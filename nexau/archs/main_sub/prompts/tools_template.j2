@@ -1,0 +1,28 @@
+{% if tools %}
+
+## Available Tools
+You can use tools by including XML blocks in your response:
+{% for tool in tools %}
+
+### {{ tool.name }}
+{% if tool.as_skill%}
+{{ tool.skill_description if tool.skill_description else 'No skill description available' }}
+{% else %}
+{{ tool.template_override or '' }}
+{% if tool.template_override is none%}
+{{ tool.description if tool.description else 'No description available' }}
+Usage:
+<tool_use>
+  <tool_name>{{ tool.name }}</tool_name>
+  <parameter>
+{% if tool.parameters %}
+{% for param in tool.parameters %}
+    <{{ param.name }}>{{ param.description }}{% if not param.required %} (optional, type: {{ param.type }}{% if param.default %}, default: {{ param.default }}{% endif %}){% else %} (required, type: {{ param.type }}){% endif %}</{{ param.name }}>
+{% endfor %}
+{% endif %}
+  </parameter>
+</tool_use>
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}

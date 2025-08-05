@@ -1,0 +1,19 @@
+{% if sub_agents %}
+
+## Available Sub-Agents
+You can delegate tasks to specialized sub-agents:
+{% for sub_agent in sub_agents %}
+
+<description_of_sub_agent:{{sub_agent.name}}>
+### {{ sub_agent.name }}
+{{ sub_agent.description or 'Specialized agent for ' + sub_agent.name + '-related tasks' }}
+Usage:
+<tool_use>
+  <tool_name>agent:{{sub_agent.name}}</tool_name>
+  <parameter>
+    <message>task description</message>
+  </parameter>
+</tool_use>
+</description_of_sub_agent:{{sub_agent.name}}>
+{% endfor %}
+{% endif %}

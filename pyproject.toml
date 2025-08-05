@@ -1,0 +1,88 @@
+[project]
+name = "nexau"
+version = "0.3.2"
+description = "A general-purpose agent framework"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0",
+    "pydantic>=2.7",
+    "jsonschema>=4.0.0",
+    "requests>=2.25.0",
+    "jinja2>=3.0.0",
+    "beautifulsoup4>=4.9.0",
+    "openai>=1.0.0",
+    "httpx>=0.25.0",
+    "mcp>=1.12.3",
+    "lark_oapi>=1.4.0",
+    "sqlmodel>=0.0.18",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "streamlit>=1.48.0",
+    "plotly>=6.2.0",
+    "pandas>=2.3.1",
+    "langfuse>=3.2.3",
+    "tiktoken>=0.5.0",
+    "fastmcp",
+    "diskcache>=5.6.3",
+    "anthropic>=0.72.0",
+    "opentelemetry-instrumentation-anthropic>=0.47.5",
+]
+
+[project.scripts]
+nexau-cli = "nexau.cli_wrapper:main"
+
+[tool.uv]
+dev-dependencies = [
+    "ruff>=0.8.0",
+]
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nexau*"]
+
+[tool.setuptools.package-data]
+nexau = [
+    "archs/main_sub/prompts/*.j2",
+    "cli/dist/*.js",
+    "cli/dist/*.js.map",
+]
+
+[tool.ruff]
+# Set the target Python version
+target-version = "py312"
+line-length = 140
+# Exclude directories from linting
+exclude = [
+    "examples/code_agent/skills",
+]
+
+[tool.ruff.lint]
+# Enable common linting rules
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+# Ignore import rules in __init__.py files
+"__init__.py" = ["F401"]
+# Ignore star imports in test __init__.py files
+"tests/**/__init__.py" = ["F401", "F403"]
+# Ignore specific rules in test files
+"tests/**/*.py" = ["N802", "N803"]
+
+[tool.ruff.format]
+# Use double quotes for strings
+quote-style = "double"
+# Indent with spaces
+indent-style = "space"

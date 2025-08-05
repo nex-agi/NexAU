@@ -1,0 +1,56 @@
+type: agent
+name: nexau_code_agent
+max_context_tokens: 100000
+system_prompt: ./system-workflow.md
+system_prompt_type: jinja
+tool_call_mode: openai # xml, openai or anthorpic
+llm_config: # Support environment variable replacement in YAML config
+  model: ${env.LLM_MODEL}
+  base_url: ${env.LLM_BASE_URL}
+  api_key: ${env.LLM_API_KEY}
+  temperature: 0.7
+  max_tokens: 4096
+  api_type: openai_chat_completion # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
+tools: # Tool definition and implementation (binding) are decoupled
+  - name: web_search
+    yaml_path: ./tools/WebSearch.tool.yaml
+    binding: nexau.archs.tool.builtin.web_tool:web_search
+  - name: web_read
+    yaml_path: ./tools/WebFetch.tool.yaml
+    binding: nexau.archs.tool.builtin.web_tool:web_read
+  - name: todo_write
+    yaml_path: ./tools/TodoWrite.tool.yaml
+    binding: nexau.archs.tool.builtin.todo_write:todo_write
+  - name: grep
+    yaml_path: ./tools/Grep.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools.grep_tool:grep_tool
+  - name: glob
+    yaml_path: ./tools/Glob.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools.glob_tool:glob_tool
+  - name: file_read
+    yaml_path: ./tools/Read.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools.file_read_tool:file_read_tool
+  - name: file_write
+    yaml_path: ./tools/Write.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools.file_write_tool:file_write_tool
+  - name: file_edit
+    yaml_path: ./tools/Edit.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools.file_edit_tool:file_edit_tool
+  - name: bash
+    yaml_path: ./tools/Bash.tool.yaml
+    binding: nexau.archs.tool.builtin.bash_tool:bash_tool
+  - name: ls
+    yaml_path: ./tools/Ls.tool.yaml
+    binding: nexau.archs.tool.builtin.ls_tool:ls_tool
+  - name: multiedit
+    yaml_path: ./tools/MultiEdit.tool.yaml
+    binding: nexau.archs.tool.builtin.multiedit_tool:multiedit_tool
+skills: # Skills are used to hint the agent to solve specific tasks
+  - ./skills/template-skill
+  - ./skills/theme-factory
+middlewares: # Middlewares are used to modify the behavior of the agent.
+  - import: nexau.archs.main_sub.execution.hooks:LoggingMiddleware
+    params:
+      model_logger: "nexau_code_model_debug"
+      tool_logger: "nexau_code_tool_debug"
+      log_model_calls: true
