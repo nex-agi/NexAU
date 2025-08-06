@@ -769,27 +769,34 @@ Usage:
             try:
                 root = ET.fromstring(f"<root>{xml_content}</root>")
             except ET.ParseError as e:
-                logger.warning(f"Initial XML parsing failed: {e}. Attempting with CDATA wrapping...")
+                logger.warning(f"Initial XML parsing failed: {e}. Attempting with HTML escaping...")
                 
-                # Try wrapping parameter content in CDATA to preserve HTML/XML content
+                # Try escaping HTML/XML content in parameter values
                 try:
-                    # First, extract and wrap parameter contents in CDATA
                     import re
+                    import html
                     
-                    # Find parameter blocks and wrap their content in CDATA
-                    def wrap_param_content(match):
+                    def escape_param_content(match):
                         param_name = match.group(1)
                         param_content = match.group(2)
-                        # Only wrap in CDATA if content contains XML/HTML-like structures
+                        
+                        # Escape HTML/XML content if it contains < >
                         if '<' in param_content and '>' in param_content:
-                            return f"<{param_name}><![CDATA[{param_content}]]></{param_name}>"
+                            escaped_content = html.escape(param_content)
+                            return f"<{param_name}>{escaped_content}</{param_name}>"
                         return match.group(0)
                     
-                    # Pattern to match parameter tags with content
-                    param_pattern = r'<(\w+)>(.*?)</\1>'
-                    cdata_wrapped = re.sub(param_pattern, wrap_param_content, xml_content, flags=re.DOTALL)
+                    # Find and escape parameter content within parameters block
+                    escaped_xml = xml_content
+                    params_match = re.search(r'<parameters>(.*?)</parameters>', xml_content, re.DOTALL)
+                    if params_match:
+                        params_content = params_match.group(1)
+                        # Pattern to match individual parameter tags
+                        param_pattern = r'<(\w+)>(.*?)</\1>'
+                        escaped_params = re.sub(param_pattern, escape_param_content, params_content, flags=re.DOTALL)
+                        escaped_xml = xml_content.replace(params_match.group(1), escaped_params)
                     
-                    root = ET.fromstring(f"<root>{cdata_wrapped}</root>")
+                    root = ET.fromstring(f"<root>{escaped_xml}</root>")
                     
                 except ET.ParseError:
                     # Fallback: Try escaping common problematic characters
@@ -812,7 +819,14 @@ Usage:
             if params_elem is not None:
                 for param in params_elem:
                     param_name = param.tag
-                    param_value = param.text or ""
+                    
+                    # Handle both regular text and CDATA content
+                    if param.text is not None:
+                        param_value = param.text
+                    else:
+                        # Handle case where content is in CDATA or mixed content
+                        param_value = ''.join(param.itertext()) or ""
+                    
                     # Unescape HTML entities in parameter values
                     import html
                     param_value = html.unescape(param_value)
