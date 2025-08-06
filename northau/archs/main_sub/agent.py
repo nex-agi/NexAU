@@ -44,6 +44,8 @@ class Agent:
         # Context parameters
         initial_state: Optional[Dict[str, Any]] = None,
         initial_config: Optional[Dict[str, Any]] = None,
+        # MCP parameters
+        mcp_servers: Optional[List[Dict[str, Any]]] = None,
         # Deprecated parameters (for backward compatibility)
         model: Optional[str] = None,
         model_base_url: Optional[str] = None
@@ -65,6 +67,10 @@ class Agent:
         
         # Handle LLM configuration
         self.llm_config = self._setup_llm_config(llm_config, model, model_base_url)
+        
+        # Initialize MCP tools if servers are configured
+        if mcp_servers:
+            self._initialize_mcp_tools(mcp_servers)
         
         # Build tool registry for quick lookup
         self.tool_registry = {tool.name: tool for tool in self.tools}
@@ -109,6 +115,22 @@ class Agent:
             return llm_config
         else:
             raise ValueError(f"Invalid llm_config type: {type(llm_config)}")
+    
+    def _initialize_mcp_tools(self, mcp_servers: List[Dict[str, Any]]) -> None:
+        """Initialize tools from MCP servers."""
+        try:
+            from ..tool.builtin import sync_initialize_mcp_tools
+            logger.info(f"Initializing MCP tools from {len(mcp_servers)} servers")
+            
+            mcp_tools = sync_initialize_mcp_tools(mcp_servers)
+            self.tools.extend(mcp_tools)
+            
+            logger.info(f"Successfully initialized {len(mcp_tools)} MCP tools")
+            
+        except ImportError:
+            logger.error("MCP client not available. Please install the mcp package.")
+        except Exception as e:
+            logger.error(f"Failed to initialize MCP tools: {e}")
     
     def run(
         self,
@@ -259,7 +281,7 @@ class Agent:
                 messages = [messages[0]] + history_messages + [messages[1]]
             
             # Loop until no more tool calls or sub-agent calls are made
-            max_iterations = 10  # Prevent infinite loops
+            max_iterations = 100  # Prevent infinite loops
             iteration = 0
             final_response = ""
             
@@ -371,7 +393,7 @@ class Agent:
                 messages = [messages[0]] + history_messages + [messages[1]]
             
             # Loop until no more tool calls or sub-agent calls are made
-            max_iterations = 10  # Prevent infinite loops
+            max_iterations = 100  # Prevent infinite loops
             iteration = 0
             
             while iteration < max_iterations:
@@ -994,6 +1016,8 @@ def create_agent(
     # Context parameters
     initial_state: Optional[Dict[str, Any]] = None,
     initial_config: Optional[Dict[str, Any]] = None,
+    # MCP parameters
+    mcp_servers: Optional[List[Dict[str, Any]]] = None,
     # Deprecated parameters (for backward compatibility)
     model: Optional[str] = None,
     model_base_url: Optional[str] = None,
@@ -1024,6 +1048,7 @@ def create_agent(
         timeout=timeout,
         initial_state=initial_state,
         initial_config=initial_config,
+        mcp_servers=mcp_servers,
         model=model,  # Keep for backward compatibility
         model_base_url=model_base_url  # Keep for backward compatibility
     )
