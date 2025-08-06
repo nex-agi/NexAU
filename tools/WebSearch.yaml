@@ -17,10 +17,6 @@ input_schema:
       type: integer
       default: 10
       description: Number of results to return
-    search_engine:
-      type: string
-      default: "duckduckgo"
-      description: Search engine to use
   required:
     - query
   additionalProperties: false

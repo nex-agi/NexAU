@@ -36,6 +36,8 @@ class HtmlParser:
             page_content = response_data["content"]
             if 'extracted_text' in response_data:
                 page_content = response_data['extracted_text']
+            else:
+                page_content = "No content found"
             return True, page_content
         else:
             logger.warning(

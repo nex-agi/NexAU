@@ -62,7 +62,7 @@ def load_agent_config(
             llm_params = {}
             for key in ['model', 'base_url', 'model_base_url', 'api_key', 'temperature', 
                        'max_tokens', 'top_p', 'frequency_penalty', 'presence_penalty', 
-                       'timeout', 'max_retries']:
+                       'timeout', 'max_retries', 'debug']:
                 value = config.get(key)
                 if value is not None:
                     # Handle model_base_url -> base_url mapping
