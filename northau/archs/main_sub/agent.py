@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 from .prompt_handler import PromptHandler
 from ..llm import LLMConfig
+from .agent_context import AgentContext
 
 # Setup logger for agent execution
 logger = logging.getLogger(__name__)
@@ -40,6 +41,9 @@ class Agent:
         error_handler: Optional[Callable] = None,
         retry_attempts: int = 3,
         timeout: int = 300,
+        # Context parameters
+        initial_state: Optional[Dict[str, Any]] = None,
+        initial_config: Optional[Dict[str, Any]] = None,
         # Deprecated parameters (for backward compatibility)
         model: Optional[str] = None,
         model_base_url: Optional[str] = None
@@ -54,6 +58,10 @@ class Agent:
         self.error_handler = error_handler
         self.retry_attempts = retry_attempts
         self.timeout = timeout
+        
+        # Initialize context data
+        self.initial_state = initial_state or {}
+        self.initial_config = initial_config or {}
         
         # Handle LLM configuration
         self.llm_config = self._setup_llm_config(llm_config, model, model_base_url)
@@ -106,68 +114,108 @@ class Agent:
         self,
         message: str,
         history: Optional[List[Dict]] = None,
-        context: Optional[Dict] = None
+        context: Optional[Dict] = None,
+        state: Optional[Dict[str, Any]] = None,
+        config: Optional[Dict[str, Any]] = None
     ) -> str:
         """Run agent with a message and return response."""
         logger.info(f"🤖 Agent '{self.name}' starting execution")
         logger.info(f"📝 User message: {message}")
         
-        if history:
-            self.history = history.copy()
+        # Merge initial state/config with provided ones
+        merged_state = {**self.initial_state}
+        if state:
+            merged_state.update(state)
+            
+        merged_config = {**self.initial_config}
+        if config:
+            merged_config.update(config)
         
-        # Add user message to history
-        self.history.append({"role": "user", "content": message})
-        
-        try:
-            # Generate response using the LLM
-            response = self._generate_response(message, context)
+        # Create agent context
+        with AgentContext(state=merged_state, config=merged_config) as ctx:
+            # Setup context modification callback to refresh system prompt
+            def on_context_modified():
+                # Reset processed system prompt to force regeneration
+                self.processed_system_prompt = self._process_system_prompt()
             
-            # Add assistant response to history
-            self.history.append({"role": "assistant", "content": response})
+            ctx.add_modification_callback(on_context_modified)
             
-            logger.info(f"✅ Agent '{self.name}' completed execution")
-            return response
+            if history:
+                self.history = history.copy()
             
-        except Exception as e:
-            logger.error(f"❌ Agent '{self.name}' encountered error: {e}")
-            if self.error_handler:
-                error_response = self.error_handler(e, self, context)
-                self.history.append({"role": "assistant", "content": error_response})
-                return error_response
-            else:
-                raise
+            # Add user message to history
+            self.history.append({"role": "user", "content": message})
+            
+            try:
+                # Generate response using the LLM
+                response = self._generate_response(message, context)
+                
+                # Add assistant response to history
+                self.history.append({"role": "assistant", "content": response})
+                
+                logger.info(f"✅ Agent '{self.name}' completed execution")
+                return response
+                
+            except Exception as e:
+                logger.error(f"❌ Agent '{self.name}' encountered error: {e}")
+                if self.error_handler:
+                    error_response = self.error_handler(e, self, context)
+                    self.history.append({"role": "assistant", "content": error_response})
+                    return error_response
+                else:
+                    raise
     
     def stream(
         self,
         message: str,
         history: Optional[List[Dict]] = None,
-        context: Optional[Dict] = None
+        context: Optional[Dict] = None,
+        state: Optional[Dict[str, Any]] = None,
+        config: Optional[Dict[str, Any]] = None
     ) -> Iterator[str]:
         """Stream agent response in chunks with real-time tool execution."""
         logger.info(f"🌊 Agent '{self.name}' starting streaming execution")
         logger.info(f"📝 User message: {message}")
         
-        if history:
-            self.history = history.copy()
-        
-        # Add user message to history
-        self.history.append({"role": "user", "content": message})
-        
-        try:
-            # Stream the response generation
-            for chunk in self._stream_response(message, context):
-                yield chunk
+        # Merge initial state/config with provided ones
+        merged_state = {**self.initial_state}
+        if state:
+            merged_state.update(state)
             
-            logger.info(f"✅ Agent '{self.name}' completed streaming execution")
+        merged_config = {**self.initial_config}
+        if config:
+            merged_config.update(config)
+        
+        # Create agent context
+        with AgentContext(state=merged_state, config=merged_config) as ctx:
+            # Setup context modification callback to refresh system prompt
+            def on_context_modified():
+                # Reset processed system prompt to force regeneration
+                self.processed_system_prompt = self._process_system_prompt()
+            
+            ctx.add_modification_callback(on_context_modified)
+            
+            if history:
+                self.history = history.copy()
+            
+            # Add user message to history
+            self.history.append({"role": "user", "content": message})
+            
+            try:
+                # Stream the response generation
+                for chunk in self._stream_response(message, context):
+                    yield chunk
                 
-        except Exception as e:
-            logger.error(f"❌ Agent '{self.name}' streaming error: {e}")
-            if self.error_handler:
-                error_response = self.error_handler(e, self, context)
-                self.history.append({"role": "assistant", "content": error_response})
-                yield error_response
-            else:
-                raise
+                logger.info(f"✅ Agent '{self.name}' completed streaming execution")
+                    
+            except Exception as e:
+                logger.error(f"❌ Agent '{self.name}' streaming error: {e}")
+                if self.error_handler:
+                    error_response = self.error_handler(e, self, context)
+                    self.history.append({"role": "assistant", "content": error_response})
+                    yield error_response
+                else:
+                    raise
     
     def add_tool(self, tool) -> None:
         """Add a tool to the agent."""
@@ -190,11 +238,11 @@ class Agent:
     def _generate_response(self, message: str, context: Optional[Dict] = None) -> str:
         """Generate response using OpenAI API with XML-based tool and sub-agent calls."""
         if not self.openai_client:
-            return self._fallback_response(message, context)
+            raise RuntimeError("OpenAI client is not available. Please check your API configuration.")
         
         try:
             # Build system prompt with available tools and sub-agents
-            system_prompt = self._build_system_prompt_with_capabilities()
+            system_prompt = self._build_system_prompt_with_capabilities(context)
             
             # Prepare initial messages
             messages = [
@@ -228,9 +276,20 @@ class Agent:
                 if 'max_tokens' not in api_params:
                     api_params['max_tokens'] = self.max_context // 4  # Reserve space for context
                 
+                # Debug logging for LLM messages
+                if self.llm_config.debug:
+                    logger.info(f"🐛 [DEBUG] LLM Request Messages for agent '{self.name}':")
+                    for i, msg in enumerate(messages):
+                        # logger.info(f"🐛 [DEBUG] Message {i}: {msg['role']} -> {msg['content'][:200]}{'...' if len(msg['content']) > 200 else ''}")
+                        logger.info(f"🐛 [DEBUG] Message {i}: {msg['role']} -> {msg['content']}")
+                
                 logger.info(f"🧠 Calling LLM for agent '{self.name}'...")
                 response = self.openai_client.chat.completions.create(**api_params)
                 assistant_response = response.choices[0].message.content
+                
+                # Debug logging for LLM response
+                if self.llm_config.debug:
+                    logger.info(f"🐛 [DEBUG] LLM Response for agent '{self.name}': {assistant_response}")
                 
                 logger.info(f"💬 LLM Response for agent '{self.name}': {assistant_response}")
                 
@@ -285,18 +344,17 @@ class Agent:
             return final_response
             
         except Exception as e:
-            # Fallback to simple response if OpenAI call fails
-            return f"Error calling OpenAI API: {e}\n\n{self._fallback_response(message, context)}"
+            # Re-raise with more context
+            raise RuntimeError(f"Error calling OpenAI API: {e}") from e
     
     def _stream_response(self, message: str, context: Optional[Dict] = None) -> Iterator[str]:
         """Stream response using OpenAI API with XML-based tool and sub-agent calls."""
         if not self.openai_client:
-            yield self._fallback_response(message, context)
-            return
+            raise RuntimeError("OpenAI client is not available. Please check your API configuration.")
         
         try:
             # Build system prompt with available tools and sub-agents
-            system_prompt = self._build_system_prompt_with_capabilities()
+            system_prompt = self._build_system_prompt_with_capabilities(context)
             
             # Prepare initial messages
             messages = [
@@ -326,6 +384,12 @@ class Agent:
                 if 'max_tokens' not in api_params:
                     api_params['max_tokens'] = self.max_context // 4  # Reserve space for context
                 
+                # Debug logging for LLM messages
+                if self.llm_config.debug:
+                    logger.info(f"🐛 [DEBUG] LLM Streaming Request Messages for agent '{self.name}':")
+                    for i, msg in enumerate(messages):
+                        logger.info(f"🐛 [DEBUG] Message {i}: {msg['role']} -> {msg['content'][:200]}{'...' if len(msg['content']) > 200 else ''}")
+                
                 response_stream = self.openai_client.chat.completions.create(**api_params)
                 
                 # Collect streamed response
@@ -335,6 +399,10 @@ class Agent:
                         content = chunk.choices[0].delta.content
                         assistant_response += content
                         yield content
+                
+                # Debug logging for complete streamed response
+                if self.llm_config.debug:
+                    logger.info(f"🐛 [DEBUG] LLM Streaming Response for agent '{self.name}': {assistant_response}")
                 
                 # Check if response contains tool calls or sub-agent calls
                 has_tool_calls = bool(re.search(r'<tool_use>.*?</tool_use>', assistant_response, re.DOTALL))
@@ -384,26 +452,14 @@ class Agent:
                 yield "\n\n[Note: Maximum iteration limit reached]"
                 
         except Exception as e:
-            # Fallback to simple response if OpenAI call fails
-            yield f"Error calling OpenAI API: {e}\n\n{self._fallback_response(message, context)}"
+            # Re-raise with more context
+            raise RuntimeError(f"Error calling OpenAI API: {e}") from e
     
-    def _fallback_response(self, message: str, context: Optional[Dict] = None) -> str:
-        """Fallback response when OpenAI is not available."""
-        available_tools = [tool.name for tool in self.tools]
-        available_sub_agents = list(self.sub_agents.keys())
-        
-        response_parts = []
-        response_parts.append(f"Agent '{self.name}' processing: \"{message}\" (fallback mode)")
-        response_parts.append(f"Available tools: {available_tools}")
-        response_parts.append(f"Available sub-agents: {available_sub_agents}")
-        
-        if context:
-            response_parts.append(f"Context: {context}")
-        
-        return "\n".join(response_parts)
     
     def call_sub_agent(self, sub_agent_name: str, message: str, context: Optional[Dict] = None) -> str:
         """Call a sub-agent like a tool call."""
+        from .agent_context import get_context
+        
         logger.info(f"🤖➡️🤖 Agent '{self.name}' calling sub-agent '{sub_agent_name}' with message: {message}")
         
         if sub_agent_name not in self.sub_agents:
@@ -413,7 +469,17 @@ class Agent:
         
         sub_agent = self.sub_agents[sub_agent_name]
         try:
-            result = sub_agent.run(message, context=context)
+            # Pass current agent context state and config to sub-agent
+            current_context = get_context()
+            if current_context:
+                result = sub_agent.run(
+                    message, 
+                    context=context,
+                    state=current_context.state.copy(),
+                    config=current_context.config.copy()
+                )
+            else:
+                result = sub_agent.run(message, context=context)
             logger.info(f"✅ Sub-agent '{sub_agent_name}' returned result to agent '{self.name}'")
             return result
         except Exception as e:
@@ -439,10 +505,139 @@ class Agent:
             raise
 
     
-    def _build_system_prompt_with_capabilities(self) -> str:
+    def _build_system_prompt_with_capabilities(self, runtime_context: Optional[Dict] = None) -> str:
         """Build system prompt including tool and sub-agent capabilities."""
-        base_prompt = self.processed_system_prompt
+        # Check if context has been modified and refresh the processed system prompt
+        from .agent_context import get_context
+        current_context = get_context()
+        if current_context and current_context.is_modified():
+            self.processed_system_prompt = self._process_system_prompt()
+            current_context.reset_modification_flag()
         
+        # Re-process system prompt with runtime context if provided
+        if runtime_context and self.system_prompt:
+            try:
+                # Merge runtime context with default context
+                default_context = self.prompt_handler.get_default_context(self)
+                merged_context = {**default_context, **runtime_context}
+                base_prompt = self.prompt_handler.create_dynamic_prompt(
+                    self.system_prompt, self, additional_context=merged_context
+                )
+            except Exception as e:
+                # Fallback to processed system prompt if runtime processing fails
+                logger.error(f"❌ Error processing system prompt: {e}")
+                base_prompt = self.processed_system_prompt
+        else:
+            base_prompt = self.processed_system_prompt
+
+        # Template for tool documentation
+        tools_template = """
+{% if tools %}
+
+## Available Tools
+You can use tools by including XML blocks in your response:
+{% for tool in tools %}
+
+### {{ tool.name }}
+{{ tool.description or 'No description available' }}
+Usage:
+<tool_use>
+  <tool_name>{{ tool.name }}</tool_name>
+  <parameters>
+{% if tool.parameters %}
+{% for param in tool.parameters %}
+    <{{ param.name }}>{{ param.description }}{% if not param.required %} (optional, type: {{ param.type }}{% if param.default %}, default: {{ param.default }}{% endif %}){% else %} (required, type: {{ param.type }}){% endif %}</{{ param.name }}>
+{% endfor %}
+{% endif %}
+  </parameters>
+</tool_use>
+{% endfor %}
+{% endif %}"""
+
+        # Template for sub-agent documentation  
+        sub_agents_template = """
+{% if sub_agents %}
+
+## Available Sub-Agents
+You can delegate tasks to specialized sub-agents:
+{% for sub_agent in sub_agents %}
+
+### {{ sub_agent.name }}
+{{ sub_agent.description or 'Specialized agent for ' + sub_agent.name + '-related tasks' }}
+Usage:
+<sub-agent>
+  <agent_name>{{ sub_agent.name }}</agent_name>
+  <message>task description</message>
+</sub-agent>
+{% endfor %}
+{% endif %}"""
+
+        try:
+            # Prepare enhanced context with tool parameters
+            context = self.prompt_handler.get_default_context(self)
+            
+            # Merge with runtime context if provided
+            if runtime_context:
+                context.update(runtime_context)
+            
+            # Add detailed tool parameter information
+            if context.get('tools'):
+                for i, tool_info in enumerate(context['tools']):
+                    if hasattr(self.tools[i], 'input_schema'):
+                        schema = getattr(self.tools[i], 'input_schema', {})
+                        properties = schema.get('properties', {})
+                        required_params = schema.get('required', [])
+                        
+                        parameters = []
+                        for param_name, param_info in properties.items():
+                            param_type = param_info.get('type', 'string')
+                            param_desc = param_info.get('description', '')
+                            default_value = param_info.get('default')
+                            is_required = param_name in required_params
+                            
+                            # Map JSON Schema types to Python types
+                            type_mapping = {
+                                'string': 'str',
+                                'integer': 'int', 
+                                'number': 'float',
+                                'boolean': 'bool',
+                                'array': 'list',
+                                'object': 'dict'
+                            }
+                            python_type = type_mapping.get(param_type, 'str')
+                            
+                            parameters.append({
+                                'name': param_name,
+                                'description': param_desc,
+                                'type': python_type,
+                                'required': is_required,
+                                'default': default_value
+                            })
+                        
+                        tool_info['parameters'] = parameters
+            
+            # Render tool documentation
+            tools_docs = self.prompt_handler.create_dynamic_prompt(
+                tools_template, self, context
+            )
+            
+            # Render sub-agent documentation
+            sub_agents_docs = self.prompt_handler.create_dynamic_prompt(
+                sub_agents_template, self, context
+            )
+            
+            base_prompt += tools_docs + sub_agents_docs
+            
+        except Exception:
+            # Fallback to original implementation if template rendering fails
+            base_prompt = self._build_system_prompt_with_capabilities_fallback(base_prompt)
+        
+        base_prompt += "\n\nWhen you use tools or sub-agents, include the XML blocks in your response and I will execute them and provide the results."
+        
+        return base_prompt
+    
+    def _build_system_prompt_with_capabilities_fallback(self, base_prompt: str) -> str:
+        """Fallback method for building capabilities documentation."""
         # Add tool documentation
         if self.tools:
             tool_docs = []
@@ -514,8 +709,6 @@ class Agent:
             
             base_prompt += "\n".join(sub_agent_docs)
         
-        base_prompt += "\n\nWhen you use tools or sub-agents, include the XML blocks in your response and I will execute them and provide the results."
-        
         return base_prompt
     
     def _process_xml_calls(self, response: str) -> str:
@@ -572,8 +765,39 @@ class Agent:
     def _execute_tool_from_xml(self, xml_content: str) -> Tuple[str, str]:
         """Execute a tool from XML content. Returns (tool_name, result)."""
         try:
-            # Parse XML
-            root = ET.fromstring(f"<root>{xml_content}</root>")
+            # Parse XML - first try as-is, then try with HTML entity escaping
+            try:
+                root = ET.fromstring(f"<root>{xml_content}</root>")
+            except ET.ParseError as e:
+                logger.warning(f"Initial XML parsing failed: {e}. Attempting with CDATA wrapping...")
+                
+                # Try wrapping parameter content in CDATA to preserve HTML/XML content
+                try:
+                    # First, extract and wrap parameter contents in CDATA
+                    import re
+                    
+                    # Find parameter blocks and wrap their content in CDATA
+                    def wrap_param_content(match):
+                        param_name = match.group(1)
+                        param_content = match.group(2)
+                        # Only wrap in CDATA if content contains XML/HTML-like structures
+                        if '<' in param_content and '>' in param_content:
+                            return f"<{param_name}><![CDATA[{param_content}]]></{param_name}>"
+                        return match.group(0)
+                    
+                    # Pattern to match parameter tags with content
+                    param_pattern = r'<(\w+)>(.*?)</\1>'
+                    cdata_wrapped = re.sub(param_pattern, wrap_param_content, xml_content, flags=re.DOTALL)
+                    
+                    root = ET.fromstring(f"<root>{cdata_wrapped}</root>")
+                    
+                except ET.ParseError:
+                    # Fallback: Try escaping common problematic characters
+                    import html
+                    escaped_content = html.escape(xml_content, quote=False)
+                    # Unescape the XML tags we need
+                    escaped_content = escaped_content.replace("&lt;", "<").replace("&gt;", ">")
+                    root = ET.fromstring(f"<root>{escaped_content}</root>")
             
             # Get tool name
             tool_name_elem = root.find('tool_name')
@@ -589,13 +813,16 @@ class Agent:
                 for param in params_elem:
                     param_name = param.tag
                     param_value = param.text or ""
+                    # Unescape HTML entities in parameter values
+                    import html
+                    param_value = html.unescape(param_value)
                     parameters[param_name] = self._convert_parameter_type(
                         tool_name, param_name, param_value.strip()
                     )
             
             # Execute tool
             result = self._execute_tool(tool_name, parameters)
-            return tool_name, json.dumps(result, indent=2)
+            return tool_name, json.dumps(result, indent=2, ensure_ascii=False)
             
         except ET.ParseError as e:
             raise ValueError(f"Invalid XML format: {e}")
@@ -683,11 +910,10 @@ class Agent:
             return self._get_default_system_prompt()
         
         try:
-            context = self.prompt_handler.get_default_context(self)
-            return self.prompt_handler.process_prompt(
+            # Use create_dynamic_prompt for enhanced variable rendering
+            return self.prompt_handler.create_dynamic_prompt(
                 self.system_prompt,
-                self.system_prompt_type,
-                context
+                self
             )
         except Exception as e:
             # Fallback to default prompt if processing fails
@@ -695,7 +921,37 @@ class Agent:
     
     def _get_default_system_prompt(self) -> str:
         """Get default system prompt for the agent."""
-        return f"""You are an AI agent named '{self.name}' built on the Northau framework.
+        template = """You are an AI agent named '{{ agent_name }}' built on the Northau framework.
+
+{% if tools %}
+You have access to the following tools:
+{% for tool in tools %}
+- {{ tool.name }}: {{ tool.description or 'No description' }}
+{% endfor %}
+{% else %}
+You currently have no tools available.
+{% endif %}
+
+{% if sub_agents %}
+You can delegate tasks to the following sub-agents:
+{% for sub_agent in sub_agents %}
+- {{ sub_agent.name }}: {{ sub_agent.description or 'Specialized agent for ' + sub_agent.name + '-related tasks' }}
+{% endfor %}
+{% else %}
+You currently have no sub-agents available.
+{% endif %}
+
+Your goal is to help users accomplish their tasks efficiently by:
+1. Understanding the user's request
+2. Determining if you can handle it with your available tools
+3. Delegating to appropriate sub-agents when their specialized capabilities are needed
+4. Executing the necessary actions and providing clear, helpful responses"""
+        
+        try:
+            return self.prompt_handler.create_dynamic_prompt(template, self)
+        except Exception:
+            # Fallback to simple string formatting if dynamic rendering fails
+            return f"""You are an AI agent named '{self.name}' built on the Northau framework.
 
 You have access to the following tools:
 {chr(10).join(f"- {tool.name}: {getattr(tool, 'description', 'No description')}" for tool in self.tools)}
@@ -721,6 +977,9 @@ def create_agent(
     error_handler: Optional[Callable] = None,
     retry_attempts: int = 3,
     timeout: int = 300,
+    # Context parameters
+    initial_state: Optional[Dict[str, Any]] = None,
+    initial_config: Optional[Dict[str, Any]] = None,
     # Deprecated parameters (for backward compatibility)
     model: Optional[str] = None,
     model_base_url: Optional[str] = None,
@@ -749,6 +1008,8 @@ def create_agent(
         error_handler=error_handler,
         retry_attempts=retry_attempts,
         timeout=timeout,
+        initial_state=initial_state,
+        initial_config=initial_config,
         model=model,  # Keep for backward compatibility
         model_base_url=model_base_url  # Keep for backward compatibility
     )

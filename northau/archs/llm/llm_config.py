@@ -19,6 +19,7 @@ class LLMConfig:
         presence_penalty: Optional[float] = None,
         timeout: Optional[float] = None,
         max_retries: int = 3,
+        debug: bool = False,
         **kwargs
     ):
         """
@@ -35,6 +36,7 @@ class LLMConfig:
             presence_penalty: Presence penalty (-2.0 to 2.0)
             timeout: Request timeout in seconds
             max_retries: Maximum number of retries
+            debug: Enable debug logging of LLM messages
             **kwargs: Additional model-specific parameters
         """
         self.model = model
@@ -47,6 +49,7 @@ class LLMConfig:
         self.presence_penalty = presence_penalty
         self.timeout = timeout
         self.max_retries = max_retries
+        self.debug = debug
         
         # Store additional parameters
         self.extra_params = kwargs
@@ -137,6 +140,7 @@ class LLMConfig:
             presence_penalty=self.presence_penalty,
             timeout=self.timeout,
             max_retries=self.max_retries,
+            debug=self.debug,
             **self.extra_params
         )
     

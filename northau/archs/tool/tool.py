@@ -105,7 +105,8 @@ class Tool:
         try:
             jsonschema.validate(params, self.input_schema)
             return True
-        except jsonschema.ValidationError:
+        except jsonschema.ValidationError as e:
+            print(f"Invalid parameters for tool '{self.name}': {params}, error: {e}")
             return False
     
     def _validate_schema(self):
