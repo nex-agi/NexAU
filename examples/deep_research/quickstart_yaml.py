@@ -3,6 +3,7 @@
 
 import os
 from datetime import datetime
+from pathlib import Path
 
 from northau.archs.config.config_loader import load_agent_config
 
@@ -35,8 +36,9 @@ def main():
             "llm_config": llm_config_overrides
         }
         
+        script_dir = Path(__file__).parent
         deep_research_agent = load_agent_config(
-            "agents/deep_research_agent.yaml",
+            str(script_dir / "deep_research_agent.yaml"),
             overrides=config_overrides
         )
         print("✓ Agent loaded successfully from YAML")

@@ -241,7 +241,6 @@ def web_read(
             "status_code": response.status_code,
             "content_type": content_type,
             "content_length": len(content),
-            "raw_content": content,
             "method": "direct_http"
         }
         

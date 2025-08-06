@@ -29,17 +29,6 @@ input_schema:
     url:
       type: string
       description: URL to fetch
-    timeout:
-      type: integer
-      default: 30
-      description: Request timeout in seconds
-    headers:
-      type: object
-      description: Optional HTTP headers
-    extract_text:
-      type: boolean
-      default: true
-      description: Whether to extract plain text from HTML
   required:
     - url
   additionalProperties: false

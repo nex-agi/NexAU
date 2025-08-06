@@ -3,11 +3,10 @@
 
 import os
 from datetime import datetime
+from pathlib import Path
 
 from northau.archs.main_sub import create_agent
 from northau.archs.tool import Tool
-from northau.archs.tool.builtin.bash_tool import bash
-from northau.archs.tool.builtin.file_tool import file_edit, file_search
 from northau.archs.tool.builtin.todo_write import todo_write
 from northau.archs.tool.builtin.web_tool import web_search, web_read
 from northau.archs.llm import LLMConfig
@@ -22,13 +21,11 @@ def main():
     
     try:
         # Create tools
+        script_dir = Path(__file__).parent
         print("Creating tools...")
-        # bash_tool = Tool.from_yaml("tools/Bash.yaml", binding=bash)
-        # edit_tool = Tool.from_yaml("tools/Edit.yaml", binding=file_edit)
-        # file_search_tool = Tool.from_yaml("tools/Grep.yaml", binding=file_search)
-        web_search_tool = Tool.from_yaml("tools/WebSearch.yaml", binding=web_search)
-        web_read_tool = Tool.from_yaml("tools/WebRead.yaml", binding=web_read)
-        todo_write_tool = Tool.from_yaml("tools/TodoWrite.yaml", binding=todo_write)
+        web_search_tool = Tool.from_yaml(str(script_dir / "tools/WebSearch.yaml"), binding=web_search)
+        web_read_tool = Tool.from_yaml(str(script_dir / "tools/WebRead.yaml"), binding=web_read)
+        todo_write_tool = Tool.from_yaml(str(script_dir / "tools/TodoWrite.tool.yaml"), binding=todo_write)
         print("✓ Tools created successfully")
         
         # Create sub-agents
@@ -36,7 +33,6 @@ def main():
             model=os.getenv("LLM_MODEL"),
             base_url=os.getenv("LLM_BASE_URL"),
             api_key=os.getenv("LLM_API_KEY"),
-            debug=True
         )
         print("\nCreating sub-agents...")
         

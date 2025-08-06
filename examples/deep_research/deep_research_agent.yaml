@@ -7,9 +7,9 @@ llm_config:
   max_tokens: 4096
 tools:
   - name: web_search
-    yaml_path: ../tools/WebSearch.yaml
+    yaml_path: ./tools/WebSearch.yaml
     binding: northau.archs.tool.builtin.web_tool:web_search
   - name: web_read
-    yaml_path: ../tools/WebRead.yaml
+    yaml_path: ./tools/WebRead.yaml
     binding: northau.archs.tool.builtin.web_tool:web_read
 sub_agents: []

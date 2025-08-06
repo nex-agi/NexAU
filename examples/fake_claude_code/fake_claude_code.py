@@ -3,6 +3,7 @@
 
 import os
 from datetime import datetime
+from pathlib import Path
 
 from northau.archs.main_sub import create_agent
 from northau.archs.tool import Tool
@@ -29,18 +30,21 @@ def main():
     try:
         # Create tools
         print("Creating tools...")
+        # Get the directory where this script is located
+        script_dir = Path(__file__).parent
+        
         # Bind YAML configurations to existing tools
-        grep_tool_configured = Tool.from_yaml("tools/claude_code/Grep.tool.yaml", binding=grep_tool)
-        glob_tool_configured = Tool.from_yaml("tools/claude_code/Glob.tool.yaml", binding=glob_tool)
-        todo_write_tool = Tool.from_yaml("tools/claude_code/TodoWrite.tool.yaml", binding=todo_write)
-        web_search_tool = Tool.from_yaml("tools/claude_code/WebSearch.tool.yaml", binding=web_search)
-        web_read_tool = Tool.from_yaml("tools/claude_code/WebFetch.tool.yaml", binding=web_read)
-        file_read_tool_configured = Tool.from_yaml("tools/claude_code/Read.tool.yaml", binding=file_read_tool)
-        file_write_tool_configured = Tool.from_yaml("tools/claude_code/Write.tool.yaml", binding=file_write_tool)
-        file_edit_tool_configured = Tool.from_yaml("tools/claude_code/Edit.tool.yaml", binding=file_edit_tool)
-        bash_tool_configured = Tool.from_yaml("tools/claude_code/Bash.tool.yaml", binding=bash_tool)
-        ls_tool_configured = Tool.from_yaml("tools/claude_code/Ls.tool.yaml", binding=ls_tool)
-        multiedit_tool_configured = Tool.from_yaml("tools/claude_code/MultiEdit.tool.yaml", binding=multiedit_tool)
+        grep_tool_configured = Tool.from_yaml(str(script_dir / "tools/Grep.tool.yaml"), binding=grep_tool)
+        glob_tool_configured = Tool.from_yaml(str(script_dir / "tools/Glob.tool.yaml"), binding=glob_tool)
+        todo_write_tool = Tool.from_yaml(str(script_dir / "tools/TodoWrite.tool.yaml"), binding=todo_write)
+        web_search_tool = Tool.from_yaml(str(script_dir / "tools/WebSearch.tool.yaml"), binding=web_search)
+        web_read_tool = Tool.from_yaml(str(script_dir / "tools/WebFetch.tool.yaml"), binding=web_read)
+        file_read_tool_configured = Tool.from_yaml(str(script_dir / "tools/Read.tool.yaml"), binding=file_read_tool)
+        file_write_tool_configured = Tool.from_yaml(str(script_dir / "tools/Write.tool.yaml"), binding=file_write_tool)
+        file_edit_tool_configured = Tool.from_yaml(str(script_dir / "tools/Edit.tool.yaml"), binding=file_edit_tool)
+        bash_tool_configured = Tool.from_yaml(str(script_dir / "tools/Bash.tool.yaml"), binding=bash_tool)
+        ls_tool_configured = Tool.from_yaml(str(script_dir / "tools/Ls.tool.yaml"), binding=ls_tool)
+        multiedit_tool_configured = Tool.from_yaml(str(script_dir / "tools/MultiEdit.tool.yaml"), binding=multiedit_tool)
         
         print("✓ Tools created successfully")
         
@@ -51,6 +55,9 @@ def main():
             api_key=os.getenv("LLM_API_KEY"),
         )
         print("\nCreating sub-agents...")
+        
+        # Get the directory where this script is located
+        script_dir = Path(__file__).parent
         
         claude_code_agent = create_agent(
             name="claude_code_agent",
@@ -68,21 +75,21 @@ def main():
                 multiedit_tool_configured
             ],
             llm_config=llm_config,
-            system_prompt=open("agents/claude_code/system-workflow.md").read(),
+            system_prompt=open(str(script_dir / "system-workflow.md")).read(),
         )
         print("✓ Sub-agents created successfully")
 
-        print("\nTesting delegation with web research...")
-        web_message = "Create a simple Python web server that serves static files"
-        print(f"\nUser: {web_message}")
+        print("\nTesting Fake Claude Code...")
+        user_message = input("Enter your task: ")
+        print(f"\nUser: {user_message}")
         print("\nAgent Response:")
         print("-" * 30)
         
-        response = claude_code_agent.run(web_message, context={
+        response = claude_code_agent.run(user_message, context={
             "env_content": {
                 "date": get_date(),
                 "username": os.getenv("USER"),
-                "pwd": os.getcwd(),
+                "working_directory": os.getcwd(),
             },
         })
         print(response)
