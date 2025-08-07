@@ -1,0 +1,29 @@
+name: GetFeishuChatList
+description: >-
+  获取用户或机器人所在的群列表。支持按创建时间或活跃时间排序，支持分页查询。
+input_schema:
+  type: object
+  properties:
+    sort_type:
+      type: string
+      description: >-
+        The type of the sort (must be one of the following: ByCreateTimeAsc/ByActiveTimeDesc)
+    page_size:
+      type: integer
+      description: >-
+        The size of the page (must be between 1 and 100)
+    user_id_type:
+      type: string
+      description: >-
+        The type of the user_id (must be one of the following: open_id/union_id/user_id)
+    page_token:
+      type: string
+      description: >-
+        The token for the next page (must be a valid token)
+  required:
+    - sort_type
+    - page_size
+    - user_id_type
+    - page_token
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

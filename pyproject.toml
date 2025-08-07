@@ -13,4 +13,5 @@ dependencies = [
     "openai>=1.0.0",
     "httpx>=0.25.0",
     "mcp>=1.12.3",
+    "lark_oapi>=1.4.0",
 ]
