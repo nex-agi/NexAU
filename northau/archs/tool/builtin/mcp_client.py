@@ -235,13 +235,62 @@ class MCPClient:
                         if not self.process.stdout or not self.process.stdin:
                             raise RuntimeError("Failed to get process streams")
                             
-                        # Test the connection with a simple request
-                        await self._make_request("tools/list")
+                        # Initialize the MCP connection properly
+                        await self._initialize_connection()
                         return self
                     
                     def _get_next_id(self):
                         self._request_id += 1
                         return self._request_id
+                        
+                    async def _initialize_connection(self):
+                        """Initialize the MCP connection with proper handshake."""
+                        import json
+                        # Send initialize request
+                        init_request = {
+                            "jsonrpc": "2.0",
+                            "id": self._get_next_id(),
+                            "method": "initialize",
+                            "params": {
+                                "protocolVersion": "2024-11-05",
+                                "capabilities": {
+                                    "roots": {
+                                        "listChanged": True
+                                    },
+                                    "sampling": {}
+                                },
+                                "clientInfo": {
+                                    "name": "northau-mcp-client",
+                                    "version": "1.0.0"
+                                }
+                            }
+                        }
+                        
+                        # Send the initialize request
+                        init_str = json.dumps(init_request) + "\n"
+                        self.process.stdin.write(init_str.encode())
+                        await self.process.stdin.drain()
+                        
+                        # Read the initialize response
+                        response_line = await self.process.stdout.readline()
+                        response = json.loads(response_line.decode().strip())
+                        
+                        if "error" in response:
+                            raise Exception(f"MCP initialization error: {response['error']}")
+                            
+                        # Send initialized notification
+                        initialized_notification = {
+                            "jsonrpc": "2.0",
+                            "method": "notifications/initialized",
+                            "params": {}
+                        }
+                        
+                        notif_str = json.dumps(initialized_notification) + "\n"
+                        self.process.stdin.write(notif_str.encode())
+                        await self.process.stdin.drain()
+                        
+                        # Test with tools/list to verify connection
+                        await self._make_request("tools/list")
                         
                     async def _make_request(self, method, params=None):
                         if not self.process or not self.process.stdin or not self.process.stdout:
