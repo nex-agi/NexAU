@@ -7,7 +7,6 @@ A general-purpose agent framework inspired by Claude Code's architecture for bui
 - **Modular Tool System**: Easy-to-configure tools with YAML-based configuration
 - **Agent Architecture**: Create specialized agents with different capabilities
 - **Built-in Tools**: File operations, web search, bash execution, and more
-- **Todo Management**: Built-in task tracking and management
 - **LLM Integration**: Support for various LLM providers (OpenAI, Claude, etc.)
 - **YAML Configuration**: Define agents and tools declaratively
 
