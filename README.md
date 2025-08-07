@@ -308,6 +308,168 @@ response = agent.run(
 )
 ```
 
+### Modifying State and Config in Tools using AgentContext
+
+Tools can access and modify the agent's state and configuration during execution using the AgentContext system. This allows tools to persist information across tool calls and dynamically adjust agent behavior.
+
+#### Accessing Current State and Config
+
+```python
+from northau.archs.main_sub.agent_context import get_state, get_config, get_context
+
+def my_stateful_tool(param1: str) -> dict:
+    """Example tool that accesses and modifies agent state."""
+    
+    # Get current agent state and config
+    current_state = get_state()  # Returns Dict[str, Any]
+    current_config = get_config()  # Returns Dict[str, Any]
+    
+    # Access specific values with defaults
+    from northau.archs.main_sub.agent_context import get_state_value, get_config_value
+    user_name = get_state_value("user_name", "anonymous")
+    debug_mode = get_config_value("debug", False)
+    
+    return {"result": f"Processing {param1} for user {user_name}"}
+```
+
+#### Modifying State and Config from Tools
+
+```python
+from northau.archs.main_sub.agent_context import (
+    update_state, update_config, 
+    set_state_value, set_config_value
+)
+
+def learning_tool(new_info: str) -> dict:
+    """Tool that learns and updates agent state."""
+    
+    # Update multiple state values at once
+    update_state(
+        last_learned=new_info,
+        learning_count=get_state_value("learning_count", 0) + 1
+    )
+    
+    # Update individual values
+    set_state_value("last_update_time", datetime.now().isoformat())
+    
+    # Modify config (affects agent behavior)
+    if get_state_value("learning_count", 0) > 10:
+        set_config_value("expert_mode", True)
+        update_config(temperature=0.3, max_tokens=2000)
+    
+    return {"result": f"Learned: {new_info}"}
+
+def adaptive_tool(complexity: str) -> dict:
+    """Tool that adapts agent configuration based on task complexity."""
+    
+    # Adjust agent behavior based on complexity
+    if complexity == "high":
+        update_config(
+            temperature=0.1,  # More deterministic
+            max_tokens=4000,  # Allow longer responses
+            timeout=600       # More processing time
+        )
+        set_state_value("complexity_mode", "high")
+    elif complexity == "creative":
+        update_config(
+            temperature=0.9,  # More creative
+            max_tokens=2000
+        )
+        set_state_value("complexity_mode", "creative")
+    
+    return {"result": f"Adapted to {complexity} complexity mode"}
+```
+
+#### Using Full Context Object
+
+```python
+from northau.archs.main_sub.agent_context import get_context
+
+def context_aware_tool(action: str) -> dict:
+    """Tool that uses the full context object for advanced operations."""
+    
+    # Get the full context object
+    ctx = get_context()
+    if ctx is None:
+        return {"error": "No agent context available"}
+    
+    # Access context data
+    all_state = ctx.state
+    all_config = ctx.config
+    
+    # Check if context was recently modified
+    if ctx.is_modified():
+        # Context was changed by another tool
+        pass
+    
+    # Add a callback for when context changes
+    def on_context_change():
+        print("Context was modified!")
+    
+    ctx.add_modification_callback(on_context_change)
+    
+    # Modify context
+    ctx.update_state({"tool_action": action})
+    ctx.set_config_value("last_tool", "context_aware_tool")
+    
+    return {"result": f"Executed {action} with full context awareness"}
+```
+
+#### Practical Example: Session Management Tool
+
+```python
+from datetime import datetime
+from northau.archs.main_sub.agent_context import (
+    get_state_value, set_state_value, update_state, get_config_value
+)
+
+def session_manager(action: str, data: dict = None) -> dict:
+    """Manage user session state across tool calls."""
+    
+    if action == "start_session":
+        session_id = f"session_{datetime.now().timestamp()}"
+        update_state(
+            session_id=session_id,
+            session_start=datetime.now().isoformat(),
+            user_actions=[],
+            session_data=data or {}
+        )
+        return {"result": f"Started session {session_id}"}
+    
+    elif action == "log_action":
+        actions = get_state_value("user_actions", [])
+        actions.append({
+            "action": data.get("action"),
+            "timestamp": datetime.now().isoformat(),
+            "details": data.get("details", {})
+        })
+        set_state_value("user_actions", actions)
+        
+        # Adjust agent behavior based on session length
+        if len(actions) > 20:
+            # Long session - make agent more concise
+            from northau.archs.main_sub.agent_context import update_config
+            update_config(max_tokens=1000)
+            
+        return {"result": f"Logged action: {data.get('action')}"}
+    
+    elif action == "get_session_info":
+        session_id = get_state_value("session_id", "no-session")
+        actions_count = len(get_state_value("user_actions", []))
+        session_start = get_state_value("session_start", "unknown")
+        
+        return {
+            "session_id": session_id,
+            "actions_count": actions_count,
+            "session_start": session_start,
+            "current_config": get_config_value("max_tokens", "default")
+        }
+    
+    return {"error": f"Unknown session action: {action}"}
+```
+
+**Note**: State and config modifications persist for the duration of the agent's execution context and automatically trigger system prompt refresh when the context is modified, ensuring the agent's behavior adapts to the new state.
+
 ### MCP
 Define the mcp servers and create agent by setting `mcp_servers` as follows:
 
