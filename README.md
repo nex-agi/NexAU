@@ -15,7 +15,7 @@ A general-purpose agent framework inspired by Claude Code's architecture for bui
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone git@github.com:china-qijizhifeng/northau.git
 cd northau
 
 # Install dependencies using uv
@@ -266,14 +266,14 @@ LLM_API_KEY="sk-xxxx"
 There are some exampels in `examples`
 ```bash
 # Run the basic quickstart
-dotenv run python examples/deep_research/quickstart.py
+dotenv run python examples.deep_research.quickstart.py
 
 # Run the YAML-based example
-dotenv run python examples/deep_research/quickstart_yaml.py
+dotenv run python examples.deep_research.quickstart_yaml.py
 
-dotenv run python examples/fake_claude_code/fake_claude_code.py
+dotenv run python examples.fake_claude_code.fake_claude_code.py
 
-dotenv run python examples/mcp/mcp_amap_example.py
+dotenv run python -m examples.mcp.mcp_amap_example
 
 ```
 ## Advanced Usage
