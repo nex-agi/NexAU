@@ -203,14 +203,103 @@ class MCPClient:
                 # Use asyncio.wait_for for timeout protection
                 timeout_duration = config.timeout or 30
                 
-                async def connect_stdio():
-                    async with stdio_client(server_params) as (read, write):
-                        session = ClientSession(read, write)
-                        await session.initialize()
-                        self.sessions[server_name] = session
-                        return True
+                # Use direct subprocess approach with proper JSON-RPC protocol
+                logger.info(f"Starting stdio MCP server: {config.command} {' '.join(config.args or [])}")
                 
-                await asyncio.wait_for(connect_stdio(), timeout=timeout_duration)
+                # Override the environment to preserve PATH
+                import os
+                merged_env = os.environ.copy()
+                if server_params.env:
+                    merged_env.update(server_params.env)
+                
+                # Create a direct subprocess-based MCP session
+                class DirectMCPSession:
+                    def __init__(self, command, args, env):
+                        self.command = command
+                        self.args = args
+                        self.env = env
+                        self.process = None
+                        self._request_id = 0
+                        
+                    async def initialize(self):
+                        import subprocess
+                        self.process = await asyncio.create_subprocess_exec(
+                            self.command,
+                            *self.args,
+                            env=self.env,
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE
+                        )
+                        
+                        if not self.process.stdout or not self.process.stdin:
+                            raise RuntimeError("Failed to get process streams")
+                            
+                        # Test the connection with a simple request
+                        await self._make_request("tools/list")
+                        return self
+                    
+                    def _get_next_id(self):
+                        self._request_id += 1
+                        return self._request_id
+                        
+                    async def _make_request(self, method, params=None):
+                        if not self.process or not self.process.stdin or not self.process.stdout:
+                            raise RuntimeError("Process not initialized")
+                            
+                        import json
+                        request = {
+                            "jsonrpc": "2.0",
+                            "id": self._get_next_id(),
+                            "method": method,
+                            "params": params or {}
+                        }
+                        
+                        # Send request
+                        request_str = json.dumps(request) + "\n"
+                        self.process.stdin.write(request_str.encode())
+                        await self.process.stdin.drain()
+                        
+                        # Read response
+                        response_line = await self.process.stdout.readline()
+                        response = json.loads(response_line.decode().strip())
+                        
+                        if "error" in response:
+                            raise Exception(f"MCP error: {response['error']}")
+                            
+                        return response
+                        
+                    async def list_tools(self):
+                        response = await self._make_request("tools/list")
+                        tools_data = response.get("result", {}).get("tools", [])
+                        
+                        # Create tool objects
+                        class SimpleTool:
+                            def __init__(self, data):
+                                self.name = data["name"] 
+                                self.description = data.get("description", "")
+                                self.inputSchema = data.get("inputSchema", {})
+                                
+                        class ToolResult:
+                            def __init__(self, tools):
+                                self.tools = [SimpleTool(tool) for tool in tools]
+                                
+                        return ToolResult(tools_data)
+                        
+                    async def call_tool(self, name, arguments):
+                        response = await self._make_request("tools/call", {"name": name, "arguments": arguments})
+                        result_data = response.get("result", {})
+                        
+                        class ToolCallResult:
+                            def __init__(self, data):
+                                self.content = data.get("content", [])
+                                
+                        return ToolCallResult(result_data)
+                
+                # Create and initialize the session
+                session = DirectMCPSession(server_params.command, server_params.args, merged_env)
+                await asyncio.wait_for(session.initialize(), timeout=timeout_duration)
+                self.sessions[server_name] = session
                 logger.info(f"Successfully connected to stdio MCP server: {server_name}")
                 return True
                     
