@@ -355,29 +355,9 @@ def learning_tool(new_info: str) -> dict:
     # Modify config (affects agent behavior)
     if get_state_value("learning_count", 0) > 10:
         set_config_value("expert_mode", True)
-        update_config(temperature=0.3, max_tokens=2000)
     
     return {"result": f"Learned: {new_info}"}
 
-def adaptive_tool(complexity: str) -> dict:
-    """Tool that adapts agent configuration based on task complexity."""
-    
-    # Adjust agent behavior based on complexity
-    if complexity == "high":
-        update_config(
-            temperature=0.1,  # More deterministic
-            max_tokens=4000,  # Allow longer responses
-            timeout=600       # More processing time
-        )
-        set_state_value("complexity_mode", "high")
-    elif complexity == "creative":
-        update_config(
-            temperature=0.9,  # More creative
-            max_tokens=2000
-        )
-        set_state_value("complexity_mode", "creative")
-    
-    return {"result": f"Adapted to {complexity} complexity mode"}
 ```
 
 #### Using Full Context Object
