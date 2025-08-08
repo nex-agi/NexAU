@@ -73,7 +73,7 @@ def llm_evaluation(
     prompt = f"""
     Evaluate the following agent response for the given task:
     
-    Task: {dataset_item.input_message}
+    Task: {dataset_item.input_data}
     Expected: {dataset_item.expected_output or "No expected output provided"}
     Agent Response: {item_result.agent_output}
     

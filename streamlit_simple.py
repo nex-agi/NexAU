@@ -126,20 +126,42 @@ def load_dataset_items(dataset_name: str, dataset_version: str = None):
     """Load dataset items from files or database if available."""
     # Try to find dataset files in common locations
     dataset_paths = [
+        # JSON files
         Path(__file__).parent / "data" / f"{dataset_name}.json",
-        Path(__file__).parent / "datasets" / f"{dataset_name}.json",
-        Path(__file__).parent / f"{dataset_name}.json"
+        Path(__file__).parent / "datasets" / f"{dataset_name}.json", 
+        Path(__file__).parent / f"{dataset_name}.json",
+        # JSONL files
+        Path(__file__).parent / "data" / f"{dataset_name}.jsonl",
+        Path(__file__).parent / "datasets" / f"{dataset_name}.jsonl",
+        Path(__file__).parent / f"{dataset_name}.jsonl",
+        # Specific examples path for prompt_hacking
+        Path(__file__).parent / "examples" / "prompt_hacking" / "sample_dataset.jsonl",
+        Path(__file__).parent / "examples" / f"{dataset_name}" / "sample_dataset.jsonl",
     ]
     
     for path in dataset_paths:
         if path.exists():
             try:
-                with open(path, 'r') as f:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        return data
-                    elif isinstance(data, dict) and 'items' in data:
-                        return data['items']
+                if path.suffix == '.jsonl':
+                    # Handle JSONL files (one JSON object per line)
+                    items = []
+                    with open(path, 'r') as f:
+                        for line in f:
+                            line = line.strip()
+                            if line:
+                                try:
+                                    items.append(json.loads(line))
+                                except json.JSONDecodeError:
+                                    continue
+                    return items
+                else:
+                    # Handle regular JSON files
+                    with open(path, 'r') as f:
+                        data = json.load(f)
+                        if isinstance(data, list):
+                            return data
+                        elif isinstance(data, dict) and 'items' in data:
+                            return data['items']
             except Exception as e:
                 st.warning(f"Error loading dataset from {path}: {e}")
                 continue
@@ -577,13 +599,23 @@ def render_item_io_tab(experiments):
     dataset_map = {}
     for item in dataset_items:
         if isinstance(item, dict):
-            item_id = item.get('id') or item.get('item_id')
+            # Try different ID field names
+            item_id = item.get('id') or item.get('item_id') or item.get('identifier')
             if item_id:
-                dataset_map[item_id] = item
+                dataset_map[str(item_id)] = item
     
     st.info(f"Found {len(item_results)} item results. " + 
             (f"Original dataset has {len(dataset_items)} items." if dataset_items else 
              "No original dataset found - showing outputs only."))
+    
+    # Debug info
+    if dataset_items:
+        first_item = dataset_items[0] if dataset_items else {}
+        st.write(f"**Dataset info:** Found fields: {list(first_item.keys()) if first_item else 'None'}")
+    else:
+        if current_session:
+            st.write(f"**Looking for dataset:** {current_session.get('dataset_name')} v{current_session.get('dataset_version')}")
+        st.write("**Searched paths:** examples/prompt_hacking/sample_dataset.jsonl, data/{dataset_name}.jsonl, etc.")
     
     # Display options
     col1, col2, col3 = st.columns([2, 1, 1])
@@ -648,14 +680,14 @@ def render_item_io_tab(experiments):
                 st.metric("Output Length", f"{output_length:,} chars")
             
             # Show original input if available
-            item_id = item.get('item_id')
+            item_id = str(item.get('item_id', ''))
             original_item = dataset_map.get(item_id)
             
             if original_item:
                 st.subheader("📥 Original Input")
                 
                 # Display different input fields based on what's available
-                input_fields = ['input_message', 'input', 'question', 'prompt', 'text', 'content']
+                input_fields = ['message', 'input_message', 'input_data', 'input', 'question', 'prompt', 'text', 'content']
                 input_found = False
                 
                 for field in input_fields:
@@ -675,8 +707,8 @@ def render_item_io_tab(experiments):
                     # Show the entire original item as JSON
                     st.json(original_item)
                 
-                # Show expected output if available
-                expected_fields = ['expected_output', 'expected', 'answer', 'target', 'label']
+                # Show expected output if available  
+                expected_fields = ['expected', 'expected_output', 'answer', 'target', 'label']
                 for field in expected_fields:
                     if field in original_item:
                         st.subheader(f"🎯 Expected Output ({field})")

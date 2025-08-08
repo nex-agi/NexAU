@@ -15,7 +15,7 @@ class DatasetItem:
     """Individual test case within a dataset."""
     
     id: str
-    input_message: str
+    input_data: Dict[str, Any]
     expected_output: Optional[str] = None
     evaluation_criteria: Dict[str, Any] = field(default_factory=dict)
     evaluation_method: Optional[str] = None
@@ -233,7 +233,7 @@ class Dataset:
             
             # Header
             writer.writerow([
-                "id", "input_message", "expected_output", 
+                "id", "input_data", "expected_output", 
                 "evaluation_method", "category", "difficulty"
             ])
             
@@ -241,7 +241,7 @@ class Dataset:
             for item in self.items:
                 writer.writerow([
                     item.id,
-                    item.input_message,
+                    item.input_data,
                     item.expected_output or "",
                     item.evaluation_method or "",
                     item.metadata.get("category", ""),

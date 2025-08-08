@@ -30,7 +30,7 @@ class PromptHackingAgent:
         self.base_url = os.getenv('LLM_BASE_URL', 'https://***REMOVED***/v1/')
         self.api_key = os.getenv('LLM_API_KEY')
         
-    def process_message(self, message: str) -> str:
+    def run(self, message: str) -> str:
         """Process message for experiment runner - returns JSON string."""
         result = self.classify_prompt(message)
         return json.dumps(result)

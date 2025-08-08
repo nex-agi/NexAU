@@ -31,7 +31,7 @@ def load_dataset_from_jsonl(jsonl_path: str, dataset_name: str = "prompt_hacking
                 
                 item = DatasetItem(
                     id=data.get("id", f"item_{line_num}"),
-                    input_message=data["input"],
+                    input_data={"message": data["message"]},
                     expected_output=json.dumps({"is_prompt_hack": data["expected"]}),
                     evaluation_criteria={"correct_classification": True},
                     metadata={

@@ -260,6 +260,7 @@ class ExperimentManager:
         })
         
         self.current_session_id = session_id
+        start_time = time.time()
         
         try:
             config_results = {}
@@ -289,6 +290,34 @@ class ExperimentManager:
                 config_results=config_results,
                 comparative_analysis=comparative_analysis
             )
+            
+            # Update session completion status
+            best_result = max(config_results.values(), key=lambda x: x.overall_score) if config_results else None
+            if best_result:
+                # Find the actual best config
+                best_config_id = None
+                for config_id, result in config_results.items():
+                    if result.overall_score == best_result.overall_score:
+                        best_config_id = config_id
+                        break
+                
+                best_config = next((c for c in configs if c.config_id == best_config_id), configs[0])
+                
+                # Calculate total time
+                total_time = time.time() - start_time
+                
+                # Create EvaluationResults object for the session update
+                session_results = EvaluationResults(
+                    session_id=session_id,
+                    best_config=best_config,
+                    best_score=best_result.overall_score,
+                    total_experiments=len(configs),
+                    convergence_reached=True,
+                    total_time_seconds=total_time
+                )
+                
+                # Update session in database
+                self._update_session_completion(session_id, session_results, total_time)
             
             logger.info("Evaluation-only session completed")
             return report
