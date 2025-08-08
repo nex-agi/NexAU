@@ -160,10 +160,10 @@ class ExperimentRunner:
             # Execute agent with item input
             if self.enable_tracing:
                 agent_output, execution_trace, token_usage = self._run_agent_with_tracing(
-                    agent, item.input_message
+                    agent, item
                 )
             else:
-                agent_output, token_usage = self._run_agent_simple(agent, item.input_message)
+                agent_output, token_usage = self._run_agent_simple(agent, item)
                 execution_trace = None
             
             execution_time = time.time() - start_time
@@ -250,20 +250,15 @@ class ExperimentRunner:
         
         return results
     
-    def _run_agent_simple(self, agent: Agent, input_message: str) -> Tuple[str, Dict[str, int]]:
+    def _run_agent_simple(self, agent: Agent, input_item: DatasetItem) -> Tuple[str, Dict[str, int]]:
         """Run agent without detailed tracing."""
         # This would integrate with the actual agent system
         # For now, provide a mock implementation
         
         try:
-            # Mock agent execution
-            if hasattr(agent, 'process_message'):
-                output = agent.process_message(input_message)
+            if hasattr(agent, 'run'):
+                output = agent.run(**input_item.input_data)
                 token_usage = getattr(agent, 'last_token_usage', {})
-            else:
-                # Fallback mock
-                output = f"Mock agent response to: {input_message}"
-                token_usage = {"prompt_tokens": 100, "completion_tokens": 50}
             
             return output, token_usage
             
@@ -274,36 +269,10 @@ class ExperimentRunner:
     def _run_agent_with_tracing(
         self,
         agent: Agent,
-        input_message: str
+        input_item: DatasetItem
     ) -> Tuple[str, List[Dict[str, Any]], Dict[str, int]]:
         """Run agent with detailed execution tracing."""
-        # This would integrate with the actual agent system's tracing
-        # For now, provide a mock implementation
-        
-        try:
-            output, token_usage = self._run_agent_simple(agent, input_message)
-            
-            # Mock execution trace
-            execution_trace = [
-                {
-                    "step": 1,
-                    "action": "process_input",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "input": input_message
-                },
-                {
-                    "step": 2,
-                    "action": "generate_response",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "output": output
-                }
-            ]
-            
-            return output, execution_trace, token_usage
-            
-        except Exception as e:
-            logger.error(f"Agent execution with tracing failed: {e}")
-            raise
+        raise NotImplementedError("Tracing is not implemented for this agent")
     
     def _calculate_overall_metrics(self, item_results: List[ItemResult]) -> Dict[str, float]:
         """Calculate overall metrics for the experiment."""

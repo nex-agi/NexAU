@@ -20,7 +20,7 @@ from northau.archs.autotuning import ExperimentManager, Dataset, DatasetItem, Co
 items = [
     DatasetItem(
         id="test_001",
-        input_message="Hello, how are you?",
+        input_data={"message": "Hello, how are you?"},
         expected_output="Hi! How can I help you?",
         evaluation_criteria={"should_be_friendly": True}
     )
@@ -159,7 +159,7 @@ tuning:
   "items": [
     {
       "id": "cs_001",
-      "input_message": "I need help with my order",
+      "input_data": {"message": "I need help with my order"},
       "expected_output": "I'd be happy to help with your order. What's your order number?",
       "evaluation_criteria": {
         "should_offer_help": true,
