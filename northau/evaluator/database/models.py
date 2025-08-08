@@ -131,7 +131,7 @@ class ConfigBase(SQLModel):
     parent_config_id: Optional[str] = Field(default=None, max_length=100)
     
     # Config content
-    system_prompt: str = Field(nullable=False)
+    system_prompts: Dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
     tool_descriptions: Dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
     llm_config: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     agent_parameters: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
