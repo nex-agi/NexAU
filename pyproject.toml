@@ -14,4 +14,17 @@ dependencies = [
     "httpx>=0.25.0",
     "mcp>=1.12.3",
     "lark_oapi>=1.4.0",
+    "sqlmodel>=0.0.18",
+    "pytest>=7.0.0",
+    "streamlit>=1.48.0",
+    "plotly>=6.2.0",
+    "pandas>=2.3.1",
 ]
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["northau*"]
