@@ -14,14 +14,14 @@ class Config:
     def __init__(
         self,
         config_id: Optional[str] = None,
-        system_prompt: str = "",
+        system_prompts: Dict[str, str] = None,
         tool_descriptions: Dict[str, str] = None,
         llm_config: Dict[str, Any] = None,
         agent_parameters: Dict[str, Any] = None,
         metadata: Dict[str, Any] = None
     ):
         self.config_id = config_id or str(uuid.uuid4())
-        self.system_prompt = system_prompt
+        self.system_prompts = system_prompts or {}
         self.tool_descriptions = tool_descriptions or {}
         self.llm_config = llm_config or {}
         self.agent_parameters = agent_parameters or {}
@@ -31,7 +31,7 @@ class Config:
         """Create deep copy of configuration."""
         return Config(
             config_id=None,  # Generate new ID
-            system_prompt=self.system_prompt,
+            system_prompts=copy.deepcopy(self.system_prompts),
             tool_descriptions=copy.deepcopy(self.tool_descriptions),
             llm_config=copy.deepcopy(self.llm_config),
             agent_parameters=copy.deepcopy(self.agent_parameters),
@@ -42,7 +42,7 @@ class Config:
         """Convert configuration to dictionary."""
         return {
             "config_id": self.config_id,
-            "system_prompt": self.system_prompt,
+            "system_prompts": self.system_prompts,
             "tool_descriptions": self.tool_descriptions,
             "llm_config": self.llm_config,
             "agent_parameters": self.agent_parameters,
@@ -54,7 +54,7 @@ class Config:
         """Create configuration from dictionary."""
         return cls(
             config_id=data.get("config_id"),
-            system_prompt=data.get("system_prompt", ""),
+            system_prompts=data.get("system_prompts", {}),
             tool_descriptions=data.get("tool_descriptions", {}),
             llm_config=data.get("llm_config", {}),
             agent_parameters=data.get("agent_parameters", {}),
@@ -98,8 +98,8 @@ class Config:
         issues = []
         
         # Check required fields
-        if not self.system_prompt.strip():
-            issues.append("System prompt cannot be empty")
+        if not self.system_prompts or not any(prompt.strip() for prompt in self.system_prompts.values()):
+            issues.append("System prompt dictionary cannot be empty or contain only empty prompts")
         
         # Check LLM config constraints
         if "temperature" in self.llm_config:

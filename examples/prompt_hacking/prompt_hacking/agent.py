@@ -21,14 +21,15 @@ class PromptHackingAgent:
     
     def __init__(self, config: Config):
         self.config = config
-        self.system_prompt = config.system_prompt
+        # Handle both dict and string system prompts for backward compatibility
+        self.system_prompt = config.system_prompts.get('default')
         self.llm_config = config.llm_config
         self.last_token_usage = {}
         
         # LLM configuration from environment
-        self.model = os.getenv('LLM_MODEL', 'glm-4.5')
-        self.base_url = os.getenv('LLM_BASE_URL', 'https://***REMOVED***/v1/')
-        self.api_key = os.getenv('LLM_API_KEY')
+        self.model = self.llm_config['model']
+        self.base_url = self.llm_config['base_url']
+        self.api_key = self.llm_config['api_key']
         
     def run(self, message: str) -> str:
         """Process message for experiment runner - returns JSON string."""

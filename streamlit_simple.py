@@ -467,9 +467,13 @@ def render_single_experiment_details(experiment):
     if config_data:
         with st.expander("📋 Configuration Details", expanded=False):
             # System prompt
-            if config_data.get('system_prompt'):
-                st.subheader("System Prompt")
-                st.text_area("System Prompt", config_data['system_prompt'], height=200, disabled=True, key=f"prompt_{experiment.get('id')}", label_visibility="collapsed")
+            if config_data.get('system_prompts'):
+                if isinstance(config_data['system_prompts'], dict):
+                    for key, value in config_data['system_prompts'].items():
+                        st.subheader(f"System Prompt {key}")
+                        st.text_area(f"System Prompt: {key}", value, height=200, disabled=True, key=f"prompt_{experiment.get('id')}", label_visibility="collapsed")
+                else:
+                    st.text_area("System Prompt", config_data['system_prompts'], height=200, disabled=True, key=f"prompt_{experiment.get('id')}", label_visibility="collapsed")
             
             # LLM config
             if config_data.get('llm_config'):
