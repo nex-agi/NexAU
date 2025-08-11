@@ -104,6 +104,8 @@ When use video generation of MiniMax:
 1. Always use asynchronous mode for video generation
 2. Monitor ongoing video generation tasks throughout the conversation until it is Success or FAILED.
 
+Do not ask user to provide any information, just use the tools to get the information.
+Note that if you response with multiple tools, they will run in parallel. If you need to use the result of one tool in another tool, you need to wait for the first tool to complete and then use the result in the second tool.
 """,
             mcp_servers=mcp_servers,
             llm_config=llm_config,
