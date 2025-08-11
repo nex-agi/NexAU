@@ -21,27 +21,82 @@ def _check_ripgrep_available() -> bool:
 
 
 def _run_ripgrep(
-    pattern: str, search_path: str, include_pattern: Optional[str] = None
+    pattern: str, 
+    search_path: str, 
+    glob_pattern: Optional[str] = None,
+    output_mode: str = "files_with_matches",
+    context_before: Optional[int] = None,
+    context_after: Optional[int] = None,
+    context_around: Optional[int] = None,
+    show_line_numbers: bool = False,
+    case_insensitive: bool = True,
+    file_type: Optional[str] = None,
+    head_limit: Optional[int] = None,
+    multiline: bool = False
 ) -> Tuple[List[str], int]:
     """
-    Run ripgrep command and return matching filenames and duration.
+    Run ripgrep command and return results based on output mode.
 
     Args:
         pattern: Regular expression pattern to search for
         search_path: Directory to search in
-        include_pattern: File pattern to include (e.g., "*.js", "*.{ts,tsx}")
+        glob_pattern: File pattern to include (e.g., "*.js", "*.{ts,tsx}")
+        output_mode: Output mode - "content", "files_with_matches", or "count"
+        context_before: Lines of context before match (-B)
+        context_after: Lines of context after match (-A) 
+        context_around: Lines of context around match (-C)
+        show_line_numbers: Show line numbers in output (-n)
+        case_insensitive: Case insensitive search (-i)
+        file_type: File type to search (--type)
+        head_limit: Limit output lines
+        multiline: Enable multiline mode (-U --multiline-dotall)
 
     Returns:
-        Tuple of (matching_filenames, duration_ms)
+        Tuple of (results, duration_ms)
     """
     start_time = time.time()
 
     # Build ripgrep command
-    cmd = ["rg", "-l", "-i", pattern]  # -l: list files, -i: ignore case
-
-    if include_pattern:
-        cmd.extend(["--glob", include_pattern])
-
+    cmd = ["rg"]
+    
+    # Set output mode
+    if output_mode == "files_with_matches":
+        cmd.append("-l")  # list files only
+    elif output_mode == "count":
+        cmd.append("-c")  # count matches
+    # For "content" mode, no special flag needed
+    
+    # Case sensitivity
+    if case_insensitive:
+        cmd.append("-i")
+        
+    # Context options (only for content mode)
+    if output_mode == "content":
+        if context_around is not None:
+            cmd.extend(["-C", str(context_around)])
+        else:
+            if context_before is not None:
+                cmd.extend(["-B", str(context_before)])
+            if context_after is not None:
+                cmd.extend(["-A", str(context_after)])
+        
+        # Line numbers
+        if show_line_numbers:
+            cmd.append("-n")
+    
+    # Multiline mode
+    if multiline:
+        cmd.extend(["-U", "--multiline-dotall"])
+        
+    # File type filter
+    if file_type:
+        cmd.extend(["--type", file_type])
+        
+    # Glob pattern filter
+    if glob_pattern:
+        cmd.extend(["--glob", glob_pattern])
+    
+    cmd.append(pattern)
     cmd.append(search_path)
 
     try:
@@ -57,21 +112,26 @@ def _run_ripgrep(
         # Parse output
         if result.returncode == 0:
             # Found matches
-            filenames = [
+            output_lines = [
                 line.strip()
                 for line in result.stdout.strip().split("\n")
                 if line.strip()
             ]
+            
+            # Apply head_limit if specified
+            if head_limit and len(output_lines) > head_limit:
+                output_lines = output_lines[:head_limit]
+                
         elif result.returncode == 1:
             # No matches found (this is normal)
-            filenames = []
+            output_lines = []
         else:
             # Error occurred
             logger.error(f"Ripgrep error (code {result.returncode}): {result.stderr}")
             raise subprocess.CalledProcessError(result.returncode, cmd, result.stderr)
 
         duration_ms = int((time.time() - start_time) * 1000)
-        return filenames, duration_ms
+        return output_lines, duration_ms
 
     except Exception as e:
         logger.error(f"Error running ripgrep: {e}")
@@ -115,7 +175,9 @@ def _sort_files_by_modification_time(
 def grep_tool(
     pattern: str,
     path: Optional[str] = None,
-    include: Optional[str] = None,
+    glob: Optional[str] = None,
+    output_mode: str = "files_with_matches",
+    **kwargs
 ) -> str:
     """
     Fast content search tool that works with any codebase size using ripgrep.
@@ -181,9 +243,32 @@ def grep_tool(
                 indent=2,
             )
 
+        # Extract additional parameters
+        context_before = kwargs.get("-B")
+        context_after = kwargs.get("-A") 
+        context_around = kwargs.get("-C")
+        show_line_numbers = kwargs.get("-n", False)
+        case_insensitive = kwargs.get("-i", True)  # Default to case insensitive
+        file_type = kwargs.get("type")
+        head_limit = kwargs.get("head_limit")
+        multiline = kwargs.get("multiline", False)
+        
         # Run ripgrep search
         try:
-            filenames, search_duration_ms = _run_ripgrep(pattern, search_dir, include)
+            results, search_duration_ms = _run_ripgrep(
+                pattern=pattern,
+                search_path=search_dir,
+                glob_pattern=glob,
+                output_mode=output_mode,
+                context_before=context_before,
+                context_after=context_after,
+                context_around=context_around,
+                show_line_numbers=show_line_numbers,
+                case_insensitive=case_insensitive,
+                file_type=file_type,
+                head_limit=head_limit,
+                multiline=multiline
+            )
         except subprocess.CalledProcessError as e:
             return json.dumps(
                 {
@@ -196,57 +281,99 @@ def grep_tool(
                 indent=2,
             )
 
-        # Sort files by modification time if we have results
-        if filenames:
-            try:
-                sorted_filenames = _sort_files_by_modification_time(
-                    filenames, search_dir
-                )
-            except Exception as e:
-                logger.warning(f"Failed to sort by modification time: {e}")
-                # Fallback to alphabetical sort with absolute paths
-                sorted_filenames = [
-                    os.path.abspath(os.path.join(search_dir, f))
-                    for f in sorted(filenames)
-                ]
-        else:
-            sorted_filenames = []
+        # Handle different output modes
+        if output_mode == "content":
+            # For content mode, return the matching lines directly
+            final_results = results
+        elif output_mode == "count":
+            # For count mode, return count results 
+            final_results = results
+        else:  # files_with_matches
+            # Sort files by modification time if we have results
+            if results:
+                try:
+                    final_results = _sort_files_by_modification_time(
+                        results, search_dir
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to sort by modification time: {e}")
+                    # Fallback to alphabetical sort with absolute paths
+                    final_results = [
+                        os.path.abspath(os.path.join(search_dir, f))
+                        for f in sorted(results)
+                    ]
+            else:
+                final_results = []
 
-        # Apply result limit and check for truncation
-        truncated = len(sorted_filenames) > MAX_RESULTS
-        if truncated:
-            sorted_filenames = sorted_filenames[:MAX_RESULTS]
+        # Apply result limit and check for truncation (only for files_with_matches mode)
+        if output_mode == "files_with_matches" and not head_limit:
+            truncated = len(final_results) > MAX_RESULTS
+            if truncated:
+                final_results = final_results[:MAX_RESULTS]
+        else:
+            truncated = False
 
         # Calculate total duration
         total_duration_ms = int((time.time() - start_time) * 1000)
 
-        # Prepare result
-        result = {
-            "num_files": len(sorted_filenames),
-            "filenames": sorted_filenames,
-            "duration_ms": total_duration_ms,
-            "truncated": truncated,
-            "search_directory": search_dir,
-            "pattern": pattern,
-        }
+        # Prepare result based on output mode
+        if output_mode == "content":
+            result = {
+                "content": final_results,
+                "num_lines": len(final_results),
+                "duration_ms": total_duration_ms,
+                "truncated": truncated,
+                "search_directory": search_dir,
+                "pattern": pattern,
+                "output_mode": output_mode,
+            }
+        elif output_mode == "count":
+            result = {
+                "counts": final_results,
+                "num_files": len(final_results),
+                "duration_ms": total_duration_ms,
+                "truncated": truncated,
+                "search_directory": search_dir,
+                "pattern": pattern,
+                "output_mode": output_mode,
+            }
+        else:  # files_with_matches
+            result = {
+                "num_files": len(final_results),
+                "filenames": final_results,
+                "duration_ms": total_duration_ms,
+                "truncated": truncated,
+                "search_directory": search_dir,
+                "pattern": pattern,
+                "output_mode": output_mode,
+            }
 
-        if include:
-            result["include_pattern"] = include
+        if glob:
+            result["glob_pattern"] = glob
 
         # Add descriptive message
-        if len(sorted_filenames) == 0:
-            result["message"] = "No files found matching the pattern."
+        result_count = len(final_results)
+        if result_count == 0:
+            if output_mode == "content":
+                result["message"] = "No matching content found."
+            elif output_mode == "count":
+                result["message"] = "No matches found to count."
+            else:
+                result["message"] = "No files found matching the pattern."
         elif truncated:
             result["message"] = (
-                f"Found {len(sorted_filenames)} files (truncated from more results). Consider using a more specific pattern or include filter."
+                f"Found {result_count} results (truncated from more). Consider using a more specific pattern or filter."
             )
         else:
-            result["message"] = (
-                f"Found {len(sorted_filenames)} file{'s' if len(sorted_filenames) != 1 else ''} matching the pattern."
-            )
+            if output_mode == "content":
+                result["message"] = f"Found {result_count} matching line{'s' if result_count != 1 else ''}."
+            elif output_mode == "count":
+                result["message"] = f"Found match counts for {result_count} file{'s' if result_count != 1 else ''}."
+            else:
+                result["message"] = f"Found {result_count} file{'s' if result_count != 1 else ''} matching the pattern."
 
         logger.info(
-            f"Grep search completed: found {len(sorted_filenames)} files in {total_duration_ms}ms"
+            f"Grep search completed: found {result_count} results in {total_duration_ms}ms (mode: {output_mode})"
         )
 
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -315,14 +442,18 @@ class GrepSearchTool:
                 raise PermissionError(f"No read permission for directory: {search_dir}")
 
             # Perform search
-            filenames, search_duration = _run_ripgrep(
-                pattern, search_dir, include_pattern
+            results, search_duration = _run_ripgrep(
+                pattern=pattern,
+                search_path=search_dir, 
+                glob_pattern=include_pattern,
+                output_mode="files_with_matches",
+                case_insensitive=not self.case_sensitive
             )
 
             # Sort results
-            if filenames:
+            if results:
                 sorted_filenames = _sort_files_by_modification_time(
-                    filenames, search_dir
+                    results, search_dir
                 )
             else:
                 sorted_filenames = []
@@ -382,7 +513,7 @@ def main():
     # Test 2: Basic search test
     print("\n📋 测试 2: 基本搜索测试")
     try:
-        result = grep_tool.invoke({"pattern": "import", "path": "."})
+        result = grep_tool(pattern="import", path=".")
         result_dict = json.loads(result)
 
         if "error" in result_dict:
@@ -403,7 +534,7 @@ def main():
     # Test 3: Search with file type filter
     print("\n📋 测试 3: 带文件类型过滤的搜索")
     try:
-        result = grep_tool.invoke({"pattern": "def ", "path": ".", "include": "*.py"})
+        result = grep_tool(pattern="def ", path=".", glob="*.py")
         result_dict = json.loads(result)
 
         if "error" in result_dict:
@@ -424,8 +555,8 @@ def main():
     # Test 4: Search for non-existent pattern
     print("\n📋 测试 4: 搜索不存在的模式")
     try:
-        result = grep_tool.invoke(
-            {"pattern": "this_pattern_should_never_exist_12345_xyz", "path": "."}
+        result = grep_tool(
+            pattern="this_pattern_should_never_exist_12345_xyz", path="."
         )
         result_dict = json.loads(result)
 
@@ -456,8 +587,8 @@ def main():
     # Test 6: Test invalid directory
     print("\n📋 测试 6: 无效目录测试")
     try:
-        result = grep_tool.invoke(
-            {"pattern": "test", "path": "/this/directory/does/not/exist"}
+        result = grep_tool(
+            pattern="test", path="/this/directory/does/not/exist"
         )
         result_dict = json.loads(result)
 

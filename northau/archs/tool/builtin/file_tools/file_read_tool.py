@@ -444,8 +444,8 @@ def add_line_numbers(content: str, start_line: int = 1) -> str:
 
 def file_read_tool(
     file_path: str,
-    offset: Optional[int] = None,
-    limit: Optional[int] = None,
+    offset: Optional[Union[int, float]] = None,
+    limit: Optional[Union[int, float]] = None,
 ) -> str:
     """
     Read a file from the local filesystem. Supports both text and image files.
@@ -583,11 +583,12 @@ def file_read_tool(
 
         # Read text content
         try:
-            # Convert 1-based offset to 0-based for internal use
-            internal_offset = (offset - 1) if offset and offset > 0 else 0
+            # Convert 1-based offset to 0-based for internal use, ensuring integers
+            internal_offset = (int(offset) - 1) if offset and offset > 0 else 0
+            int_limit = int(limit) if limit is not None else None
 
             content, lines_read, total_lines = read_text_content(
-                file_path, internal_offset, limit
+                file_path, internal_offset, int_limit
             )
 
             # Check content size after reading
@@ -611,7 +612,7 @@ def file_read_tool(
                 )
 
             # Add line numbers
-            start_line_num = offset if offset else 1
+            start_line_num = int(offset) if offset else 1
             content_with_lines = add_line_numbers(content, start_line_num)
 
             # Update timestamp cache for file_write_tool compatibility
