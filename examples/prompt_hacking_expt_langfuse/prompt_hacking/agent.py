@@ -5,36 +5,38 @@ Prompt Hacking Detection Agent
 
 import os
 import json
-import requests
 import re
 from typing import Dict, Any
-from dotenv import load_dotenv
+from langfuse import get_client
+from langfuse import openai
 
-from northau.autotuning import Config
-
-# Load environment variables
-load_dotenv()
-
+langfuse_client = get_client()
 
 class PromptHackingAgent:
     """Agent for detecting prompt hacking attempts using LLM API calls."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: dict):
         self.config = config
         # Handle both dict and string system prompts for backward compatibility
-        self.system_prompt = config.system_prompts.get('default')
-        self.llm_config = config.llm_config
+        self.system_prompt = config['system_prompts']['default']
+        self.llm_config = config['llm_config']
         self.last_token_usage = {}
         
         # LLM configuration from environment
         self.model = self.llm_config['model']
         self.base_url = self.llm_config['base_url']
         self.api_key = self.llm_config['api_key']
+        self.llm_client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
         
     def run(self, message: str) -> str:
         """Process message for experiment runner - returns JSON string."""
-        result = self.classify_prompt(message)
-        return json.dumps(result)
+        with langfuse_client.start_as_current_span(name="prompt_hacking_agent", input=message) as span:
+            result = self.classify_prompt(message)
+            span.update(
+                output=result
+            )
+            
+            return json.dumps(result)
     
     def classify_prompt(self, prompt: str) -> Dict[str, Any]:
         """Classify if a prompt contains hacking attempts."""
@@ -82,10 +84,6 @@ Analyze this prompt and respond with ONLY a JSON object:
     
     def _call_llm(self, system_prompt: str, prompt: str) -> str:
         """Make API call to LLM service."""
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
         
         payload = {
             "model": self.model,
@@ -98,19 +96,9 @@ Analyze this prompt and respond with ONLY a JSON object:
         }
         
         try:
-            response = requests.post(
-                f"{self.base_url}chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                return data["choices"][0]["message"]["content"]
-            else:
-                return f"API Error: {response.status_code}"
-                
+            response = self.llm_client.chat.completions.create(**payload)
+            return response.choices[0].message.content
+
         except Exception as e:
             return f"Network Error: {str(e)}"
     
@@ -147,10 +135,3 @@ Analyze this prompt and respond with ONLY a JSON object:
                 "confidence": 0.0,
                 "reasoning": f"Parse error: {str(e)}"
             }
-
-
-def create_agent_factory():
-    """Factory function to create agents."""
-    def factory(config: Config) -> PromptHackingAgent:
-        return PromptHackingAgent(config)
-    return factory

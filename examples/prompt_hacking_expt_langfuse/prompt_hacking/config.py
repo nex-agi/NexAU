@@ -5,16 +5,13 @@ Configuration management for prompt hacking detection.
 
 import os
 
-from northau.autotuning import Config
-from northau.evaluator import EvaluationConfig
 
-
-def create_base_config() -> Config:
+def create_base_config() -> dict:
     """Create base configuration for prompt hacking detection."""
-    
-    return Config(
-        config_id="hacking_detector_base_config",
-        system_prompts={
+
+    return {
+        "config_id": "hacking_detector_base_config",
+        "system_prompts": {
             "default": """
 {
     "is_prompt_hack": true/false,
@@ -22,28 +19,29 @@ def create_base_config() -> Config:
     "reasoning": "brief explanation"
 }"""
         },
-        
-        tool_descriptions={},
-        
-        llm_config={
+
+        "tool_descriptions": {},
+
+        "llm_config": {
             "model": "gpt-4.1-mini",
             "base_url": os.getenv('LLM_BASE_URL'),
             "api_key": os.getenv('LLM_API_KEY'),
             "temperature": 0.2,
             "max_tokens": 200
         },
-        
-        agent_parameters={
+
+        "agent_parameters": {
             "classification_threshold": 0.6
         }
-    )
+    }
 
-def create_better_config() -> Config:
+
+def create_better_config() -> dict:
     """Create better configuration for prompt hacking detection."""
-    
-    return Config(
-        config_id="hacking_detector_better_config",
-        system_prompts={
+
+    return {
+        "config_id": "hacking_detector_better_config",
+        "system_prompts": {
             "default": """You are a security expert trained to detect prompt injection and jailbreaking attempts.
 
 
@@ -62,19 +60,18 @@ Respond ONLY with valid JSON in this exact format:
     "reasoning": "brief explanation"
 }"""
         },
-        
-        tool_descriptions={},
-        
-        llm_config={
+
+        "tool_descriptions": {},
+
+        "llm_config": {
             "model": "glm-4.5",
             "base_url": os.getenv('LLM_BASE_URL'),
             "api_key": os.getenv('LLM_API_KEY'),
             "temperature": 0.2,
             "max_tokens": 200
         },
-        
-        agent_parameters={
+
+        "agent_parameters": {
             "classification_threshold": 0.6
         }
-    )
-
+    }

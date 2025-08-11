@@ -9,6 +9,8 @@ from datetime import datetime
 from .prompt_handler import PromptHandler
 from ..llm import LLMConfig
 from .agent_context import AgentContext
+from langfuse import get_client
+from langfuse.openai import openai
 
 # Setup logger for agent execution
 logger = logging.getLogger(__name__)
@@ -18,12 +20,6 @@ if not logger.handlers:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
-
-try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
 
 
 class Agent:
@@ -85,14 +81,10 @@ class Agent:
         self.processed_system_prompt = self._process_system_prompt()
         
         # Initialize OpenAI client
-        self.openai_client = None
-        if OPENAI_AVAILABLE:
-            try:
-                client_kwargs = self.llm_config.to_client_kwargs()
-                self.openai_client = OpenAI(**client_kwargs)
-            except Exception:
-                # If OpenAI client fails to initialize, continue without it
-                pass
+        client_kwargs = self.llm_config.to_client_kwargs()
+        self.openai_client = openai.OpenAI(**client_kwargs)
+        
+        self.langfuse_client = get_client()
     
     def _setup_llm_config(
         self, 
@@ -170,7 +162,11 @@ class Agent:
             
             try:
                 # Generate response using the LLM
-                response = self._generate_response(message, context)
+                with self.langfuse_client.start_as_current_span(name=self.name, input=message) as generation:
+                    response = self._generate_response(message, context)
+                    generation.update(
+                        output=response
+                    )
                 
                 # Add assistant response to history
                 self.history.append({"role": "assistant", "content": response})
@@ -184,58 +180,6 @@ class Agent:
                     error_response = self.error_handler(e, self, context)
                     self.history.append({"role": "assistant", "content": error_response})
                     return error_response
-                else:
-                    raise
-    
-    def stream(
-        self,
-        message: str,
-        history: Optional[List[Dict]] = None,
-        context: Optional[Dict] = None,
-        state: Optional[Dict[str, Any]] = None,
-        config: Optional[Dict[str, Any]] = None
-    ) -> Iterator[str]:
-        """Stream agent response in chunks with real-time tool execution."""
-        logger.info(f"🌊 Agent '{self.name}' starting streaming execution")
-        logger.info(f"📝 User message: {message}")
-        
-        # Merge initial state/config with provided ones
-        merged_state = {**self.initial_state}
-        if state:
-            merged_state.update(state)
-            
-        merged_config = {**self.initial_config}
-        if config:
-            merged_config.update(config)
-        
-        # Create agent context
-        with AgentContext(state=merged_state, config=merged_config) as ctx:
-            # Setup context modification callback to refresh system prompt
-            def on_context_modified():
-                # Reset processed system prompt to force regeneration
-                self.processed_system_prompt = self._process_system_prompt()
-            
-            ctx.add_modification_callback(on_context_modified)
-            
-            if history:
-                self.history = history.copy()
-            
-            # Add user message to history
-            self.history.append({"role": "user", "content": message})
-            
-            try:
-                # Stream the response generation
-                for chunk in self._stream_response(message, context):
-                    yield chunk
-                
-                logger.info(f"✅ Agent '{self.name}' completed streaming execution")
-                    
-            except Exception as e:
-                logger.error(f"❌ Agent '{self.name}' streaming error: {e}")
-                if self.error_handler:
-                    error_response = self.error_handler(e, self, context)
-                    self.history.append({"role": "assistant", "content": error_response})
-                    yield error_response
                 else:
                     raise
     
@@ -369,114 +313,6 @@ class Agent:
             # Re-raise with more context
             raise RuntimeError(f"Error calling OpenAI API: {e}") from e
     
-    def _stream_response(self, message: str, context: Optional[Dict] = None) -> Iterator[str]:
-        """Stream response using OpenAI API with XML-based tool and sub-agent calls."""
-        if not self.openai_client:
-            raise RuntimeError("OpenAI client is not available. Please check your API configuration.")
-        
-        try:
-            # Build system prompt with available tools and sub-agents
-            system_prompt = self._build_system_prompt_with_capabilities(context)
-            
-            # Prepare initial messages
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": message}
-            ]
-            
-            # Add conversation history
-            if self.history:
-                # Insert history before the current message
-                history_messages = []
-                for msg in self.history[:-1]:  # Exclude the current message we just added
-                    history_messages.append(msg)
-                messages = [messages[0]] + history_messages + [messages[1]]
-            
-            # Loop until no more tool calls or sub-agent calls are made
-            max_iterations = 100  # Prevent infinite loops
-            iteration = 0
-            
-            while iteration < max_iterations:
-                # Call OpenAI API with streaming enabled
-                api_params = self.llm_config.to_openai_params()
-                api_params['messages'] = messages
-                api_params['stream'] = True
-                
-                # Set max_tokens if not specified in config
-                if 'max_tokens' not in api_params:
-                    api_params['max_tokens'] = self.max_context // 4  # Reserve space for context
-                
-                # Debug logging for LLM messages
-                if self.llm_config.debug:
-                    logger.info(f"🐛 [DEBUG] LLM Streaming Request Messages for agent '{self.name}':")
-                    for i, msg in enumerate(messages):
-                        logger.info(f"🐛 [DEBUG] Message {i}: {msg['role']} -> {msg['content'][:200]}{'...' if len(msg['content']) > 200 else ''}")
-                
-                response_stream = self.openai_client.chat.completions.create(**api_params)
-                
-                # Collect streamed response
-                assistant_response = ""
-                for chunk in response_stream:
-                    if chunk.choices[0].delta.content:
-                        content = chunk.choices[0].delta.content
-                        assistant_response += content
-                        yield content
-                
-                # Debug logging for complete streamed response
-                if self.llm_config.debug:
-                    logger.info(f"🐛 [DEBUG] LLM Streaming Response for agent '{self.name}': {assistant_response}")
-                
-                # Check if response contains tool calls or sub-agent calls
-                has_tool_calls = bool(re.search(r'<tool_use>.*?</tool_use>', assistant_response, re.DOTALL))
-                has_sub_agent_calls = bool(re.search(r'<sub-agent>.*?</sub-agent>', assistant_response, re.DOTALL))
-                
-                if not has_tool_calls and not has_sub_agent_calls:
-                    # No more commands to execute, we're done
-                    # Add final response to history
-                    self.history.append({"role": "assistant", "content": assistant_response})
-                    break
-                
-                # Add the assistant's original response to conversation
-                messages.append({"role": "assistant", "content": assistant_response})
-                
-                # Process tool calls and sub-agent calls
-                processed_response = self._process_xml_calls(assistant_response)
-                
-                # Yield the tool/sub-agent execution results
-                tool_results = processed_response.replace(assistant_response, "").strip()
-                if tool_results:
-                    yield tool_results
-                
-                # Add final response to history (will be updated in next iteration or at end)
-                if iteration == 0:  # First iteration
-                    self.history.append({"role": "assistant", "content": processed_response})
-                else:  # Update existing entry
-                    self.history[-1]["content"] = processed_response
-                
-                # Add tool results as user feedback with iteration context
-                remaining_iterations = max_iterations - iteration - 1
-                iteration_hint = self._build_iteration_hint(iteration + 1, max_iterations, remaining_iterations)
-                
-                if tool_results:
-                    messages.append({
-                        "role": "user", 
-                        "content": f"Tool execution results:\n{tool_results}\n\n{iteration_hint}"
-                    })
-                else:
-                    messages.append({
-                        "role": "user", 
-                        "content": f"{iteration_hint}"
-                    })
-                
-                iteration += 1
-            
-            if iteration >= max_iterations:
-                yield "\n\n[Note: Maximum iteration limit reached]"
-                
-        except Exception as e:
-            # Re-raise with more context
-            raise RuntimeError(f"Error calling OpenAI API: {e}") from e
-    
     
     def call_sub_agent(self, sub_agent_name: str, message: str, context: Optional[Dict] = None) -> str:
         """Call a sub-agent like a tool call."""
@@ -494,12 +330,16 @@ class Agent:
             # Pass current agent context state and config to sub-agent
             current_context = get_context()
             if current_context:
-                result = sub_agent.run(
-                    message, 
-                    context=context,
-                    state=current_context.state.copy(),
-                    config=current_context.config.copy()
-                )
+                with self.langfuse_client.start_as_current_span(name=f"Sub-agent: {sub_agent_name}", input=message) as generation:
+                    result = sub_agent.run(
+                        message, 
+                        context=context,
+                        state=current_context.state.copy(),
+                        config=current_context.config.copy()
+                    )
+                    generation.update(
+                        output=result
+                    )
             else:
                 result = sub_agent.run(message, context=context)
             logger.info(f"✅ Sub-agent '{sub_agent_name}' returned result to agent '{self.name}'")
@@ -519,7 +359,11 @@ class Agent:
         
         tool = self.tool_registry[tool_name]
         try:
-            result = tool.execute(**parameters)
+            with self.langfuse_client.start_as_current_generation(name=f"Tool: {tool_name}", input=parameters) as generation:
+                result = tool.execute(**parameters)
+                generation.update(
+                    output=result,
+                )
             logger.info(f"✅ Tool '{tool_name}' executed successfully")
             return result
         except Exception as e:
