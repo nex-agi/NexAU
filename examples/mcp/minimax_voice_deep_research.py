@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example demonstrating AllvoiceLab MCP server integration with Northau agents."""
+"""Example demonstrating MiniMax MCP server integration with Northau agents."""
 
 from typing import Any
 
@@ -16,7 +16,7 @@ from northau.archs.tool.builtin.web_tool import web_search, web_read
 
 
 def main():
-    """Demonstrate AllvoiceLab MCP"""
+    """Demonstrate MiniMax MCP"""
 
     # GitHub MCP server configuration
     # This uses the stdio protocol with the official GitHub MCP server
@@ -62,7 +62,7 @@ def main():
         api_key=os.getenv("LLM_API_KEY"),
     )
 
-    print("📋 Configured AllvoiceLab MCP Server:")
+    print("📋 Configured MiniMax MCP Server:")
     for server in mcp_servers:
         print(f"   - {server['name']}")
         print(f"     Type: {server['type']}")
@@ -79,9 +79,9 @@ def main():
 
     try:
         # Create an agent with Github MCP server
-        print("🤖 Creating agent with AllvoiceLab MCP server...")
+        print("🤖 Creating agent with MiniMax MCP server...")
         agent = create_agent(
-            name="allvoicelab_agent",
+            name="minimax_agent",
             system_prompt="""You are an AI agent with access to MiniMax MCP, feishu tools, bash tool, and web search tool.
 
 You can also use feishu tools to upload files and send messages to feishu.
@@ -100,6 +100,10 @@ You can use Bash tool to execute bash commands, e.g., convert a mp3 file to opus
 ffmpeg -i SourceFile.mp3 -acodec libopus -ac 1 -ar 16000 TargetFile.opus
 ```
 
+When use video generation of MiniMax:
+1. Always use asynchronous mode for video generation
+2. Monitor ongoing video generation tasks throughout the conversation until it is Success or FAILED.
+
 """,
             mcp_servers=mcp_servers,
             llm_config=llm_config,
@@ -112,7 +116,7 @@ ffmpeg -i SourceFile.mp3 -acodec libopus -ac 1 -ar 16000 TargetFile.opus
 
         # List available tools
         if agent.tools:
-            print("\n🗺️  Available AllvoiceLab tools:")
+            print("\n🗺️  Available MiniMax tools:")
             for tool in agent.tools:
                 print(
                     f"   - {tool.name}: {getattr(tool, 'description', 'No description')}")
@@ -147,7 +151,7 @@ ffmpeg -i SourceFile.mp3 -acodec libopus -ac 1 -ar 16000 TargetFile.opus
 # —— 爱你们的小北
 #         """
 #         response = agent.run(f"帮我生成一段语音并发送到飞书群 bot测试群 里，内容是：{content}")
-        response = agent.run("今天是 2025年 8 月 8 日，现使用 WebSearch 和 WebRead 工具，搜索并整理今天的GPT相关的资讯，然后用MiniMax的文字转语音功能制造语音播客，并发语音消息到飞书的 bot测试群 里")
+        response = agent.run("今天是 2025年 8 月 10 日，现使用 WebSearch 和 WebRead 工具，搜索并整理今天的最新的 LLM 相关的资讯，然后用MiniMax的生成语音功能制造一个语音，并发语音消息到飞书的 bot测试群 里")
         # response = agent.run("/Users/hanzhenhua/Desktop/tts_1754551121_7gneh8.mp3 帮我转成 opus并发送到飞书群 bot 测试群里")
         # response = agent.run("帮我获取飞书群列表")
         # response = agent.run("帮我上传/Users/hanzhenhua/Desktop/tts_1754551121_7gneh8.opus文件到飞书，注意要用 opus 格式，需要带 duration （可以用ffproobe 拿），并用语音消息发送到飞书群 bot 测试群里")
