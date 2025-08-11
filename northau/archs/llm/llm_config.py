@@ -9,7 +9,7 @@ class LLMConfig:
     
     def __init__(
         self,
-        model: str = "gpt-4",
+        model: Optional[str] = None,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         temperature: float = 0.7,
@@ -39,8 +39,8 @@ class LLMConfig:
             debug: Enable debug logging of LLM messages
             **kwargs: Additional model-specific parameters
         """
-        self.model = model
-        self.base_url = base_url
+        self.model = model or self._get_model_from_env()
+        self.base_url = base_url or self._get_base_url_from_env()
         self.api_key = api_key or self._get_api_key_from_env()
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -54,13 +54,46 @@ class LLMConfig:
         # Store additional parameters
         self.extra_params = kwargs
     
+    def _get_model_from_env(self) -> str:
+        """Get model from environment variables."""
+        # Try common environment variable names for model
+        env_vars = [
+            'LLM_MODEL',
+            'OPENAI_MODEL', 
+            'MODEL'
+        ]
+        
+        for var in env_vars:
+            model = os.getenv(var)
+            if model:
+                return model
+        
+        # Default fallback
+        return "gpt-4"
+    
+    def _get_base_url_from_env(self) -> Optional[str]:
+        """Get base URL from environment variables."""
+        # Try common environment variable names for base URL
+        env_vars = [
+            'LLM_BASE_URL',
+            'OPENAI_BASE_URL',
+            'BASE_URL'
+        ]
+        
+        for var in env_vars:
+            url = os.getenv(var)
+            if url:
+                return url
+        
+        return None
+    
     def _get_api_key_from_env(self) -> Optional[str]:
         """Get API key from environment variables."""
         # Try common environment variable names
         env_vars = [
+            'LLM_API_KEY',
             'OPENAI_API_KEY',
             'API_KEY',
-            'LLM_API_KEY',
             'ANTHROPIC_API_KEY'
         ]
         
