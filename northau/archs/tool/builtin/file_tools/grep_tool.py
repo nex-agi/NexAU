@@ -218,11 +218,11 @@ def grep_tool(
                 indent=2,
             )
 
-        # Validate search directory
+        # Validate search path (can be file or directory)
         if not os.path.exists(search_dir):
             return json.dumps(
                 {
-                    "error": f"Directory does not exist: {search_dir}",
+                    "error": f"Path does not exist: {search_dir}",
                     "num_files": 0,
                     "filenames": [],
                     "duration_ms": int((time.time() - start_time) * 1000),
@@ -234,7 +234,7 @@ def grep_tool(
         if not os.access(search_dir, os.R_OK):
             return json.dumps(
                 {
-                    "error": f"No read permission for directory: {search_dir}",
+                    "error": f"No read permission for path: {search_dir}",
                     "num_files": 0,
                     "filenames": [],
                     "duration_ms": int((time.time() - start_time) * 1000),
@@ -242,6 +242,27 @@ def grep_tool(
                 },
                 indent=2,
             )
+
+        # Handle file vs directory
+        if os.path.isfile(search_dir):
+            # If it's a file, search in its parent directory but only in that file
+            file_dir = os.path.dirname(search_dir)
+            file_name = os.path.basename(search_dir)
+            # Use the file as a glob pattern to restrict search to just this file
+            if glob:
+                # If glob is already specified, we can't search a single file
+                return json.dumps(
+                    {
+                        "error": f"Cannot use glob pattern when searching a specific file: {search_dir}",
+                        "num_files": 0,
+                        "filenames": [],
+                        "duration_ms": int((time.time() - start_time) * 1000),
+                        "truncated": False,
+                    },
+                    indent=2,
+                )
+            glob = file_name
+            search_dir = file_dir
 
         # Extract additional parameters
         context_before = kwargs.get("-B")
