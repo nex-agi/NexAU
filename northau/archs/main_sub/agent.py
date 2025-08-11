@@ -33,6 +33,7 @@ class Agent:
         system_prompt: Optional[str] = None,
         system_prompt_type: str = "string",
         llm_config: Optional[Union[LLMConfig, Dict[str, Any]]] = None,
+        max_iterations: int = 100,
         max_context: int = 100000,
         error_handler: Optional[Callable] = None,
         retry_attempts: int = 3,
@@ -42,9 +43,6 @@ class Agent:
         initial_config: Optional[Dict[str, Any]] = None,
         # MCP parameters
         mcp_servers: Optional[List[Dict[str, Any]]] = None,
-        # Deprecated parameters (for backward compatibility)
-        model: Optional[str] = None,
-        model_base_url: Optional[str] = None
     ):
         """Initialize an agent with specified configuration."""
         self.name = name or f"agent_{id(self)}"
@@ -53,6 +51,7 @@ class Agent:
         self.system_prompt = system_prompt
         self.system_prompt_type = system_prompt_type
         self.max_context = max_context
+        self.max_iterations = max_iterations
         self.error_handler = error_handler
         self.retry_attempts = retry_attempts
         self.timeout = timeout
@@ -62,7 +61,7 @@ class Agent:
         self.initial_config = initial_config or {}
         
         # Handle LLM configuration
-        self.llm_config = self._setup_llm_config(llm_config, model, model_base_url)
+        self.llm_config = self._setup_llm_config(llm_config)
         
         # Initialize MCP tools if servers are configured
         if mcp_servers:
@@ -89,16 +88,11 @@ class Agent:
     def _setup_llm_config(
         self, 
         llm_config: Optional[Union[LLMConfig, Dict[str, Any]]], 
-        model: Optional[str], 
-        model_base_url: Optional[str]
     ) -> LLMConfig:
         """Setup LLM configuration with backward compatibility."""
         if llm_config is None:
             # Create from deprecated parameters or defaults
-            return LLMConfig(
-                model=model or "gpt-4",
-                base_url=model_base_url
-            )
+            raise ValueError("llm_config is required")
         elif isinstance(llm_config, dict):
             # Create from dictionary
             return LLMConfig(**llm_config)
@@ -225,7 +219,7 @@ class Agent:
                 messages = [messages[0]] + history_messages + [messages[1]]
             
             # Loop until no more tool calls or sub-agent calls are made
-            max_iterations = 100  # Prevent infinite loops
+            max_iterations = self.max_iterations  # Prevent infinite loops
             iteration = 0
             final_response = ""
             
@@ -862,9 +856,6 @@ def create_agent(
     initial_config: Optional[Dict[str, Any]] = None,
     # MCP parameters
     mcp_servers: Optional[List[Dict[str, Any]]] = None,
-    # Deprecated parameters (for backward compatibility)
-    model: Optional[str] = None,
-    model_base_url: Optional[str] = None,
     **llm_kwargs
 ) -> Agent:
     """Create a new agent with specified configuration."""
@@ -893,6 +884,4 @@ def create_agent(
         initial_state=initial_state,
         initial_config=initial_config,
         mcp_servers=mcp_servers,
-        model=model,  # Keep for backward compatibility
-        model_base_url=model_base_url  # Keep for backward compatibility
     )
