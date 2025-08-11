@@ -273,7 +273,7 @@ def get_feishu_chat_list(
         return error_msg
 
 
-async def get_chat_user_mapping(chat_id: str) -> dict:
+def get_chat_user_mapping(chat_id: str) -> dict:
     """获取指定群聊中用户ID和用户名的对应关系，支持分页获取所有用户
 
     Args:
