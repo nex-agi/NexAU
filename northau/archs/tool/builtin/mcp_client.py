@@ -110,9 +110,22 @@ class MCPServerConfig:
 class MCPTool(Tool):
     """Wrapper for MCP tools to conform to Northau Tool interface."""
     
-    def __init__(self, mcp_tool: MCPToolType, client_session: Union[ClientSession, HTTPMCPSession]):
+    def __init__(self, mcp_tool: MCPToolType, client_session: Union[ClientSession, HTTPMCPSession], server_config: Optional[MCPServerConfig] = None):
         self.mcp_tool = mcp_tool
         self.client_session = client_session
+        self.server_config = server_config  # Store config for recreating sessions
+        self._session_type = type(client_session).__name__
+        
+        # Store session parameters for thread-safe recreation
+        if isinstance(client_session, HTTPMCPSession):
+            self._session_params = {
+                'config': client_session.config,
+                'headers': client_session.headers,
+                'timeout': client_session.timeout
+            }
+        else:
+            # For stdio sessions, store the server config for recreation
+            self._session_params = server_config
         
         # Convert MCP tool to Northau tool format
         super().__init__(
@@ -122,16 +135,171 @@ class MCPTool(Tool):
             implementation=self._execute_sync
         )
     
+    async def _get_thread_local_session(self) -> Union[ClientSession, HTTPMCPSession]:
+        """Get or create a thread-local session to avoid event loop conflicts."""
+        # For HTTPMCPSession, we can safely create a new instance in each thread
+        if self._session_type == 'HTTPMCPSession' and isinstance(self._session_params, dict):
+            return HTTPMCPSession(
+                self._session_params['config'],
+                self._session_params['headers'],
+                self._session_params['timeout']
+            )
+        
+        # For stdio sessions, we need to create a new DirectMCPSession
+        elif self._session_type == 'DirectMCPSession' and isinstance(self._session_params, MCPServerConfig):
+            config = self._session_params
+            if config.type == "stdio" and config.command:
+                # Create a new DirectMCPSession
+                import os
+                merged_env = os.environ.copy()
+                if config.env:
+                    merged_env.update(config.env)
+                
+                # Use the DirectMCPSession class definition from the original code
+                class DirectMCPSession:
+                    def __init__(self, command, args, env):
+                        self.command = command
+                        self.args = args
+                        self.env = env
+                        self.process = None
+                        self._request_id = 0
+                        
+                    async def initialize(self):
+                        import subprocess
+                        self.process = await asyncio.create_subprocess_exec(
+                            self.command,
+                            *self.args,
+                            env=self.env,
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE
+                        )
+                        
+                        if not self.process.stdout or not self.process.stdin:
+                            raise RuntimeError("Failed to get process streams")
+                            
+                        # Initialize the MCP connection properly
+                        await self._initialize_connection()
+                        return self
+                    
+                    def _get_next_id(self):
+                        self._request_id += 1
+                        return self._request_id
+                        
+                    async def _initialize_connection(self):
+                        """Initialize the MCP connection with proper handshake."""
+                        import json
+                        # Send initialize request
+                        init_request = {
+                            "jsonrpc": "2.0",
+                            "id": self._get_next_id(),
+                            "method": "initialize",
+                            "params": {
+                                "protocolVersion": "2024-11-05",
+                                "capabilities": {
+                                    "roots": {
+                                        "listChanged": True
+                                    },
+                                    "sampling": {}
+                                },
+                                "clientInfo": {
+                                    "name": "northau-mcp-client",
+                                    "version": "1.0.0"
+                                }
+                            }
+                        }
+                        
+                        # Send the initialize request
+                        init_str = json.dumps(init_request) + "\n"
+                        self.process.stdin.write(init_str.encode())
+                        await self.process.stdin.drain()
+                        
+                        # Read the initialize response
+                        response_line = await self.process.stdout.readline()
+                        response = json.loads(response_line.decode().strip())
+                        
+                        if "error" in response:
+                            raise Exception(f"MCP initialization error: {response['error']}")
+                            
+                        # Send initialized notification
+                        initialized_notification = {
+                            "jsonrpc": "2.0",
+                            "method": "notifications/initialized",
+                            "params": {}
+                        }
+                        
+                        notif_str = json.dumps(initialized_notification) + "\n"
+                        self.process.stdin.write(notif_str.encode())
+                        await self.process.stdin.drain()
+                        
+                        # Test with tools/list to verify connection
+                        await self._make_request("tools/list")
+                        
+                    async def _make_request(self, method, params=None):
+                        if not self.process or not self.process.stdin or not self.process.stdout:
+                            raise RuntimeError("Process not initialized")
+                            
+                        import json
+                        request = {
+                            "jsonrpc": "2.0",
+                            "id": self._get_next_id(),
+                            "method": method,
+                            "params": params or {}
+                        }
+                        
+                        # Send request
+                        request_str = json.dumps(request) + "\n"
+                        self.process.stdin.write(request_str.encode())
+                        await self.process.stdin.drain()
+                        
+                        # Read response
+                        response_line = await self.process.stdout.readline()
+                        response = json.loads(response_line.decode().strip())
+                        
+                        if "error" in response:
+                            raise Exception(f"MCP error: {response['error']}")
+                            
+                        return response
+                        
+                    async def call_tool(self, name, arguments):
+                        response = await self._make_request("tools/call", {"name": name, "arguments": arguments})
+                        result_data = response.get("result", {})
+                        
+                        class ToolCallResult:
+                            def __init__(self, data):
+                                self.content = data.get("content", [])
+                                
+                        return ToolCallResult(result_data)
+                
+                # Create and initialize new session
+                session = DirectMCPSession(config.command, config.args or [], merged_env)
+                await session.initialize()
+                return session
+        
+        # For other session types, try to use the original session
+        # This is a fallback - ideally all MCP sessions should be recreatable
+        return self.client_session
+    
     def _execute_sync(self, **kwargs) -> Dict[str, Any]:
         """Execute the MCP tool synchronously."""
-        # Run the async execution in a new event loop
+        # Always create a new event loop to avoid "Future attached to a different loop" errors
+        # This is necessary when running in multi-threaded environments like ThreadPoolExecutor
+        loop = asyncio.new_event_loop()
         try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-        
-        return loop.run_until_complete(self._execute_async(**kwargs))
+            return loop.run_until_complete(self._execute_async(**kwargs))
+        finally:
+            # Clean up the event loop
+            try:
+                loop.close()
+            except Exception:
+                pass
+            # Reset to previous loop if it exists
+            try:
+                asyncio.get_event_loop()
+            except RuntimeError:
+                # No existing loop, that's fine
+                pass
     
     def execute(self, **kwargs) -> Dict[str, Any]:
         """Execute the MCP tool synchronously (for backward compatibility)."""
@@ -140,11 +308,9 @@ class MCPTool(Tool):
     async def _execute_async(self, **kwargs) -> Dict[str, Any]:
         """Execute the MCP tool asynchronously."""
         try:
-            # Handle both ClientSession and HTTPMCPSession
-            if isinstance(self.client_session, HTTPMCPSession):
-                result = await self.client_session.call_tool(self.name, kwargs)
-            else:
-                result = await self.client_session.call_tool(self.name, kwargs)
+            # Create a thread-local session to avoid event loop conflicts
+            session = await self._get_thread_local_session()
+            result = await session.call_tool(self.name, kwargs)
             
             if hasattr(result, 'content'):
                 if isinstance(result.content, list):
@@ -445,15 +611,17 @@ class MCPClient:
             
             # Convert MCP tools to Northau tools
             discovered_tools = []
+            server_config = self.servers.get(server_name)
+            
             for mcp_tool in tools_result.tools:
                 # For HTTPMCPSession, we need to pass the session directly
                 # For regular ClientSession, we also pass it directly
                 # Convert SimpleTool to MCPToolType-like object for compatibility
                 if hasattr(mcp_tool, 'inputSchema'):
-                    tool = MCPTool(mcp_tool, session)
+                    tool = MCPTool(mcp_tool, session, server_config)
                 else:
                     # Handle SimpleTool case by converting to proper format
-                    tool = MCPTool(mcp_tool, session)
+                    tool = MCPTool(mcp_tool, session, server_config)
                 discovered_tools.append(tool)
                 
                 # Store in registry with server prefix to avoid conflicts
@@ -603,10 +771,21 @@ async def initialize_mcp_tools(server_configs: List[Dict[str, Any]]) -> List[Too
 
 def sync_initialize_mcp_tools(server_configs: List[Dict[str, Any]]) -> List[Tool]:
     """Synchronous wrapper for initialize_mcp_tools."""
+    # Always create a new event loop to avoid "Future attached to a different loop" errors
+    # This matches the pattern used in MCPTool._execute_sync
+    loop = asyncio.new_event_loop()
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    
-    return loop.run_until_complete(initialize_mcp_tools(server_configs))
+        return loop.run_until_complete(initialize_mcp_tools(server_configs))
+    finally:
+        # Clean up the event loop
+        try:
+            loop.close()
+        except Exception:
+            pass
+        # Reset to previous loop if it exists
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            # No existing loop, that's fine
+            pass

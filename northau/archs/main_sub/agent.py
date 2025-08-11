@@ -6,6 +6,8 @@ import re
 import xml.etree.ElementTree as ET
 import logging
 from datetime import datetime
+from contextvars import copy_context
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from .prompt_handler import PromptHandler
 from ..llm import LLMConfig
 from .agent_context import AgentContext
@@ -572,55 +574,103 @@ Usage:
         return base_prompt
     
     def _process_xml_calls(self, response: str) -> str:
-        """Process XML tool calls and sub-agent calls in the response."""
+        """Process XML tool calls and sub-agent calls in the response in parallel."""
         processed_response = response
-        tool_results = []
         
-        # Process tool calls
+        # Find all tool calls and sub-agent calls
         tool_pattern = r'<tool_use>(.*?)</tool_use>'
         tool_matches = re.findall(tool_pattern, response, re.DOTALL)
         
-        for tool_xml in tool_matches:
-            try:
-                tool_name, result = self._execute_tool_from_xml(tool_xml)
-                logger.info(f"📤 Tool '{tool_name}' result: {result}")
-                tool_results.append(f"<tool_result>\n<tool_name>{tool_name}</tool_name>\n<result>{result}</result>\n</tool_result>")
-            except Exception as e:
-                # Extract tool name for error reporting
-                try:
-                    root = ET.fromstring(f"<root>{tool_xml}</root>")
-                    tool_name_elem = root.find('tool_name')
-                    tool_name = (tool_name_elem.text or "").strip() if tool_name_elem is not None else "unknown"
-                except:
-                    tool_name = "unknown"
-                logger.error(f"❌ Tool '{tool_name}' error: {e}")
-                tool_results.append(f"<tool_result>\n<tool_name>{tool_name}</tool_name>\n<error>{str(e)}</error>\n</tool_result>")
-        
-        # Process sub-agent calls
         sub_agent_pattern = r'<sub-agent>(.*?)</sub-agent>'
         sub_agent_matches = re.findall(sub_agent_pattern, response, re.DOTALL)
         
-        for sub_agent_xml in sub_agent_matches:
-            try:
-                agent_name, result = self._execute_sub_agent_from_xml(sub_agent_xml)
-                logger.info(f"📤 Sub-agent '{agent_name}' result: {result}")
-                tool_results.append(f"<tool_result>\n<tool_name>{agent_name}_sub_agent</tool_name>\n<result>{result}</result>\n</tool_result>")
-            except Exception as e:
-                # Extract agent name for error reporting
+        # If no calls to process, return original response
+        if not tool_matches and not sub_agent_matches:
+            return processed_response
+        
+        # Execute all calls in parallel
+        with ThreadPoolExecutor() as executor:
+            # Submit tool execution tasks
+            tool_futures = {}
+            for tool_xml in tool_matches:
+                # Propagate current tracing context into the worker thread
+                task_ctx = copy_context()
+                future = executor.submit(task_ctx.run, self._execute_tool_from_xml_safe, tool_xml)
+                tool_futures[future] = ('tool', tool_xml)
+            
+            # Submit sub-agent execution tasks
+            sub_agent_futures = {}
+            for sub_agent_xml in sub_agent_matches:
+                # Propagate current tracing context into the worker thread
+                task_ctx = copy_context()
+                future = executor.submit(task_ctx.run, self._execute_sub_agent_from_xml_safe, sub_agent_xml)
+                sub_agent_futures[future] = ('sub_agent', sub_agent_xml)
+            
+            # Combine all futures
+            all_futures = {**tool_futures, **sub_agent_futures}
+            
+            # Collect results as they complete
+            tool_results = []
+            for future in as_completed(all_futures):
+                call_type, xml_content = all_futures[future]
                 try:
-                    root = ET.fromstring(f"<root>{sub_agent_xml}</root>")
-                    agent_name_elem = root.find('agent_name')
-                    agent_name = (agent_name_elem.text or "").strip() if agent_name_elem is not None else "unknown"
-                except:
-                    agent_name = "unknown"
-                logger.error(f"❌ Sub-agent '{agent_name}' error: {e}")
-                tool_results.append(f"<tool_result>\n<tool_name>{agent_name}_sub_agent</tool_name>\n<error>{str(e)}</error>\n</tool_result>")
+                    result_data = future.result()
+                    if call_type == 'tool':
+                        tool_name, result, is_error = result_data
+                        if is_error:
+                            logger.error(f"❌ Tool '{tool_name}' error: {result}")
+                            tool_results.append(f"<tool_result>\n<tool_name>{tool_name}</tool_name>\n<error>{result}</error>\n</tool_result>")
+                        else:
+                            logger.info(f"📤 Tool '{tool_name}' result: {result}")
+                            tool_results.append(f"<tool_result>\n<tool_name>{tool_name}</tool_name>\n<result>{result}</result>\n</tool_result>")
+                    elif call_type == 'sub_agent':
+                        agent_name, result, is_error = result_data
+                        if is_error:
+                            logger.error(f"❌ Sub-agent '{agent_name}' error: {result}")
+                            tool_results.append(f"<tool_result>\n<tool_name>{agent_name}_sub_agent</tool_name>\n<error>{result}</error>\n</tool_result>")
+                        else:
+                            logger.info(f"📤 Sub-agent '{agent_name}' result: {result}")
+                            tool_results.append(f"<tool_result>\n<tool_name>{agent_name}_sub_agent</tool_name>\n<result>{result}</result>\n</tool_result>")
+                except Exception as e:
+                    # This should not happen due to safe wrappers, but just in case
+                    logger.error(f"❌ Unexpected error processing {call_type}: {e}")
+                    tool_results.append(f"<tool_result>\n<tool_name>unknown</tool_name>\n<error>Unexpected error: {str(e)}</error>\n</tool_result>")
         
         # Append tool results to the original response
         if tool_results:
             processed_response += "\n\n" + "\n\n".join(tool_results)
         
         return processed_response
+    
+    def _execute_tool_from_xml_safe(self, xml_content: str) -> Tuple[str, str, bool]:
+        """Safe wrapper for _execute_tool_from_xml that handles exceptions. Returns (tool_name, result, is_error)."""
+        try:
+            tool_name, result = self._execute_tool_from_xml(xml_content)
+            return tool_name, result, False
+        except Exception as e:
+            # Extract tool name for error reporting
+            try:
+                root = ET.fromstring(f"<root>{xml_content}</root>")
+                tool_name_elem = root.find('tool_name')
+                tool_name = (tool_name_elem.text or "").strip() if tool_name_elem is not None else "unknown"
+            except:
+                tool_name = "unknown"
+            return tool_name, str(e), True
+    
+    def _execute_sub_agent_from_xml_safe(self, xml_content: str) -> Tuple[str, str, bool]:
+        """Safe wrapper for _execute_sub_agent_from_xml that handles exceptions. Returns (agent_name, result, is_error)."""
+        try:
+            agent_name, result = self._execute_sub_agent_from_xml(xml_content)
+            return agent_name, result, False
+        except Exception as e:
+            # Extract agent name for error reporting
+            try:
+                root = ET.fromstring(f"<root>{xml_content}</root>")
+                agent_name_elem = root.find('agent_name')
+                agent_name = (agent_name_elem.text or "").strip() if agent_name_elem is not None else "unknown"
+            except:
+                agent_name = "unknown"
+            return agent_name, str(e), True
     
     def _execute_tool_from_xml(self, xml_content: str) -> Tuple[str, str]:
         """Execute a tool from XML content. Returns (tool_name, result)."""

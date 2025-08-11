@@ -34,6 +34,29 @@ export LLM_BASE_URL="https://api.openai.com/v1"
 export LLM_API_KEY="your-api-key-here"
 ```
 
+NorthAU supports tracing with Langfuse. If you need tracing, please set the following environment variables:
+
+```bash
+export LANGFUSE_SECRET_KEY="your-langfuse-secret-key-here"
+export LANGFUSE_PUBLIC_KEY="your-langfuse-public-key-here"
+export LANGFUSE_HOST="your-langfuse-host-here"
+```
+
+You can also use .env file to set the environment variables and run the following command to start the agent:
+
+```.env
+LLM_MODEL=glm-4.5
+LLM_BASE_URL=https://***REMOVED***/v1/
+LLM_API_KEY=sk-xxxx
+LANGFUSE_SECRET_KEY=sk-lf-xxxx
+LANGFUSE_PUBLIC_KEY=pk-lf-xxxx
+LANGFUSE_HOST=***REMOVED***
+```
+
+```bash
+dotenv run uv run examples/deep_research/quickstart.py
+```
+
 ### Example 1: Basic Agent with Code Tools
 
 ```python
