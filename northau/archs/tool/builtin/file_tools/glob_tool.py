@@ -122,7 +122,36 @@ def glob_tool(
             f"Glob search completed: found {len(files)} files in {duration_ms}ms"
         )
 
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        # Apply length limit to JSON output
+        result_json = json.dumps(result, indent=2, ensure_ascii=False)
+        if len(result_json) > 10000:
+            # Calculate how many files to keep to stay under limit
+            files_to_keep = len(files)
+            while files_to_keep > 0:
+                truncated_result = result.copy()
+                truncated_result["filenames"] = files[:files_to_keep]
+                truncated_result["num_files"] = files_to_keep
+                truncated_result["truncated_output"] = True
+                truncated_result["remaining_files"] = len(files) - files_to_keep
+                truncated_result["message"] = f"Found {files_to_keep} files (truncated: {len(files) - files_to_keep} more files not shown)"
+                
+                test_json = json.dumps(truncated_result, indent=2, ensure_ascii=False)
+                if len(test_json) <= 10000:
+                    return test_json
+                files_to_keep -= 1
+            
+            # If even 0 files is too long, return minimal result
+            minimal_result = {
+                "truncated_output": True,
+                "total_files": len(files),
+                "message": f"Output too long: found {len(files)} files (details truncated)",
+                "search_directory": search_dir,
+                "pattern": pattern,
+                "duration_ms": duration_ms
+            }
+            return json.dumps(minimal_result, indent=2, ensure_ascii=False)
+
+        return result_json
 
     except Exception as e:
         logger.error(f"Error during glob search: {e}")

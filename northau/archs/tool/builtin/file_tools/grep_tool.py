@@ -397,7 +397,69 @@ def grep_tool(
             f"Grep search completed: found {result_count} results in {total_duration_ms}ms (mode: {output_mode})"
         )
 
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        # Apply length limit to JSON output
+        result_json = json.dumps(result, indent=2, ensure_ascii=False)
+        if len(result_json) > 10000:
+            # For different output modes, truncate appropriately
+            if output_mode == "files_with_matches":
+                # Truncate filenames list
+                items_to_keep = len(final_results)
+                while items_to_keep > 0:
+                    truncated_result = result.copy()
+                    truncated_result["filenames"] = final_results[:items_to_keep]
+                    truncated_result["num_files"] = items_to_keep
+                    truncated_result["truncated_output"] = True
+                    truncated_result["remaining_files"] = len(final_results) - items_to_keep
+                    truncated_result["message"] = f"Found {items_to_keep} files (truncated: {len(final_results) - items_to_keep} more files not shown)"
+                    
+                    test_json = json.dumps(truncated_result, indent=2, ensure_ascii=False)
+                    if len(test_json) <= 10000:
+                        return test_json
+                    items_to_keep -= 1
+            elif output_mode == "content":
+                # Truncate content lines
+                items_to_keep = len(final_results)
+                while items_to_keep > 0:
+                    truncated_result = result.copy()
+                    truncated_result["content"] = final_results[:items_to_keep]
+                    truncated_result["num_lines"] = items_to_keep
+                    truncated_result["truncated_output"] = True
+                    truncated_result["remaining_lines"] = len(final_results) - items_to_keep
+                    truncated_result["message"] = f"Found {items_to_keep} lines (truncated: {len(final_results) - items_to_keep} more lines not shown)"
+                    
+                    test_json = json.dumps(truncated_result, indent=2, ensure_ascii=False)
+                    if len(test_json) <= 1000:
+                        return test_json
+                    items_to_keep -= 1
+            elif output_mode == "count":
+                # Truncate count results
+                items_to_keep = len(final_results)
+                while items_to_keep > 0:
+                    truncated_result = result.copy()
+                    truncated_result["counts"] = final_results[:items_to_keep]
+                    truncated_result["num_files"] = items_to_keep
+                    truncated_result["truncated_output"] = True
+                    truncated_result["remaining_files"] = len(final_results) - items_to_keep
+                    truncated_result["message"] = f"Found counts for {items_to_keep} files (truncated: {len(final_results) - items_to_keep} more files not shown)"
+                    
+                    test_json = json.dumps(truncated_result, indent=2, ensure_ascii=False)
+                    if len(test_json) <= 1000:
+                        return test_json
+                    items_to_keep -= 1
+            
+            # If even minimal result is too long, return basic summary
+            minimal_result = {
+                "truncated_output": True,
+                "total_matches": len(final_results),
+                "message": f"Output too long: found {len(final_results)} matches (details truncated)",
+                "search_directory": search_dir,
+                "pattern": pattern,
+                "output_mode": output_mode,
+                "duration_ms": total_duration_ms
+            }
+            return json.dumps(minimal_result, indent=2, ensure_ascii=False)
+
+        return result_json
 
     except Exception as e:
         logger.error(f"Unexpected error during grep search: {e}")
