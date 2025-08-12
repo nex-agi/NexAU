@@ -5,6 +5,7 @@ import json
 import re
 import xml.etree.ElementTree as ET
 import logging
+import os
 from datetime import datetime
 from contextvars import copy_context
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -243,7 +244,8 @@ class Agent:
                     "</tool_use>",
                     "</sub-agent>", 
                     "</use_parallel_tool_calls>",
-                    "</use_parallel_sub_agents>"
+                    "</use_parallel_sub_agents>",
+                    "</use_batch_agent>"
                 ]
                 
                 # Merge with existing stop sequences if any
@@ -278,15 +280,16 @@ class Agent:
                 # Store this as the latest response (potential final response)
                 final_response = assistant_response
                 
-                # Check if response contains tool calls or sub-agent calls (including parallel formats)
+                # Check if response contains tool calls or sub-agent calls (including parallel formats and batch processing)
                 has_tool_calls = bool(re.search(r'<tool_use>.*?</tool_use>', assistant_response, re.DOTALL))
                 has_sub_agent_calls = bool(re.search(r'<sub-agent>.*?</sub-agent>', assistant_response, re.DOTALL))
                 has_parallel_tool_calls = bool(re.search(r'<use_parallel_tool_calls>.*?</use_parallel_tool_calls>', assistant_response, re.DOTALL))
                 has_parallel_sub_agents = bool(re.search(r'<use_parallel_sub_agents>.*?</use_parallel_sub_agents>', assistant_response, re.DOTALL))
+                has_batch_agent = bool(re.search(r'<use_batch_agent>.*?</use_batch_agent>', assistant_response, re.DOTALL))
                 
-                logger.info(f"🔍 Analysis for agent '{self.name}': tool_calls={has_tool_calls}, sub_agent_calls={has_sub_agent_calls}, parallel_tool_calls={has_parallel_tool_calls}, parallel_sub_agents={has_parallel_sub_agents}")
+                logger.info(f"🔍 Analysis for agent '{self.name}': tool_calls={has_tool_calls}, sub_agent_calls={has_sub_agent_calls}, parallel_tool_calls={has_parallel_tool_calls}, parallel_sub_agents={has_parallel_sub_agents}, batch_agent={has_batch_agent}")
                 
-                if not has_tool_calls and not has_sub_agent_calls and not has_parallel_tool_calls and not has_parallel_sub_agents:
+                if not has_tool_calls and not has_sub_agent_calls and not has_parallel_tool_calls and not has_parallel_sub_agents and not has_batch_agent:
                     # No more commands to execute, return final response
                     logger.info(f"🏁 No more commands to execute, finishing agent '{self.name}'")
                     break
@@ -429,13 +432,13 @@ You can use tools by including XML blocks in your response:
 Usage:
 <tool_use>
   <tool_name>{{ tool.name }}</tool_name>
-  <parameters>
+  <parameter>
 {% if tool.parameters %}
 {% for param in tool.parameters %}
     <{{ param.name }}>{{ param.description }}{% if not param.required %} (optional, type: {{ param.type }}{% if param.default %}, default: {{ param.default }}{% endif %}){% else %} (required, type: {{ param.type }}){% endif %}</{{ param.name }}>
 {% endfor %}
 {% endif %}
-  </parameters>
+  </parameter>
 </tool_use>
 {% endfor %}
 {% endif %}"""
@@ -524,11 +527,11 @@ For parallel execution of multiple tools, use:
 <use_parallel_tool_calls>
 <parallel_tool>
   <tool_name>tool1</tool_name>
-  <parameters>...</parameters>
+  <parameter>...</parameter>
 </parallel_tool>
 <parallel_tool>
   <tool_name>tool2</tool_name>
-  <parameters>...</parameters>
+  <parameter>...</parameter>
 </parallel_tool>
 </use_parallel_tool_calls>
 
@@ -540,9 +543,27 @@ For parallel execution of tools and sub-agents together, use:
 </parallel_agent>
 <parallel_tool>
   <tool_name>tool1</tool_name>
-  <parameters>...</parameters>
+  <parameter>...</parameter>
 </parallel_tool>
-</use_parallel_sub_agents>"""
+</use_parallel_sub_agents>
+
+For batch processing multiple data items with an agent, use:
+<use_batch_agent>
+  <agent_name>agent_name</agent_name>
+  <input_data_source>
+    <file_name>/absolute/path/to/file.jsonl</file_name>
+    <format>jsonl</format>
+  </input_data_source>
+  <message>Your message template with {variable_placeholders}</message>
+</use_batch_agent>
+
+IMPORTANT: When using batch processing:
+- Ensure the JSONL file exists or will be created if not found
+- Validate that the JSONL file contains valid JSON objects
+- Make sure the message template uses valid keys that exist in the JSONL data
+- Each line in the JSONL file should be a separate JSON object
+- Variable placeholders in the message use {key_name} format from the JSON data
+- All agents in the batch will run in parallel for efficient processing"""
         
         return base_prompt
     
@@ -560,7 +581,7 @@ For parallel execution of tools and sub-agents together, use:
                 tool_docs.append("Usage:")
                 tool_docs.append("<tool_use>")
                 tool_docs.append(f"  <tool_name>{tool.name}</tool_name>")
-                tool_docs.append("  <parameters>")
+                tool_docs.append("  <parameter>")
                 
                 # Add parameter documentation from schema
                 schema = getattr(tool, 'input_schema', {})
@@ -597,10 +618,11 @@ For parallel execution of tools and sub-agents together, use:
                     param_doc = " ".join(param_parts)
                     tool_docs.append(f"    <{param_name}>{param_doc}</{param_name}>")
                 
-                tool_docs.append("  </parameters>")
+                tool_docs.append("  </parameter>")
                 tool_docs.append("</tool_use>")
             
             base_prompt += "\n".join(tool_docs)
+            base_prompt += "\n\nIMPORTANT: use </parameter> to end the parameters block."
         
         # Add sub-agent documentation
         if self.sub_agent_factories:
@@ -625,12 +647,21 @@ For parallel execution of tools and sub-agents together, use:
         """Process XML tool calls and sub-agent calls in the response in parallel."""
         processed_response = response
         
-        # Check for parallel execution formats first
+        # Check for parallel execution formats and batch processing first
         parallel_tool_calls_pattern = r'<use_parallel_tool_calls>(.*?)</use_parallel_tool_calls>'
         parallel_tool_calls_match = re.search(parallel_tool_calls_pattern, response, re.DOTALL)
         
         parallel_sub_agents_pattern = r'<use_parallel_sub_agents>(.*?)</use_parallel_sub_agents>'
         parallel_sub_agents_match = re.search(parallel_sub_agents_pattern, response, re.DOTALL)
+        
+        batch_agent_pattern = r'<use_batch_agent>(.*?)</use_batch_agent>'
+        batch_agent_match = re.search(batch_agent_pattern, response, re.DOTALL)
+        
+        # Handle batch processing first
+        if batch_agent_match:
+            batch_result = self._execute_batch_agent_from_xml(batch_agent_match.group(1))
+            processed_response += f"\n\n<tool_result>\n<tool_name>batch_agent</tool_name>\n<result>{batch_result}</result>\n</tool_result>"
+            return processed_response
         
         tool_matches = []
         sub_agent_matches = []
@@ -874,7 +905,7 @@ For parallel execution of tools and sub-agents together, use:
             
             # Find and escape parameter content within parameters block
             escaped_xml = xml_content
-            params_match = re.search(r'<parameters>(.*?)</parameters>', xml_content, re.DOTALL)
+            params_match = re.search(r'<parameter>(.*?)</parameter>', xml_content, re.DOTALL)
             if params_match:
                 params_content = params_match.group(1)
                 # Pattern to match individual parameter tags
@@ -905,10 +936,10 @@ For parallel execution of tools and sub-agents together, use:
             minimal_xml = f"<tool_name>{tool_name}</tool_name>"
             
             # Try to extract parameters
-            params_match = re.search(r'<parameters>(.*?)</parameters>', xml_content, re.DOTALL | re.IGNORECASE)
+            params_match = re.search(r'<parameter>(.*?)</parameter>', xml_content, re.DOTALL | re.IGNORECASE)
             if params_match:
                 params_content = params_match.group(1).strip()
-                minimal_xml += f"<parameters>{params_content}</parameters>"
+                minimal_xml += f"<parameter>{params_content}</parameter>"
             
             return ET.fromstring(f"<root>{minimal_xml}</root>")
         except (ET.ParseError, AttributeError):
@@ -932,7 +963,7 @@ For parallel execution of tools and sub-agents together, use:
             
             # Get parameters
             parameters = {}
-            params_elem = root.find('parameters')
+            params_elem = root.find('parameter')
             if params_elem is not None:
                 for param in params_elem:
                     param_name = param.tag
@@ -1006,7 +1037,8 @@ For parallel execution of tools and sub-agents together, use:
             ('<parallel_tool>', '</parallel_tool>'),
             ('<parallel_agent>', '</parallel_agent>'),
             ('<use_parallel_tool_calls>', '</use_parallel_tool_calls>'),
-            ('<use_parallel_sub_agents>', '</use_parallel_sub_agents>')
+            ('<use_parallel_sub_agents>', '</use_parallel_sub_agents>'),
+            ('<use_batch_agent>', '</use_batch_agent>')
         ]
         
         for open_tag, close_tag in tag_pairs:
@@ -1033,6 +1065,187 @@ For parallel execution of tools and sub-agents together, use:
             return (f"🔄 Iteration {current_iteration}/{max_iterations} - Continue your response if you have more to say, "
                    f"or if you need to make additional tool calls or sub-agent calls.")
     
+    def _execute_batch_agent_from_xml(self, xml_content: str) -> str:
+        """Execute batch agent processing from XML content."""
+        try:
+            # Parse XML using robust parsing
+            root = self._parse_xml_content_robust(xml_content)
+            
+            # Get agent name
+            agent_name_elem = root.find('agent_name')
+            if agent_name_elem is None:
+                raise ValueError("Missing agent_name in batch agent XML")
+            
+            agent_name = (agent_name_elem.text or "").strip()
+            
+            # Get input data source
+            input_data_elem = root.find('input_data_source')
+            if input_data_elem is None:
+                raise ValueError("Missing input_data_source in batch agent XML")
+            
+            file_name_elem = input_data_elem.find('file_name')
+            if file_name_elem is None:
+                raise ValueError("Missing file_name in input_data_source")
+            
+            file_path = (file_name_elem.text or "").strip()
+            
+            format_elem = input_data_elem.find('format')
+            data_format = (format_elem.text or "jsonl").strip() if format_elem is not None else "jsonl"
+            
+            # Get message template
+            message_elem = root.find('message')
+            if message_elem is None:
+                raise ValueError("Missing message in batch agent XML")
+            
+            message_template = (message_elem.text or "").strip()
+            
+            # Validate file exists or create if not exist
+            if not os.path.exists(file_path):
+                logger.warning(f"File {file_path} does not exist. Creating empty JSONL file.")
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                with open(file_path, 'w') as f:
+                    pass  # Create empty file
+                return f"Batch processing completed: 0 items processed (file was created but empty)"
+            
+            # Execute batch processing
+            return self._process_batch_data(agent_name, file_path, data_format, message_template)
+            
+        except ET.ParseError as e:
+            raise ValueError(f"Invalid XML format: {e}")
+        except Exception as e:
+            raise ValueError(f"Batch processing error: {e}")
+    
+    def _process_batch_data(self, agent_name: str, file_path: str, data_format: str, message_template: str) -> str:
+        """Process batch data from file and execute agent calls in parallel."""
+        if data_format.lower() != 'jsonl':
+            raise ValueError(f"Unsupported data format: {data_format}. Only 'jsonl' is supported.")
+        
+        # Read and validate JSONL file
+        batch_data = []
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        if not isinstance(data, dict):
+                            logger.warning(f"Line {line_num}: Expected JSON object, got {type(data).__name__}")
+                            continue
+                        batch_data.append((line_num, data))
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Line {line_num}: Invalid JSON - {e}")
+                        continue
+        except Exception as e:
+            raise ValueError(f"Error reading file {file_path}: {e}")
+        
+        if not batch_data:
+            return f"Batch processing completed: 0 items processed (no valid JSON objects found)"
+        
+        # Validate message template uses valid keys
+        template_keys = self._extract_template_keys(message_template)
+        sample_data = batch_data[0][1]
+        invalid_keys = [key for key in template_keys if key not in sample_data]
+        if invalid_keys:
+            raise ValueError(f"Message template uses invalid keys: {invalid_keys}. Available keys in data: {list(sample_data.keys())}")
+        
+        # Execute batch processing in parallel
+        results = []
+        with ThreadPoolExecutor() as executor:
+            # Submit all batch items for parallel execution
+            futures = {}
+            for line_num, data in batch_data:
+                # Render message template with data
+                try:
+                    rendered_message = self._render_message_template(message_template, data)
+                    # Propagate current tracing context into the worker thread
+                    task_ctx = copy_context()
+                    future = executor.submit(task_ctx.run, self._execute_batch_item_safe, agent_name, rendered_message, line_num)
+                    futures[future] = (line_num, data)
+                except Exception as e:
+                    results.append({
+                        'line': line_num,
+                        'status': 'error',
+                        'error': f"Template rendering failed: {e}",
+                        'data': data
+                    })
+            
+            # Collect results as they complete
+            for future in as_completed(futures):
+                line_num, data = futures[future]
+                try:
+                    result = future.result()
+                    results.append({
+                        'line': line_num,
+                        'status': 'success',
+                        'result': result,
+                        'data': data
+                    })
+                except Exception as e:
+                    results.append({
+                        'line': line_num,
+                        'status': 'error',
+                        'error': str(e),
+                        'data': data
+                    })
+        
+        # Sort results by line number
+        results.sort(key=lambda x: x['line'])
+        
+        # Generate summary
+        total_items = len(results)
+        successful_items = len([r for r in results if r['status'] == 'success'])
+        failed_items = total_items - successful_items
+        
+        summary = f"Batch processing completed: {successful_items}/{total_items} items successful, {failed_items} failed"
+        
+        # Limit detailed results to first 3 items to prevent overly long responses
+        displayed_results = results[:3]
+        remaining_count = max(0, len(results) - 3)
+        
+        # Include limited detailed results
+        detailed_results = {
+            'summary': summary,
+            'total_items': total_items,
+            'successful_items': successful_items,
+            'failed_items': failed_items,
+            'displayed_results': displayed_results,
+            'remaining_items': remaining_count
+        }
+        
+        if remaining_count > 0:
+            detailed_results['note'] = f"Showing first 3 results. {remaining_count} additional results not displayed to keep response concise."
+        
+        return json.dumps(detailed_results, indent=2, ensure_ascii=False)
+    
+    def _extract_template_keys(self, template: str) -> List[str]:
+        """Extract variable keys from message template."""
+        import re
+        # Find all {variable_name} patterns
+        keys = re.findall(r'\{([^}]+)\}', template)
+        return keys
+    
+    def _render_message_template(self, template: str, data: Dict[str, Any]) -> str:
+        """Render message template with data."""
+        try:
+            return template.format(**data)
+        except KeyError as e:
+            missing_key = str(e).strip("'\"")
+            available_keys = list(data.keys())
+            raise ValueError(f"Template key '{missing_key}' not found in data. Available keys: {available_keys}")
+    
+    def _execute_batch_item_safe(self, agent_name: str, message: str, line_num: int) -> str:
+        """Safely execute a single batch item."""
+        try:
+            logger.info(f"🔄 Processing batch item {line_num} with agent '{agent_name}'")
+            result = self.call_sub_agent(agent_name, message)
+            logger.info(f"✅ Batch item {line_num} completed successfully")
+            return result
+        except Exception as e:
+            logger.error(f"❌ Batch item {line_num} failed: {e}")
+            raise
+
     def _execute_sub_agent_from_xml(self, xml_content: str) -> Tuple[str, str]:
         """Execute a sub-agent call from XML content. Returns (agent_name, result)."""
         try:
