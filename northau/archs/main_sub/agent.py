@@ -238,6 +238,23 @@ class Agent:
                 if 'max_tokens' not in api_params:
                     api_params['max_tokens'] = self.max_context // 4  # Reserve space for context
                 
+                # Add stop sequences for XML closing tags to prevent malformed XML
+                xml_stop_sequences = [
+                    "</tool_use>",
+                    "</sub-agent>", 
+                    "</use_parallel_tool_calls>",
+                    "</use_parallel_sub_agents>"
+                ]
+                
+                # Merge with existing stop sequences if any
+                existing_stop = api_params.get('stop', [])
+                if isinstance(existing_stop, str):
+                    existing_stop = [existing_stop]
+                elif existing_stop is None:
+                    existing_stop = []
+                
+                api_params['stop'] = existing_stop + xml_stop_sequences
+                
                 # Debug logging for LLM messages
                 if self.llm_config.debug:
                     logger.info(f"🐛 [DEBUG] LLM Request Messages for agent '{self.name}':")
@@ -249,6 +266,9 @@ class Agent:
                 response = self.openai_client.chat.completions.create(**api_params)
                 assistant_response = response.choices[0].message.content
                 
+                # Add back XML closing tags if they were removed by stop sequences
+                assistant_response = self._restore_xml_closing_tags(assistant_response)
+                
                 # Debug logging for LLM response
                 if self.llm_config.debug:
                     logger.info(f"🐛 [DEBUG] LLM Response for agent '{self.name}': {assistant_response}")
@@ -258,13 +278,15 @@ class Agent:
                 # Store this as the latest response (potential final response)
                 final_response = assistant_response
                 
-                # Check if response contains tool calls or sub-agent calls
+                # Check if response contains tool calls or sub-agent calls (including parallel formats)
                 has_tool_calls = bool(re.search(r'<tool_use>.*?</tool_use>', assistant_response, re.DOTALL))
                 has_sub_agent_calls = bool(re.search(r'<sub-agent>.*?</sub-agent>', assistant_response, re.DOTALL))
+                has_parallel_tool_calls = bool(re.search(r'<use_parallel_tool_calls>.*?</use_parallel_tool_calls>', assistant_response, re.DOTALL))
+                has_parallel_sub_agents = bool(re.search(r'<use_parallel_sub_agents>.*?</use_parallel_sub_agents>', assistant_response, re.DOTALL))
                 
-                logger.info(f"🔍 Analysis for agent '{self.name}': tool_calls={has_tool_calls}, sub_agent_calls={has_sub_agent_calls}")
+                logger.info(f"🔍 Analysis for agent '{self.name}': tool_calls={has_tool_calls}, sub_agent_calls={has_sub_agent_calls}, parallel_tool_calls={has_parallel_tool_calls}, parallel_sub_agents={has_parallel_sub_agents}")
                 
-                if not has_tool_calls and not has_sub_agent_calls:
+                if not has_tool_calls and not has_sub_agent_calls and not has_parallel_tool_calls and not has_parallel_sub_agents:
                     # No more commands to execute, return final response
                     logger.info(f"🏁 No more commands to execute, finishing agent '{self.name}'")
                     break
@@ -496,7 +518,31 @@ Usage:
             # Fallback to original implementation if template rendering fails
             base_prompt = self._build_system_prompt_with_capabilities_fallback(base_prompt)
         
-        base_prompt += "\n\nWhen you use tools or sub-agents, include the XML blocks in your response and I will execute them and provide the results."
+        base_prompt += """\n\nWhen you use tools or sub-agents, include the XML blocks in your response and I will execute them and provide the results.
+
+For parallel execution of multiple tools, use:
+<use_parallel_tool_calls>
+<parallel_tool>
+  <tool_name>tool1</tool_name>
+  <parameters>...</parameters>
+</parallel_tool>
+<parallel_tool>
+  <tool_name>tool2</tool_name>
+  <parameters>...</parameters>
+</parallel_tool>
+</use_parallel_tool_calls>
+
+For parallel execution of tools and sub-agents together, use:
+<use_parallel_sub_agents>
+<parallel_agent>
+  <agent_name>agent1</agent_name>
+  <message>task description</message>
+</parallel_agent>
+<parallel_tool>
+  <tool_name>tool1</tool_name>
+  <parameters>...</parameters>
+</parallel_tool>
+</use_parallel_sub_agents>"""
         
         return base_prompt
     
@@ -579,12 +625,35 @@ Usage:
         """Process XML tool calls and sub-agent calls in the response in parallel."""
         processed_response = response
         
-        # Find all tool calls and sub-agent calls
-        tool_pattern = r'<tool_use>(.*?)</tool_use>'
-        tool_matches = re.findall(tool_pattern, response, re.DOTALL)
+        # Check for parallel execution formats first
+        parallel_tool_calls_pattern = r'<use_parallel_tool_calls>(.*?)</use_parallel_tool_calls>'
+        parallel_tool_calls_match = re.search(parallel_tool_calls_pattern, response, re.DOTALL)
         
-        sub_agent_pattern = r'<sub-agent>(.*?)</sub-agent>'
-        sub_agent_matches = re.findall(sub_agent_pattern, response, re.DOTALL)
+        parallel_sub_agents_pattern = r'<use_parallel_sub_agents>(.*?)</use_parallel_sub_agents>'
+        parallel_sub_agents_match = re.search(parallel_sub_agents_pattern, response, re.DOTALL)
+        
+        tool_matches = []
+        sub_agent_matches = []
+        
+        if parallel_tool_calls_match:
+            # Extract tool calls from within the parallel block using parallel_tool tags
+            parallel_content = parallel_tool_calls_match.group(1)
+            tool_pattern = r'<parallel_tool>(.*?)</parallel_tool>'
+            tool_matches = re.findall(tool_pattern, parallel_content, re.DOTALL)
+        elif parallel_sub_agents_match:
+            # Extract both tool calls and sub-agent calls from within the parallel block
+            parallel_content = parallel_sub_agents_match.group(1)
+            tool_pattern = r'<parallel_tool>(.*?)</parallel_tool>'
+            sub_agent_pattern = r'<parallel_agent>(.*?)</parallel_agent>'
+            tool_matches = re.findall(tool_pattern, parallel_content, re.DOTALL)
+            sub_agent_matches = re.findall(sub_agent_pattern, parallel_content, re.DOTALL)
+        else:
+            # Fall back to original behavior - find individual tool calls and sub-agent calls
+            tool_pattern = r'<tool_use>(.*?)</tool_use>'
+            tool_matches = re.findall(tool_pattern, response, re.DOTALL)
+            
+            sub_agent_pattern = r'<sub-agent>(.*?)</sub-agent>'
+            sub_agent_matches = re.findall(sub_agent_pattern, response, re.DOTALL)
         
         # If no calls to process, return original response
         if not tool_matches and not sub_agent_matches:
@@ -924,6 +993,31 @@ Usage:
         except (ValueError, json.JSONDecodeError) as e:
             logger.warning(f"Failed to convert parameter '{param_name}' of type '{param_type}': {e}")
             return param_value  # Fallback to string value
+    
+    def _restore_xml_closing_tags(self, response: str) -> str:
+        """Restore XML closing tags that may have been removed by stop sequences."""
+        # Check for incomplete XML blocks and add missing closing tags
+        restored_response = response
+        
+        # List of tag pairs to check (opening_tag, closing_tag)
+        tag_pairs = [
+            ('<tool_use>', '</tool_use>'),
+            ('<sub-agent>', '</sub-agent>'),
+            ('<parallel_tool>', '</parallel_tool>'),
+            ('<parallel_agent>', '</parallel_agent>'),
+            ('<use_parallel_tool_calls>', '</use_parallel_tool_calls>'),
+            ('<use_parallel_sub_agents>', '</use_parallel_sub_agents>')
+        ]
+        
+        for open_tag, close_tag in tag_pairs:
+            if open_tag in restored_response and not restored_response.rstrip().endswith(close_tag):
+                # Count open and close tags
+                open_count = restored_response.count(open_tag)
+                close_count = restored_response.count(close_tag)
+                if open_count > close_count:
+                    restored_response += close_tag
+        
+        return restored_response
     
     def _build_iteration_hint(self, current_iteration: int, max_iterations: int, remaining_iterations: int) -> str:
         """Build a hint message for the LLM about iteration status."""
