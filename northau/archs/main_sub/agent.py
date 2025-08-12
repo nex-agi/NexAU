@@ -38,6 +38,7 @@ class Agent:
         llm_config: Optional[Union[LLMConfig, Dict[str, Any]]] = None,
         max_iterations: int = 100,
         max_context: int = 100000,
+        max_running_subagents: int = 5,
         error_handler: Optional[Callable] = None,
         retry_attempts: int = 3,
         timeout: int = 300,
@@ -55,6 +56,7 @@ class Agent:
         self.system_prompt_type = system_prompt_type
         self.max_context = max_context
         self.max_iterations = max_iterations
+        self.max_running_subagents = max_running_subagents
         self.error_handler = error_handler
         self.retry_attempts = retry_attempts
         self.timeout = timeout
@@ -690,22 +692,22 @@ IMPORTANT: When using batch processing:
         if not tool_matches and not sub_agent_matches:
             return processed_response
         
-        # Execute all calls in parallel
-        with ThreadPoolExecutor() as executor:
-            # Submit tool execution tasks
+        # Execute all calls in parallel with separate thread pools for tools and sub-agents
+        with ThreadPoolExecutor() as tool_executor, ThreadPoolExecutor(max_workers=self.max_running_subagents) as subagent_executor:
+            # Submit tool execution tasks (no limit on concurrent tools)
             tool_futures = {}
             for tool_xml in tool_matches:
                 # Propagate current tracing context into the worker thread
                 task_ctx = copy_context()
-                future = executor.submit(task_ctx.run, self._execute_tool_from_xml_safe, tool_xml)
+                future = tool_executor.submit(task_ctx.run, self._execute_tool_from_xml_safe, tool_xml)
                 tool_futures[future] = ('tool', tool_xml)
             
-            # Submit sub-agent execution tasks
+            # Submit sub-agent execution tasks (limited by max_running_subagents)
             sub_agent_futures = {}
             for sub_agent_xml in sub_agent_matches:
                 # Propagate current tracing context into the worker thread
                 task_ctx = copy_context()
-                future = executor.submit(task_ctx.run, self._execute_sub_agent_from_xml_safe, sub_agent_xml)
+                future = subagent_executor.submit(task_ctx.run, self._execute_sub_agent_from_xml_safe, sub_agent_xml)
                 sub_agent_futures[future] = ('sub_agent', sub_agent_xml)
             
             # Combine all futures
@@ -1152,7 +1154,7 @@ IMPORTANT: When using batch processing:
         
         # Execute batch processing in parallel
         results = []
-        with ThreadPoolExecutor() as executor:
+        with ThreadPoolExecutor(max_workers=self.max_running_subagents) as executor:
             # Submit all batch items for parallel execution
             futures = {}
             for line_num, data in batch_data:
@@ -1343,6 +1345,7 @@ def create_agent(
     system_prompt_type: str = "string",
     llm_config: Optional[Union[LLMConfig, Dict[str, Any]]] = None,
     max_context: int = 100000,
+    max_running_subagents: int = 5,
     error_handler: Optional[Callable] = None,
     retry_attempts: int = 3,
     timeout: int = 300,
@@ -1367,6 +1370,7 @@ def create_agent(
         system_prompt_type=system_prompt_type,
         llm_config=llm_config,
         max_context=max_context,
+        max_running_subagents=max_running_subagents,
         error_handler=error_handler,
         retry_attempts=retry_attempts,
         timeout=timeout,
