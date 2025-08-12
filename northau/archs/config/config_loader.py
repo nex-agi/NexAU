@@ -49,6 +49,7 @@ def load_agent_config(
         # Extract agent configuration
         agent_name = config.get('name', 'configured_agent')
         max_context = config.get('max_context', 100000)
+        max_running_subagents = config.get('max_running_subagents', 5)
         system_prompt = config.get('system_prompt')
         system_prompt_type = config.get('system_prompt_type', 'string')
         
@@ -105,7 +106,8 @@ def load_agent_config(
             system_prompt=system_prompt,
             system_prompt_type=system_prompt_type,
             llm_config=llm_config,
-            max_context=max_context
+            max_context=max_context,
+            max_running_subagents=max_running_subagents
         )
         
         # Apply template context if provided and using Jinja templates
@@ -282,6 +284,7 @@ def create_default_config(output_path: str, agent_name: str = "default_agent") -
     default_config = {
         'name': agent_name,
         'max_context': 100000,
+        'max_running_subagents': 5,
         'system_prompt': f'You are an AI agent named {agent_name}. Help users accomplish their tasks efficiently.',
         'system_prompt_type': 'string',
         'llm_config': {
