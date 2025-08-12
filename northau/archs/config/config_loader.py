@@ -164,16 +164,16 @@ def load_tool_from_config(tool_config: Dict[str, Any], base_path: Path) -> Tool:
 def load_sub_agent_from_config(
     sub_config: Dict[str, Any], 
     base_path: Path
-) -> tuple[str, Any]:
+) -> tuple[str, callable]:
     """
-    Load a sub-agent from configuration.
+    Load a sub-agent factory from configuration.
     
     Args:
         sub_config: Sub-agent configuration dictionary
         base_path: Base path for resolving relative paths
     
     Returns:
-        Tuple of (agent_name, agent_instance)
+        Tuple of (agent_name, agent_factory)
     """
     name = sub_config.get('name')
     if not name:
@@ -187,10 +187,11 @@ def load_sub_agent_from_config(
     if not Path(config_path).is_absolute():
         config_path = base_path / config_path
     
-    # Load sub-agent
-    sub_agent = load_agent_config(str(config_path))
+    # Create factory function that loads agent when called
+    def agent_factory():
+        return load_agent_config(str(config_path))
     
-    return (name, sub_agent)
+    return (name, agent_factory)
 
 
 def import_from_string(import_string: str) -> Any:

@@ -166,13 +166,13 @@ class PromptHandler:
             ]
         
         # Add sub-agent information
-        if hasattr(agent, 'sub_agents') and agent.sub_agents:
+        if hasattr(agent, 'sub_agent_factories') and agent.sub_agent_factories:
             context["sub_agents"] = [
                 {
                     "name": name,
-                    "description": getattr(sub_agent, 'description', name)
+                    "description": f"Specialized agent for {name}-related tasks"
                 }
-                for name, sub_agent in agent.sub_agents.items()
+                for name in agent.sub_agent_factories.keys()
             ]
         
         return context

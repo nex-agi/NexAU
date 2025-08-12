@@ -31,7 +31,7 @@ class Agent:
         self,
         name: Optional[str] = None,
         tools: Optional[List] = None,
-        sub_agents: Optional[List[Tuple[str, 'Agent']]] = None,
+        sub_agents: Optional[List[Tuple[str, Callable[[], 'Agent']]]] = None,
         system_prompt: Optional[str] = None,
         system_prompt_type: str = "string",
         llm_config: Optional[Union[LLMConfig, Dict[str, Any]]] = None,
@@ -49,7 +49,7 @@ class Agent:
         """Initialize an agent with specified configuration."""
         self.name = name or f"agent_{id(self)}"
         self.tools = tools or []
-        self.sub_agents = dict(sub_agents or [])
+        self.sub_agent_factories = dict(sub_agents or [])
         self.system_prompt = system_prompt
         self.system_prompt_type = system_prompt_type
         self.max_context = max_context
@@ -184,9 +184,9 @@ class Agent:
         self.tools.append(tool)
         self.tool_registry[tool.name] = tool
     
-    def add_sub_agent(self, name: str, agent: 'Agent') -> None:
-        """Add a sub-agent for delegation."""
-        self.sub_agents[name] = agent
+    def add_sub_agent(self, name: str, agent_factory: Callable[[], 'Agent']) -> None:
+        """Add a sub-agent factory for delegation."""
+        self.sub_agent_factories[name] = agent_factory
     
     def delegate_task(
         self,
@@ -316,12 +316,14 @@ class Agent:
         
         logger.info(f"🤖➡️🤖 Agent '{self.name}' calling sub-agent '{sub_agent_name}' with message: {message}")
         
-        if sub_agent_name not in self.sub_agents:
+        if sub_agent_name not in self.sub_agent_factories:
             error_msg = f"Sub-agent '{sub_agent_name}' not found"
             logger.error(f"❌ {error_msg}")
             raise ValueError(error_msg)
         
-        sub_agent = self.sub_agents[sub_agent_name]
+        # Instantiate a fresh sub-agent from the factory
+        sub_agent_factory = self.sub_agent_factories[sub_agent_name]
+        sub_agent = sub_agent_factory()
         try:
             # Pass current agent context state and config to sub-agent
             current_context = get_context()
@@ -555,12 +557,12 @@ Usage:
             base_prompt += "\n".join(tool_docs)
         
         # Add sub-agent documentation
-        if self.sub_agents:
+        if self.sub_agent_factories:
             sub_agent_docs = []
             sub_agent_docs.append("\n## Available Sub-Agents")
             sub_agent_docs.append("You can delegate tasks to specialized sub-agents:")
             
-            for name, sub_agent in self.sub_agents.items():
+            for name in self.sub_agent_factories.keys():
                 sub_agent_docs.append(f"\n### {name}")
                 sub_agent_docs.append(f"Specialized agent for {name}-related tasks")
                 sub_agent_docs.append("Usage:")
@@ -648,14 +650,50 @@ Usage:
             tool_name, result = self._execute_tool_from_xml(xml_content)
             return tool_name, result, False
         except Exception as e:
-            # Extract tool name for error reporting
-            try:
-                root = ET.fromstring(f"<root>{xml_content}</root>")
-                tool_name_elem = root.find('tool_name')
-                tool_name = (tool_name_elem.text or "").strip() if tool_name_elem is not None else "unknown"
-            except:
-                tool_name = "unknown"
+            # Extract tool name for error reporting using more robust parsing
+            tool_name = self._extract_tool_name_from_xml(xml_content)
             return tool_name, str(e), True
+    
+    def _extract_tool_name_from_xml(self, xml_content: str) -> str:
+        """Extract tool name from potentially malformed XML using multiple strategies."""
+        # Strategy 1: Try simple regex extraction
+        import re
+        tool_name_match = re.search(r'<tool_name>\s*([^<]+)\s*</tool_name>', xml_content, re.IGNORECASE | re.DOTALL)
+        if tool_name_match:
+            return tool_name_match.group(1).strip()
+        
+        # Strategy 2: Try parsing as valid XML
+        try:
+            root = ET.fromstring(f"<root>{xml_content}</root>")
+            tool_name_elem = root.find('tool_name')
+            if tool_name_elem is not None and tool_name_elem.text:
+                return tool_name_elem.text.strip()
+        except ET.ParseError:
+            pass
+        
+        # Strategy 3: Try cleaning up common XML issues
+        try:
+            # Remove potential unclosed tags and extra content
+            cleaned_xml = xml_content.strip()
+            
+            # Try to fix unclosed tags by finding the pattern and closing them
+            lines = cleaned_xml.split('\n')
+            for i, line in enumerate(lines):
+                # Check if this line has an opening tag but no closing tag
+                tag_match = re.search(r'<(\w+)>[^<]*$', line.strip())
+                if tag_match:
+                    tag_name = tag_match.group(1)
+                    lines[i] = line.rstrip() + f'</{tag_name}>'
+            
+            cleaned_xml = '\n'.join(lines)
+            root = ET.fromstring(f"<root>{cleaned_xml}</root>")
+            tool_name_elem = root.find('tool_name')
+            if tool_name_elem is not None and tool_name_elem.text:
+                return tool_name_elem.text.strip()
+        except (ET.ParseError, AttributeError):
+            pass
+        
+        return "unknown"
     
     def _execute_sub_agent_from_xml_safe(self, xml_content: str) -> Tuple[str, str, bool]:
         """Safe wrapper for _execute_sub_agent_from_xml that handles exceptions. Returns (agent_name, result, is_error)."""
@@ -663,58 +701,158 @@ Usage:
             agent_name, result = self._execute_sub_agent_from_xml(xml_content)
             return agent_name, result, False
         except Exception as e:
-            # Extract agent name for error reporting
-            try:
-                root = ET.fromstring(f"<root>{xml_content}</root>")
-                agent_name_elem = root.find('agent_name')
-                agent_name = (agent_name_elem.text or "").strip() if agent_name_elem is not None else "unknown"
-            except:
-                agent_name = "unknown"
+            # Extract agent name for error reporting using more robust parsing
+            agent_name = self._extract_agent_name_from_xml(xml_content)
             return agent_name, str(e), True
+    
+    def _extract_agent_name_from_xml(self, xml_content: str) -> str:
+        """Extract agent name from potentially malformed XML using multiple strategies."""
+        # Strategy 1: Try simple regex extraction
+        import re
+        agent_name_match = re.search(r'<agent_name>\s*([^<]+)\s*</agent_name>', xml_content, re.IGNORECASE | re.DOTALL)
+        if agent_name_match:
+            return agent_name_match.group(1).strip()
+        
+        # Strategy 2: Try parsing as valid XML
+        try:
+            root = ET.fromstring(f"<root>{xml_content}</root>")
+            agent_name_elem = root.find('agent_name')
+            if agent_name_elem is not None and agent_name_elem.text:
+                return agent_name_elem.text.strip()
+        except ET.ParseError:
+            pass
+        
+        # Strategy 3: Try cleaning up common XML issues
+        try:
+            # Remove potential unclosed tags and extra content
+            cleaned_xml = xml_content.strip()
+            
+            # Try to fix unclosed tags by finding the pattern and closing them
+            lines = cleaned_xml.split('\n')
+            for i, line in enumerate(lines):
+                # Check if this line has an opening tag but no closing tag
+                tag_match = re.search(r'<(\w+)>[^<]*$', line.strip())
+                if tag_match:
+                    tag_name = tag_match.group(1)
+                    lines[i] = line.rstrip() + f'</{tag_name}>'
+            
+            cleaned_xml = '\n'.join(lines)
+            root = ET.fromstring(f"<root>{cleaned_xml}</root>")
+            agent_name_elem = root.find('agent_name')
+            if agent_name_elem is not None and agent_name_elem.text:
+                return agent_name_elem.text.strip()
+        except (ET.ParseError, AttributeError):
+            pass
+        
+        return "unknown"
+    
+    def _parse_xml_content_robust(self, xml_content: str):
+        """Parse XML content using multiple strategies to handle malformed XML."""
+        import re
+        import html
+        
+        # Strategy 1: Try as-is
+        try:
+            return ET.fromstring(f"<root>{xml_content}</root>")
+        except ET.ParseError as e:
+            logger.warning(f"Initial XML parsing failed: {e}. Attempting recovery strategies...")
+        
+        # Strategy 2: Clean up common issues (unclosed tags, extra whitespace)
+        try:
+            cleaned_xml = xml_content.strip()
+            
+            # Fix potential unclosed tags by ensuring proper closing
+            lines = cleaned_xml.split('\n')
+            corrected_lines = []
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                # Check for unclosed tags (opening tag without closing)
+                tag_matches = re.findall(r'<(\w+)(?:\s+[^>]*)?>([^<]*?)(?:</\1>|$)', line)
+                if tag_matches:
+                    # Line has proper tag structure
+                    corrected_lines.append(line)
+                else:
+                    # Check if line has opening tag but no closing tag
+                    opening_match = re.match(r'<(\w+)(?:\s+[^>]*)?>\s*([^<]*)\s*$', line)
+                    if opening_match:
+                        tag_name = opening_match.group(1)
+                        content = opening_match.group(2)
+                        corrected_lines.append(f"<{tag_name}>{content}</{tag_name}>")
+                    else:
+                        corrected_lines.append(line)
+            
+            cleaned_xml = '\n'.join(corrected_lines)
+            return ET.fromstring(f"<root>{cleaned_xml}</root>")
+            
+        except ET.ParseError:
+            pass
+        
+        # Strategy 3: Escape HTML/XML content in parameter values
+        try:
+            def escape_param_content(match):
+                param_name = match.group(1)
+                param_content = match.group(2)
+                
+                # Escape HTML/XML content if it contains < >
+                if '<' in param_content and '>' in param_content:
+                    escaped_content = html.escape(param_content)
+                    return f"<{param_name}>{escaped_content}</{param_name}>"
+                return match.group(0)
+            
+            # Find and escape parameter content within parameters block
+            escaped_xml = xml_content
+            params_match = re.search(r'<parameters>(.*?)</parameters>', xml_content, re.DOTALL)
+            if params_match:
+                params_content = params_match.group(1)
+                # Pattern to match individual parameter tags
+                param_pattern = r'<(\w+)>(.*?)</\1>'
+                escaped_params = re.sub(param_pattern, escape_param_content, params_content, flags=re.DOTALL)
+                escaped_xml = xml_content.replace(params_match.group(1), escaped_params)
+            
+            return ET.fromstring(f"<root>{escaped_xml}</root>")
+            
+        except ET.ParseError:
+            pass
+        
+        # Strategy 4: Fallback - escape all content and selectively unescape XML tags
+        try:
+            escaped_content = html.escape(xml_content, quote=False)
+            # Unescape the XML tags we need
+            escaped_content = escaped_content.replace("&lt;", "<").replace("&gt;", ">")
+            return ET.fromstring(f"<root>{escaped_content}</root>")
+        except ET.ParseError:
+            pass
+        
+        # Strategy 5: Extract content using regex and build minimal XML
+        try:
+            tool_name_match = re.search(r'<tool_name>\s*([^<]+)\s*</tool_name>', xml_content, re.IGNORECASE | re.DOTALL)
+            tool_name = tool_name_match.group(1).strip() if tool_name_match else "unknown"
+            
+            # Build minimal XML structure
+            minimal_xml = f"<tool_name>{tool_name}</tool_name>"
+            
+            # Try to extract parameters
+            params_match = re.search(r'<parameters>(.*?)</parameters>', xml_content, re.DOTALL | re.IGNORECASE)
+            if params_match:
+                params_content = params_match.group(1).strip()
+                minimal_xml += f"<parameters>{params_content}</parameters>"
+            
+            return ET.fromstring(f"<root>{minimal_xml}</root>")
+        except (ET.ParseError, AttributeError):
+            pass
+        
+        # Final fallback: raise with detailed error
+        raise ValueError(f"Unable to parse XML content after multiple strategies. Content preview: {xml_content[:200]}...")
     
     def _execute_tool_from_xml(self, xml_content: str) -> Tuple[str, str]:
         """Execute a tool from XML content. Returns (tool_name, result)."""
         try:
-            # Parse XML - first try as-is, then try with HTML entity escaping
-            try:
-                root = ET.fromstring(f"<root>{xml_content}</root>")
-            except ET.ParseError as e:
-                logger.warning(f"Initial XML parsing failed: {e}. Attempting with HTML escaping...")
-                
-                # Try escaping HTML/XML content in parameter values
-                try:
-                    import re
-                    import html
-                    
-                    def escape_param_content(match):
-                        param_name = match.group(1)
-                        param_content = match.group(2)
-                        
-                        # Escape HTML/XML content if it contains < >
-                        if '<' in param_content and '>' in param_content:
-                            escaped_content = html.escape(param_content)
-                            return f"<{param_name}>{escaped_content}</{param_name}>"
-                        return match.group(0)
-                    
-                    # Find and escape parameter content within parameters block
-                    escaped_xml = xml_content
-                    params_match = re.search(r'<parameters>(.*?)</parameters>', xml_content, re.DOTALL)
-                    if params_match:
-                        params_content = params_match.group(1)
-                        # Pattern to match individual parameter tags
-                        param_pattern = r'<(\w+)>(.*?)</\1>'
-                        escaped_params = re.sub(param_pattern, escape_param_content, params_content, flags=re.DOTALL)
-                        escaped_xml = xml_content.replace(params_match.group(1), escaped_params)
-                    
-                    root = ET.fromstring(f"<root>{escaped_xml}</root>")
-                    
-                except ET.ParseError:
-                    # Fallback: Try escaping common problematic characters
-                    import html
-                    escaped_content = html.escape(xml_content, quote=False)
-                    # Unescape the XML tags we need
-                    escaped_content = escaped_content.replace("&lt;", "<").replace("&gt;", ">")
-                    root = ET.fromstring(f"<root>{escaped_content}</root>")
+            # Parse XML - use improved multi-strategy approach
+            root = self._parse_xml_content_robust(xml_content)
             
             # Get tool name
             tool_name_elem = root.find('tool_name')
@@ -804,8 +942,8 @@ Usage:
     def _execute_sub_agent_from_xml(self, xml_content: str) -> Tuple[str, str]:
         """Execute a sub-agent call from XML content. Returns (agent_name, result)."""
         try:
-            # Parse XML
-            root = ET.fromstring(f"<root>{xml_content}</root>")
+            # Parse XML using robust parsing
+            root = self._parse_xml_content_robust(xml_content)
             
             # Get agent name
             agent_name_elem = root.find('agent_name')
@@ -881,7 +1019,7 @@ You have access to the following tools:
 {chr(10).join(f"- {tool.name}: {getattr(tool, 'description', 'No description')}" for tool in self.tools)}
 
 You can delegate tasks to the following sub-agents:
-{chr(10).join(f"- {name}: Specialized agent for {name}-related tasks" for name in self.sub_agents.keys())}
+{chr(10).join(f"- {name}: Specialized agent for {name}-related tasks" for name in self.sub_agent_factories.keys())}
 
 Your goal is to help users accomplish their tasks efficiently by:
 1. Understanding the user's request
@@ -893,7 +1031,7 @@ Your goal is to help users accomplish their tasks efficiently by:
 def create_agent(
     name: Optional[str] = None,
     tools: Optional[List] = None,
-    sub_agents: Optional[List[Tuple[str, Agent]]] = None,
+    sub_agents: Optional[List[Tuple[str, Callable[[], Agent]]]] = None,
     system_prompt: Optional[str] = None,
     system_prompt_type: str = "string",
     llm_config: Optional[Union[LLMConfig, Dict[str, Any]]] = None,
@@ -910,15 +1048,9 @@ def create_agent(
 ) -> Agent:
     """Create a new agent with specified configuration."""
     # Handle llm_config creation with backward compatibility
-    if llm_config is None and (model is not None or model_base_url is not None or llm_kwargs):
-        # Create LLMConfig from deprecated parameters and kwargs
-        llm_params = {}
-        if model is not None:
-            llm_params['model'] = model
-        if model_base_url is not None:
-            llm_params['base_url'] = model_base_url
-        llm_params.update(llm_kwargs)
-        llm_config = LLMConfig(**llm_params)
+    if llm_config is None and llm_kwargs:
+        # Create LLMConfig from kwargs
+        llm_config = LLMConfig(**llm_kwargs)
     
     return Agent(
         name=name,
