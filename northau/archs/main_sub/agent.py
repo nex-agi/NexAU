@@ -893,26 +893,30 @@ IMPORTANT: When using batch processing:
         except ET.ParseError:
             pass
         
-        # Strategy 3: Escape HTML/XML content in parameter values
+        # Strategy 3: Handle JSON content within XML parameters
         try:
-            def escape_param_content(match):
+            def handle_json_param_content(match):
                 param_name = match.group(1)
-                param_content = match.group(2)
+                param_content = match.group(2).strip()
                 
-                # Escape HTML/XML content if it contains < >
-                if '<' in param_content and '>' in param_content:
+                # Check if content looks like JSON
+                if param_content.startswith(('{', '[')):
+                    # Wrap JSON content in CDATA to preserve it
+                    return f"<{param_name}><![CDATA[{param_content}]]></{param_name}>"
+                elif '<' in param_content and '>' in param_content:
+                    # Escape HTML/XML content if it contains < >
                     escaped_content = html.escape(param_content)
                     return f"<{param_name}>{escaped_content}</{param_name}>"
                 return match.group(0)
             
-            # Find and escape parameter content within parameters block
+            # Find and handle parameter content within parameters block
             escaped_xml = xml_content
             params_match = re.search(r'<parameter>(.*?)</parameter>', xml_content, re.DOTALL)
             if params_match:
                 params_content = params_match.group(1)
-                # Pattern to match individual parameter tags
+                # Pattern to match individual parameter tags with their content
                 param_pattern = r'<(\w+)>(.*?)</\1>'
-                escaped_params = re.sub(param_pattern, escape_param_content, params_content, flags=re.DOTALL)
+                escaped_params = re.sub(param_pattern, handle_json_param_content, params_content, flags=re.DOTALL)
                 escaped_xml = xml_content.replace(params_match.group(1), escaped_params)
             
             return ET.fromstring(f"<root>{escaped_xml}</root>")
@@ -970,18 +974,34 @@ IMPORTANT: When using batch processing:
                 for param in params_elem:
                     param_name = param.tag
                     
-                    # Handle both regular text and CDATA content
-                    if param.text is not None:
-                        param_value = param.text
+                    # Check if parameter has child elements (nested XML structure)
+                    if len(param) > 0:
+                        # Parameter has child elements - parse as nested XML into dictionary
+                        param_value = self._parse_nested_xml_to_dict(param)
                     else:
-                        # Handle case where content is in CDATA or mixed content
-                        param_value = ''.join(param.itertext()) or ""
+                        # Handle both regular text and CDATA content, preserving whitespace for JSON
+                        if param.text is not None:
+                            param_value = param.text
+                            # If there's tail text, include it
+                            if param.tail:
+                                param_value = ''.join(param.itertext())
+                        else:
+                            # Handle case where content is in CDATA or mixed content
+                            param_value = ''.join(param.itertext()) or ""
+                        
+                        # Unescape HTML entities in parameter values
+                        import html
+                        param_value = html.unescape(param_value)
+                        
+                        # Don't strip whitespace for JSON parameters as it might be significant
+                        if param_value.strip().startswith(('{', '[')):
+                            # Likely JSON, preserve formatting but clean up excessive whitespace
+                            param_value = param_value.strip()
+                        else:
+                            param_value = param_value.strip()
                     
-                    # Unescape HTML entities in parameter values
-                    import html
-                    param_value = html.unescape(param_value)
                     parameters[param_name] = self._convert_parameter_type(
-                        tool_name, param_name, param_value.strip()
+                        tool_name, param_name, param_value
                     )
             
             # Execute tool
@@ -991,8 +1011,74 @@ IMPORTANT: When using batch processing:
         except ET.ParseError as e:
             raise ValueError(f"Invalid XML format: {e}")
     
-    def _convert_parameter_type(self, tool_name: str, param_name: str, param_value: str):
+    def _parse_nested_xml_to_dict(self, element) -> Dict[str, Any]:
+        """Parse nested XML element into a dictionary."""
+        result = {}
+        
+        for child in element:
+            child_name = child.tag
+            
+            # Check if child has its own children (nested structure)
+            if len(child) > 0:
+                # Recursively parse nested elements
+                result[child_name] = self._parse_nested_xml_to_dict(child)
+            else:
+                # Get text content
+                if child.text is not None:
+                    child_value = child.text.strip()
+                else:
+                    child_value = ''.join(child.itertext()).strip()
+                
+                # Try to convert to appropriate Python type
+                result[child_name] = self._convert_xml_value_to_python_type(child_value)
+        
+        return result
+    
+    def _convert_xml_value_to_python_type(self, value: str):
+        """Convert XML string value to appropriate Python type."""
+        if not value:
+            return ""
+        
+        # Try boolean conversion first
+        if value.lower() in ('true', 'false'):
+            return value.lower() == 'true'
+        
+        # Try integer conversion
+        try:
+            return int(value)
+        except ValueError:
+            pass
+        
+        # Try float conversion
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        
+        # Try JSON parsing (for arrays or objects)
+        if value.startswith(('{', '[')):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                pass
+        
+        # Return as string if no other type matches
+        return value
+    
+    def _convert_parameter_type(self, tool_name: str, param_name: str, param_value):
         """Convert parameter value to the correct type based on tool schema."""
+        # If param_value is already a dict (from nested XML parsing), return it as-is for object types
+        if isinstance(param_value, dict):
+            return param_value
+        
+        # If param_value is already a list, return it as-is for array types
+        if isinstance(param_value, list):
+            return param_value
+        
+        # If param_value is not a string, return as-is (already converted)
+        if not isinstance(param_value, str):
+            return param_value
+        
         if tool_name not in self.tool_registry:
             return param_value  # Return as string if tool not found
         
@@ -1008,6 +1094,8 @@ IMPORTANT: When using batch processing:
         
         try:
             if param_type == 'boolean':
+                if isinstance(param_value, bool):
+                    return param_value
                 return param_value.lower() in ('true', '1', 'yes', 'on')
             elif param_type == 'integer':
                 return int(param_value)
@@ -1017,14 +1105,21 @@ IMPORTANT: When using batch processing:
                 # Try to parse as JSON array, fallback to comma-separated
                 try:
                     return json.loads(param_value)
-                except:
+                except json.JSONDecodeError as json_err:
+                    logger.debug(f"JSON parsing failed for array parameter '{param_name}': {json_err}. Trying comma-separated fallback.")
                     return [item.strip() for item in param_value.split(',')]
             elif param_type == 'object':
-                return json.loads(param_value)
+                try:
+                    return json.loads(param_value)
+                except json.JSONDecodeError as json_err:
+                    logger.error(f"Failed to parse JSON object for parameter '{param_name}': {json_err}")
+                    logger.error(f"Parameter value was: {repr(param_value)}")
+                    raise ValueError(f"Invalid JSON for parameter '{param_name}': {json_err}")
             else:  # string or unknown type
                 return param_value
         except (ValueError, json.JSONDecodeError) as e:
             logger.warning(f"Failed to convert parameter '{param_name}' of type '{param_type}': {e}")
+            logger.warning(f"Parameter value was: {repr(param_value)}")
             return param_value  # Fallback to string value
     
     def _restore_xml_closing_tags(self, response: str) -> str:
