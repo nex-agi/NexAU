@@ -48,10 +48,39 @@ def load_agent_config(
         
         # Extract agent configuration
         agent_name = config.get('name', 'configured_agent')
-        max_context = config.get('max_context', 100000)
+        max_context = config.get('max_context', 100000)  # Backward compatibility
+        max_context_tokens = config.get('max_context_tokens', 128000)
         max_running_subagents = config.get('max_running_subagents', 5)
         system_prompt = config.get('system_prompt')
         system_prompt_type = config.get('system_prompt_type', 'string')
+        
+        # Handle token counter configuration
+        token_counter = None
+        if 'token_counter' in config:
+            token_counter_config = config['token_counter']
+            if isinstance(token_counter_config, str):
+                # Import string format: "module.path:function_name"
+                token_counter = import_from_string(token_counter_config)
+            elif isinstance(token_counter_config, dict):
+                # Dictionary format with import and optional parameters
+                import_string = token_counter_config.get('import')
+                if not import_string:
+                    raise ConfigError("Token counter configuration missing 'import' field")
+                
+                # Import the function/class
+                token_counter_func = import_from_string(import_string)
+                
+                # Check if there are parameters to pass
+                params = token_counter_config.get('params', {})
+                if params:
+                    # Create a wrapper function with the parameters
+                    def configured_token_counter(messages):
+                        return token_counter_func(messages, **params)
+                    token_counter = configured_token_counter
+                else:
+                    token_counter = token_counter_func
+            else:
+                raise ConfigError("Token counter configuration must be a string or dictionary")
         
         # Handle LLM configuration
         llm_config = None
@@ -106,8 +135,9 @@ def load_agent_config(
             system_prompt=system_prompt,
             system_prompt_type=system_prompt_type,
             llm_config=llm_config,
-            max_context=max_context,
-            max_running_subagents=max_running_subagents
+            max_context_tokens=max_context_tokens,
+            max_running_subagents=max_running_subagents,
+            token_counter=token_counter,
         )
         
         # Apply template context if provided and using Jinja templates
@@ -283,7 +313,7 @@ def create_default_config(output_path: str, agent_name: str = "default_agent") -
     """
     default_config = {
         'name': agent_name,
-        'max_context': 100000,
+        'max_context_tokens': 128000,
         'max_running_subagents': 5,
         'system_prompt': f'You are an AI agent named {agent_name}. Help users accomplish their tasks efficiently.',
         'system_prompt_type': 'string',
@@ -293,6 +323,13 @@ def create_default_config(output_path: str, agent_name: str = "default_agent") -
             'temperature': 0.7,
             'max_tokens': 4096
         },
+        # Optional: Custom token counter
+        # 'token_counter': {
+        #     'import': 'my_module:custom_token_counter',
+        #     'params': {
+        #         'model_name': 'gpt-4'
+        #     }
+        # },
         'tools': [
             {
                 'name': 'bash',

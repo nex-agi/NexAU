@@ -19,7 +19,8 @@ dependencies = [
     "streamlit>=1.48.0",
     "plotly>=6.2.0",
     "pandas>=2.3.1",
-    "langfuse>=3.2.3"
+    "langfuse>=3.2.3",
+    "tiktoken>=0.5.0"
 ]
 
 [build-system]
