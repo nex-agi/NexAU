@@ -6,14 +6,38 @@ import re
 import xml.etree.ElementTree as ET
 import logging
 import os
+import signal
+import atexit
+import threading
+import weakref
+import uuid
 from datetime import datetime
 from contextvars import copy_context
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    TIKTOKEN_AVAILABLE = False
+    tiktoken = None
 from .prompt_handler import PromptHandler
 from ..llm import LLMConfig
 from .agent_context import AgentContext
-from langfuse import get_client
-from langfuse.openai import openai
+try:
+    from langfuse.client import Langfuse
+    try:
+        from langfuse.openai import openai
+    except ImportError:
+        import openai
+    LANGFUSE_AVAILABLE = True
+except ImportError:
+    LANGFUSE_AVAILABLE = False
+    Langfuse = None
+    try:
+        import openai
+    except ImportError:
+        openai = None
 
 # Setup logger for agent execution
 logger = logging.getLogger(__name__)
@@ -23,6 +47,54 @@ if not logger.handlers:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+
+
+# Global registry to track all active agents for cleanup
+_active_agents = weakref.WeakSet()
+_cleanup_registered = False
+_cleanup_lock = threading.Lock()
+
+
+def _cleanup_all_agents():
+    """Clean up all active agents and their running sub-agents."""
+    logger.info("🧹 Cleaning up all active agents and sub-agents...")
+    agents_to_cleanup = list(_active_agents)
+    
+    for agent in agents_to_cleanup:
+        try:
+            if hasattr(agent, '_cleanup_agent'):
+                agent._cleanup_agent()
+        except Exception as e:
+            logger.error(f"❌ Error cleaning up agent {getattr(agent, 'name', 'unknown')}: {e}")
+    
+    logger.info("✅ Agent cleanup completed")
+
+
+def _signal_handler(signum, frame):
+    """Handle termination signals by cleaning up agents."""
+    logger.info(f"🚨 Received signal {signum}, initiating cleanup...")
+    _cleanup_all_agents()
+    # Re-raise the signal with default handler to ensure proper termination
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+def _register_cleanup_handlers():
+    """Register cleanup handlers for process termination."""
+    global _cleanup_registered
+    with _cleanup_lock:
+        if _cleanup_registered:
+            return
+        
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGTERM, _signal_handler)
+        signal.signal(signal.SIGINT, _signal_handler)
+        
+        # Register atexit handler as fallback
+        atexit.register(_cleanup_all_agents)
+        
+        _cleanup_registered = True
+        logger.debug("🔧 Cleanup handlers registered")
 
 
 class Agent:
@@ -37,11 +109,13 @@ class Agent:
         system_prompt_type: str = "string",
         llm_config: Optional[Union[LLMConfig, Dict[str, Any]]] = None,
         max_iterations: int = 100,
-        max_context: int = 100000,
+        max_context_tokens: int = 128000,
         max_running_subagents: int = 5,
         error_handler: Optional[Callable] = None,
         retry_attempts: int = 3,
         timeout: int = 300,
+        # Token counting parameters
+        token_counter: Optional[Callable[[List[Dict[str, str]]], int]] = None,
         # Context parameters
         initial_state: Optional[Dict[str, Any]] = None,
         initial_config: Optional[Dict[str, Any]] = None,
@@ -54,12 +128,15 @@ class Agent:
         self.sub_agent_factories = dict(sub_agents or [])
         self.system_prompt = system_prompt
         self.system_prompt_type = system_prompt_type
-        self.max_context = max_context
+        self.max_context_tokens = max_context_tokens
         self.max_iterations = max_iterations
         self.max_running_subagents = max_running_subagents
         self.error_handler = error_handler
         self.retry_attempts = retry_attempts
         self.timeout = timeout
+        
+        # Setup token counter
+        self.token_counter = token_counter or self._create_default_token_counter()
         
         # Initialize context data
         self.initial_state = initial_state or {}
@@ -85,10 +162,63 @@ class Agent:
         self.processed_system_prompt = self._process_system_prompt()
         
         # Initialize OpenAI client
-        client_kwargs = self.llm_config.to_client_kwargs()
-        self.openai_client = openai.OpenAI(**client_kwargs)
+        if openai is not None:
+            client_kwargs = self.llm_config.to_client_kwargs()
+            self.openai_client = openai.OpenAI(**client_kwargs)
+        else:
+            self.openai_client = None
         
-        self.langfuse_client = get_client()
+        if LANGFUSE_AVAILABLE:
+            self.langfuse_client = Langfuse()
+        else:
+            self.langfuse_client = None
+        
+        # Initialize process tracking for sub-agents
+        self._running_executors = {}  # Maps executor_id to ThreadPoolExecutor
+        self._executor_lock = threading.Lock()
+        self._shutdown_event = threading.Event()
+        
+        # Register this agent for cleanup and setup handlers
+        _active_agents.add(self)
+        _register_cleanup_handlers()
+    
+    def _create_default_token_counter(self) -> Callable[[List[Dict[str, str]]], int]:
+        """Create default token counter using tiktoken with gpt-4o model."""
+        if not TIKTOKEN_AVAILABLE:
+            logger.warning("tiktoken not available, using approximate token counting (chars/4)")
+            return self._fallback_message_token_counter
+        
+        try:
+            # Use gpt-4o encoding
+            encoding = tiktoken.encoding_for_model("gpt-4o")
+            
+            def tiktoken_message_counter(messages: List[Dict[str, str]]) -> int:
+                """Count tokens in messages using tiktoken."""
+                total_tokens = 0
+                for message in messages:
+                    # Add tokens for role and content
+                    total_tokens += len(encoding.encode(message.get('content', '')))
+                return total_tokens
+            
+            return tiktoken_message_counter
+        except Exception as e:
+            logger.warning(f"Failed to create tiktoken encoder: {e}, using approximate counting")
+            return self._fallback_message_token_counter
+    
+    def _fallback_message_token_counter(self, messages: List[Dict[str, str]]) -> int:
+        """Fallback token counter using character approximation."""
+        total_tokens = 0
+        for message in messages:
+            # Add tokens for role and content using chars/4 approximation
+            total_tokens += len(message.get('role', '')) // 4
+            total_tokens += len(message.get('content', '')) // 4
+            # Add overhead tokens for message formatting
+            total_tokens += 4
+        return max(total_tokens, 1)  # Ensure at least 1 token
+    
+    def _count_messages_tokens(self, messages: List[Dict[str, str]]) -> int:
+        """Count total tokens in a list of messages using configured token counter."""
+        return self.token_counter(messages)
     
     def _setup_llm_config(
         self, 
@@ -161,11 +291,14 @@ class Agent:
             
             try:
                 # Generate response using the LLM
-                with self.langfuse_client.start_as_current_span(name=self.name, input=message) as generation:
+                if self.langfuse_client:
+                    with self.langfuse_client.start_as_current_span(name=self.name, input=message) as generation:
+                        response = self._generate_response(message, context)
+                        generation.update(
+                            output=response
+                        )
+                else:
                     response = self._generate_response(message, context)
-                    generation.update(
-                        output=response
-                    )
                 
                 # Add assistant response to history
                 self.history.append({"role": "assistant", "content": response})
@@ -190,6 +323,34 @@ class Agent:
     def add_sub_agent(self, name: str, agent_factory: Callable[[], 'Agent']) -> None:
         """Add a sub-agent factory for delegation."""
         self.sub_agent_factories[name] = agent_factory
+    
+    def _cleanup_agent(self) -> None:
+        """Clean up this agent and all its running sub-agents."""
+        logger.info(f"🧹 Cleaning up agent '{self.name}' and its sub-agents...")
+        
+        # Signal shutdown to prevent new tasks
+        self._shutdown_event.set()
+        
+        # Shutdown all running executors
+        with self._executor_lock:
+            for executor_id, executor in self._running_executors.items():
+                try:
+                    logger.info(f"🛑 Shutting down executor {executor_id}")
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except Exception as e:
+                    logger.error(f"❌ Error shutting down executor {executor_id}: {e}")
+            
+            self._running_executors.clear()
+        
+        logger.info(f"✅ Agent '{self.name}' cleanup completed")
+    
+    def __del__(self):
+        """Destructor to ensure cleanup when agent is garbage collected."""
+        try:
+            if not self._shutdown_event.is_set():
+                self._cleanup_agent()
+        except Exception:
+            pass  # Avoid exceptions during garbage collection
     
     def delegate_task(
         self,
@@ -237,9 +398,32 @@ class Agent:
                 api_params = self.llm_config.to_openai_params()
                 api_params['messages'] = messages
                 
-                # Set max_tokens if not specified in config
-                if 'max_tokens' not in api_params:
-                    api_params['max_tokens'] = self.max_context // 4  # Reserve space for context
+                # Count current prompt tokens
+                current_prompt_tokens = self._count_messages_tokens(messages)
+                
+                # Check if prompt exceeds max context tokens - force stop if so
+                if current_prompt_tokens > self.max_context_tokens:
+                    logger.error(f"❌ Prompt tokens ({current_prompt_tokens}) exceed max_context_tokens ({self.max_context_tokens}). Stopping execution.")
+                    final_response += f"\n\n[Error: Prompt too long ({current_prompt_tokens} tokens) exceeds maximum context ({self.max_context_tokens} tokens). Execution stopped.]"
+                    break
+                
+                # Calculate max_tokens dynamically based on available budget
+                available_tokens = self.max_context_tokens - current_prompt_tokens
+                
+                # Get desired max_tokens from LLM config or use reasonable default
+                desired_max_tokens = api_params.get('max_tokens', 4096)
+                calculated_max_tokens = min(desired_max_tokens, available_tokens)
+                
+                # Ensure we have at least some tokens for response
+                if calculated_max_tokens < 50:
+                    logger.error(f"❌ Insufficient tokens for response ({calculated_max_tokens}). Stopping execution.")
+                    final_response += f"\n\n[Error: Insufficient tokens for response ({calculated_max_tokens} tokens). Context too full.]"
+                    break
+                
+                # Set max_tokens based on calculation
+                api_params['max_tokens'] = calculated_max_tokens
+                
+                logger.info(f"🔢 Token usage: prompt={current_prompt_tokens}, max_tokens={api_params['max_tokens']}, available={available_tokens}")
                 
                 # Add stop sequences for XML closing tags to prevent malformed XML
                 xml_stop_sequences = [
@@ -266,7 +450,7 @@ class Agent:
                         # logger.info(f"🐛 [DEBUG] Message {i}: {msg['role']} -> {msg['content'][:200]}{'...' if len(msg['content']) > 200 else ''}")
                         logger.info(f"🐛 [DEBUG] Message {i}: {msg['role']} -> {msg['content']}")
                 
-                logger.info(f"🧠 Calling LLM for agent '{self.name}'...")
+                logger.info(f"🧠 Calling LLM for agent '{self.name}' with {api_params['max_tokens']} max tokens...")
                 response = self.openai_client.chat.completions.create(**api_params)
                 assistant_response = response.choices[0].message.content
                 
@@ -341,6 +525,11 @@ class Agent:
         """Call a sub-agent like a tool call."""
         from .agent_context import get_context
         
+        # Check if agent is shutting down
+        if self._shutdown_event.is_set():
+            logger.warning(f"⚠️ Agent '{self.name}' is shutting down, cannot call sub-agent '{sub_agent_name}'")
+            raise RuntimeError(f"Agent '{self.name}' is shutting down")
+        
         logger.info(f"🤖➡️🤖 Agent '{self.name}' calling sub-agent '{sub_agent_name}' with message: {message}")
         
         if sub_agent_name not in self.sub_agent_factories:
@@ -355,15 +544,23 @@ class Agent:
             # Pass current agent context state and config to sub-agent
             current_context = get_context()
             if current_context:
-                with self.langfuse_client.start_as_current_span(name=f"Sub-agent: {sub_agent_name}", input=message) as generation:
+                if self.langfuse_client:
+                    with self.langfuse_client.start_as_current_span(name=f"Sub-agent: {sub_agent_name}", input=message) as generation:
+                        result = sub_agent.run(
+                            message, 
+                            context=context,
+                            state=current_context.state.copy(),
+                            config=current_context.config.copy()
+                        )
+                        generation.update(
+                            output=result
+                        )
+                else:
                     result = sub_agent.run(
                         message, 
                         context=context,
                         state=current_context.state.copy(),
                         config=current_context.config.copy()
-                    )
-                    generation.update(
-                        output=result
                     )
             else:
                 result = sub_agent.run(message, context=context)
@@ -384,11 +581,14 @@ class Agent:
         
         tool = self.tool_registry[tool_name]
         try:
-            with self.langfuse_client.start_as_current_generation(name=f"Tool: {tool_name}", input=parameters) as generation:
+            if self.langfuse_client:
+                with self.langfuse_client.start_as_current_generation(name=f"Tool: {tool_name}", input=parameters) as generation:
+                    result = tool.execute(**parameters)
+                    generation.update(
+                        output=result,
+                    )
+            else:
                 result = tool.execute(**parameters)
-                generation.update(
-                    output=result,
-                )
             logger.info(f"✅ Tool '{tool_name}' executed successfully")
             return result
         except Exception as e:
@@ -692,8 +892,23 @@ IMPORTANT: When using batch processing:
         if not tool_matches and not sub_agent_matches:
             return processed_response
         
+        # Check if agent is shutting down
+        if self._shutdown_event.is_set():
+            logger.warning(f"⚠️ Agent '{self.name}' is shutting down, skipping new task execution")
+            return processed_response
+        
         # Execute all calls in parallel with separate thread pools for tools and sub-agents
-        with ThreadPoolExecutor() as tool_executor, ThreadPoolExecutor(max_workers=self.max_running_subagents) as subagent_executor:
+        executor_id = str(uuid.uuid4())
+        
+        tool_executor = ThreadPoolExecutor()
+        subagent_executor = ThreadPoolExecutor(max_workers=self.max_running_subagents)
+        
+        # Track executors for cleanup
+        with self._executor_lock:
+            self._running_executors[f"{executor_id}_tools"] = tool_executor
+            self._running_executors[f"{executor_id}_subagents"] = subagent_executor
+        
+        try:
             # Submit tool execution tasks (no limit on concurrent tools)
             tool_futures = {}
             for tool_xml in tool_matches:
@@ -739,10 +954,23 @@ IMPORTANT: When using batch processing:
                     # This should not happen due to safe wrappers, but just in case
                     logger.error(f"❌ Unexpected error processing {call_type}: {e}")
                     tool_results.append(f"<tool_result>\n<tool_name>unknown</tool_name>\n<error>Unexpected error: {str(e)}</error>\n</tool_result>")
+            
+            # Append tool results to the original response
+            if tool_results:
+                processed_response += "\n\n" + "\n\n".join(tool_results)
         
-        # Append tool results to the original response
-        if tool_results:
-            processed_response += "\n\n" + "\n\n".join(tool_results)
+        finally:
+            # Clean up executors
+            with self._executor_lock:
+                try:
+                    tool_executor.shutdown(wait=True, cancel_futures=False)
+                    subagent_executor.shutdown(wait=True, cancel_futures=False)
+                except Exception as e:
+                    logger.error(f"❌ Error shutting down executors: {e}")
+                finally:
+                    # Remove from tracking
+                    self._running_executors.pop(f"{executor_id}_tools", None)
+                    self._running_executors.pop(f"{executor_id}_subagents", None)
         
         return processed_response
     
@@ -1439,19 +1667,39 @@ def create_agent(
     system_prompt: Optional[str] = None,
     system_prompt_type: str = "string",
     llm_config: Optional[Union[LLMConfig, Dict[str, Any]]] = None,
-    max_context: int = 100000,
+    max_context_tokens: int = 128000,
     max_running_subagents: int = 5,
     error_handler: Optional[Callable] = None,
     retry_attempts: int = 3,
     timeout: int = 300,
+    # Token counting parameters
+    token_counter: Optional[Callable[[List[Dict[str, str]]], int]] = None,
     # Context parameters
     initial_state: Optional[Dict[str, Any]] = None,
     initial_config: Optional[Dict[str, Any]] = None,
     # MCP parameters
     mcp_servers: Optional[List[Dict[str, Any]]] = None,
+    # Backward compatibility
+    max_context: Optional[int] = None,
+    max_response_tokens: Optional[int] = None,
     **llm_kwargs
 ) -> Agent:
     """Create a new agent with specified configuration."""
+    # Handle backward compatibility for max_context
+    if max_context is not None:
+        logger.warning("max_context is deprecated, use max_context_tokens instead")
+        max_context_tokens = max_context
+    
+    # Handle backward compatibility for max_response_tokens
+    if max_response_tokens is not None:
+        logger.warning("max_response_tokens is deprecated, use LLMConfig.max_tokens instead")
+        if llm_config is None:
+            llm_config = {}
+        if isinstance(llm_config, dict):
+            llm_config.setdefault('max_tokens', max_response_tokens)
+        elif hasattr(llm_config, 'max_tokens') and llm_config.max_tokens is None:
+            llm_config.max_tokens = max_response_tokens
+    
     # Handle llm_config creation with backward compatibility
     if llm_config is None and llm_kwargs:
         # Create LLMConfig from kwargs
@@ -1464,11 +1712,12 @@ def create_agent(
         system_prompt=system_prompt,
         system_prompt_type=system_prompt_type,
         llm_config=llm_config,
-        max_context=max_context,
+        max_context_tokens=max_context_tokens,
         max_running_subagents=max_running_subagents,
         error_handler=error_handler,
         retry_attempts=retry_attempts,
         timeout=timeout,
+        token_counter=token_counter,
         initial_state=initial_state,
         initial_config=initial_config,
         mcp_servers=mcp_servers,
