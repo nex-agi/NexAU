@@ -4,7 +4,7 @@ import yaml
 import importlib
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Union
-from ..main_sub import create_agent
+from ..main_sub import create_agent, Agent
 from ..tool import Tool
 from ..llm import LLMConfig
 
@@ -18,7 +18,7 @@ def load_agent_config(
     config_path: str,
     overrides: Optional[Dict[str, Any]] = None,
     template_context: Optional[Dict[str, Any]] = None
-) -> Any:
+) -> Agent:
     """
     Load agent configuration from YAML file.
     
