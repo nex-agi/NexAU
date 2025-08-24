@@ -186,7 +186,8 @@ class PromptHandler:
         self,
         base_template: str,
         agent,
-        additional_context: Optional[Dict[str, Any]] = None
+        additional_context: Optional[Dict[str, Any]] = None,
+        template_type: str = "string"
     ) -> str:
         """Create a dynamic prompt by combining base template with agent context."""
         context = self.get_default_context(agent)
@@ -196,8 +197,12 @@ class PromptHandler:
         
         try:
             if self._jinja_available:
-                template = self._jinja_env.from_string(base_template)
-                return template.render(**context).strip()
+                if template_type == "jinja":
+                    # base_template is a path to a jinja template file
+                    return self._process_jinja_prompt(base_template, context)
+                else:
+                    template = self._jinja_env.from_string(base_template)
+                    return template.render(**context)
             else:
                 # Fallback to simple string formatting
                 return base_template.format(**context)
