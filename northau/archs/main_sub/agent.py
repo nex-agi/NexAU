@@ -178,6 +178,13 @@ class Agent:
         self._executor_lock = threading.Lock()
         self._shutdown_event = threading.Event()
         
+        # Initialize trace storage for signal handling
+        self._current_trace_data = None
+        self._current_dump_trace_path = None
+        self._trace_lock = threading.Lock()
+        self._sub_agent_counter = 0
+        self._sub_agent_counter_lock = threading.Lock()
+        
         # Register this agent for cleanup and setup handlers
         _active_agents.add(self)
         _register_cleanup_handlers()
@@ -259,11 +266,23 @@ class Agent:
         history: Optional[List[Dict]] = None,
         context: Optional[Dict] = None,
         state: Optional[Dict[str, Any]] = None,
-        config: Optional[Dict[str, Any]] = None
+        config: Optional[Dict[str, Any]] = None,
+        dump_trace_path: Optional[str] = None
     ) -> str:
         """Run agent with a message and return response."""
         logger.info(f"🤖 Agent '{self.name}' starting execution")
         logger.info(f"📝 User message: {message}")
+        
+        # Initialize trace storage if dump_trace_path is provided
+        trace_data = []
+        should_trace = dump_trace_path is not None
+        
+        if should_trace:
+            logger.info(f"📊 Trace logging enabled, will dump to: {dump_trace_path}")
+            # Store trace data in instance variables for signal handler access
+            with self._trace_lock:
+                self._current_trace_data = trace_data
+                self._current_dump_trace_path = dump_trace_path
         
         # Merge initial state/config with provided ones
         merged_state = {**self.initial_state}
@@ -293,21 +312,47 @@ class Agent:
                 # Generate response using the LLM
                 if self.langfuse_client:
                     with self.langfuse_client.start_as_current_span(name=self.name, input=message) as generation:
-                        response = self._generate_response(message, context)
+                        response = self._generate_response(message, context, trace_data, should_trace)
                         generation.update(
                             output=response
                         )
                 else:
-                    response = self._generate_response(message, context)
+                    response = self._generate_response(message, context, trace_data, should_trace)
                 
                 # Add assistant response to history
                 self.history.append({"role": "assistant", "content": response})
                 
                 logger.info(f"✅ Agent '{self.name}' completed execution")
+                
+                # Dump trace if enabled
+                if should_trace:
+                    self._dump_trace_to_file(trace_data, dump_trace_path)
+                    # Clear trace data after successful dump
+                    with self._trace_lock:
+                        self._current_trace_data = None
+                        self._current_dump_trace_path = None
+                
                 return response
                 
             except Exception as e:
                 logger.error(f"❌ Agent '{self.name}' encountered error: {e}")
+                
+                # Dump trace even on error if enabled
+                if should_trace:
+                    # Add error to trace
+                    trace_data.append({
+                        "type": "error",
+                        "timestamp": datetime.now().isoformat(),
+                        "agent_name": self.name,
+                        "error": str(e),
+                        "error_type": type(e).__name__
+                    })
+                    self._dump_trace_to_file(trace_data, dump_trace_path)
+                    # Clear trace data after dump
+                    with self._trace_lock:
+                        self._current_trace_data = None
+                        self._current_dump_trace_path = None
+                
                 if self.error_handler:
                     error_response = self.error_handler(e, self, context)
                     self.history.append({"role": "assistant", "content": error_response})
@@ -324,9 +369,102 @@ class Agent:
         """Add a sub-agent factory for delegation."""
         self.sub_agent_factories[name] = agent_factory
     
+    def _dump_trace_to_file(self, trace_data: List[Dict[str, Any]], dump_trace_path: str) -> None:
+        """Dump trace data to a JSON file."""
+        try:
+            import json
+            import os
+            
+            # Ensure directory exists
+            trace_dir = os.path.dirname(dump_trace_path)
+            if trace_dir:  # Only create if there's a directory part
+                os.makedirs(trace_dir, exist_ok=True)
+            
+            # Prepare trace metadata
+            trace_metadata = {
+                "agent_name": self.name,
+                "dump_timestamp": datetime.now().isoformat(),
+                "total_entries": len(trace_data),
+                "entry_types": list(set(entry.get("type", "unknown") for entry in trace_data))
+            }
+            
+            # Complete trace structure
+            complete_trace = {
+                "metadata": trace_metadata,
+                "trace": trace_data
+            }
+            
+            # Write to file
+            with open(dump_trace_path, 'w', encoding='utf-8') as f:
+                json.dump(complete_trace, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"📊 Trace dumped to {dump_trace_path} with {len(trace_data)} entries")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to dump trace to {dump_trace_path}: {e}")
+            # Don't raise the exception as trace dumping should not break the main execution
+    
+    def _save_trace_on_shutdown(self) -> None:
+        """Save trace data during shutdown/signal handling."""
+        try:
+            with self._trace_lock:
+                if self._current_trace_data is not None and self._current_dump_trace_path is not None:
+                    logger.info(f"💾 Saving trace data due to shutdown signal for agent '{self.name}'")
+                    
+                    # Add shutdown entry to trace
+                    self._current_trace_data.append({
+                        "type": "shutdown",
+                        "timestamp": datetime.now().isoformat(),
+                        "agent_name": self.name,
+                        "reason": "Signal interrupt (Ctrl+C)"
+                    })
+                    
+                    # Dump trace data
+                    self._dump_trace_to_file(self._current_trace_data, self._current_dump_trace_path)
+                    
+                    # Clear trace data
+                    self._current_trace_data = None
+                    self._current_dump_trace_path = None
+                    
+                    logger.info(f"✅ Trace data saved successfully for agent '{self.name}'")
+        except Exception as e:
+            logger.error(f"❌ Failed to save trace data during shutdown for agent '{self.name}': {e}")
+    
+    def _generate_sub_agent_trace_path(self, sub_agent_name: str, main_trace_path: str) -> str:
+        """Generate trace path for sub-agent based on main agent's trace path."""
+        try:
+            import os
+            from pathlib import Path
+            
+            # Get unique sub-agent ID
+            with self._sub_agent_counter_lock:
+                self._sub_agent_counter += 1
+                sub_agent_id = self._sub_agent_counter
+            
+            # Parse main trace path
+            main_path = Path(main_trace_path)
+            main_dir = main_path.parent
+            main_stem = main_path.stem  # filename without extension
+            
+            # Create subfolder structure: xxx/yyy_sub_agents/
+            sub_agents_dir = main_dir / f"{main_stem}_sub_agents"
+            
+            # Create sub-agent trace filename: sub_agent_name+sub_agent_id.json
+            sub_agent_filename = f"{sub_agent_name}_{sub_agent_id}.json"
+            sub_agent_trace_path = sub_agents_dir / sub_agent_filename
+            
+            return str(sub_agent_trace_path)
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to generate sub-agent trace path: {e}")
+            return None
+    
     def _cleanup_agent(self) -> None:
         """Clean up this agent and all its running sub-agents."""
         logger.info(f"🧹 Cleaning up agent '{self.name}' and its sub-agents...")
+        
+        # Save trace data if available before cleanup
+        self._save_trace_on_shutdown()
         
         # Signal shutdown to prevent new tasks
         self._shutdown_event.set()
@@ -361,7 +499,7 @@ class Agent:
         """Explicitly delegate a task to a sub-agent."""
         return self.call_sub_agent(sub_agent_name, task, context)
     
-    def _generate_response(self, message: str, context: Optional[Dict] = None) -> str:
+    def _generate_response(self, message: str, context: Optional[Dict] = None, trace_data: Optional[List] = None, should_trace: bool = False) -> str:
         """Generate response using OpenAI API with XML-based tool and sub-agent calls."""
         if not self.openai_client:
             raise RuntimeError("OpenAI client is not available. Please check your API configuration.")
@@ -451,8 +589,48 @@ class Agent:
                         logger.info(f"🐛 [DEBUG] Message {i}: {msg['role']} -> {msg['content']}")
                 
                 logger.info(f"🧠 Calling LLM for agent '{self.name}' with {api_params['max_tokens']} max tokens...")
+                
+                # Log LLM request to trace if enabled
+                if should_trace and trace_data is not None:
+                    trace_entry = {
+                        "type": "llm_request",
+                        "timestamp": datetime.now().isoformat(),
+                        "agent_name": self.name,
+                        "iteration": iteration + 1,
+                        "api_params": {
+                            # Copy api_params but truncate messages for readability if too long
+                            **{k: v for k, v in api_params.items() if k != 'messages'},
+                            "messages": [
+                                {
+                                    "role": msg["role"],
+                                    "content": msg["content"][:1000] + "..." if len(msg["content"]) > 1000 else msg["content"]
+                                } for msg in api_params["messages"]
+                            ]
+                        }
+                    }
+                    trace_data.append(trace_entry)
+                
                 response = self.openai_client.chat.completions.create(**api_params)
                 assistant_response = response.choices[0].message.content
+                
+                # Log LLM response to trace if enabled
+                if should_trace and trace_data is not None:
+                    trace_entry = {
+                        "type": "llm_response",
+                        "timestamp": datetime.now().isoformat(),
+                        "agent_name": self.name,
+                        "iteration": iteration + 1,
+                        "response": {
+                            "content": assistant_response,
+                            "usage": response.usage.model_dump() if response.usage else None,
+                            "model": response.model,
+                            "finish_reason": response.choices[0].finish_reason,
+                            "prompt_tokens": response.usage.prompt_tokens if response.usage else None,
+                            "completion_tokens": response.usage.completion_tokens if response.usage else None,
+                            "total_tokens": response.usage.total_tokens if response.usage else None
+                        }
+                    }
+                    trace_data.append(trace_entry)
                 
                 # Add back XML closing tags if they were removed by stop sequences
                 assistant_response = self._restore_xml_closing_tags(assistant_response)
@@ -485,7 +663,7 @@ class Agent:
                 
                 # Process tool calls and sub-agent calls
                 logger.info(f"⚙️ Processing tool/sub-agent calls for agent '{self.name}'...")
-                processed_response = self._process_xml_calls(assistant_response)
+                processed_response = self._process_xml_calls(assistant_response, trace_data, should_trace)
                 
                 # Extract just the tool results from processed_response
                 tool_results = processed_response.replace(assistant_response, "").strip()
@@ -541,6 +719,12 @@ class Agent:
         sub_agent_factory = self.sub_agent_factories[sub_agent_name]
         sub_agent = sub_agent_factory()
         try:
+            # Generate sub-agent trace path if main agent has tracing enabled
+            sub_agent_trace_path = None
+            with self._trace_lock:
+                if self._current_dump_trace_path is not None:
+                    sub_agent_trace_path = self._generate_sub_agent_trace_path(sub_agent_name, self._current_dump_trace_path)
+            
             # Pass current agent context state and config to sub-agent
             current_context = get_context()
             if current_context:
@@ -550,7 +734,8 @@ class Agent:
                             message, 
                             context=context,
                             state=current_context.state.copy(),
-                            config=current_context.config.copy()
+                            config=current_context.config.copy(),
+                            dump_trace_path=sub_agent_trace_path
                         )
                         generation.update(
                             output=result
@@ -560,10 +745,11 @@ class Agent:
                         message, 
                         context=context,
                         state=current_context.state.copy(),
-                        config=current_context.config.copy()
+                        config=current_context.config.copy(),
+                        dump_trace_path=sub_agent_trace_path
                     )
             else:
-                result = sub_agent.run(message, context=context)
+                result = sub_agent.run(message, context=context, dump_trace_path=sub_agent_trace_path)
             logger.info(f"✅ Sub-agent '{sub_agent_name}' returned result to agent '{self.name}'")
             return result
         except Exception as e:
@@ -845,7 +1031,7 @@ IMPORTANT: When using batch processing:
         
         return base_prompt
     
-    def _process_xml_calls(self, response: str) -> str:
+    def _process_xml_calls(self, response: str, trace_data: Optional[List] = None, should_trace: bool = False) -> str:
         """Process XML tool calls and sub-agent calls in the response in parallel."""
         processed_response = response
         
@@ -914,7 +1100,7 @@ IMPORTANT: When using batch processing:
             for tool_xml in tool_matches:
                 # Propagate current tracing context into the worker thread
                 task_ctx = copy_context()
-                future = tool_executor.submit(task_ctx.run, self._execute_tool_from_xml_safe, tool_xml)
+                future = tool_executor.submit(task_ctx.run, self._execute_tool_from_xml_safe, tool_xml, trace_data, should_trace)
                 tool_futures[future] = ('tool', tool_xml)
             
             # Submit sub-agent execution tasks (limited by max_running_subagents)
@@ -922,7 +1108,7 @@ IMPORTANT: When using batch processing:
             for sub_agent_xml in sub_agent_matches:
                 # Propagate current tracing context into the worker thread
                 task_ctx = copy_context()
-                future = subagent_executor.submit(task_ctx.run, self._execute_sub_agent_from_xml_safe, sub_agent_xml)
+                future = subagent_executor.submit(task_ctx.run, self._execute_sub_agent_from_xml_safe, sub_agent_xml, trace_data, should_trace)
                 sub_agent_futures[future] = ('sub_agent', sub_agent_xml)
             
             # Combine all futures
@@ -974,10 +1160,10 @@ IMPORTANT: When using batch processing:
         
         return processed_response
     
-    def _execute_tool_from_xml_safe(self, xml_content: str) -> Tuple[str, str, bool]:
+    def _execute_tool_from_xml_safe(self, xml_content: str, trace_data: Optional[List] = None, should_trace: bool = False) -> Tuple[str, str, bool]:
         """Safe wrapper for _execute_tool_from_xml that handles exceptions. Returns (tool_name, result, is_error)."""
         try:
-            tool_name, result = self._execute_tool_from_xml(xml_content)
+            tool_name, result = self._execute_tool_from_xml(xml_content, trace_data, should_trace)
             return tool_name, result, False
         except Exception as e:
             # Extract tool name for error reporting using more robust parsing
@@ -1025,10 +1211,10 @@ IMPORTANT: When using batch processing:
         
         return "unknown"
     
-    def _execute_sub_agent_from_xml_safe(self, xml_content: str) -> Tuple[str, str, bool]:
+    def _execute_sub_agent_from_xml_safe(self, xml_content: str, trace_data: Optional[List] = None, should_trace: bool = False) -> Tuple[str, str, bool]:
         """Safe wrapper for _execute_sub_agent_from_xml that handles exceptions. Returns (agent_name, result, is_error)."""
         try:
-            agent_name, result = self._execute_sub_agent_from_xml(xml_content)
+            agent_name, result = self._execute_sub_agent_from_xml(xml_content, trace_data, should_trace)
             return agent_name, result, False
         except Exception as e:
             # Extract agent name for error reporting using more robust parsing
@@ -1182,7 +1368,7 @@ IMPORTANT: When using batch processing:
         # Final fallback: raise with detailed error
         raise ValueError(f"Unable to parse XML content after multiple strategies. Content preview: {xml_content[:200]}...")
     
-    def _execute_tool_from_xml(self, xml_content: str) -> Tuple[str, str]:
+    def _execute_tool_from_xml(self, xml_content: str, trace_data: Optional[List] = None, should_trace: bool = False) -> Tuple[str, str]:
         """Execute a tool from XML content. Returns (tool_name, result)."""
         try:
             # Parse XML - use improved multi-strategy approach
@@ -1232,8 +1418,31 @@ IMPORTANT: When using batch processing:
                         tool_name, param_name, param_value
                     )
             
+            # Log tool request to trace if enabled
+            if should_trace and trace_data is not None:
+                trace_entry = {
+                    "type": "tool_request",
+                    "timestamp": datetime.now().isoformat(),
+                    "agent_name": self.name,
+                    "tool_name": tool_name,
+                    "parameters": parameters
+                }
+                trace_data.append(trace_entry)
+            
             # Execute tool
             result = self._execute_tool(tool_name, parameters)
+            
+            # Log tool response to trace if enabled
+            if should_trace and trace_data is not None:
+                trace_entry = {
+                    "type": "tool_response",
+                    "timestamp": datetime.now().isoformat(),
+                    "agent_name": self.name,
+                    "tool_name": tool_name,
+                    "result": result
+                }
+                trace_data.append(trace_entry)
+            
             return tool_name, json.dumps(result, indent=2, ensure_ascii=False)
             
         except ET.ParseError as e:
@@ -1571,7 +1780,7 @@ IMPORTANT: When using batch processing:
             logger.error(f"❌ Batch item {line_num} failed: {e}")
             raise
 
-    def _execute_sub_agent_from_xml(self, xml_content: str) -> Tuple[str, str]:
+    def _execute_sub_agent_from_xml(self, xml_content: str, trace_data: Optional[List] = None, should_trace: bool = False) -> Tuple[str, str]:
         """Execute a sub-agent call from XML content. Returns (agent_name, result)."""
         try:
             # Parse XML using robust parsing
@@ -1591,8 +1800,31 @@ IMPORTANT: When using batch processing:
             
             message = (message_elem.text or "").strip()
             
+            # Log sub-agent request to trace if enabled
+            if should_trace and trace_data is not None:
+                trace_entry = {
+                    "type": "subagent_request",
+                    "timestamp": datetime.now().isoformat(),
+                    "agent_name": self.name,
+                    "subagent_name": agent_name,
+                    "message": message
+                }
+                trace_data.append(trace_entry)
+            
             # Execute sub-agent call
             result = self.call_sub_agent(agent_name, message)
+            
+            # Log sub-agent response to trace if enabled
+            if should_trace and trace_data is not None:
+                trace_entry = {
+                    "type": "subagent_response",
+                    "timestamp": datetime.now().isoformat(),
+                    "agent_name": self.name,
+                    "subagent_name": agent_name,
+                    "result": result
+                }
+                trace_data.append(trace_entry)
+            
             return agent_name, result
             
         except ET.ParseError as e:
