@@ -472,6 +472,23 @@ def session_manager(action: str, data: dict = None) -> dict:
 
 **Note**: State and config modifications persist for the duration of the agent's execution context and automatically trigger system prompt refresh when the context is modified, ensuring the agent's behavior adapts to the new state.
 
+
+### Dump trace to file
+
+In addition to langfuse trace, you can also dump trace to files by setting `dump_trace_path` in `agent.run`, the input and output of each round of main agent is dump to `dump_trace_path` and the trace of sub-agent will be saved in to a subfolder with the same name of dump_trace_path (without .json extention).
+
+```python
+response = agent.run(input_message, dump_trace_path="test_log.json")
+```
+
+```
+|- test_log.json
+|- test_log
+    |- sub_agent_1.json
+    |- sub_agent_2.json
+```
+
+
 ### MCP
 Define the mcp servers and create agent by setting `mcp_servers` as follows:
 
