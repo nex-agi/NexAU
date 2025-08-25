@@ -111,11 +111,6 @@ class AgentContext:
 
 # Thread-local storage for the current context
 _current_context: Optional[AgentContext] = None
-_current_context_lock = threading.Lock()
-
-
-def get_context_lock():
-    return _current_context_lock
 
 
 def get_state() -> Dict[str, Any]:
