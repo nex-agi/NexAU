@@ -50,16 +50,12 @@ def todo_write(todos: List[Dict[str, str]]) -> Dict[str, Any]:
                     "error": f"Todo item {i} missing required 'content' field"
                 }
             
-            if "status" not in todo:
-                return {
-                    "status": "error", 
-                    "error": f"Todo item {i} missing required 'status' field"
-                }
+            status = todo.get("status", "pending")
             
-            if todo["status"] not in ["pending", "in_progress", "completed"]:
+            if status not in ["pending", "in_progress", "completed"]:
                 return {
                     "status": "error",
-                    "error": f"Todo item {i} has invalid status '{todo['status']}'. Must be 'pending', 'in_progress', or 'completed'"
+                    "error": f"Todo item {i} has invalid status '{status}'. Must be 'pending', 'in_progress', or 'completed'"
                 }
             
             if "id" not in todo or not todo["id"]:
@@ -78,7 +74,7 @@ def todo_write(todos: List[Dict[str, str]]) -> Dict[str, Any]:
             
             validated_todo = {
                 "content": todo["content"],
-                "status": todo["status"],
+                "status": status,
                 "priority": priority,
                 "id": todo["id"],
                 "created_at": datetime.now().isoformat(),
@@ -96,11 +92,11 @@ def todo_write(todos: List[Dict[str, str]]) -> Dict[str, Any]:
         
         # Count status types for validation
         in_progress_count = sum(1 for todo in validated_todos if todo["status"] == "in_progress")
-        if in_progress_count > 1:
-            return {
-                "status": "error",
-                "error": f"Only one todo can be 'in_progress' at a time. Found {in_progress_count} in_progress todos"
-            }
+        # if in_progress_count > 1:
+        #     return {
+        #         "status": "error",
+        #         "error": f"Only one todo can be 'in_progress' at a time. Found {in_progress_count} in_progress todos"
+        #     }
         
         # Store the todo list in agent context
         set_state_value("current_todos", validated_todos)
