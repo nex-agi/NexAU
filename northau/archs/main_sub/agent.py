@@ -396,6 +396,12 @@ class Agent:
             try:
                 response = self.openai_client.chat.completions.create(**kwargs)
                 response_content = response.choices[0].message.content
+                stop = kwargs.get('stop', [])
+                if stop:
+                    for s in stop:
+                        response_content = response_content.split(s)[0]
+                        response_content = response_content.strip()
+                        response.choices[0].message.content = response_content
                 if response_content:
                     return response
                 else:
@@ -976,7 +982,30 @@ Usage:
         base_prompt += """\n\nCRITICAL TOOL EXECUTION INSTRUCTIONS:
 When you use tools or sub-agents, include the XML blocks in your response and I will execute them and provide the results.
 
-IMPORTANT: After outputting any tool call XML block (e.g., <tool_use>, <sub-agent>, etc.), you MUST STOP and WAIT for the tool execution results before continuing your response. Do NOT continue generating text after tool calls until you receive the results.
+CRITICAL CONSTRAINT: You MUST output only ONE type of tool call XML at a time. DO NOT mix different types of tool calls in a single response.
+
+Valid tool call types (use only ONE per response):
+1. Single tool: <tool_use>
+2. Single sub-agent: <sub-agent>
+3. Parallel tools only: <use_parallel_tool_calls>
+4. Parallel tools and sub-agents: <use_parallel_sub_agents>
+5. Batch agent processing: <use_batch_agent>
+
+IMPORTANT: After outputting any tool call XML block, you MUST STOP and WAIT for the tool execution results before continuing your response. Do NOT continue generating text after tool calls until you receive the results.
+
+For single tool execution:
+<tool_use>
+  <tool_name>tool_name</tool_name>
+  <parameter>
+    <param_name>value</param_name>
+  </parameter>
+</tool_use>
+
+For single sub-agent delegation:
+<sub-agent>
+  <agent_name>agent_name</agent_name>
+  <message>task description</message>
+</sub-agent>
 
 For parallel execution of multiple tools, use:
 <use_parallel_tool_calls>
@@ -1021,10 +1050,12 @@ IMPORTANT: When using batch processing:
 - All agents in the batch will run in parallel for efficient processing
 
 EXECUTION FLOW REMINDER:
-1. When you output XML tool/agent blocks, STOP your response immediately
-2. Wait for the execution results to be provided to you
-3. Only then continue with analysis of the results and next steps
-4. Never generate additional content after XML blocks until results are returned"""
+1. Choose ONLY ONE type of tool call XML for your response
+2. When you output XML tool/agent blocks, STOP your response immediately
+3. Wait for the execution results to be provided to you
+4. Only then continue with analysis of the results and next steps
+5. Never generate additional content after XML blocks until results are returned
+6. NEVER mix different tool call types (e.g., don't use both <tool_use> and <sub-agent> in the same response)"""
         
         return base_prompt
     
