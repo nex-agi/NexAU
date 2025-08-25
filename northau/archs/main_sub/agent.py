@@ -11,6 +11,7 @@ import atexit
 import threading
 import weakref
 import uuid
+import time
 from datetime import datetime
 from contextvars import copy_context
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -119,8 +120,11 @@ class Agent:
         # Context parameters
         initial_state: Optional[Dict[str, Any]] = None,
         initial_config: Optional[Dict[str, Any]] = None,
+        initial_context: Optional[Dict[str, Any]] = None,
         # MCP parameters
         mcp_servers: Optional[List[Dict[str, Any]]] = None,
+        # Stop tools parameters
+        stop_tools: Optional[List[str]] = None,
     ):
         """Initialize an agent with specified configuration."""
         self.name = name or f"agent_{id(self)}"
@@ -141,7 +145,10 @@ class Agent:
         # Initialize context data
         self.initial_state = initial_state or {}
         self.initial_config = initial_config or {}
+        self.initial_context = initial_context or {}
         
+        # Initialize stop tools list
+        self.stop_tools = set(stop_tools or [])
         # Handle LLM configuration
         self.llm_config = self._setup_llm_config(llm_config)
         
@@ -267,8 +274,9 @@ class Agent:
         context: Optional[Dict] = None,
         state: Optional[Dict[str, Any]] = None,
         config: Optional[Dict[str, Any]] = None,
-        dump_trace_path: Optional[str] = None
-    ) -> str:
+        dump_trace_path: Optional[str] = None,
+        return_final_state: bool = False,
+    ) -> str | tuple[str, dict[str, Any]]:
         """Run agent with a message and return response."""
         logger.info(f"🤖 Agent '{self.name}' starting execution")
         logger.info(f"📝 User message: {message}")
@@ -293,6 +301,10 @@ class Agent:
         if config:
             merged_config.update(config)
         
+        merged_context = {**self.initial_context}
+        if context:
+            merged_context.update(context)
+        
         # Create agent context
         with AgentContext(state=merged_state, config=merged_config) as ctx:
             # Setup context modification callback to refresh system prompt
@@ -312,12 +324,12 @@ class Agent:
                 # Generate response using the LLM
                 if self.langfuse_client:
                     with self.langfuse_client.start_as_current_span(name=self.name, input=message) as generation:
-                        response = self._generate_response(message, context, trace_data, should_trace)
+                        response = self._generate_response(message, merged_context, trace_data, should_trace)
                         generation.update(
                             output=response
                         )
                 else:
-                    response = self._generate_response(message, context, trace_data, should_trace)
+                    response = self._generate_response(message, merged_context, trace_data, should_trace)
                 
                 # Add assistant response to history
                 self.history.append({"role": "assistant", "content": response})
@@ -331,8 +343,12 @@ class Agent:
                     with self._trace_lock:
                         self._current_trace_data = None
                         self._current_dump_trace_path = None
-                
-                return response
+
+                if return_final_state:
+                    final_state = ctx.state.copy()
+                    return response, final_state
+                else:
+                    return response
                 
             except Exception as e:
                 logger.error(f"❌ Agent '{self.name}' encountered error: {e}")
@@ -354,9 +370,13 @@ class Agent:
                         self._current_dump_trace_path = None
                 
                 if self.error_handler:
-                    error_response = self.error_handler(e, self, context)
+                    error_response = self.error_handler(e, self, merged_context)
                     self.history.append({"role": "assistant", "content": error_response})
-                    return error_response
+                    if return_final_state:
+                        final_state = ctx.state.copy()
+                        return error_response, final_state
+                    else:
+                        return error_response
                 else:
                     raise
     
@@ -368,6 +388,30 @@ class Agent:
     def add_sub_agent(self, name: str, agent_factory: Callable[[], 'Agent']) -> None:
         """Add a sub-agent factory for delegation."""
         self.sub_agent_factories[name] = agent_factory
+
+    def call_openai_client_with_retry(self, **kwargs):
+        """Call OpenAI client with exponential backoff retry."""
+        backoff = 1
+        for i in range(self.retry_attempts):
+            try:
+                response = self.openai_client.chat.completions.create(**kwargs)
+                response_content = response.choices[0].message.content
+                stop = kwargs.get('stop', [])
+                if stop:
+                    for s in stop:
+                        response_content = response_content.split(s)[0]
+                        response_content = response_content.strip()
+                        response.choices[0].message.content = response_content
+                if response_content:
+                    return response
+                else:
+                    raise Exception("No response content")
+            except Exception as e:
+                logger.error(f"❌ OpenAI client call failed (attempt {i+1}/{self.retry_attempts}): {e}")
+                if i == self.retry_attempts - 1:
+                    raise e
+                time.sleep(backoff)
+                backoff *= 2
     
     def _dump_trace_to_file(self, trace_data: List[Dict[str, Any]], dump_trace_path: str) -> None:
         """Dump trace data to a JSON file."""
@@ -610,7 +654,8 @@ class Agent:
                     }
                     trace_data.append(trace_entry)
                 
-                response = self.openai_client.chat.completions.create(**api_params)
+                logger.info(f"🧠 Calling LLM for agent '{self.name}'...")
+                response = self.call_openai_client_with_retry(**api_params)
                 assistant_response = response.choices[0].message.content
                 
                 # Log LLM response to trace if enabled
@@ -663,13 +708,27 @@ class Agent:
                 
                 # Process tool calls and sub-agent calls
                 logger.info(f"⚙️ Processing tool/sub-agent calls for agent '{self.name}'...")
-                processed_response = self._process_xml_calls(assistant_response, trace_data, should_trace)
+                processed_response, should_stop, stop_tool_result = self._process_xml_calls(assistant_response, trace_data, should_trace)
+                
+                # Check if a stop tool was executed
+                if should_stop:
+                    logger.info(f"🛑 Stop tool detected, returning stop tool result as final response")
+                    # Return the stop tool result directly, formatted as JSON if it's not a string
+                    if stop_tool_result is not None:
+                        if isinstance(stop_tool_result, str):
+                            return stop_tool_result
+                        else:
+                            import json
+                            return json.dumps(stop_tool_result, indent=4, ensure_ascii=False)
+                    else:
+                        # Fallback to the processed response if no specific result
+                        return processed_response
                 
                 # Extract just the tool results from processed_response
                 tool_results = processed_response.replace(assistant_response, "").strip()
                 
-                if tool_results:
-                    logger.info(f"🔧 Tool execution results for agent '{self.name}':\n{tool_results}")
+                # if tool_results:
+                #     logger.info(f"🔧 Tool execution results for agent '{self.name}':\n{tool_results}")
                 
                 # Add tool results as user feedback with iteration context
                 remaining_iterations = max_iterations - iteration - 1
@@ -776,6 +835,17 @@ class Agent:
             else:
                 result = tool.execute(**parameters)
             logger.info(f"✅ Tool '{tool_name}' executed successfully")
+            
+            # Check if this is a stop tool
+            if tool_name in self.stop_tools:
+                logger.info(f"🛑 Stop tool '{tool_name}' executed, marking for early termination")
+                # Add special marker to indicate this is a stop tool result
+                if isinstance(result, dict):
+                    result['_is_stop_tool'] = True
+                else:
+                    # Wrap non-dict results to include the marker
+                    result = {'result': result, '_is_stop_tool': True}
+            
             return result
         except Exception as e:
             logger.error(f"❌ Tool '{tool_name}' execution failed: {e}")
@@ -798,7 +868,7 @@ class Agent:
                 default_context = self.prompt_handler.get_default_context(self)
                 merged_context = {**default_context, **runtime_context}
                 base_prompt = self.prompt_handler.create_dynamic_prompt(
-                    self.system_prompt, self, additional_context=merged_context
+                    self.system_prompt, self, additional_context=merged_context, template_type=self.system_prompt_type
                 )
             except Exception as e:
                 # Fallback to processed system prompt if runtime processing fails
@@ -909,7 +979,33 @@ Usage:
             # Fallback to original implementation if template rendering fails
             base_prompt = self._build_system_prompt_with_capabilities_fallback(base_prompt)
         
-        base_prompt += """\n\nWhen you use tools or sub-agents, include the XML blocks in your response and I will execute them and provide the results.
+        base_prompt += """\n\nCRITICAL TOOL EXECUTION INSTRUCTIONS:
+When you use tools or sub-agents, include the XML blocks in your response and I will execute them and provide the results.
+
+CRITICAL CONSTRAINT: You MUST output only ONE type of tool call XML at a time. DO NOT mix different types of tool calls in a single response.
+
+Valid tool call types (use only ONE per response):
+1. Single tool: <tool_use>
+2. Single sub-agent: <sub-agent>
+3. Parallel tools only: <use_parallel_tool_calls>
+4. Parallel tools and sub-agents: <use_parallel_sub_agents>
+5. Batch agent processing: <use_batch_agent>
+
+IMPORTANT: After outputting any tool call XML block, you MUST STOP and WAIT for the tool execution results before continuing your response. Do NOT continue generating text after tool calls until you receive the results.
+
+For single tool execution:
+<tool_use>
+  <tool_name>tool_name</tool_name>
+  <parameter>
+    <param_name>value</param_name>
+  </parameter>
+</tool_use>
+
+For single sub-agent delegation:
+<sub-agent>
+  <agent_name>agent_name</agent_name>
+  <message>task description</message>
+</sub-agent>
 
 For parallel execution of multiple tools, use:
 <use_parallel_tool_calls>
@@ -951,7 +1047,15 @@ IMPORTANT: When using batch processing:
 - Make sure the message template uses valid keys that exist in the JSONL data
 - Each line in the JSONL file should be a separate JSON object
 - Variable placeholders in the message use {key_name} format from the JSON data
-- All agents in the batch will run in parallel for efficient processing"""
+- All agents in the batch will run in parallel for efficient processing
+
+EXECUTION FLOW REMINDER:
+1. Choose ONLY ONE type of tool call XML for your response
+2. When you output XML tool/agent blocks, STOP your response immediately
+3. Wait for the execution results to be provided to you
+4. Only then continue with analysis of the results and next steps
+5. Never generate additional content after XML blocks until results are returned
+6. NEVER mix different tool call types (e.g., don't use both <tool_use> and <sub-agent> in the same response)"""
         
         return base_prompt
     
@@ -1009,8 +1113,11 @@ IMPORTANT: When using batch processing:
                 tool_docs.append("  </parameter>")
                 tool_docs.append("</tool_use>")
             
+            print("tool_docs:", tool_docs)
             base_prompt += "\n".join(tool_docs)
             base_prompt += "\n\nIMPORTANT: use </parameter> to end the parameters block."
+            base_prompt += "\n\nCRITICAL TOOL EXECUTION INSTRUCTIONS:"
+            base_prompt += "\nIMPORTANT: After outputting any tool call XML block (e.g., <tool_use>, <sub-agent>, etc.), you MUST STOP and WAIT for the tool execution results before continuing your response. Do NOT continue generating text after tool calls until you receive the results."
         
         # Add sub-agent documentation
         if self.sub_agent_factories:
@@ -1028,11 +1135,23 @@ IMPORTANT: When using batch processing:
                 sub_agent_docs.append("</sub-agent>")
             
             base_prompt += "\n".join(sub_agent_docs)
+            base_prompt += "\n\nEXECUTION FLOW REMINDER:"
+            base_prompt += "\n1. When you output XML tool/agent blocks, STOP your response immediately"
+            base_prompt += "\n2. Wait for the execution results to be provided to you"
+            base_prompt += "\n3. Only then continue with analysis of the results and next steps"
+            base_prompt += "\n4. Never generate additional content after XML blocks until results are returned"
         
         return base_prompt
     
-    def _process_xml_calls(self, response: str, trace_data: Optional[List] = None, should_trace: bool = False) -> str:
-        """Process XML tool calls and sub-agent calls in the response in parallel."""
+    def _process_xml_calls(self, response: str, trace_data: Optional[List] = None, should_trace: bool = False) -> Tuple[str, bool, Optional[str]]:
+        """Process XML tool calls and sub-agent calls in the response in parallel.
+        
+        Returns:
+            Tuple of (processed_response, should_stop, stop_tool_result)
+            - processed_response: The response with tool results appended
+            - should_stop: True if a stop tool was executed
+            - stop_tool_result: The result from the stop tool if any
+        """
         processed_response = response
         
         # Check for parallel execution formats and batch processing first
@@ -1049,7 +1168,7 @@ IMPORTANT: When using batch processing:
         if batch_agent_match:
             batch_result = self._execute_batch_agent_from_xml(batch_agent_match.group(1))
             processed_response += f"\n\n<tool_result>\n<tool_name>batch_agent</tool_name>\n<result>{batch_result}</result>\n</tool_result>"
-            return processed_response
+            return processed_response, False, None
         
         tool_matches = []
         sub_agent_matches = []
@@ -1076,12 +1195,12 @@ IMPORTANT: When using batch processing:
         
         # If no calls to process, return original response
         if not tool_matches and not sub_agent_matches:
-            return processed_response
+            return processed_response, False, None
         
         # Check if agent is shutting down
         if self._shutdown_event.is_set():
             logger.warning(f"⚠️ Agent '{self.name}' is shutting down, skipping new task execution")
-            return processed_response
+            return processed_response, False, None
         
         # Execute all calls in parallel with separate thread pools for tools and sub-agents
         executor_id = str(uuid.uuid4())
@@ -1116,6 +1235,9 @@ IMPORTANT: When using batch processing:
             
             # Collect results as they complete
             tool_results = []
+            stop_tool_detected = False
+            stop_tool_result = None
+            
             for future in as_completed(all_futures):
                 call_type, xml_content = all_futures[future]
                 try:
@@ -1127,7 +1249,27 @@ IMPORTANT: When using batch processing:
                             tool_results.append(f"<tool_result>\n<tool_name>{tool_name}</tool_name>\n<error>{result}</error>\n</tool_result>")
                         else:
                             logger.info(f"📤 Tool '{tool_name}' result: {result}")
-                            tool_results.append(f"<tool_result>\n<tool_name>{tool_name}</tool_name>\n<result>{result}</result>\n</tool_result>")
+                            tool_result_xml = f"<tool_result>\n<tool_name>{tool_name}</tool_name>\n<result>{result}</result>\n</tool_result>"
+                            tool_results.append(tool_result_xml)
+                            
+                            # Check if this tool result indicates a stop tool was executed
+                            try:
+                                import json
+                                parsed_result = json.loads(result)
+                                if isinstance(parsed_result, dict) and parsed_result.get('_is_stop_tool'):
+                                    stop_tool_detected = True
+                                    # Extract the actual result, excluding the marker
+                                    actual_result = {k: v for k, v in parsed_result.items() if k != '_is_stop_tool'}
+                                    if 'result' in actual_result and len(actual_result) == 1:
+                                        # If only 'result' key remains, use its value
+                                        stop_tool_result = actual_result['result']
+                                    else:
+                                        # Otherwise use the full cleaned result
+                                        stop_tool_result = actual_result if actual_result else parsed_result
+                                    logger.info(f"🛑 Stop tool '{tool_name}' result detected, will terminate after processing")
+                            except (json.JSONDecodeError, TypeError):
+                                # Result is not JSON, continue normally
+                                pass
                     elif call_type == 'sub_agent':
                         agent_name, result, is_error = result_data
                         if is_error:
@@ -1158,7 +1300,7 @@ IMPORTANT: When using batch processing:
                     self._running_executors.pop(f"{executor_id}_tools", None)
                     self._running_executors.pop(f"{executor_id}_subagents", None)
         
-        return processed_response
+        return processed_response, stop_tool_detected, stop_tool_result
     
     def _execute_tool_from_xml_safe(self, xml_content: str, trace_data: Optional[List] = None, should_trace: bool = False) -> Tuple[str, str, bool]:
         """Safe wrapper for _execute_tool_from_xml that handles exceptions. Returns (tool_name, result, is_error)."""
@@ -1839,7 +1981,8 @@ IMPORTANT: When using batch processing:
             # Use create_dynamic_prompt for enhanced variable rendering
             return self.prompt_handler.create_dynamic_prompt(
                 self.system_prompt,
-                self
+                self,
+                template_type=self.system_prompt_type
             )
         except Exception as e:
             # Fallback to default prompt if processing fails
@@ -1910,11 +2053,14 @@ def create_agent(
     # Context parameters
     initial_state: Optional[Dict[str, Any]] = None,
     initial_config: Optional[Dict[str, Any]] = None,
+    initial_context: Optional[Dict[str, Any]] = None,
     # MCP parameters
     mcp_servers: Optional[List[Dict[str, Any]]] = None,
     # Backward compatibility
     max_context: Optional[int] = None,
     max_response_tokens: Optional[int] = None,
+    # Stop tools parameters
+    stop_tools: Optional[List[str]] = None,
     **llm_kwargs
 ) -> Agent:
     """Create a new agent with specified configuration."""
@@ -1954,5 +2100,7 @@ def create_agent(
         token_counter=token_counter,
         initial_state=initial_state,
         initial_config=initial_config,
+        initial_context=initial_context,
         mcp_servers=mcp_servers,
+        stop_tools=stop_tools,
     )

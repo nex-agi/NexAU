@@ -7,6 +7,9 @@ from typing import Dict, Any, Optional, List, Union
 from ..main_sub import create_agent, Agent
 from ..tool import Tool
 from ..llm import LLMConfig
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigError(Exception):
@@ -53,6 +56,11 @@ def load_agent_config(
         max_running_subagents = config.get('max_running_subagents', 5)
         system_prompt = config.get('system_prompt')
         system_prompt_type = config.get('system_prompt_type', 'string')
+        initial_context = config.get('context', {})
+        initial_state = config.get('state', {})
+        initial_config = config.get('config', {})
+        initial_config.update(initial_context)
+        stop_tools = config.get('stop_tools', [])
         
         # Handle token counter configuration
         token_counter = None
@@ -127,6 +135,7 @@ def load_agent_config(
             except Exception as e:
                 raise ConfigError(f"Error loading sub-agent '{sub_config.get('name', 'unknown')}': {e}")
         
+        system_prompt = path.parent / system_prompt
         # Create agent
         agent = create_agent(
             name=agent_name,
@@ -138,10 +147,14 @@ def load_agent_config(
             max_context_tokens=max_context_tokens,
             max_running_subagents=max_running_subagents,
             token_counter=token_counter,
+            initial_state=initial_state,
+            initial_config=initial_config,
+            initial_context=initial_context,
+            stop_tools=stop_tools
         )
         
         # Apply template context if provided and using Jinja templates
-        if template_context and system_prompt_type == 'jinja':
+        if system_prompt_type == "jinja":
             # Update the agent's prompt handler context
             if hasattr(agent, 'prompt_handler'):
                 agent.processed_system_prompt = agent.prompt_handler.process_prompt(
