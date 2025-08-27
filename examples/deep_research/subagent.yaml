@@ -14,4 +14,4 @@ tools:
     binding: northau.archs.tool.builtin.web_tool:web_read
 sub_agents:
   - name: sub_deep_research_agent
-    config_path: deep_research_agent.yaml
+    config_path: subagent.yaml
