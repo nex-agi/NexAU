@@ -3,6 +3,8 @@
 from typing import Dict, List, Optional, Tuple, Callable, Any, Union
 import logging
 from datetime import datetime
+import os
+from pathlib import Path
 
 try:
     from langfuse import Langfuse
@@ -34,6 +36,26 @@ if not logger.handlers:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+
+
+def _get_python_type_from_json_schema(json_type: str) -> str:
+    """Convert JSON Schema type to Python type string.
+    
+    Args:
+        json_type: JSON Schema type (string, integer, number, boolean, array, object)
+        
+    Returns:
+        Python type string (str, int, float, bool, list, dict)
+    """
+    type_mapping = {
+        'string': 'str',
+        'integer': 'int', 
+        'number': 'float',
+        'boolean': 'bool',
+        'array': 'list',
+        'object': 'dict'
+    }
+    return type_mapping.get(json_type, 'str')
 
 
 class Agent:
@@ -168,6 +190,23 @@ class Agent:
         
         # Register this agent for cleanup
         cleanup_manager.register_agent(self)
+    
+    @staticmethod
+    def _load_prompt_template(prompt_name: str) -> str:
+        """Load a prompt template from the prompts directory."""
+        current_dir = Path(__file__).parent
+        prompts_dir = current_dir / "prompts"
+        prompt_file = prompts_dir / f"{prompt_name}.j2"
+        
+        try:
+            with open(prompt_file, 'r', encoding='utf-8') as f:
+                return f.read()
+        except FileNotFoundError:
+            logger.warning(f"Prompt file not found: {prompt_file}")
+            return ""
+        except Exception as e:
+            logger.error(f"Error loading prompt template {prompt_name}: {e}")
+            return ""
     
     def run(
         self,
@@ -354,37 +393,23 @@ class Agent:
     
     def _get_default_system_prompt(self) -> str:
         """Get default system prompt for the agent."""
-        template = """You are an AI agent named '{{ agent_name }}' built on the Northau framework.
-
-{% if tools %}
-You have access to the following tools:
-{% for tool in tools %}
-- {{ tool.name }}: {{ tool.description or 'No description' }}
-{% endfor %}
-{% else %}
-You currently have no tools available.
-{% endif %}
-
-{% if sub_agents %}
-You can delegate tasks to the following sub-agents:
-{% for sub_agent in sub_agents %}
-- {{ sub_agent.name }}: {{ sub_agent.description or 'Specialized agent for ' + sub_agent.name + '-related tasks' }}
-{% endfor %}
-{% else %}
-You currently have no sub-agents available.
-{% endif %}
-
-Your goal is to help users accomplish their tasks efficiently by:
-1. Understanding the user's request
-2. Determining if you can handle it with your available tools
-3. Delegating to appropriate sub-agents when their specialized capabilities are needed
-4. Executing the necessary actions and providing clear, helpful responses"""
+        template = self._load_prompt_template("default_system_prompt")
+        
+        if not template:
+            # Fallback template if file loading fails
+            raise ValueError("Default system prompt template not found")
         
         try:
             return self.prompt_handler.create_dynamic_prompt(template, self)
         except Exception:
             # Fallback to simple string formatting if dynamic rendering fails
-            return f"""You are an AI agent named '{self.name}' built on the Northau framework.
+            fallback_template = self._load_prompt_template("fallback_system_prompt")
+            if fallback_template:
+                tools_list = chr(10).join(f"- {tool.name}: {getattr(tool, 'description', 'No description')}" for tool in self.tools)
+                sub_agents_list = chr(10).join(f"- {name}: Specialized agent for {name}-related tasks" for name in self.sub_agent_factories.keys())
+                return fallback_template.replace("{{ agent_name }}", self.name).replace("{{ tools_list }}", tools_list).replace("{{ sub_agents_list }}", sub_agents_list)
+            else:
+                return f"""You are an AI agent named '{self.name}' built on the Northau framework.
 
 You have access to the following tools:
 {chr(10).join(f"- {tool.name}: {getattr(tool, 'description', 'No description')}" for tool in self.tools)}
@@ -423,32 +448,16 @@ Your goal is to help users accomplish their tasks efficiently by:
         else:
             base_prompt = str(self.processed_system_prompt)
 
-        # Template for tool documentation
-        tools_template = """
-{% if tools %}
-
-## Available Tools
-You can use tools by including XML blocks in your response:
-{% for tool in tools %}
-
-### {{ tool.name }}
-{{ tool.description or 'No description available' }}
-Usage:
-<tool_use>
-  <tool_name>{{ tool.name }}</tool_name>
-  <parameter>
-{% if tool.parameters %}
-{% for param in tool.parameters %}
-    <{{ param.name }}>{{ param.description }}{% if not param.required %} (optional, type: {{ param.type }}{% if param.default %}, default: {{ param.default }}{% endif %}){% else %} (required, type: {{ param.type }}){% endif %}</{{ param.name }}>
-{% endfor %}
-{% endif %}
-  </parameter>
-</tool_use>
-{% endfor %}
-{% endif %}"""
-
-        # Template for sub-agent documentation  
-        sub_agents_template = """
+        # Load templates from files
+        tools_template = self._load_prompt_template("tools_template")
+        sub_agents_template = self._load_prompt_template("sub_agents_template")
+        
+        # Provide fallback templates if loading fails
+        if not tools_template:
+            raise ValueError("Tools template not found")
+        
+        if not sub_agents_template:
+            sub_agents_template = """
 {% if sub_agents %}
 
 ## Available Sub-Agents
@@ -489,15 +498,7 @@ Usage:
                             is_required = param_name in required_params
                             
                             # Map JSON Schema types to Python types
-                            type_mapping = {
-                                'string': 'str',
-                                'integer': 'int', 
-                                'number': 'float',
-                                'boolean': 'bool',
-                                'array': 'list',
-                                'object': 'dict'
-                            }
-                            python_type = type_mapping.get(param_type, 'str')
+                            python_type = _get_python_type_from_json_schema(param_type)
                             
                             parameters.append({
                                 'name': param_name,
@@ -525,83 +526,12 @@ Usage:
             # Fallback to original implementation if template rendering fails
             base_prompt = self._build_system_prompt_with_capabilities_fallback(base_prompt)
         
-        base_prompt += """\\n\\nCRITICAL TOOL EXECUTION INSTRUCTIONS:
-When you use tools or sub-agents, include the XML blocks in your response and I will execute them and provide the results.
-
-CRITICAL CONSTRAINT: You MUST output only ONE type of tool call XML at a time. DO NOT mix different types of tool calls in a single response.
-
-Valid tool call types (use only ONE per response):
-1. Single tool: <tool_use>
-2. Single sub-agent: <sub-agent>
-3. Parallel tools only: <use_parallel_tool_calls>
-4. Parallel tools and sub-agents: <use_parallel_sub_agents>
-5. Batch agent processing: <use_batch_agent>
-
-IMPORTANT: After outputting any tool call XML block, you MUST STOP and WAIT for the tool execution results before continuing your response. Do NOT continue generating text after tool calls until you receive the results.
-
-For single tool execution:
-<tool_use>
-  <tool_name>tool_name</tool_name>
-  <parameter>
-    <param_name>value</param_name>
-  </parameter>
-</tool_use>
-
-For single sub-agent delegation:
-<sub-agent>
-  <agent_name>agent_name</agent_name>
-  <message>task description</message>
-</sub-agent>
-
-For parallel execution of multiple tools, use:
-<use_parallel_tool_calls>
-<parallel_tool>
-  <tool_name>tool1</tool_name>
-  <parameter>...</parameter>
-</parallel_tool>
-<parallel_tool>
-  <tool_name>tool2</tool_name>
-  <parameter>...</parameter>
-</parallel_tool>
-</use_parallel_tool_calls>
-
-For parallel execution of tools and sub-agents together, use:
-<use_parallel_sub_agents>
-<parallel_agent>
-  <agent_name>agent1</agent_name>
-  <message>task description</message>
-</parallel_agent>
-<parallel_tool>
-  <tool_name>tool1</tool_name>
-  <parameter>...</parameter>
-</parallel_tool>
-</use_parallel_sub_agents>
-
-For batch processing multiple data items with an agent, use:
-<use_batch_agent>
-  <agent_name>agent_name</agent_name>
-  <input_data_source>
-    <file_name>/absolute/path/to/file.jsonl</file_name>
-    <format>jsonl</format>
-  </input_data_source>
-  <message>Your message template with {variable_placeholders}</message>
-</use_batch_agent>
-
-IMPORTANT: When using batch processing:
-- Ensure the JSONL file exists or will be created if not found
-- Validate that the JSONL file contains valid JSON objects
-- Make sure the message template uses valid keys that exist in the JSONL data
-- Each line in the JSONL file should be a separate JSON object
-- Variable placeholders in the message use {key_name} format from the JSON data
-- All agents in the batch will run in parallel for efficient processing
-
-EXECUTION FLOW REMINDER:
-1. Choose ONLY ONE type of tool call XML for your response
-2. When you output XML tool/agent blocks, STOP your response immediately
-3. Wait for the execution results to be provided to you
-4. Only then continue with analysis of the results and next steps
-5. Never generate additional content after XML blocks until results are returned
-6. NEVER mix different tool call types (e.g., don't use both <tool_use> and <sub-agent> in the same response)"""
+        # Add tool execution instructions from file
+        tool_execution_instructions = self._load_prompt_template("tool_execution_instructions")
+        if tool_execution_instructions:
+            base_prompt += tool_execution_instructions
+        else:
+            raise ValueError("Tool execution instructions template not found")
         
         return base_prompt
     
@@ -633,15 +563,7 @@ EXECUTION FLOW REMINDER:
                     is_required = param_name in required_params
                     
                     # Map JSON Schema types to Python types
-                    type_mapping = {
-                        'string': 'str',
-                        'integer': 'int', 
-                        'number': 'float',
-                        'boolean': 'bool',
-                        'array': 'list',
-                        'object': 'dict'
-                    }
-                    python_type = type_mapping.get(param_type, 'str')
+                    python_type = _get_python_type_from_json_schema(param_type)
                     
                     # Build parameter documentation with type and optional info
                     param_parts = [param_desc]

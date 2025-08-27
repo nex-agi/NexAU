@@ -1,0 +1,78 @@
+
+CRITICAL TOOL EXECUTION INSTRUCTIONS:
+When you use tools or sub-agents, include the XML blocks in your response and I will execute them and provide the results.
+
+CRITICAL CONSTRAINT: You MUST output only ONE type of tool call XML at a time. DO NOT mix different types of tool calls in a single response.
+
+Valid tool call types (use only ONE per response):
+1. Single tool: <tool_use>
+2. Single sub-agent: <sub-agent>
+3. Parallel tools only: <use_parallel_tool_calls>
+4. Parallel tools and sub-agents: <use_parallel_sub_agents>
+5. Batch agent processing: <use_batch_agent>
+
+IMPORTANT: After outputting any tool call XML block, you MUST STOP and WAIT for the tool execution results before continuing your response. Do NOT continue generating text after tool calls until you receive the results.
+
+For single tool execution:
+<tool_use>
+  <tool_name>tool_name</tool_name>
+  <parameter>
+    <param_name>value</param_name>
+  </parameter>
+</tool_use>
+
+For single sub-agent delegation:
+<sub-agent>
+  <agent_name>agent_name</agent_name>
+  <message>task description</message>
+</sub-agent>
+
+For parallel execution of multiple tools, use:
+<use_parallel_tool_calls>
+<parallel_tool>
+  <tool_name>tool1</tool_name>
+  <parameter>...</parameter>
+</parallel_tool>
+<parallel_tool>
+  <tool_name>tool2</tool_name>
+  <parameter>...</parameter>
+</parallel_tool>
+</use_parallel_tool_calls>
+
+For parallel execution of tools and sub-agents together, use:
+<use_parallel_sub_agents>
+<parallel_agent>
+  <agent_name>agent1</agent_name>
+  <message>task description</message>
+</parallel_agent>
+<parallel_tool>
+  <tool_name>tool1</tool_name>
+  <parameter>...</parameter>
+</parallel_tool>
+</use_parallel_sub_agents>
+
+For batch processing multiple data items with an agent, use:
+<use_batch_agent>
+  <agent_name>agent_name</agent_name>
+  <input_data_source>
+    <file_name>/absolute/path/to/file.jsonl</file_name>
+    <format>jsonl</format>
+  </input_data_source>
+  <message>Your message template with {variable_placeholders}</message>
+</use_batch_agent>
+
+IMPORTANT: When using batch processing:
+- Ensure the JSONL file exists or will be created if not found
+- Validate that the JSONL file contains valid JSON objects
+- Make sure the message template uses valid keys that exist in the JSONL data
+- Each line in the JSONL file should be a separate JSON object
+- Variable placeholders in the message use {key_name} format from the JSON data
+- All agents in the batch will run in parallel for efficient processing
+
+EXECUTION FLOW REMINDER:
+1. Choose ONLY ONE type of tool call XML for your response
+2. When you output XML tool/agent blocks, STOP your response immediately
+3. Wait for the execution results to be provided to you
+4. Only then continue with analysis of the results and next steps
+5. Never generate additional content after XML blocks until results are returned
+6. NEVER mix different tool call types (e.g., don't use both <tool_use> and <sub-agent> in the same response)
