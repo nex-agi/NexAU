@@ -1,0 +1,267 @@
+"""LLM response generation with iteration management."""
+
+import logging
+import re
+from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime
+
+from ..utils.xml_utils import XMLUtils
+from ..tracing.tracer import Tracer
+
+logger = logging.getLogger(__name__)
+
+try:
+    import openai
+except ImportError:
+    openai = None
+
+
+class ResponseGenerator:
+    """Handles LLM response generation with iteration control."""
+    
+    def __init__(self, agent_name: str, openai_client, llm_config, max_iterations: int = 100, 
+                 max_context_tokens: int = 128000, retry_attempts: int = 3):
+        """Initialize response generator.
+        
+        Args:
+            agent_name: Name of the agent
+            openai_client: OpenAI client instance
+            llm_config: LLM configuration
+            max_iterations: Maximum number of iterations
+            max_context_tokens: Maximum context token limit
+            retry_attempts: Number of retry attempts for API calls
+        """
+        self.agent_name = agent_name
+        self.openai_client = openai_client
+        self.llm_config = llm_config
+        self.max_iterations = max_iterations
+        self.max_context_tokens = max_context_tokens
+        self.retry_attempts = retry_attempts
+    
+    def generate_response(self, message: str, system_prompt: str, history: List[Dict[str, str]], 
+                         token_counter, xml_processor, tracer: Optional[Tracer] = None) -> str:
+        """Generate response using OpenAI API with XML-based tool and sub-agent calls.
+        
+        Args:
+            message: User message
+            system_prompt: System prompt to use
+            history: Conversation history
+            token_counter: Token counting function
+            xml_processor: XML call processor
+            tracer: Optional tracer for logging
+            
+        Returns:
+            Final response from the LLM
+        """
+        if not self.openai_client:
+            raise RuntimeError("OpenAI client is not available. Please check your API configuration.")
+        
+        try:
+            # Prepare initial messages
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message}
+            ]
+            
+            # Add conversation history
+            if history:
+                # Insert history before the current message
+                history_messages = []
+                for msg in history[:-1]:  # Exclude the current message we just added
+                    history_messages.append(msg)
+                messages = [messages[0]] + history_messages + [messages[1]]
+            
+            # Loop until no more tool calls or sub-agent calls are made
+            iteration = 0
+            final_response = ""
+            
+            logger.info(f"🔄 Starting iterative execution loop for agent '{self.agent_name}'")
+            
+            while iteration < self.max_iterations:
+                logger.info(f"🔄 Iteration {iteration + 1}/{self.max_iterations} for agent '{self.agent_name}'")
+                
+                # Call OpenAI API with LLM config parameters
+                api_params = self.llm_config.to_openai_params()
+                api_params['messages'] = messages
+                
+                # Count current prompt tokens
+                current_prompt_tokens = token_counter(messages)
+                
+                # Check if prompt exceeds max context tokens - force stop if so
+                if current_prompt_tokens > self.max_context_tokens:
+                    logger.error(f"❌ Prompt tokens ({current_prompt_tokens}) exceed max_context_tokens ({self.max_context_tokens}). Stopping execution.")
+                    final_response += f"\\n\\n[Error: Prompt too long ({current_prompt_tokens} tokens) exceeds maximum context ({self.max_context_tokens} tokens). Execution stopped.]"
+                    break
+                
+                # Calculate max_tokens dynamically based on available budget
+                available_tokens = self.max_context_tokens - current_prompt_tokens
+                
+                # Get desired max_tokens from LLM config or use reasonable default
+                desired_max_tokens = api_params.get('max_tokens', 4096)
+                calculated_max_tokens = min(desired_max_tokens, available_tokens)
+                
+                # Ensure we have at least some tokens for response
+                if calculated_max_tokens < 50:
+                    logger.error(f"❌ Insufficient tokens for response ({calculated_max_tokens}). Stopping execution.")
+                    final_response += f"\\n\\n[Error: Insufficient tokens for response ({calculated_max_tokens} tokens). Context too full.]"
+                    break
+                
+                # Set max_tokens based on calculation
+                api_params['max_tokens'] = calculated_max_tokens
+                
+                logger.info(f"🔢 Token usage: prompt={current_prompt_tokens}, max_tokens={api_params['max_tokens']}, available={available_tokens}")
+                
+                # Add stop sequences for XML closing tags to prevent malformed XML
+                xml_stop_sequences = [
+                    "</tool_use>",
+                    "</sub-agent>", 
+                    "</use_parallel_tool_calls>",
+                    "</use_parallel_sub_agents>",
+                    "</use_batch_agent>"
+                ]
+                
+                # Merge with existing stop sequences if any
+                existing_stop = api_params.get('stop', [])
+                if isinstance(existing_stop, str):
+                    existing_stop = [existing_stop]
+                elif existing_stop is None:
+                    existing_stop = []
+                
+                api_params['stop'] = existing_stop + xml_stop_sequences
+                
+                # Debug logging for LLM messages
+                if self.llm_config.debug:
+                    logger.info(f"🐛 [DEBUG] LLM Request Messages for agent '{self.agent_name}':")
+                    for i, msg in enumerate(messages):
+                        logger.info(f"🐛 [DEBUG] Message {i}: {msg['role']} -> {msg['content']}")
+                
+                logger.info(f"🧠 Calling LLM for agent '{self.agent_name}' with {api_params['max_tokens']} max tokens...")
+                
+                # Log LLM request to trace if enabled
+                if tracer:
+                    tracer.add_llm_request(iteration + 1, api_params)
+                
+                logger.info(f"🧠 Calling LLM for agent '{self.agent_name}'...")
+                response = self._call_openai_with_retry(**api_params)
+                assistant_response = response.choices[0].message.content
+                
+                # Log LLM response to trace if enabled
+                if tracer:
+                    tracer.add_llm_response(iteration + 1, response)
+                
+                # Add back XML closing tags if they were removed by stop sequences
+                assistant_response = XMLUtils.restore_closing_tags(assistant_response)
+                
+                # Debug logging for LLM response
+                if self.llm_config.debug:
+                    logger.info(f"🐛 [DEBUG] LLM Response for agent '{self.agent_name}': {assistant_response}")
+                
+                logger.info(f"💬 LLM Response for agent '{self.agent_name}': {assistant_response}")
+                
+                # Store this as the latest response (potential final response)
+                final_response = assistant_response
+                
+                # Check if response contains tool calls or sub-agent calls (including parallel formats and batch processing)
+                has_tool_calls = bool(re.search(r'<tool_use>.*?</tool_use>', assistant_response, re.DOTALL))
+                has_sub_agent_calls = bool(re.search(r'<sub-agent>.*?</sub-agent>', assistant_response, re.DOTALL))
+                has_parallel_tool_calls = bool(re.search(r'<use_parallel_tool_calls>.*?</use_parallel_tool_calls>', assistant_response, re.DOTALL))
+                has_parallel_sub_agents = bool(re.search(r'<use_parallel_sub_agents>.*?</use_parallel_sub_agents>', assistant_response, re.DOTALL))
+                has_batch_agent = bool(re.search(r'<use_batch_agent>.*?</use_batch_agent>', assistant_response, re.DOTALL))
+                
+                logger.info(f"🔍 Analysis for agent '{self.agent_name}': tool_calls={has_tool_calls}, sub_agent_calls={has_sub_agent_calls}, parallel_tool_calls={has_parallel_tool_calls}, parallel_sub_agents={has_parallel_sub_agents}, batch_agent={has_batch_agent}")
+                
+                if not has_tool_calls and not has_sub_agent_calls and not has_parallel_tool_calls and not has_parallel_sub_agents and not has_batch_agent:
+                    # No more commands to execute, return final response
+                    logger.info(f"🏁 No more commands to execute, finishing agent '{self.agent_name}'")
+                    break
+                
+                # Add the assistant's original response to conversation
+                messages.append({"role": "assistant", "content": assistant_response})
+                
+                # Process tool calls and sub-agent calls
+                logger.info(f"⚙️ Processing tool/sub-agent calls for agent '{self.agent_name}'...")
+                processed_response, should_stop, stop_tool_result = xml_processor(assistant_response, tracer)
+                
+                # Check if a stop tool was executed
+                if should_stop:
+                    logger.info(f"🛑 Stop tool detected, returning stop tool result as final response")
+                    # Return the stop tool result directly, formatted as JSON if it's not a string
+                    if stop_tool_result is not None:
+                        if isinstance(stop_tool_result, str):
+                            return stop_tool_result
+                        else:
+                            import json
+                            return json.dumps(stop_tool_result, indent=4, ensure_ascii=False)
+                    else:
+                        # Fallback to the processed response if no specific result
+                        return processed_response
+                
+                # Extract just the tool results from processed_response
+                tool_results = processed_response.replace(assistant_response, "").strip()
+                
+                # Add tool results as user feedback with iteration context
+                remaining_iterations = self.max_iterations - iteration - 1
+                iteration_hint = self._build_iteration_hint(iteration + 1, self.max_iterations, remaining_iterations)
+                
+                if tool_results:
+                    messages.append({
+                        "role": "user", 
+                        "content": f"Tool execution results:\\n{tool_results}\\n\\n{iteration_hint}"
+                    })
+                else:
+                    messages.append({
+                        "role": "user", 
+                        "content": f"{iteration_hint}"
+                    })
+                
+                iteration += 1
+            
+            # Add note if max iterations reached
+            if iteration >= self.max_iterations:
+                final_response += "\\n\\n[Note: Maximum iteration limit reached]"
+            
+            return final_response
+            
+        except Exception as e:
+            # Re-raise with more context
+            raise RuntimeError(f"Error calling OpenAI API: {e}") from e
+    
+    def _call_openai_with_retry(self, **kwargs):
+        """Call OpenAI client with exponential backoff retry."""
+        import time
+        
+        backoff = 1
+        for i in range(self.retry_attempts):
+            try:
+                response = self.openai_client.chat.completions.create(**kwargs)
+                response_content = response.choices[0].message.content
+                stop = kwargs.get('stop', [])
+                if stop:
+                    for s in stop:
+                        response_content = response_content.split(s)[0]
+                        response_content = response_content.strip()
+                        response.choices[0].message.content = response_content
+                if response_content:
+                    return response
+                else:
+                    raise Exception("No response content")
+            except Exception as e:
+                logger.error(f"❌ OpenAI client call failed (attempt {i+1}/{self.retry_attempts}): {e}")
+                if i == self.retry_attempts - 1:
+                    raise e
+                time.sleep(backoff)
+                backoff *= 2
+    
+    def _build_iteration_hint(self, current_iteration: int, max_iterations: int, remaining_iterations: int) -> str:
+        """Build a hint message for the LLM about iteration status."""
+        if remaining_iterations <= 1:
+            return (f"⚠️ WARNING: This is iteration {current_iteration}/{max_iterations}. "
+                   f"You have only {remaining_iterations} iteration(s) remaining. "
+                   f"Please provide a conclusive response and avoid making additional tool calls or sub-agent calls "
+                   f"unless absolutely critical. Focus on summarizing your findings and providing final recommendations.")
+        elif remaining_iterations <= 3:
+            return (f"🔄 Iteration {current_iteration}/{max_iterations} - {remaining_iterations} iterations remaining. "
+                   f"Please be mindful of the remaining steps and work towards a conclusion.")
+        else:
+            return (f"🔄 Iteration {current_iteration}/{max_iterations} - Continue your response if you have more to say, "
+                   f"or if you need to make additional tool calls or sub-agent calls.")

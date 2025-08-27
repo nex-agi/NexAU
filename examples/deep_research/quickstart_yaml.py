@@ -44,7 +44,8 @@ def main():
         print("✓ Agent loaded successfully from YAML")
 
         print("\nTesting delegation with web research...")
-        web_message = "What day is it today? and the stock price of Tencent on the day?"
+        # web_message = "Call sub_deep_research_agent to get the information of what day is it today? and the stock price of Tencent on the day?"
+        web_message = "调研一下腾讯，拆解成多个调研子任务，并让多个 subagent 分别并行执行这些子任务"
         print(f"\nUser: {web_message}")
         print("\nAgent Response:")
         print("-" * 30)
