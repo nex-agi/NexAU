@@ -15,19 +15,15 @@ class PromptHandler:
         self._setup_jinja()
     
     def _setup_jinja(self):
-        """Setup Jinja2 environment if available."""
-        try:
-            from jinja2 import Environment, FileSystemLoader, BaseLoader
-            self._jinja_available = True
-            
-            # Create a basic environment
-            self._jinja_env = Environment(
-                loader=BaseLoader(),
-                trim_blocks=True,
-                lstrip_blocks=True
-            )
-        except ImportError:
-            self._jinja_available = False
+        """Setup Jinja2 environment."""
+        from jinja2 import Environment, BaseLoader
+        
+        # Create a basic environment
+        self._jinja_env = Environment(
+            loader=BaseLoader(),
+            trim_blocks=True,
+            lstrip_blocks=True
+        )
     
     def process_prompt(
         self,
@@ -113,9 +109,6 @@ class PromptHandler:
         context: Optional[Dict[str, Any]] = None
     ) -> str:
         """Process a Jinja template prompt."""
-        if not self._jinja_available:
-            raise ValueError("Jinja2 not available. Install with: pip install jinja2")
-        
         path = Path(template_path)
         
         if not path.exists():
@@ -196,16 +189,12 @@ class PromptHandler:
             context.update(additional_context)
         
         try:
-            if self._jinja_available:
-                if template_type == "jinja":
-                    # base_template is a path to a jinja template file
-                    return self._process_jinja_prompt(base_template, context)
-                else:
-                    template = self._jinja_env.from_string(base_template)
-                    return template.render(**context)
+            if template_type == "jinja":
+                # base_template is a path to a jinja template file
+                return self._process_jinja_prompt(base_template, context)
             else:
-                # Fallback to simple string formatting
-                return base_template.format(**context)
+                template = self._jinja_env.from_string(base_template)
+                return template.render(**context)
         except Exception as e:
             # Return base template if rendering fails
             return base_template
