@@ -8,9 +8,11 @@ from ..main_sub import create_agent, Agent
 from ..tool import Tool
 from ..llm import LLMConfig
 import logging
+import dotenv
 
 logger = logging.getLogger(__name__)
 
+dotenv.load_dotenv()
 
 class ConfigError(Exception):
     """Exception raised for configuration errors."""
