@@ -227,20 +227,20 @@ def load_tool_from_config(tool_config: Dict[str, Any], base_path: Path) -> Tool:
         raise ConfigError("Tool configuration missing 'name' field")
     
     yaml_path = tool_config.get('yaml_path')
-    binding = tool_config.get('binding')
+    binding = tool_config.get('binding', None)
     
     if not yaml_path:
         raise ConfigError(f"Tool '{name}' missing 'yaml_path' field")
-    
-    if not binding:
-        raise ConfigError(f"Tool '{name}' missing 'binding' field")
     
     # Resolve YAML path
     if not Path(yaml_path).is_absolute():
         yaml_path = base_path / yaml_path
     
     # Import and get the binding function
-    binding_func = import_from_string(binding)
+    if binding:
+        binding_func = import_from_string(binding)
+    else:
+        binding_func = lambda x: x
     
     # Create tool
     tool = Tool.from_yaml(str(yaml_path), binding_func)

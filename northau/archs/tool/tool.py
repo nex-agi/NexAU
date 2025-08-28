@@ -16,6 +16,7 @@ class Tool:
         description: str,
         input_schema: Dict,
         implementation: Callable,
+        template_override: Optional[str] = None,
         cache_results: bool = False,
         timeout: Optional[int] = None
     ):
@@ -24,6 +25,7 @@ class Tool:
         self.description = description
         self.input_schema = input_schema
         self.implementation = implementation
+        self.template_override = template_override
         self.cache_results = cache_results
         self.timeout = timeout
         
@@ -52,6 +54,7 @@ class Tool:
         name = tool_def.get('name')
         description = tool_def.get('description', '')
         input_schema = tool_def.get('input_schema', {})
+        template_override = tool_def.get('template_override', None)
         
         if not name:
             raise ValueError(f"Tool definition missing 'name' field in {yaml_path}")
@@ -62,6 +65,7 @@ class Tool:
             description=description,
             input_schema=input_schema,
             implementation=binding,
+            template_override=template_override,
             **kwargs
         )
     
@@ -136,6 +140,7 @@ class Tool:
         """Get tool information."""
         return {
             "name": self.name,
+            "template_override": self.template_override,
             "description": self.description,
             "input_schema": self.input_schema,
             "cache_enabled": self.cache_results,
