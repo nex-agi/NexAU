@@ -154,6 +154,7 @@ class PromptHandler:
                 {
                     "name": tool.name,
                     "description": getattr(tool, 'description', ''),
+                    "template_override": getattr(tool, 'template_override', None),
                 }
                 for tool in agent.tools
             ]
