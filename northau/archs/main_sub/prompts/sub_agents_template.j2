@@ -7,9 +7,9 @@ You can delegate tasks to specialized sub-agents:
 ### {{ sub_agent.name }}
 {{ sub_agent.description or 'Specialized agent for ' + sub_agent.name + '-related tasks' }}
 Usage:
-<sub-agent>
+<sub_agent>
   <agent_name>{{ sub_agent.name }}</agent_name>
   <message>task description</message>
-</sub-agent>
+</sub_agent>
 {% endfor %}
 {% endif %}

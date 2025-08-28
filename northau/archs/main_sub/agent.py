@@ -2,8 +2,6 @@
 
 from typing import Dict, List, Optional, Tuple, Callable, Any, Union
 import logging
-from datetime import datetime
-import os
 from pathlib import Path
 
 try:
@@ -73,7 +71,7 @@ class Agent:
         max_context_tokens: int = 128000,
         max_running_subagents: int = 5,
         error_handler: Optional[Callable] = None,
-        retry_attempts: int = 3,
+        retry_attempts: int = 5,
         timeout: int = 300,
         # Token counting parameters
         token_counter: Optional[Callable[[List[Dict[str, str]]], int]] = None,
@@ -193,7 +191,6 @@ class Agent:
             langfuse_client=self.langfuse_client,
             after_model_hooks=self.after_model_hooks
         )
-        
         # Register this agent for cleanup
         cleanup_manager.register_agent(self)
     
@@ -486,10 +483,10 @@ You can delegate tasks to specialized sub-agents:
 ### {{ sub_agent.name }}
 {{ sub_agent.description or 'Specialized agent for ' + sub_agent.name + '-related tasks' }}
 Usage:
-<sub-agent>
+<sub_agent>
   <agent_name>{{ sub_agent.name }}</agent_name>
   <message>task description</message>
-</sub-agent>
+</sub_agent>
 {% endfor %}
 {% endif %}"""
 
@@ -603,7 +600,7 @@ Usage:
             base_prompt += "\\n".join(tool_docs)
             base_prompt += "\\n\\nIMPORTANT: use </parameter> to end the parameters block."
             base_prompt += "\\n\\nCRITICAL TOOL EXECUTION INSTRUCTIONS:"
-            base_prompt += "\\nIMPORTANT: After outputting any tool call XML block (e.g., <tool_use>, <sub-agent>, etc.), you MUST STOP and WAIT for the tool execution results before continuing your response. Do NOT continue generating text after tool calls until you receive the results."
+            base_prompt += "\\nIMPORTANT: After outputting any tool call XML block (e.g., <tool_use>, <sub_agent>, etc.), you MUST STOP and WAIT for the tool execution results before continuing your response. Do NOT continue generating text after tool calls until you receive the results."
         
         # Add sub-agent documentation
         if self.sub_agent_factories:
@@ -615,10 +612,10 @@ Usage:
                 sub_agent_docs.append(f"\\n### {name}")
                 sub_agent_docs.append(f"Specialized agent for {name}-related tasks")
                 sub_agent_docs.append("Usage:")
-                sub_agent_docs.append("<sub-agent>")
+                sub_agent_docs.append("<sub_agent>")
                 sub_agent_docs.append(f"  <agent_name>{name}</agent_name>")
                 sub_agent_docs.append("  <message>task description</message>")
-                sub_agent_docs.append("</sub-agent>")
+                sub_agent_docs.append("</sub_agent>")
             
             base_prompt += "\\n".join(sub_agent_docs)
             base_prompt += "\\n\\nEXECUTION FLOW REMINDER:"
@@ -654,7 +651,7 @@ def create_agent(
     max_context_tokens: int = 128000,
     max_running_subagents: int = 5,
     error_handler: Optional[Callable] = None,
-    retry_attempts: int = 3,
+    retry_attempts: int = 5,
     timeout: int = 300,
     # Token counting parameters
     token_counter: Optional[Callable[[List[Dict[str, str]]], int]] = None,
