@@ -15,12 +15,6 @@ from northau.archs.main_sub.execution.hooks import AfterModelHookInput, HookResu
 def get_date():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-# def create_print_global_storage_hook():
-#     def print_global_storage_hook(hook_input: AfterModelHookInput) -> HookResult:
-#         print("Agent GlobalStorage: ", hook_input.global_storage.items())
-#         return HookResult.no_changes()
-#     return print_global_storage_hook
-
 def create_increase_global_counter_hook():
     def increase_global_counter_hook(hook_input: AfterModelHookInput) -> HookResult:
         if hook_input.global_storage is not None:
