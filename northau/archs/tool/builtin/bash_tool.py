@@ -80,7 +80,8 @@ def bash_tool(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=os.getcwd()
+            cwd=os.getcwd(),
+            env=os.environ.copy()
         )
         
         try:
