@@ -9,6 +9,7 @@ from ..tool import Tool
 from ..llm import LLMConfig
 import logging
 import dotenv
+from ..main_sub.agent_context import GlobalStorage
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +99,11 @@ def load_agent_config(
                                 raise ConfigError(f"Hook {i} is not callable and cannot accept parameters")
                         else:
                             after_model_hooks.append(hook_func)
+                    elif callable(hook_config):
+                        # Direct callable function (e.g., from overrides)
+                        after_model_hooks.append(hook_config)
                     else:
-                        raise ConfigError(f"Hook {i} must be a string or dictionary")
+                        raise ConfigError(f"Hook {i} must be a string, dictionary, or callable")
                 except Exception as e:
                     raise ConfigError(f"Error loading hook {i}: {e}")
         
@@ -275,8 +279,8 @@ def load_sub_agent_from_config(
         config_path = base_path / config_path
     
     # Create factory function that loads agent when called
-    def agent_factory():
-        return load_agent_config(str(config_path))
+    def agent_factory(global_storage: Optional[GlobalStorage] = None):
+        return load_agent_config(str(config_path), overrides={"global_storage": global_storage})
     
     return (name, agent_factory)
 

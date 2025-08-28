@@ -748,14 +748,6 @@ class Agent:
     def add_sub_agent(self, name: str, agent: 'Agent') -> None:
         """Add a sub-agent for delegation."""
         
-    def delegate_task(
-        self,
-        task: str,
-        sub_agent_name: str,
-        context: Optional[Dict] = None
-    ) -> str:
-        """Explicitly delegate a task to a sub-agent."""
-        
     def call_sub_agent(
         self,
         sub_agent_name: str,
