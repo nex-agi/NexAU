@@ -85,6 +85,8 @@ class Agent:
         mcp_servers: Optional[List[Dict[str, Any]]] = None,
         # Stop tools parameters
         stop_tools: Optional[List[str]] = None,
+        # Hook parameters
+        after_model_hooks: Optional[List[Callable]] = None,
     ):
         """Initialize an agent with specified configuration."""
         self.name = name or f"agent_{id(self)}"
@@ -101,6 +103,9 @@ class Agent:
         
         # Initialize stop tools list
         self.stop_tools = set(stop_tools or [])
+        
+        # Store the hooks
+        self.after_model_hooks = after_model_hooks
         
         # Handle LLM configuration
         self.llm_config = self._setup_llm_config(llm_config)
@@ -185,7 +190,8 @@ class Agent:
             max_running_subagents=max_running_subagents,
             retry_attempts=retry_attempts,
             token_counter=self.token_counter,
-            langfuse_client=self.langfuse_client
+            langfuse_client=self.langfuse_client,
+            after_model_hooks=self.after_model_hooks
         )
         
         # Register this agent for cleanup
@@ -250,10 +256,11 @@ class Agent:
             # Add user message to history
             self.history.append({"role": "user", "content": message})
             
+            # Add system prompt as first message if history is empty (first run)
+            if len(self.history) == 1:  # Only user message exists
+                self.history.insert(0, {"role": "system", "content": self._build_system_prompt_with_capabilities(merged_context)})
+            
             try:
-                # Build system prompt with current context
-                system_prompt = self._build_system_prompt_with_capabilities(merged_context)
-                
                 # Generate response using the executor
                 if self.langfuse_client:
                     try:
@@ -273,8 +280,11 @@ class Agent:
                         ) as span:
                             logger.info(f"📊 Created Langfuse span for agent: {self.name}")
                             
-                            # Execute the agent task
-                            response = self.executor.execute(message, system_prompt, self.history, dump_trace_path)
+                            # Execute the agent task - executor now returns response and updated messages
+                            response, updated_messages = self.executor.execute(self.history, dump_trace_path)
+                            
+                            # Update history with all new messages generated during execution
+                            self.history = updated_messages
                             
                             # Update span with response
                             self.langfuse_client.update_current_span(
@@ -294,12 +304,17 @@ class Agent:
                         
                     except Exception as langfuse_error:
                         logger.warning(f"⚠️ Langfuse tracing failed: {langfuse_error}")
-                        response = self.executor.execute(message, system_prompt, self.history, dump_trace_path)
+                        response, updated_messages = self.executor.execute(self.history, dump_trace_path)
+                        # Update history with all new messages even when Langfuse fails
+                        self.history = updated_messages
                 else:
-                    response = self.executor.execute(message, system_prompt, self.history, dump_trace_path)
+                    response, updated_messages = self.executor.execute(self.history, dump_trace_path)
+                    # Update history with all new messages generated during execution
+                    self.history = updated_messages
                 
-                # Add assistant response to history
-                self.history.append({"role": "assistant", "content": response})
+                # Add final assistant response to history if not already included
+                if not self.history or self.history[-1]["role"] != "assistant" or self.history[-1]["content"] != response:
+                    self.history.append({"role": "assistant", "content": response})
                 
                 logger.info(f"✅ Agent '{self.name}' completed execution")
                 
@@ -314,6 +329,7 @@ class Agent:
                 
                 if self.error_handler:
                     error_response = self.error_handler(e, self, merged_context)
+                    # Always add error response to history
                     self.history.append({"role": "assistant", "content": error_response})
                     if return_final_state:
                         final_state = ctx.state.copy()
@@ -321,6 +337,9 @@ class Agent:
                     else:
                         return error_response
                 else:
+                    # Even if no error handler, add an error message to history for completeness
+                    error_message = f"Error: {str(e)}"
+                    self.history.append({"role": "assistant", "content": error_message})
                     raise
     
     def add_tool(self, tool) -> None:
@@ -650,6 +669,8 @@ def create_agent(
     max_response_tokens: Optional[int] = None,
     # Stop tools parameters
     stop_tools: Optional[List[str]] = None,
+    # Hook parameters
+    after_model_hooks: Optional[List[Callable]] = None,
     **llm_kwargs
 ) -> Agent:
     """Create a new agent with specified configuration."""
@@ -692,4 +713,5 @@ def create_agent(
         initial_context=initial_context,
         mcp_servers=mcp_servers,
         stop_tools=stop_tools,
+        after_model_hooks=after_model_hooks,
     )
