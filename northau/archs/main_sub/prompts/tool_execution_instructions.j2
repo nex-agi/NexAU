@@ -6,9 +6,9 @@ CRITICAL CONSTRAINT: You MUST output only ONE type of tool call XML at a time. D
 
 Valid tool call types (use only ONE per response):
 1. Single tool: <tool_use>
-2. Single sub-agent: <sub-agent>
+2. Single sub_agent: <sub_agent>
 3. Parallel tools only: <use_parallel_tool_calls>
-4. Parallel tools and sub-agents: <use_parallel_sub_agents>
+4. Parallel tools and sub_agents: <use_parallel_sub_agents>
 5. Batch agent processing: <use_batch_agent>
 
 IMPORTANT: After outputting any tool call XML block, you MUST STOP and WAIT for the tool execution results before continuing your response. Do NOT continue generating text after tool calls until you receive the results.
@@ -21,11 +21,11 @@ For single tool execution:
   </parameter>
 </tool_use>
 
-For single sub-agent delegation:
-<sub-agent>
+For single sub_agent delegation:
+<sub_agent>
   <agent_name>agent_name</agent_name>
   <message>task description</message>
-</sub-agent>
+</sub_agent>
 
 For parallel execution of multiple tools, use:
 <use_parallel_tool_calls>
@@ -75,4 +75,4 @@ EXECUTION FLOW REMINDER:
 3. Wait for the execution results to be provided to you
 4. Only then continue with analysis of the results and next steps
 5. Never generate additional content after XML blocks until results are returned
-6. NEVER mix different tool call types (e.g., don't use both <tool_use> and <sub-agent> in the same response)
+6. NEVER mix different tool call types (e.g., don't use both <tool_use> and <sub_agent> in the same response)

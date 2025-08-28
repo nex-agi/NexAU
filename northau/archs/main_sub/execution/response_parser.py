@@ -96,7 +96,7 @@ class ResponseParser:
                     tool_calls.append(tool_call)
             
             # Find individual sub-agent calls
-            sub_agent_pattern = r'<sub-agent>(.*?)</sub-agent>'
+            sub_agent_pattern = r'<sub_agent>(.*?)</sub_agent>'
             sub_agent_matches = re.findall(sub_agent_pattern, response, re.DOTALL)
             for sub_agent_xml in sub_agent_matches:
                 sub_agent_call = self._parse_sub_agent_call(sub_agent_xml)
