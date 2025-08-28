@@ -28,7 +28,7 @@ class Executor:
     def __init__(self, agent_name: str, tool_registry: dict[str, Any], sub_agent_factories: dict[str, Callable],
                  stop_tools: set[str], openai_client: Any, llm_config: Any, max_iterations: int = 100,
                  max_context_tokens: int = 128000, max_running_subagents: int = 5, 
-                 retry_attempts: int = 3, token_counter: TokenCounter | None = None,
+                 retry_attempts: int = 5, token_counter: TokenCounter | None = None,
                  langfuse_client: Any = None, after_model_hooks: list[AfterModelHook] | None = None):
         """Initialize executor.
         

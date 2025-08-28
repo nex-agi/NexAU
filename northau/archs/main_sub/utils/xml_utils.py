@@ -21,7 +21,7 @@ class XMLUtils:
         # List of tag pairs to check (opening_tag, closing_tag)
         tag_pairs = [
             ('<tool_use>', '</tool_use>'),
-            ('<sub-agent>', '</sub-agent>'),
+            ('<sub_agent>', '</sub_agent>'),
             ('<parallel_tool>', '</parallel_tool>'),
             ('<parallel_agent>', '</parallel_agent>'),
             ('<use_parallel_tool_calls>', '</use_parallel_tool_calls>'),
