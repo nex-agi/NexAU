@@ -46,7 +46,7 @@ class TokenCounter:
                 total_tokens = 0
                 for message in messages:
                     # Add tokens for role and content
-                    total_tokens += len(encoding.encode(message.get('content', '')))
+                    total_tokens += len(encoding.encode(message.get('content', ''), disallowed_special=()))
                 return total_tokens
             
             return tiktoken_message_counter
