@@ -5,6 +5,8 @@ You can use tools by including XML blocks in your response:
 {% for tool in tools %}
 
 ### {{ tool.name }}
+{{ tool.content or '' }}
+{% if tool.content is none%}
 {{ tool.description or 'No description available' }}
 Usage:
 <tool_use>
@@ -17,5 +19,6 @@ Usage:
 {% endif %}
   </parameter>
 </tool_use>
+{% endif %}
 {% endfor %}
 {% endif %}

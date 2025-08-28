@@ -154,6 +154,7 @@ class PromptHandler:
                 {
                     "name": tool.name,
                     "description": getattr(tool, 'description', ''),
+                    "content": getattr(tool, 'content', None),
                 }
                 for tool in agent.tools
             ]
