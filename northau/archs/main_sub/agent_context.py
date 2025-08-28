@@ -3,6 +3,8 @@
 import threading
 from typing import Dict, Any, Optional
 from contextvars import ContextVar
+import weakref
+from contextlib import contextmanager
 
 
 class AgentContext:
@@ -186,3 +188,84 @@ def merge_context_variables(existing_context: Dict[str, Any]) -> Dict[str, Any]:
     if _current_context is None:
         return existing_context
     return _current_context.merge_context_variables(existing_context)
+
+
+class GlobalStorage:
+    """Thread-safe storage shared across agents in the same agent hierarchy."""
+    
+    def __init__(self):
+        self._storage = {}
+        self._locks = {}
+        self._storage_lock = threading.RLock()
+        self._locks_lock = threading.RLock()
+    
+    def set(self, key: str, value: Any):
+        """Set a value in global storage."""
+        with self._storage_lock:
+            self._storage[key] = value
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get a value from global storage."""
+        with self._storage_lock:
+            return self._storage.get(key, default)
+    
+    def update(self, updates: Dict[str, Any]):
+        """Update multiple values in global storage."""
+        with self._storage_lock:
+            self._storage.update(updates)
+    
+    def delete(self, key: str) -> bool:
+        """Delete a key from global storage. Returns True if key existed."""
+        with self._storage_lock:
+            if key in self._storage:
+                del self._storage[key]
+                return True
+            return False
+    
+    def keys(self):
+        """Get all keys in global storage."""
+        with self._storage_lock:
+            return list(self._storage.keys())
+    
+    def items(self):
+        """Get all items in global storage."""
+        with self._storage_lock:
+            return list(self._storage.items())
+    
+    def clear(self):
+        """Clear all data from global storage."""
+        with self._storage_lock:
+            self._storage.clear()
+        with self._locks_lock:
+            self._locks.clear()
+    
+    def _get_lock(self, key: str) -> threading.RLock:
+        """Get or create a lock for a specific key."""
+        with self._locks_lock:
+            if key not in self._locks:
+                self._locks[key] = threading.RLock()
+            return self._locks[key]
+    
+    @contextmanager
+    def lock_key(self, key: str):
+        """Context manager to lock a specific key for exclusive access."""
+        lock = self._get_lock(key)
+        lock.acquire()
+        try:
+            yield self
+        finally:
+            lock.release()
+    
+    @contextmanager
+    def lock_multiple(self, *keys: str):
+        """Context manager to lock multiple keys for exclusive access."""
+        locks = [self._get_lock(key) for key in sorted(keys)]  # Sort to prevent deadlock
+        for lock in locks:
+            lock.acquire()
+        try:
+            yield self
+        finally:
+            for lock in reversed(locks):
+                lock.release()
+
+

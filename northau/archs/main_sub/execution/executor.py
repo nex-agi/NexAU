@@ -29,7 +29,8 @@ class Executor:
                  stop_tools: set[str], openai_client: Any, llm_config: Any, max_iterations: int = 100,
                  max_context_tokens: int = 128000, max_running_subagents: int = 5, 
                  retry_attempts: int = 5, token_counter: TokenCounter | None = None,
-                 langfuse_client: Any = None, after_model_hooks: list[AfterModelHook] | None = None):
+                 langfuse_client: Any = None, after_model_hooks: list[AfterModelHook] | None = None,
+                 global_storage: Any = None):
         """Initialize executor.
         
         Args:
@@ -52,12 +53,12 @@ class Executor:
         
         # Initialize components
         self.tool_executor = ToolExecutor(tool_registry, stop_tools, langfuse_client)
-        self.subagent_manager = SubAgentManager(agent_name, sub_agent_factories, langfuse_client)
+        self.subagent_manager = SubAgentManager(agent_name, sub_agent_factories, langfuse_client, global_storage)
         self.batch_processor = BatchProcessor(self.subagent_manager, max_running_subagents)
         self.response_parser = ResponseParser()
         self.response_generator = ResponseGenerator(
             agent_name, openai_client, llm_config, max_iterations, 
-            max_context_tokens, retry_attempts
+            max_context_tokens, retry_attempts, global_storage
         )
         self.tracer = Tracer(agent_name)
         self.hook_manager = HookManager(after_model_hooks)

@@ -17,7 +17,7 @@ class ResponseGenerator:
     """Handles LLM response generation with iteration control."""
     
     def __init__(self, agent_name: str, openai_client: Any, llm_config: Any, max_iterations: int = 100, 
-                 max_context_tokens: int = 128000, retry_attempts: int = 5):
+                 max_context_tokens: int = 128000, retry_attempts: int = 5, global_storage: Any = None):
         """Initialize response generator.
         
         Args:
@@ -27,6 +27,7 @@ class ResponseGenerator:
             max_iterations: Maximum number of iterations
             max_context_tokens: Maximum context token limit
             retry_attempts: Number of retry attempts for API calls
+            global_storage: Optional GlobalStorage instance for hooks
         """
         self.agent_name = agent_name
         self.openai_client = openai_client
@@ -34,6 +35,7 @@ class ResponseGenerator:
         self.max_iterations = max_iterations
         self.max_context_tokens = max_context_tokens
         self.retry_attempts = retry_attempts
+        self.global_storage = global_storage
     
     def generate_response(self, history: list[dict[str, str]], 
                          token_counter: Any, xml_processor: Any, tracer: Tracer | None = None) -> tuple[str, list[dict[str, str]]]:
@@ -173,7 +175,8 @@ class ResponseGenerator:
                     current_iteration=iteration,
                     original_response=assistant_response,
                     parsed_response=None,
-                    messages=messages
+                    messages=messages,
+                    global_storage=self.global_storage
                 )
                 processed_response, should_stop, stop_tool_result, updated_messages = xml_processor(after_model_hook_input)
                 
