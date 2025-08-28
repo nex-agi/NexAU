@@ -158,6 +158,38 @@ def create_remaining_reminder_hook(logger_name: str = "after_model_hook") -> Aft
     
     return remaining_reminder_hook
 
+def create_tool_after_approve_hook(tool_name: str) -> AfterModelHook:
+    """Ask for approval before running a tool.
+    
+    Args:
+        tool_name: The name of the tool to run
+    """
+    def tool_after_approve_hook(hook_input: AfterModelHookInput) -> HookResult:
+        if hook_input.parsed_response and hook_input.parsed_response.tool_calls:
+            tool_call_to_remove = []
+            for tool_call in hook_input.parsed_response.tool_calls:
+                if tool_call.tool_name == tool_name:
+                    print(f"🎣 Tool call: {tool_call.tool_name}")
+                    print(f"🎣 Tool call parameters: {tool_call.parameters}")
+                    # CLI option to approve or reject the tool call
+                    while True:
+                        approve = input(f"Approve running {tool_name}? (y/n): ")
+                        if approve not in ['y', 'n']:
+                            print("🎣 Invalid input. Please enter 'y' or 'n'.")
+                            continue
+                        else:    
+                            if approve == 'n':
+                                tool_call_to_remove.append(tool_call)
+                            break
+                    
+            if tool_call_to_remove:
+                hook_input.parsed_response.tool_calls = [
+                    call for call in hook_input.parsed_response.tool_calls 
+                    if call not in tool_call_to_remove]
+            return HookResult.with_modifications(parsed_response=hook_input.parsed_response)
+        return HookResult.no_changes()
+
+    return tool_after_approve_hook
 
 def create_filter_hook(allowed_tools: set[str] | None = None, 
                       allowed_agents: set[str] | None = None) -> AfterModelHook:
