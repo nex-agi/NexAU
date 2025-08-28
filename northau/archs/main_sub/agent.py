@@ -3,6 +3,7 @@
 from typing import Dict, List, Optional, Tuple, Callable, Any, Union
 import logging
 from pathlib import Path
+from jinja2 import Template as Jinja2Template
 
 try:
     from langfuse import Langfuse
@@ -501,6 +502,10 @@ Usage:
             # Add detailed tool parameter information
             if context.get('tools'):
                 for i, tool_info in enumerate(context['tools']):
+                    if tool_info.get('template_override'):
+                        tool_info['template_override'] = Jinja2Template(
+                            tool_info['template_override']
+                        ).render(**context)
                     if hasattr(self.tools[i], 'input_schema'):
                         schema = getattr(self.tools[i], 'input_schema', {})
                         properties = schema.get('properties', {})
