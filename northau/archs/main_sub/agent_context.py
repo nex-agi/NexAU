@@ -201,26 +201,56 @@ class GlobalStorage:
     
     def set(self, key: str, value: Any):
         """Set a value in global storage."""
-        with self._storage_lock:
-            self._storage[key] = value
+        # Use key-specific lock if it exists, otherwise use global lock
+        key_lock = self._locks.get(key)
+        if key_lock:
+            with key_lock:
+                self._storage[key] = value
+        else:
+            with self._storage_lock:
+                self._storage[key] = value
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get a value from global storage."""
-        with self._storage_lock:
-            return self._storage.get(key, default)
+        # Use key-specific lock if it exists, otherwise use global lock
+        key_lock = self._locks.get(key)
+        if key_lock:
+            with key_lock:
+                return self._storage.get(key, default)
+        else:
+            with self._storage_lock:
+                return self._storage.get(key, default)
     
     def update(self, updates: Dict[str, Any]):
         """Update multiple values in global storage."""
-        with self._storage_lock:
-            self._storage.update(updates)
+        # Check if any keys have specific locks
+        keys_with_locks = [k for k in updates.keys() if k in self._locks]
+        
+        if keys_with_locks:
+            # If some keys have specific locks, we need to handle them individually
+            for key, value in updates.items():
+                self.set(key, value)
+        else:
+            # If no keys have specific locks, use global lock
+            with self._storage_lock:
+                self._storage.update(updates)
     
     def delete(self, key: str) -> bool:
         """Delete a key from global storage. Returns True if key existed."""
-        with self._storage_lock:
-            if key in self._storage:
-                del self._storage[key]
-                return True
-            return False
+        # Use key-specific lock if it exists, otherwise use global lock
+        key_lock = self._locks.get(key)
+        if key_lock:
+            with key_lock:
+                if key in self._storage:
+                    del self._storage[key]
+                    return True
+                return False
+        else:
+            with self._storage_lock:
+                if key in self._storage:
+                    del self._storage[key]
+                    return True
+                return False
     
     def keys(self):
         """Get all keys in global storage."""
