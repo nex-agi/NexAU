@@ -21,17 +21,19 @@ except ImportError:
 class SubAgentManager:
     """Manages sub-agent lifecycle and delegation."""
     
-    def __init__(self, agent_name: str, sub_agent_factories: Dict[str, Callable], langfuse_client=None):
+    def __init__(self, agent_name: str, sub_agent_factories: Dict[str, Callable], langfuse_client=None, global_storage=None):
         """Initialize sub-agent manager.
         
         Args:
             agent_name: Name of the parent agent
             sub_agent_factories: Dictionary mapping sub-agent names to factory functions
             langfuse_client: Optional Langfuse client for tracing
+            global_storage: Optional global storage to share with sub-agents
         """
         self.agent_name = agent_name
         self.sub_agent_factories = sub_agent_factories
         self.langfuse_client = langfuse_client
+        self.global_storage = global_storage
         self.xml_parser = XMLParser()
         self._shutdown_event = threading.Event()
     
@@ -66,7 +68,23 @@ class SubAgentManager:
         
         # Instantiate a fresh sub-agent from the factory
         sub_agent_factory = self.sub_agent_factories[sub_agent_name]
-        sub_agent = sub_agent_factory()
+        
+        # Try to create sub-agent with global storage if available
+        if self.global_storage is not None:
+            try:
+                # Try to pass global_storage as keyword argument
+                sub_agent = sub_agent_factory(global_storage=self.global_storage)
+            except TypeError:
+                # If factory doesn't support global_storage parameter, create normally and set afterwards
+                sub_agent = sub_agent_factory()
+                sub_agent.global_storage = self.global_storage
+                # Also ensure the sub-agent's executor uses the same global storage
+                if hasattr(sub_agent, 'executor') and hasattr(sub_agent.executor, 'response_generator'):
+                    sub_agent.executor.response_generator.global_storage = self.global_storage
+                if hasattr(sub_agent, 'executor') and hasattr(sub_agent.executor, 'subagent_manager'):
+                    sub_agent.executor.subagent_manager.global_storage = self.global_storage
+        else:
+            sub_agent = sub_agent_factory()
         
         try:
             # Generate sub-agent trace path if main agent has tracing enabled
