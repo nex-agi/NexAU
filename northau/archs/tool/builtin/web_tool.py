@@ -188,7 +188,7 @@ def web_search(
 
 def web_read(
     url: str,
-    timeout: int = 30,
+    timeout: int = 100,
     use_html_parser: bool = True
 ) -> Dict[str, Any]:
     """
