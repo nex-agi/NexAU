@@ -402,10 +402,10 @@ The LLM can use tools by including XML blocks in its response:
 Similarly, sub-agents are called using XML syntax:
 
 ```xml
-<sub-agent>
+<sub_agent>
   <agent_name>file_search</agent_name>
   <message>find all Python files in the project</message>
-</sub-agent>
+</sub_agent>
 ```
 
 #### Implementation
@@ -548,7 +548,7 @@ def custom_error_handler(error, agent, context):
 agent = create_agent(
     tools=[...],
     error_handler=custom_error_handler,
-    retry_attempts=3,
+    retry_attempts=5,
     timeout=300
 )
 ```
@@ -667,7 +667,7 @@ def create_agent(
     model_base_url: Optional[str] = None,
     max_context: int = 100000,
     error_handler: Optional[Callable] = None,
-    retry_attempts: int = 3,
+    retry_attempts: int = 5,
     timeout: int = 300
 ) -> Agent:
     """
