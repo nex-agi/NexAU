@@ -607,7 +607,15 @@ from northau.archs.main_sub.execution.hooks import create_remaining_reminder_hoo
 
 # Adds iteration count reminders to conversation
 reminder_hook = create_remaining_reminder_hook()
+```python
+from northau.archs.main_sub.execution.hooks import create_tool_after_approve_hook
+
+tool_after_approve_hook = create_tool_after_approve_hook(
+    tool_name='WebSearch'
+) # each time WebSearch is called, the CLI prompts whether to approve (y/n). If no, the agent stops
 ```
+
+#### Tool Approve Hook
 
 #### Advanced Hook Examples
 
