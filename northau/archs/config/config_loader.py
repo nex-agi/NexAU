@@ -62,6 +62,45 @@ def load_agent_config(
         initial_config.update(initial_context)
         stop_tools = config.get('stop_tools', [])
         
+        # Handle after_model_hooks configuration
+        after_model_hooks = None
+        if 'after_model_hooks' in config:
+            hooks_config = config['after_model_hooks']
+            after_model_hooks = []
+            
+            if not isinstance(hooks_config, list):
+                raise ConfigError("'after_model_hooks' must be a list")
+            
+            for i, hook_config in enumerate(hooks_config):
+                try:
+                    if isinstance(hook_config, str):
+                        # Simple import string format
+                        hook_func = import_from_string(hook_config)
+                        after_model_hooks.append(hook_func)
+                    elif isinstance(hook_config, dict):
+                        # Dictionary format with import and optional parameters
+                        import_string = hook_config.get('import')
+                        if not import_string:
+                            raise ConfigError(f"Hook {i} missing 'import' field")
+                        
+                        hook_func = import_from_string(import_string)
+                        
+                        # Check if there are parameters to pass
+                        params = hook_config.get('params', {})
+                        if params:
+                            # For hooks that are factories (like create_* functions), call them with params
+                            if callable(hook_func):
+                                hook_instance = hook_func(**params)
+                                after_model_hooks.append(hook_instance)
+                            else:
+                                raise ConfigError(f"Hook {i} is not callable and cannot accept parameters")
+                        else:
+                            after_model_hooks.append(hook_func)
+                    else:
+                        raise ConfigError(f"Hook {i} must be a string or dictionary")
+                except Exception as e:
+                    raise ConfigError(f"Error loading hook {i}: {e}")
+        
         # Handle token counter configuration
         token_counter = None
         if 'token_counter' in config:
@@ -150,7 +189,8 @@ def load_agent_config(
             initial_state=initial_state,
             initial_config=initial_config,
             initial_context=initial_context,
-            stop_tools=stop_tools
+            stop_tools=stop_tools,
+            after_model_hooks=after_model_hooks
         )
         
         # Apply template context if provided and using Jinja templates
@@ -343,6 +383,27 @@ def create_default_config(output_path: str, agent_name: str = "default_agent") -
         #         'model_name': 'gpt-4'
         #     }
         # },
+        # Optional: After model hooks for processing LLM responses
+        # 'after_model_hooks': [
+        #     # Simple import string
+        #     'northau.archs.main_sub.execution.hooks:create_logging_hook',
+        #     # Hook with parameters
+        #     {
+        #         'import': 'northau.archs.main_sub.execution.hooks:create_filter_hook',
+        #         'params': {
+        #             'allowed_tools': ['bash', 'file_reader'],
+        #             'allowed_agents': ['helper_agent']
+        #         }
+        #     },
+        #     # Rate limiting hook
+        #     {
+        #         'import': 'northau.archs.main_sub.execution.hooks:create_rate_limit_hook',
+        #         'params': {
+        #             'max_tool_calls': 3,
+        #             'max_sub_agent_calls': 2
+        #         }
+        #     }
+        # ],
         'tools': [
             {
                 'name': 'bash',
