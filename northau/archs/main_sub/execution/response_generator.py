@@ -17,7 +17,7 @@ class ResponseGenerator:
     """Handles LLM response generation with iteration control."""
     
     def __init__(self, agent_name: str, openai_client: Any, llm_config: Any, max_iterations: int = 100, 
-                 max_context_tokens: int = 128000, retry_attempts: int = 3):
+                 max_context_tokens: int = 128000, retry_attempts: int = 5):
         """Initialize response generator.
         
         Args:
@@ -99,7 +99,7 @@ class ResponseGenerator:
                 # Add stop sequences for XML closing tags to prevent malformed XML
                 xml_stop_sequences = [
                     "</tool_use>",
-                    "</sub-agent>", 
+                    "</sub_agent>", 
                     "</use_parallel_tool_calls>",
                     "</use_parallel_sub_agents>",
                     "</use_batch_agent>"
@@ -151,7 +151,7 @@ class ResponseGenerator:
                 
                 # Check if response contains tool calls or sub-agent calls (including parallel formats and batch processing)
                 has_tool_calls = bool(re.search(r'<tool_use>.*?</tool_use>', assistant_response, re.DOTALL))
-                has_sub_agent_calls = bool(re.search(r'<sub-agent>.*?</sub-agent>', assistant_response, re.DOTALL))
+                has_sub_agent_calls = bool(re.search(r'<sub_agent>.*?</sub_agent>', assistant_response, re.DOTALL))
                 has_parallel_tool_calls = bool(re.search(r'<use_parallel_tool_calls>.*?</use_parallel_tool_calls>', assistant_response, re.DOTALL))
                 has_parallel_sub_agents = bool(re.search(r'<use_parallel_sub_agents>.*?</use_parallel_sub_agents>', assistant_response, re.DOTALL))
                 has_batch_agent = bool(re.search(r'<use_batch_agent>.*?</use_batch_agent>', assistant_response, re.DOTALL))
@@ -200,16 +200,17 @@ class ResponseGenerator:
                 # Add tool results as user feedback with iteration context
                 remaining_iterations = self.max_iterations - iteration - 1
                 iteration_hint = self._build_iteration_hint(iteration + 1, self.max_iterations, remaining_iterations)
+                token_limit_hint = self._build_token_limit_hint(current_prompt_tokens, self.max_context_tokens, available_tokens, desired_max_tokens)
                 
                 if tool_results:
                     messages.append({
                         "role": "user", 
-                        "content": f"Tool execution results:\n{tool_results}\n\n{iteration_hint}"
+                        "content": f"Tool execution results:\n{tool_results}\n\n{iteration_hint}\n\n{token_limit_hint}"
                     })
                 else:
                     messages.append({
                         "role": "user", 
-                        "content": f"{iteration_hint}"
+                        "content": f"{iteration_hint}\n\n{token_limit_hint}"
                     })
                 
                 iteration += 1
@@ -263,3 +264,14 @@ class ResponseGenerator:
         else:
             return (f"🔄 Iteration {current_iteration}/{max_iterations} - Continue your response if you have more to say, "
                    f"or if you need to make additional tool calls or sub-agent calls.")
+    
+    def _build_token_limit_hint(self, current_prompt_tokens: int, max_tokens: int, remaining_tokens: int, desired_max_tokens: int) -> str:
+        """Build a hint message for the LLM about token limit."""
+        if remaining_tokens < 3 * desired_max_tokens:
+            return (f"⚠️ WARNING: Token usage is approaching the limit {current_prompt_tokens}/{max_tokens}."
+                   f"You have only {remaining_tokens} tokens left."
+                   f"Please be mindful of the token limit and avoid making additional tool calls or sub-agent calls "
+                   f"unless absolutely critical. Focus on summarizing your findings and providing final recommendations.")
+        else:
+            return (f"🔄 Token Usage: {current_prompt_tokens}/{max_tokens} in the current prompt - {remaining_tokens} tokens left."
+                    f"Continue your response if you have more to say, or if you need to make additional tool calls or sub-agent calls.")
