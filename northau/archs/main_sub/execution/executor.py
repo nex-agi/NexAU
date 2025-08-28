@@ -143,8 +143,10 @@ class Executor:
                 logger.warning(f"⚠️ Hook execution failed: {e}")
         
         # If no calls found after hooks, return original response
+        logger.info(f"🎣 Parsed response after hooks: {parsed_response}")
+        logger.info(f"parsed has calls: {parsed_response.has_calls()}")
         if not parsed_response.has_calls():
-            return hook_input.original_response, False, None, current_messages
+            return hook_input.original_response, True, None, current_messages
         
         # Phase 2: Execute all parsed calls
         logger.info(f"⚡ Phase 2: Executing {parsed_response.get_call_summary()}")
