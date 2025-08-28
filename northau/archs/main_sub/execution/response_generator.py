@@ -2,24 +2,21 @@
 
 import logging
 import re
-from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime
+from typing import Any
 
 from ..utils.xml_utils import XMLUtils
 from ..tracing.tracer import Tracer
+from .hooks import AfterModelHookInput
 
 logger = logging.getLogger(__name__)
 
-try:
-    import openai
-except ImportError:
-    openai = None
+
 
 
 class ResponseGenerator:
     """Handles LLM response generation with iteration control."""
     
-    def __init__(self, agent_name: str, openai_client, llm_config, max_iterations: int = 100, 
+    def __init__(self, agent_name: str, openai_client: Any, llm_config: Any, max_iterations: int = 100, 
                  max_context_tokens: int = 128000, retry_attempts: int = 3):
         """Initialize response generator.
         
@@ -38,38 +35,26 @@ class ResponseGenerator:
         self.max_context_tokens = max_context_tokens
         self.retry_attempts = retry_attempts
     
-    def generate_response(self, message: str, system_prompt: str, history: List[Dict[str, str]], 
-                         token_counter, xml_processor, tracer: Optional[Tracer] = None) -> str:
+    def generate_response(self, history: list[dict[str, str]], 
+                         token_counter: Any, xml_processor: Any, tracer: Tracer | None = None) -> tuple[str, list[dict[str, str]]]:
         """Generate response using OpenAI API with XML-based tool and sub-agent calls.
         
         Args:
-            message: User message
-            system_prompt: System prompt to use
-            history: Conversation history
+            history: Complete conversation history including system prompt and user message
             token_counter: Token counting function
             xml_processor: XML call processor
             tracer: Optional tracer for logging
             
         Returns:
-            Final response from the LLM
+            Tuple of (final_response, updated_messages_history)
         """
         if not self.openai_client:
             raise RuntimeError("OpenAI client is not available. Please check your API configuration.")
         
         try:
-            # Prepare initial messages
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": message}
-            ]
-            
-            # Add conversation history
-            if history:
-                # Insert history before the current message
-                history_messages = []
-                for msg in history[:-1]:  # Exclude the current message we just added
-                    history_messages.append(msg)
-                messages = [messages[0]] + history_messages + [messages[1]]
+            # Use history directly as the single source of truth
+            # History should already contain system prompt and all messages
+            messages = history.copy()
             
             # Loop until no more tool calls or sub-agent calls are made
             iteration = 0
@@ -143,7 +128,10 @@ class ResponseGenerator:
                 
                 logger.info(f"🧠 Calling LLM for agent '{self.agent_name}'...")
                 response = self._call_openai_with_retry(**api_params)
-                assistant_response = response.choices[0].message.content
+                if response and hasattr(response, 'choices') and response.choices:
+                    assistant_response = response.choices[0].message.content
+                else:
+                    raise RuntimeError("Invalid response from OpenAI API")
                 
                 # Log LLM response to trace if enabled
                 if tracer:
@@ -180,7 +168,17 @@ class ResponseGenerator:
                 
                 # Process tool calls and sub-agent calls
                 logger.info(f"⚙️ Processing tool/sub-agent calls for agent '{self.agent_name}'...")
-                processed_response, should_stop, stop_tool_result = xml_processor(assistant_response, tracer)
+                after_model_hook_input = AfterModelHookInput(
+                    max_iterations=self.max_iterations,
+                    current_iteration=iteration,
+                    original_response=assistant_response,
+                    parsed_response=None,
+                    messages=messages
+                )
+                processed_response, should_stop, stop_tool_result, updated_messages = xml_processor(after_model_hook_input)
+                
+                # Update messages with any modifications from hooks
+                messages = updated_messages
                 
                 # Check if a stop tool was executed
                 if should_stop:
@@ -188,13 +186,13 @@ class ResponseGenerator:
                     # Return the stop tool result directly, formatted as JSON if it's not a string
                     if stop_tool_result is not None:
                         if isinstance(stop_tool_result, str):
-                            return stop_tool_result
+                            return stop_tool_result, messages
                         else:
                             import json
-                            return json.dumps(stop_tool_result, indent=4, ensure_ascii=False)
+                            return json.dumps(stop_tool_result, indent=4, ensure_ascii=False), messages
                     else:
                         # Fallback to the processed response if no specific result
-                        return processed_response
+                        return processed_response, messages
                 
                 # Extract just the tool results from processed_response
                 tool_results = processed_response.replace(assistant_response, "").strip()
@@ -206,7 +204,7 @@ class ResponseGenerator:
                 if tool_results:
                     messages.append({
                         "role": "user", 
-                        "content": f"Tool execution results:\\n{tool_results}\\n\\n{iteration_hint}"
+                        "content": f"Tool execution results:\n{tool_results}\n\n{iteration_hint}"
                     })
                 else:
                     messages.append({
@@ -220,13 +218,13 @@ class ResponseGenerator:
             if iteration >= self.max_iterations:
                 final_response += "\\n\\n[Note: Maximum iteration limit reached]"
             
-            return final_response
+            return final_response, messages
             
         except Exception as e:
             # Re-raise with more context
             raise RuntimeError(f"Error calling OpenAI API: {e}") from e
     
-    def _call_openai_with_retry(self, **kwargs):
+    def _call_openai_with_retry(self, **kwargs: Any) -> Any:
         """Call OpenAI client with exponential backoff retry."""
         import time
         

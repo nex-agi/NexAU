@@ -62,6 +62,45 @@ def load_agent_config(
         initial_config.update(initial_context)
         stop_tools = config.get('stop_tools', [])
         
+        # Handle after_model_hooks configuration
+        after_model_hooks = None
+        if 'after_model_hooks' in config:
+            hooks_config = config['after_model_hooks']
+            after_model_hooks = []
+            
+            if not isinstance(hooks_config, list):
+                raise ConfigError("'after_model_hooks' must be a list")
+            
+            for i, hook_config in enumerate(hooks_config):
+                try:
+                    if isinstance(hook_config, str):
+                        # Simple import string format
+                        hook_func = import_from_string(hook_config)
+                        after_model_hooks.append(hook_func)
+                    elif isinstance(hook_config, dict):
+                        # Dictionary format with import and optional parameters
+                        import_string = hook_config.get('import')
+                        if not import_string:
+                            raise ConfigError(f"Hook {i} missing 'import' field")
+                        
+                        hook_func = import_from_string(import_string)
+                        
+                        # Check if there are parameters to pass
+                        params = hook_config.get('params', {})
+                        if params:
+                            # For hooks that are factories (like create_* functions), call them with params
+                            if callable(hook_func):
+                                hook_instance = hook_func(**params)
+                                after_model_hooks.append(hook_instance)
+                            else:
+                                raise ConfigError(f"Hook {i} is not callable and cannot accept parameters")
+                        else:
+                            after_model_hooks.append(hook_func)
+                    else:
+                        raise ConfigError(f"Hook {i} must be a string or dictionary")
+                except Exception as e:
+                    raise ConfigError(f"Error loading hook {i}: {e}")
+        
         # Handle token counter configuration
         token_counter = None
         if 'token_counter' in config:
@@ -150,7 +189,8 @@ def load_agent_config(
             initial_state=initial_state,
             initial_config=initial_config,
             initial_context=initial_context,
-            stop_tools=stop_tools
+            stop_tools=stop_tools,
+            after_model_hooks=after_model_hooks
         )
         
         # Apply template context if provided and using Jinja templates
@@ -314,44 +354,3 @@ def validate_config_schema(config: Dict[str, Any]) -> bool:
             raise ConfigError(f"Sub-agent configuration {i} missing 'name' field")
     
     return True
-
-
-def create_default_config(output_path: str, agent_name: str = "default_agent") -> None:
-    """
-    Create a default agent configuration file.
-    
-    Args:
-        output_path: Path where to save the configuration
-        agent_name: Name for the agent
-    """
-    default_config = {
-        'name': agent_name,
-        'max_context_tokens': 128000,
-        'max_running_subagents': 5,
-        'system_prompt': f'You are an AI agent named {agent_name}. Help users accomplish their tasks efficiently.',
-        'system_prompt_type': 'string',
-        'llm_config': {
-            'model': 'gpt-4',
-            'base_url': 'https://api.openai.com/v1',
-            'temperature': 0.7,
-            'max_tokens': 4096
-        },
-        # Optional: Custom token counter
-        # 'token_counter': {
-        #     'import': 'my_module:custom_token_counter',
-        #     'params': {
-        #         'model_name': 'gpt-4'
-        #     }
-        # },
-        'tools': [
-            {
-                'name': 'bash',
-                'yaml_path': 'tools/Bash.yaml',
-                'binding': 'northau.archs.tool.builtin.bash_tool:bash'
-            }
-        ],
-        'sub_agents': []
-    }
-    
-    with open(output_path, 'w', encoding='utf-8') as f:
-        yaml.dump(default_config, f, default_flow_style=False, indent=2)

@@ -5,6 +5,7 @@ from typing import Any
 
 
 import os
+import logging
 
 from northau.archs.main_sub.agent import create_agent
 from northau.archs.llm import LLMConfig
@@ -12,6 +13,12 @@ from northau.archs.tool import Tool
 from northau.archs.tool.builtin.feishu import upload_feishu_file, send_feishu_message, get_feishu_chat_list
 from northau.archs.tool.builtin.bash_tool import bash_tool
 from northau.archs.tool.builtin.web_tool import web_search, web_read
+from northau.archs.main_sub.execution.hooks import create_tool_after_approve_hook
+
+# Configure logging for hooks to ensure they appear
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+hook_logger = logging.getLogger("minimax_agent_hooks")
+hook_logger.setLevel(logging.INFO)
 
 
 
@@ -106,10 +113,13 @@ When use video generation of MiniMax:
 
 Do not ask user to provide any information, just use the tools to get the information.
 Note that if you response with multiple tools, they will run in parallel. If you need to use the result of one tool in another tool, you need to wait for the first tool to complete and then use the result in the second tool.
+
+Today is {{date}}.
 """,
             mcp_servers=mcp_servers,
             llm_config=llm_config,
             tools=tools,
+            after_model_hooks=[create_tool_after_approve_hook("WebSearch")]
         )
 
         print("✅ Agent created successfully!")
@@ -153,7 +163,7 @@ Note that if you response with multiple tools, they will run in parallel. If you
 # —— 爱你们的小北
 #         """
 #         response = agent.run(f"帮我生成一段语音并发送到飞书群 bot测试群 里，内容是：{content}")
-        response = agent.run("今天是 2025年 8 月 10 日，现使用 WebSearch 和 WebRead 工具，搜索并整理今天的最新的 LLM 相关的资讯，然后用MiniMax的生成语音功能制造一个语音，并发语音消息到飞书的 bot测试群 里")
+        response = agent.run("WebSearch 和 WebRead 工具，搜索并整理今天的最新的 LLM 相关的资讯，然后用MiniMax的生成语音功能制造一个语音，并发语音消息到飞书的 bot测试群 里", context={"date": "2025年 8 月 27 日"})
         # response = agent.run("/Users/hanzhenhua/Desktop/tts_1754551121_7gneh8.mp3 帮我转成 opus并发送到飞书群 bot 测试群里")
         # response = agent.run("帮我获取飞书群列表")
         # response = agent.run("帮我上传/Users/hanzhenhua/Desktop/tts_1754551121_7gneh8.opus文件到飞书，注意要用 opus 格式，需要带 duration （可以用ffproobe 拿），并用语音消息发送到飞书群 bot 测试群里")
