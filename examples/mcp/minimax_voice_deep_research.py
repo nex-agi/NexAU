@@ -13,7 +13,7 @@ from northau.archs.tool import Tool
 from northau.archs.tool.builtin.feishu import upload_feishu_file, send_feishu_message, get_feishu_chat_list
 from northau.archs.tool.builtin.bash_tool import bash_tool
 from northau.archs.tool.builtin.web_tool import web_search, web_read
-from northau.archs.main_sub.execution.hooks import create_logging_hook, create_remaining_reminder_hook
+from northau.archs.main_sub.execution.hooks import create_tool_after_approve_hook
 
 # Configure logging for hooks to ensure they appear
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -119,7 +119,7 @@ Today is {{date}}.
             mcp_servers=mcp_servers,
             llm_config=llm_config,
             tools=tools,
-            after_model_hooks=[create_remaining_reminder_hook("minimax_agent_hooks"), create_logging_hook("minimax_agent_hooks")]
+            after_model_hooks=[create_tool_after_approve_hook("WebSearch")]
         )
 
         print("✅ Agent created successfully!")
