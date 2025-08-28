@@ -46,9 +46,15 @@ class CleanupManager:
             if self._cleanup_registered:
                 return
             
+        try:
             # Register signal handlers for graceful shutdown
+            # Signal handlers can only be registered in the main thread
             signal.signal(signal.SIGTERM, self._signal_handler)
             signal.signal(signal.SIGINT, self._signal_handler)
+            logger.debug("🔧 Signal handlers registered")
+        except ValueError as e:
+            # This happens when not in main thread - signal handlers can't be registered
+            logger.debug(f"Could not register signal handlers (not in main thread): {e}")
             
             # Register atexit handler as fallback
             atexit.register(self._cleanup_all_agents)
