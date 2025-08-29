@@ -1,9 +1,12 @@
 """Hook interfaces and utilities for agent execution."""
 
 from northau.archs.main_sub.execution.parse_structures import ParsedResponse
-from typing import Protocol
+from typing import Protocol, TYPE_CHECKING
 from dataclasses import dataclass
 from .parse_structures import ParsedResponse
+
+if TYPE_CHECKING:
+    from ..agent_context import GlobalStorage
 
 
 @dataclass
@@ -14,12 +17,14 @@ class AfterModelHookInput:
     - original_response: The raw response from the LLM
     - parsed_response: The parsed structure containing tool/agent calls
     - messages: The current conversation history
+    - global_storage: The agent's GlobalStorage instance for shared state
     """
     max_iterations: int
     current_iteration: int
     original_response: str
     parsed_response: ParsedResponse | None
     messages: list[dict[str, str]]
+    global_storage: 'GlobalStorage | None' = None
 
 
 @dataclass
@@ -75,6 +80,7 @@ class AfterModelHook(Protocol):
                 - original_response: The original response from the LLM
                 - parsed_response: The parsed structure containing all tool/agent calls
                 - messages: The current conversation history (list of message dicts)
+                - global_storage: The agent's GlobalStorage instance for shared state access
             
         Returns:
             HookResult containing any modifications:

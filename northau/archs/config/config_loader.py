@@ -9,6 +9,7 @@ from ..tool import Tool
 from ..llm import LLMConfig
 import logging
 import dotenv
+from ..main_sub.agent_context import GlobalStorage
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,8 @@ class ConfigError(Exception):
 def load_agent_config(
     config_path: str,
     overrides: Optional[Dict[str, Any]] = None,
-    template_context: Optional[Dict[str, Any]] = None
+    template_context: Optional[Dict[str, Any]] = None,
+    global_storage: Optional[GlobalStorage] = None
 ) -> Agent:
     """
     Load agent configuration from YAML file.
@@ -98,8 +100,11 @@ def load_agent_config(
                                 raise ConfigError(f"Hook {i} is not callable and cannot accept parameters")
                         else:
                             after_model_hooks.append(hook_func)
+                    elif callable(hook_config):
+                        # Direct callable function (e.g., from overrides)
+                        after_model_hooks.append(hook_config)
                     else:
-                        raise ConfigError(f"Hook {i} must be a string or dictionary")
+                        raise ConfigError(f"Hook {i} must be a string, dictionary, or callable")
                 except Exception as e:
                     raise ConfigError(f"Error loading hook {i}: {e}")
         
@@ -176,7 +181,6 @@ def load_agent_config(
             except Exception as e:
                 raise ConfigError(f"Error loading sub-agent '{sub_config.get('name', 'unknown')}': {e}")
         
-        system_prompt = path.parent / system_prompt
         # Create agent
         agent = create_agent(
             name=agent_name,
@@ -192,11 +196,15 @@ def load_agent_config(
             initial_config=initial_config,
             initial_context=initial_context,
             stop_tools=stop_tools,
-            after_model_hooks=after_model_hooks
+            after_model_hooks=after_model_hooks,
+            global_storage=global_storage
         )
         
         # Apply template context if provided and using Jinja templates
         if system_prompt_type == "jinja":
+            # convert system_prompt from relative path to absolute path
+            if not Path(system_prompt).is_absolute():
+                system_prompt = path.parent / system_prompt
             # Update the agent's prompt handler context
             if hasattr(agent, 'prompt_handler'):
                 agent.processed_system_prompt = agent.prompt_handler.process_prompt(
@@ -275,8 +283,8 @@ def load_sub_agent_from_config(
         config_path = base_path / config_path
     
     # Create factory function that loads agent when called
-    def agent_factory():
-        return load_agent_config(str(config_path))
+    def agent_factory(global_storage: Optional[GlobalStorage] = None):
+        return load_agent_config(str(config_path), global_storage=global_storage)
     
     return (name, agent_factory)
 
