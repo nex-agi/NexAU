@@ -1,9 +1,10 @@
 """Tool implementation for the Northau framework."""
 
 import yaml
-import json
 import jsonschema
-from typing import Dict, Callable, Optional, Any
+import inspect
+import traceback
+from typing import Dict, Callable, Optional
 from pathlib import Path
 
 
@@ -17,7 +18,6 @@ class Tool:
         input_schema: Dict,
         implementation: Callable,
         template_override: Optional[str] = None,
-        cache_results: bool = False,
         timeout: Optional[int] = None
     ):
         """Initialize a tool with schema and implementation."""
@@ -26,11 +26,7 @@ class Tool:
         self.input_schema = input_schema
         self.implementation = implementation
         self.template_override = template_override
-        self.cache_results = cache_results
         self.timeout = timeout
-        
-        # Cache for results if enabled
-        self._cache = {} if cache_results else None
         
         # Validate schema
         self._validate_schema()
@@ -54,6 +50,10 @@ class Tool:
         name = tool_def.get('name')
         description = tool_def.get('description', '')
         input_schema = tool_def.get('input_schema', {})
+        
+        if "global_storage" in input_schema:
+            raise ValueError(f"Tool definition of `{name}` contains 'global_storage' field in {yaml_path}, which will be injected by the framework, please remove it from the tool definition.")
+        
         template_override = tool_def.get('template_override', None)
         
         if not name:
@@ -71,28 +71,27 @@ class Tool:
     
     def execute(self, **params) -> Dict:
         """Execute the tool with given parameters."""
-        # Validate parameters
-        if not self.validate_params(params):
-            raise ValueError(f"Invalid parameters for tool '{self.name}': {params}")
+        # Handle global_storage parameter
+        filtered_params = params.copy()
+        if 'global_storage' in params:
+            # Check if the function signature accepts global_storage
+            sig = inspect.signature(self.implementation)
+            if 'global_storage' not in sig.parameters:
+                # Remove global_storage if function doesn't accept it
+                filtered_params.pop('global_storage', None)
         
-        # Check cache if enabled
-        if self.cache_results and self._cache is not None:
-            cache_key = self._generate_cache_key(params)
-            if cache_key in self._cache:
-                return self._cache[cache_key]
+        # Validate parameters (excluding global_storage for schema validation)
+        validation_params = {k: v for k, v in filtered_params.items() if k != 'global_storage'}
+        if not self.validate_params(validation_params):
+            raise ValueError(f"Invalid parameters for tool '{self.name}': {validation_params}")
         
         try:
             # Execute the implementation
-            result = self.implementation(**params)
+            result = self.implementation(**filtered_params)
             
             # Ensure result is a dictionary
             if not isinstance(result, dict):
                 result = {"result": result}
-            
-            # Cache result if enabled
-            if self.cache_results and self._cache is not None:
-                cache_key = self._generate_cache_key(params)
-                self._cache[cache_key] = result
             
             return result
             
@@ -101,6 +100,7 @@ class Tool:
             return {
                 "error": str(e),
                 "error_type": type(e).__name__,
+                "traceback": traceback.format_exc(),
                 "tool_name": self.name
             }
     
@@ -121,16 +121,6 @@ class Tool:
         except jsonschema.SchemaError as e:
             raise ValueError(f"Invalid JSON Schema for tool '{self.name}': {e}")
     
-    def _generate_cache_key(self, params: Dict) -> str:
-        """Generate a cache key from parameters."""
-        # Sort parameters to ensure consistent keys
-        sorted_params = json.dumps(params, sort_keys=True)
-        return f"{self.name}:{sorted_params}"
-    
-    def clear_cache(self):
-        """Clear the tool's cache."""
-        if self._cache is not None:
-            self._cache.clear()
     
     def get_schema(self) -> Dict:
         """Get the tool's input schema."""
@@ -143,7 +133,6 @@ class Tool:
             "template_override": self.template_override,
             "description": self.description,
             "input_schema": self.input_schema,
-            "cache_enabled": self.cache_results,
             "timeout": self.timeout
         }
     

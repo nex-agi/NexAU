@@ -178,7 +178,7 @@ class ResponseGenerator:
                     messages=messages,
                     global_storage=self.global_storage
                 )
-                processed_response, should_stop, stop_tool_result, updated_messages = xml_processor(after_model_hook_input)
+                processed_response, should_stop, stop_tool_result, updated_messages = xml_processor(after_model_hook_input, tracer=tracer)
                 
                 # Update messages with any modifications from hooks
                 messages = updated_messages

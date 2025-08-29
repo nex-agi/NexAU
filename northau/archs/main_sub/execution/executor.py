@@ -6,7 +6,9 @@ import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
-from typing import Any, Callable
+from typing import Any, Callable, Optional
+
+from northau.archs.main_sub.agent_context import GlobalStorage
 
 from .tool_executor import ToolExecutor
 from .subagent_manager import SubAgentManager
@@ -149,10 +151,10 @@ class Executor:
         
         # Phase 2: Execute all parsed calls
         logger.info(f"⚡ Phase 2: Executing {parsed_response.get_call_summary()}")
-        processed_response, should_stop, stop_tool_result = self._execute_parsed_calls(parsed_response, tracer)
+        processed_response, should_stop, stop_tool_result = self._execute_parsed_calls(parsed_response, hook_input.global_storage, tracer = tracer)
         return processed_response, should_stop, stop_tool_result, current_messages
     
-    def _execute_parsed_calls(self, parsed_response: ParsedResponse, tracer: Tracer | None = None) -> tuple[str, bool, str | None]:
+    def _execute_parsed_calls(self, parsed_response: ParsedResponse, global_storage: Optional[GlobalStorage] = None, tracer: Optional[Tracer] = None) -> tuple[str, bool, str | None]:
         """Execute all parsed calls in parallel.
         
         Args:
@@ -198,7 +200,7 @@ class Executor:
             tool_futures = {}
             for tool_call in parsed_response.tool_calls:
                 task_ctx = copy_context()
-                future = tool_executor.submit(task_ctx.run, self._execute_tool_call_safe, tool_call, tracer)
+                future = tool_executor.submit(task_ctx.run, self._execute_tool_call_safe, tool_call, global_storage, tracer)
                 tool_futures[future] = ('tool', tool_call)
             
             # Submit sub-agent execution tasks
@@ -273,7 +275,7 @@ class Executor:
         
         return processed_response, stop_tool_detected, stop_tool_result
     
-    def _execute_tool_call_safe(self, tool_call: ToolCall, tracer: Tracer | None = None) -> tuple[str, str, bool]:
+    def _execute_tool_call_safe(self, tool_call: ToolCall, global_storage: Optional[GlobalStorage] = None, tracer: Optional[Tracer] = None) -> tuple[str, str, bool]:
         """Safely execute a tool call."""
         try:
             # Log tool request to trace if enabled
@@ -286,6 +288,9 @@ class Executor:
                 converted_params[param_name] = self.tool_executor._convert_parameter_type(
                     tool_call.tool_name, param_name, param_value
                 )
+            
+            if global_storage is not None:
+                converted_params["global_storage"] = global_storage
             
             result = self.tool_executor.execute_tool(tool_call.tool_name, converted_params)
             
