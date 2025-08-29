@@ -22,7 +22,7 @@ except ImportError:
 
 from .prompt_handler import PromptHandler
 from ..llm import LLMConfig
-from .agent_context import AgentContext
+from .agent_context import AgentContext, GlobalStorage
 from .execution.executor import Executor
 from .utils.token_counter import TokenCounter
 from .utils.cleanup_manager import cleanup_manager
@@ -86,6 +86,8 @@ class Agent:
         stop_tools: Optional[List[str]] = None,
         # Hook parameters
         after_model_hooks: Optional[List[Callable]] = None,
+        # Global storage parameter
+        global_storage: Optional[GlobalStorage] = None,
     ):
         """Initialize an agent with specified configuration."""
         self.name = name or f"agent_{id(self)}"
@@ -105,6 +107,9 @@ class Agent:
         
         # Store the hooks
         self.after_model_hooks = after_model_hooks
+        
+        # Initialize or use provided global storage
+        self.global_storage = global_storage if global_storage is not None else GlobalStorage()
         
         # Handle LLM configuration
         self.llm_config = self._setup_llm_config(llm_config)
@@ -190,7 +195,8 @@ class Agent:
             retry_attempts=retry_attempts,
             token_counter=self.token_counter,
             langfuse_client=self.langfuse_client,
-            after_model_hooks=self.after_model_hooks
+            after_model_hooks=self.after_model_hooks,
+            global_storage=self.global_storage
         )
         # Register this agent for cleanup
         cleanup_manager.register_agent(self)
@@ -351,10 +357,6 @@ class Agent:
         self.sub_agent_factories[name] = agent_factory
         self.executor.add_sub_agent(name, agent_factory)
     
-    def delegate_task(self, task: str, sub_agent_name: str, context: Optional[Dict] = None) -> str:
-        """Explicitly delegate a task to a sub-agent."""
-        return self.executor.subagent_manager.call_sub_agent(sub_agent_name, task, context)
-    
     def call_sub_agent(self, sub_agent_name: str, message: str, context: Optional[Dict] = None) -> str:
         """Call a sub-agent like a tool call."""
         return self.executor.subagent_manager.call_sub_agent(sub_agent_name, message, context)
@@ -405,8 +407,9 @@ class Agent:
                 template_type=self.system_prompt_type
             )
         except Exception as e:
+            logger.error(f"❌ Error processing system prompt: {e}")
             # Fallback to default prompt if processing fails
-            return f"{self._get_default_system_prompt()}\\n\\nNote: System prompt processing failed: {e}"
+            return self._get_default_system_prompt()
     
     def _get_default_system_prompt(self) -> str:
         """Get default system prompt for the agent."""
@@ -673,6 +676,8 @@ def create_agent(
     stop_tools: Optional[List[str]] = None,
     # Hook parameters
     after_model_hooks: Optional[List[Callable]] = None,
+    # Global storage parameter
+    global_storage: Optional[GlobalStorage] = None,
     **llm_kwargs
 ) -> Agent:
     """Create a new agent with specified configuration."""
@@ -716,4 +721,5 @@ def create_agent(
         mcp_servers=mcp_servers,
         stop_tools=stop_tools,
         after_model_hooks=after_model_hooks,
+        global_storage=global_storage,
     )
