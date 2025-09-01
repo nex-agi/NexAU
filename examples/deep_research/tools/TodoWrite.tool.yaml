@@ -236,13 +236,13 @@ description: >-
   ## Example:
   <tool_use>
    <tool_name>TodoWrite</tool_name>
-      <parameters>
+      <parameter>
          <todos>[
             {"id": "1", "content": "Create a basic Python web server script", "status": "pending", "priority": "high"},
             {"id": "2", "content": "Add static file serving functionality", "status": "pending", "priority": "medium"},
             {"id": "3", "content": "Test the web server", "status": "pending", "priority": "low"}
          ]</todos>
-      </parameters>
+      </parameter>
    </tool_use>
 
 input_schema:
