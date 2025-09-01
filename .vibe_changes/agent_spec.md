@@ -391,10 +391,10 @@ The LLM can use tools by including XML blocks in its response:
 ```xml
 <tool_use>
   <tool_name>Bash</tool_name>
-  <parameters>
+  <parameter>
     <command>ls -la</command>
     <timeout>30</timeout>
-  </parameters>
+  </parameter>
 </tool_use>
 ```
 
