@@ -180,7 +180,12 @@ def load_agent_config(
                 sub_agents.append(sub_agent)
             except Exception as e:
                 raise ConfigError(f"Error loading sub-agent '{sub_config.get('name', 'unknown')}': {e}")
-        
+
+        # convert system_prompt from relative path to absolute path
+        if system_prompt_type in ["file", "jinja"] and not Path(system_prompt).is_absolute():
+            system_prompt = path.parent / system_prompt
+            assert Path(system_prompt).exists(), f"System prompt file not found: {system_prompt}"
+
         # Create agent
         agent = create_agent(
             name=agent_name,
@@ -202,9 +207,6 @@ def load_agent_config(
         
         # Apply template context if provided and using Jinja templates
         if system_prompt_type == "jinja":
-            # convert system_prompt from relative path to absolute path
-            if not Path(system_prompt).is_absolute():
-                system_prompt = path.parent / system_prompt
             # Update the agent's prompt handler context
             if hasattr(agent, 'prompt_handler'):
                 agent.processed_system_prompt = agent.prompt_handler.process_prompt(
