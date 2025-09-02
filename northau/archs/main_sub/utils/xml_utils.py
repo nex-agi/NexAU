@@ -256,7 +256,7 @@ class XMLParser:
         except ET.ParseError:
             pass
         
-        # Strategy 5: Extract content using regex and build minimal XML
+        # Strategy 5: Advanced parameter content extraction and reconstruction
         try:
             tool_name_match = re.search(r'<tool_name>\s*([^<]+)\s*</tool_name>', xml_content, re.IGNORECASE | re.DOTALL)
             tool_name = tool_name_match.group(1).strip() if tool_name_match else "unknown"
@@ -264,11 +264,46 @@ class XMLParser:
             # Build minimal XML structure
             minimal_xml = f"<tool_name>{tool_name}</tool_name>"
             
-            # Try to extract parameters
+            # Try to extract parameters with more robust handling
             params_match = re.search(r'<parameter>(.*?)</parameter>', xml_content, re.DOTALL | re.IGNORECASE)
             if params_match:
                 params_content = params_match.group(1).strip()
-                minimal_xml += f"<parameter>{params_content}</parameter>"
+                
+                # Try to fix common parameter issues
+                fixed_params = self._fix_parameter_content(params_content)
+                minimal_xml += f"<parameter>{fixed_params}</parameter>"
+            
+            return ET.fromstring(f"<root>{minimal_xml}</root>")
+        except (ET.ParseError, AttributeError):
+            pass
+        
+        # Strategy 6: Regex-based parameter extraction with CDATA wrapping
+        try:
+            tool_name_match = re.search(r'<tool_name>\s*([^<]+)\s*</tool_name>', xml_content, re.IGNORECASE | re.DOTALL)
+            tool_name = tool_name_match.group(1).strip() if tool_name_match else "unknown"
+            
+            minimal_xml = f"<tool_name>{tool_name}</tool_name>"
+            
+            # Extract all parameter tags individually using regex
+            param_pattern = r'<(\w+)>(.*?)</\1>'
+            param_matches = re.findall(param_pattern, xml_content, re.DOTALL | re.IGNORECASE)
+            
+            if param_matches:
+                params_xml = "<parameter>"
+                for param_name, param_value in param_matches:
+                    # Skip tool_name if it appears in parameters
+                    if param_name.lower() == 'tool_name':
+                        continue
+                    
+                    # Wrap parameter content in CDATA to preserve formatting
+                    clean_param_value = param_value.strip()
+                    if clean_param_value:
+                        params_xml += f"<{param_name}><![CDATA[{clean_param_value}]]></{param_name}>"
+                    else:
+                        params_xml += f"<{param_name}></{param_name}>"
+                
+                params_xml += "</parameter>"
+                minimal_xml += params_xml
             
             return ET.fromstring(f"<root>{minimal_xml}</root>")
         except (ET.ParseError, AttributeError):
@@ -330,3 +365,31 @@ class XMLParser:
         
         # Return as string if no other type matches
         return value
+    
+    def _fix_parameter_content(self, params_content: str) -> str:
+        """Fix common issues in parameter content that cause XML parsing to fail."""
+        try:
+            # Strategy 1: Wrap individual parameters in CDATA if they contain problematic content
+            def wrap_problematic_content(match):
+                param_name = match.group(1)
+                param_content = match.group(2)
+                
+                # Check if content has problematic characters or is very long
+                if ('&' in param_content or '<' in param_content or '>' in param_content or 
+                    len(param_content) > 100 or '\n' in param_content):
+                    return f"<{param_name}><![CDATA[{param_content}]]></{param_name}>"
+                return match.group(0)
+            
+            # Apply CDATA wrapping to parameters that need it
+            fixed_content = re.sub(
+                r'<(\w+)>(.*?)</\1>', 
+                wrap_problematic_content, 
+                params_content, 
+                flags=re.DOTALL
+            )
+            
+            return fixed_content
+            
+        except Exception:
+            # If fixing fails, wrap the entire content in a single CDATA section
+            return f"<raw_content><![CDATA[{params_content}]]></raw_content>"
