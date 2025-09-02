@@ -240,9 +240,10 @@ class MCPTool(Tool):
                             raise RuntimeError("Process not initialized")
                             
                         import json
+                        request_id = self._get_next_id()
                         request = {
                             "jsonrpc": "2.0",
-                            "id": self._get_next_id(),
+                            "id": request_id,
                             "method": method,
                             "params": params or {}
                         }
@@ -252,24 +253,50 @@ class MCPTool(Tool):
                         self.process.stdin.write(request_str.encode())
                         await self.process.stdin.drain()
                         
-                        # Read response
-                        response_line = await self.process.stdout.readline()
-                        response = json.loads(response_line.decode().strip())
+                        # Read responses until we get the one matching our request ID
+                        max_attempts = 10  # Prevent infinite loops
+                        attempts = 0
                         
-                        if "error" in response:
-                            raise Exception(f"MCP error: {response['error']}")
+                        while attempts < max_attempts:
+                            print("attempt", attempts)
+                            response_line = await self.process.stdout.readline()
                             
-                        return response
+                            if not response_line:
+                                raise Exception("MCP server closed connection")
+                                
+                            try:
+                                response = json.loads(response_line.decode().strip())
+                                
+                                # Check if this is a response to our request
+                                if "id" in response and response["id"] == request_id:
+                                    if "error" in response:
+                                        raise Exception(f"MCP error: {response['error']}")
+                                    return response
+                                # Ignore notifications and responses to other requests
+                                    
+                            except json.JSONDecodeError:
+                                # Ignore malformed JSON
+                                pass
+                                
+                            attempts += 1
+                        
+                        raise Exception(f"No matching response received for request ID {request_id} after {max_attempts} attempts")
                         
                     async def call_tool(self, name, arguments):
-                        response = await self._make_request("tools/call", {"name": name, "arguments": arguments})
-                        result_data = response.get("result", {})
-                        
-                        class ToolCallResult:
-                            def __init__(self, data):
-                                self.content = data.get("content", [])
-                                
-                        return ToolCallResult(result_data)
+                        try:
+                            response = await self._make_request("tools/call", {"name": name, "arguments": arguments})
+                            result_data = response.get("result", {})
+                            
+                            class ToolCallResult:
+                                def __init__(self, data):
+                                    self.content = data.get("content", [])
+                                    
+                            return ToolCallResult(result_data)
+                        except Exception as e:
+                            logger.error(f"MCP error: {e}")
+                            logger.error(f"Name: {name}")
+                            logger.error(f"Request: {arguments}")
+                            raise Exception(f"MCP error: {e}")
                 
                 # Create and initialize new session
                 session = DirectMCPSession(config.command, config.args or [], merged_env)
@@ -303,7 +330,10 @@ class MCPTool(Tool):
     
     def execute(self, **kwargs) -> Dict[str, Any]:
         """Execute the MCP tool synchronously (for backward compatibility)."""
-        return self._execute_sync(**kwargs)
+        # Filter out global_storage parameter as it's not needed for MCP tools
+        # and causes JSON serialization errors
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k != 'global_storage'}
+        return self._execute_sync(**filtered_kwargs)
     
     async def _execute_async(self, **kwargs) -> Dict[str, Any]:
         """Execute the MCP tool asynchronously."""
@@ -319,6 +349,8 @@ class MCPTool(Tool):
                     for item in result.content:
                         if hasattr(item, 'text'):
                             content_items.append(item.text)
+                        elif isinstance(item, dict) and 'text' in item:
+                            content_items.append(item['text'])
                         else:
                             content_items.append(str(item))
                     return {"result": "\n".join(content_items)}
