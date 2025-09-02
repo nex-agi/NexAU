@@ -16,48 +16,222 @@ logger = logging.getLogger(__name__)
 
 
 class HTTPMCPSession:
-    """HTTP MCP session that handles Connection: close servers with direct HTTP requests."""
+    """HTTP MCP session that handles MCP streamable HTTP with session management."""
     
     def __init__(self, config: 'MCPServerConfig', headers: Dict[str, str], timeout: float):
         self.config = config
         self.headers = headers
         self.timeout = timeout
         self._request_id = 0
+        self._session_id: Optional[str] = None
+        self._initialized = False
     
     def _get_next_id(self) -> int:
         """Get the next request ID."""
         self._request_id += 1
         return self._request_id
-        
-    async def _make_request(self, method: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Make a direct HTTP request to the MCP server."""
+    
+    async def _initialize_session(self) -> None:
+        """Initialize the MCP session."""
+        if self._initialized:
+            return
+            
         import httpx
         
-        request_data = {
+        # Send initialize request
+        init_request = {
             "jsonrpc": "2.0",
-            "method": method,
-            "params": params or {},
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "roots": {"listChanged": True},
+                    "sampling": {}
+                },
+                "clientInfo": {
+                    "name": "northau-mcp-client",
+                    "version": "1.0.0"
+                }
+            },
             "id": self._get_next_id()
         }
         
         async with httpx.AsyncClient(timeout=self.timeout) as client:
+            if not self.config.url:
+                raise ValueError("Server URL is required")
+            
             response = await client.post(
                 self.config.url,
-                json=request_data,
+                json=init_request,
                 headers=self.headers
             )
             response.raise_for_status()
-            return response.json()
+            
+            # Extract session ID from response headers
+            session_id = response.headers.get('mcp-session-id')
+            if session_id:
+                self._session_id = session_id
+                logger.debug(f"Captured session ID: {session_id}")
+            
+            # Parse SSE response
+            response_text = response.text
+            logger.debug(f"Initialize response: {response_text}")
+            
+            if "event: message" in response_text and "data: " in response_text:
+                # Extract JSON from SSE format
+                lines = response_text.strip().split('\n')
+                json_data = None
+                for line in lines:
+                    if line.startswith("data: "):
+                        json_data = line[6:]  # Remove "data: " prefix
+                        break
+                
+                if json_data:
+                    import json
+                    result = json.loads(json_data)
+                    
+                    if "error" in result:
+                        raise Exception(f"MCP initialization error: {result['error']}")
+                    
+                    # Check if we got a proper initialization result
+                    if "result" in result:
+                        # Send initialized notification as per MCP protocol
+                        await self._send_initialized_notification()
+                        self._initialized = True
+                        logger.info(f"MCP HTTP session initialized successfully with session ID: {self._session_id}")
+                        return
+                        
+            # If we get here, the response format was unexpected
+            raise Exception(f"Unexpected initialization response format: {response_text}")
+    
+    async def _send_initialized_notification(self) -> None:
+        """Send the initialized notification as per MCP protocol."""
+        import httpx
+        
+        notification_data = {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }
+        
+        # Prepare headers with session ID
+        request_headers = self.headers.copy()
+        if self._session_id:
+            request_headers["mcp-session-id"] = self._session_id
+        
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            if not self.config.url:
+                raise ValueError("Server URL is required")
+            response = await client.post(
+                self.config.url,
+                json=notification_data,
+                headers=request_headers
+            )
+            # Notifications don't expect a response, but check for errors
+            if response.status_code >= 400:
+                logger.warning(f"Initialized notification returned status {response.status_code}")
+            else:
+                logger.debug("Initialized notification sent successfully")
+        
+    async def _make_request(self, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Make a direct HTTP request to the MCP server."""
+        import httpx
+        import json
+        
+        # Ensure session is initialized
+        if not self._initialized:
+            await self._initialize_session()
+        
+        request_data = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "id": self._get_next_id()
+        }
+        
+        # Only include params if they are provided and not empty
+        if params:
+            request_data["params"] = params
+        
+        # Prepare headers with session ID if available
+        request_headers = self.headers.copy()
+        if self._session_id:
+            request_headers["mcp-session-id"] = self._session_id
+            logger.debug(f"Including session ID in request: {self._session_id}")
+        
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            if not self.config.url:
+                raise ValueError("Server URL is required")
+            response = await client.post(
+                self.config.url,
+                json=request_data,
+                headers=request_headers
+            )
+            response.raise_for_status()
+            
+            # Handle SSE response format
+            response_text = response.text
+            
+            if "event: message" in response_text and "data: " in response_text:
+                # Extract JSON from SSE format - need to find the message with matching ID
+                lines = response_text.strip().split('\n')
+                request_id = request_data.get("id")
+                
+                # Parse all SSE messages and find the one with matching request ID
+                for line in lines:
+                    if line.startswith("data: "):
+                        try:
+                            json_data = line[6:]  # Remove "data: " prefix
+                            parsed_message = json.loads(json_data)
+                            
+                            # Check if this message has the matching request ID (for responses)
+                            # or if it's a notification (no ID required)
+                            if "id" in parsed_message and parsed_message["id"] == request_id:
+                                logger.debug(f"Found matching response for request ID {request_id}")
+                                return parsed_message
+                            elif request_id is None and "method" not in parsed_message:
+                                # For requests without ID (notifications), return first non-notification
+                                return parsed_message
+                        except json.JSONDecodeError as e:
+                            logger.debug(f"Failed to parse SSE line as JSON: {line[:100]}...")
+                            continue
+                
+                # If no matching message found, log the issue and try to return the last valid message
+                logger.warning(f"No matching response found for request ID {request_id} in SSE stream")
+                logger.debug(f"Full SSE response: {response_text}")
+                
+                # As fallback, try to return the last message that looks like a response
+                for line in reversed(lines):
+                    if line.startswith("data: "):
+                        try:
+                            json_data = line[6:]
+                            parsed_message = json.loads(json_data)
+                            if "result" in parsed_message or "error" in parsed_message:
+                                logger.debug(f"Using fallback response: {parsed_message}")
+                                return parsed_message
+                        except json.JSONDecodeError:
+                            continue
+            
+            # Fallback to regular JSON parsing
+            try:
+                return response.json()
+            except:
+                # If JSON parsing fails, return the raw response
+                raise Exception(f"Could not parse response: {response_text}")
         
     async def list_tools(self):
         """List tools by making a direct HTTP request."""
+        # Ensure session is initialized
+        if not self._initialized:
+            await self._initialize_session()
+        
         response = await self._make_request("tools/list")
+        logger.debug(f"Tools list response: {response}")
         
         if "error" in response:
             raise Exception(f"MCP error: {response['error']}")
         
         # Convert the response to match the expected format
         tools_data = response.get("result", {}).get("tools", [])
+        logger.debug(f"Extracted tools data: {tools_data}")
         
         # Create a simple object structure that matches what MCPTool expects
         class SimpleToolList:
@@ -70,10 +244,16 @@ class HTTPMCPSession:
                 self.description = tool_data.get("description", "")
                 self.inputSchema = tool_data.get("inputSchema", {})
         
-        return SimpleToolList(tools_data)
+        result = SimpleToolList(tools_data)
+        logger.debug(f"Created tool list with {len(result.tools)} tools")
+        return result
     
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]):
         """Call a tool by making a direct HTTP request."""
+        # Ensure session is initialized
+        if not self._initialized:
+            await self._initialize_session()
+        
         params = {
             "name": tool_name,
             "arguments": arguments
@@ -139,11 +319,11 @@ class MCPTool(Tool):
         """Get or create a thread-local session to avoid event loop conflicts."""
         # For HTTPMCPSession, we can safely create a new instance in each thread
         if self._session_type == 'HTTPMCPSession' and isinstance(self._session_params, dict):
-            return HTTPMCPSession(
-                self._session_params['config'],
-                self._session_params['headers'],
-                self._session_params['timeout']
-            )
+            config = self._session_params['config']
+            headers = self._session_params['headers']
+            timeout = self._session_params['timeout']
+            if isinstance(config, MCPServerConfig) and isinstance(headers, dict) and isinstance(timeout, (int, float)):
+                return HTTPMCPSession(config, headers, timeout)
         
         # For stdio sessions, we need to create a new DirectMCPSession
         elif self._session_type == 'DirectMCPSession' and isinstance(self._session_params, MCPServerConfig):
@@ -550,7 +730,7 @@ class MCPClient:
                 return True
                     
             elif config.type == "http":
-                # HTTP server
+                # HTTP server with FastMCP protocol
                 if not config.url:
                     logger.error(f"URL required for HTTP server '{server_name}'")
                     return False
@@ -559,59 +739,34 @@ class MCPClient:
                 connection_timeout = config.timeout or 30
                 
                 try:
-                    # Test server accessibility first with a shorter timeout
-                    logger.info(f"Testing HTTP MCP server '{server_name}' accessibility...")
+                    logger.info(f"Connecting to HTTP MCP server '{server_name}'...")
                     
-                    async def connect_http():
-                        # Ensure proper headers for MCP streamable HTTP protocol
-                        headers = config.headers or {}
-                        # Add required Accept header if not present
-                        if "Accept" not in headers:
-                            headers["Accept"] = "application/json, text/event-stream"
-                        if "Content-Type" not in headers:
-                            headers["Content-Type"] = "application/json"
-                        
-                        logger.info(f"Connecting to HTTP MCP server '{server_name}' with timeout {connection_timeout}s")
-                        logger.debug(f"URL: {config.url}")
-                        logger.debug(f"Headers: {headers}")
-                        
-                        try:
-                            if not config.url:
-                                raise ValueError("URL is required for HTTP server")
-                            
-                            # For HTTP servers, we'll test the connection and then store the config
-                            # The actual persistent connection will be established per-request
-                            logger.info(f"Testing HTTP MCP server connection to '{server_name}'...")
-                            
-                            # Test connection with a short timeout first
-                            test_timeout = min(5, connection_timeout)
-                            
-                            # Test connection with direct HTTP approach
-                            logger.info(f"Testing HTTP MCP server with direct requests to '{server_name}'...")
-                            
-                            # Create test session and try to list tools
-                            test_session = HTTPMCPSession(config, headers, test_timeout)
-                            
-                            # Test basic connectivity and tool listing
-                            tools_result = await test_session.list_tools()
-                            logger.info(f"Successfully retrieved {len(tools_result.tools)} tools from '{server_name}'")
-                            
-                            # Store a session that will create real connections on demand
-                            self.sessions[server_name] = HTTPMCPSession(config, headers, connection_timeout)
-                            logger.info(f"Successfully configured HTTP MCP server: {server_name}")
-                            return True
-                        except Exception as e:
-                            logger.warning(f"HTTP client connection failed for '{server_name}': {e}")
-                            raise
+                    # Ensure proper headers for FastMCP streamable HTTP protocol
+                    headers = config.headers or {}
+                    if "Accept" not in headers:
+                        headers["Accept"] = "application/json, text/event-stream"
+                    if "Content-Type" not in headers:
+                        headers["Content-Type"] = "application/json"
                     
-                    await asyncio.wait_for(connect_http(), timeout=connection_timeout)
+                    # Test connection with a simple session
+                    test_session = HTTPMCPSession(config, headers, connection_timeout)
+                    
+                    # Test basic connectivity by trying to initialize
+                    await test_session._initialize_session()
+                    logger.info(f"Successfully tested HTTP MCP server connection: {server_name}")
+                    
+                    # Store the session configuration for later use
+                    self.sessions[server_name] = HTTPMCPSession(config, headers, connection_timeout)
                     logger.info(f"Successfully connected to HTTP MCP server: {server_name}")
                     return True
                             
                 except asyncio.TimeoutError:
                     logger.warning(f"Connection to HTTP MCP server '{server_name}' timed out after {connection_timeout}s")
                     logger.warning(f"  URL: {config.url}")
-                    logger.warning(f"  This may indicate the server is unresponsive or the URL/API key is incorrect")
+                    return False
+                except Exception as e:
+                    logger.error(f"Failed to connect to HTTP MCP server '{server_name}': {e}")
+                    logger.debug(f"Error details: {e}")
                     return False
                     
             else:
