@@ -20,7 +20,8 @@ dependencies = [
     "plotly>=6.2.0",
     "pandas>=2.3.1",
     "langfuse>=3.2.3",
-    "tiktoken>=0.5.0"
+    "tiktoken>=0.5.0",
+    "fastmcp"
 ]
 
 [build-system]
