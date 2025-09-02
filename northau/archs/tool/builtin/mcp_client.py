@@ -73,12 +73,14 @@ class HTTPMCPSession:
                 self._session_id = session_id
                 logger.debug(f"Captured session ID: {session_id}")
             
-            # Parse SSE response
+            # Parse response - handle both SSE and standard JSON formats
             response_text = response.text
             logger.debug(f"Initialize response: {response_text}")
             
+            result = None
+            
             if "event: message" in response_text and "data: " in response_text:
-                # Extract JSON from SSE format
+                # Handle SSE format (FastMCP style)
                 lines = response_text.strip().split('\n')
                 json_data = None
                 for line in lines:
@@ -89,20 +91,31 @@ class HTTPMCPSession:
                 if json_data:
                     import json
                     result = json.loads(json_data)
-                    
-                    if "error" in result:
-                        raise Exception(f"MCP initialization error: {result['error']}")
-                    
-                    # Check if we got a proper initialization result
-                    if "result" in result:
-                        # Send initialized notification as per MCP protocol
-                        await self._send_initialized_notification()
-                        self._initialized = True
-                        logger.info(f"MCP HTTP session initialized successfully with session ID: {self._session_id}")
-                        return
-                        
+            else:
+                # Handle standard JSON format (GitHub MCP style)
+                try:
+                    import json
+                    result = json.loads(response_text)
+                except json.JSONDecodeError as e:
+                    raise Exception(f"Could not parse initialization response as JSON: {response_text}")
+            
+            if not result:
+                raise Exception(f"No valid response data found in initialization response: {response_text}")
+            
+            if "error" in result:
+                raise Exception(f"MCP initialization error: {result['error']}")
+            
+            # Check if we got a proper initialization result
+            if "result" in result:
+                logger.debug(f"Initialization successful, server info: {result.get('result', {}).get('serverInfo', 'Unknown')}")
+                # Send initialized notification as per MCP protocol
+                await self._send_initialized_notification()
+                self._initialized = True
+                logger.info(f"MCP HTTP session initialized successfully with session ID: {self._session_id}")
+                return
+                
             # If we get here, the response format was unexpected
-            raise Exception(f"Unexpected initialization response format: {response_text}")
+            raise Exception(f"Unexpected initialization response format - missing 'result' field: {response_text}")
     
     async def _send_initialized_notification(self) -> None:
         """Send the initialized notification as per MCP protocol."""
@@ -349,6 +362,7 @@ class MCPTool(Tool):
                         self.process = await asyncio.create_subprocess_exec(
                             self.command,
                             *self.args,
+                            limit=1024*128, # set a large buffer size
                             env=self.env,
                             stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE,
@@ -603,6 +617,7 @@ class MCPClient:
                         self.process = await asyncio.create_subprocess_exec(
                             self.command,
                             *self.args,
+                            limit=1024*128, # set a large buffer size
                             env=self.env,
                             stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE,
