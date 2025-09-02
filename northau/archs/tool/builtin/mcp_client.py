@@ -258,7 +258,6 @@ class MCPTool(Tool):
                         attempts = 0
                         
                         while attempts < max_attempts:
-                            print("attempt", attempts)
                             response_line = await self.process.stdout.readline()
                             
                             if not response_line:
