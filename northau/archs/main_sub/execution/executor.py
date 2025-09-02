@@ -55,14 +55,14 @@ class Executor:
         
         # Initialize components
         self.tool_executor = ToolExecutor(tool_registry, stop_tools, langfuse_client)
-        self.subagent_manager = SubAgentManager(agent_name, sub_agent_factories, langfuse_client, global_storage)
+        self.tracer = Tracer(agent_name)
+        self.subagent_manager = SubAgentManager(agent_name, sub_agent_factories, langfuse_client, global_storage, self.tracer)
         self.batch_processor = BatchProcessor(self.subagent_manager, max_running_subagents)
         self.response_parser = ResponseParser()
         self.response_generator = ResponseGenerator(
             agent_name, openai_client, llm_config, max_iterations, 
             max_context_tokens, retry_attempts, global_storage
         )
-        self.tracer = Tracer(agent_name)
         self.hook_manager = HookManager(after_model_hooks)
         
         # Token counting
