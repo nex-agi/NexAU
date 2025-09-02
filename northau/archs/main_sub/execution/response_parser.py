@@ -165,9 +165,26 @@ class ResponseParser:
             
         except ET.ParseError as e:
             logger.error(f"❌ Invalid XML format in tool call: {e}")
+            logger.debug(f"XML content preview: {xml_content[:200]}...")
+            return None
+        except ValueError as e:
+            logger.error(f"❌ XML parsing strategies exhausted for tool call: {e}")
+            logger.debug(f"Full XML content: {xml_content}")
+            
+            # Try one final fallback: extract tool name and treat all content as raw
+            from ..utils.xml_utils import XMLUtils
+            tool_name = XMLUtils.extract_tool_name_from_xml(xml_content)
+            if tool_name != "unknown":
+                logger.info(f"🔧 Fallback: Creating minimal tool call for {tool_name}")
+                return ToolCall(
+                    tool_name=tool_name,
+                    parameters={"raw_xml_content": xml_content},
+                    xml_content=xml_content
+                )
             return None
         except Exception as e:
-            logger.error(f"❌ Error parsing tool call: {e}")
+            logger.error(f"❌ Unexpected error parsing tool call: {e}")
+            logger.debug(f"XML content: {xml_content}")
             return None
     
     def _parse_sub_agent_call(self, xml_content: str) -> SubAgentCall:
@@ -199,9 +216,29 @@ class ResponseParser:
             
         except ET.ParseError as e:
             logger.error(f"❌ Invalid XML format in sub-agent call: {e}")
+            logger.debug(f"XML content preview: {xml_content[:200]}...")
+            return None
+        except ValueError as e:
+            logger.error(f"❌ XML parsing strategies exhausted for sub-agent call: {e}")
+            logger.debug(f"Full XML content: {xml_content}")
+            
+            # Try one final fallback: extract agent name and treat message as raw
+            from ..utils.xml_utils import XMLUtils
+            agent_name = XMLUtils.extract_agent_name_from_xml(xml_content)
+            if agent_name != "unknown":
+                logger.info(f"🤖 Fallback: Creating minimal sub-agent call for {agent_name}")
+                # Try to extract some message content
+                message_match = re.search(r'<message[^>]*>(.*?)</message>', xml_content, re.DOTALL | re.IGNORECASE)
+                message = message_match.group(1).strip() if message_match else "Unable to parse message content"
+                return SubAgentCall(
+                    agent_name=agent_name,
+                    message=message,
+                    xml_content=xml_content
+                )
             return None
         except Exception as e:
-            logger.error(f"❌ Error parsing sub-agent call: {e}")
+            logger.error(f"❌ Unexpected error parsing sub-agent call: {e}")
+            logger.debug(f"XML content: {xml_content}")
             return None
     
     def _parse_batch_agent_call(self, xml_content: str) -> BatchAgentCall:
