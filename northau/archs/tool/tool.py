@@ -105,12 +105,21 @@ class Tool:
             }
     
     def validate_params(self, params: Dict) -> bool:
-        """Validate parameters against schema."""
+        """Validate parameters against schema.
+        
+        Only validates parameters that are defined in the schema.
+        Extra parameters (injected by hooks or with default values) are ignored.
+        """
+        # Extract only the parameters that are defined in the schema
+        schema_properties = self.input_schema.get('properties', {})
+        schema_params = {k: v for k, v in params.items() if k in schema_properties}
+        
         try:
-            jsonschema.validate(params, self.input_schema)
+            # Validate only the schema-defined parameters
+            jsonschema.validate(schema_params, self.input_schema)
             return True
         except jsonschema.ValidationError as e:
-            print(f"Invalid parameters for tool '{self.name}': {params}, error: {e}")
+            print(f"Invalid parameters for tool '{self.name}': {schema_params}, error: {e}")
             return False
     
     def _validate_schema(self):
