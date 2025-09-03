@@ -2,7 +2,7 @@
 
 import threading
 import logging
-from typing import Dict, Callable, Optional, Tuple
+from typing import Any, Callable, Optional
 import xml.etree.ElementTree as ET
 
 from ..utils.xml_utils import XMLParser, XMLUtils
@@ -12,16 +12,16 @@ logger = logging.getLogger(__name__)
 
 try:
     from langfuse.client import Langfuse
-    LANGFUSE_AVAILABLE = True
+    _langfuse_available = True
 except ImportError:
-    LANGFUSE_AVAILABLE = False
+    _langfuse_available = False
     Langfuse = None
 
 
 class SubAgentManager:
     """Manages sub-agent lifecycle and delegation."""
     
-    def __init__(self, agent_name: str, sub_agent_factories: Dict[str, Callable], langfuse_client=None, global_storage=None, main_tracer=None):
+    def __init__(self, agent_name: str, sub_agent_factories: dict[str, Callable[[], Any]], langfuse_client=None, global_storage=None, main_tracer=None):
         """Initialize sub-agent manager.
         
         Args:
@@ -39,7 +39,7 @@ class SubAgentManager:
         self.xml_parser = XMLParser()
         self._shutdown_event = threading.Event()
     
-    def call_sub_agent(self, sub_agent_name: str, message: str, context: Optional[Dict] = None) -> str:
+    def call_sub_agent(self, sub_agent_name: str, message: str, context: Optional[dict[str, Any]] = None) -> str:
         """Call a sub-agent like a tool call.
         
         Args:
@@ -101,9 +101,12 @@ class SubAgentManager:
                         if sub_agent_trace_path:
                             logger.info(f"📊 Sub-agent '{sub_agent_name}' will generate trace to: {sub_agent_trace_path}")
             
-            # Pass current agent context state and config to sub-agent
+            # Pass current agent context state, config, and context to sub-agent
             current_context = get_context()
             if current_context:
+                # Use context from current agent context if not explicitly provided
+                effective_context: dict[str, Any] = context or current_context.context.copy()
+                
                 if self.langfuse_client:
                     try:
                         with self.langfuse_client.start_as_current_generation(
@@ -113,7 +116,7 @@ class SubAgentManager:
                         ) as generation:
                             result = sub_agent.run(
                                 message, 
-                                context=context,
+                                context=effective_context,
                                 state=current_context.state.copy(),
                                 config=current_context.config.copy(),
                                 dump_trace_path=sub_agent_trace_path
@@ -124,7 +127,7 @@ class SubAgentManager:
                         logger.warning(f"⚠️ Langfuse subagent tracing failed: {langfuse_error}")
                         result = sub_agent.run(
                             message, 
-                            context=context,
+                            context=effective_context,
                             state=current_context.state.copy(),
                             config=current_context.config.copy(),
                             dump_trace_path=sub_agent_trace_path
@@ -132,7 +135,7 @@ class SubAgentManager:
                 else:
                     result = sub_agent.run(
                         message, 
-                        context=context,
+                        context=effective_context,
                         state=current_context.state.copy(),
                         config=current_context.config.copy(),
                         dump_trace_path=sub_agent_trace_path
@@ -147,7 +150,7 @@ class SubAgentManager:
             logger.error(f"❌ Sub-agent '{sub_agent_name}' failed: {e}")
             raise
     
-    def execute_sub_agent_from_xml(self, xml_content: str, tracer: Optional[Tracer] = None) -> Tuple[str, str]:
+    def execute_sub_agent_from_xml(self, xml_content: str, tracer: Optional[Tracer] = None) -> tuple[str, str]:
         """Execute a sub-agent call from XML content.
         
         Args:
@@ -191,7 +194,7 @@ class SubAgentManager:
         except ET.ParseError as e:
             raise ValueError(f"Invalid XML format: {e}")
     
-    def execute_sub_agent_from_xml_safe(self, xml_content: str, tracer: Optional[Tracer] = None) -> Tuple[str, str, bool]:
+    def execute_sub_agent_from_xml_safe(self, xml_content: str, tracer: Optional[Tracer] = None) -> tuple[str, str, bool]:
         """Safe wrapper for execute_sub_agent_from_xml that handles exceptions.
         
         Args:
@@ -213,7 +216,7 @@ class SubAgentManager:
         """Signal shutdown to prevent new sub-agent tasks."""
         self._shutdown_event.set()
     
-    def add_sub_agent(self, name: str, agent_factory: Callable):
+    def add_sub_agent(self, name: str, agent_factory: Callable[[], Any]):
         """Add a sub-agent factory for delegation.
         
         Args:

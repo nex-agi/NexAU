@@ -8,14 +8,16 @@ from contextlib import contextmanager
 
 
 class AgentContext:
-    """Context manager for agent state and config."""
+    """Context manager for agent state, config, and context."""
     
-    def __init__(self, state: Optional[Dict[str, Any]] = None, config: Optional[Dict[str, Any]] = None):
-        """Initialize agent context with state and config."""
+    def __init__(self, state: Optional[Dict[str, Any]] = None, config: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None):
+        """Initialize agent context with state, config, and context."""
         self.state = state or {}
         self.config = config or {}
+        self.context = context or {}
         self._original_state = None
         self._original_config = None
+        self._original_context = None
         
         # Track if context has been modified (for prompt refresh)
         self._context_modified = False
@@ -26,6 +28,7 @@ class AgentContext:
         global _current_context
         self._original_state = _current_context.state.copy() if _current_context else {}
         self._original_config = _current_context.config.copy() if _current_context else {}
+        self._original_context = _current_context.context.copy() if _current_context else {}
         
         # Set current context
         _current_context = self
@@ -34,10 +37,10 @@ class AgentContext:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit the context and restore previous context."""
         global _current_context
-        if self._original_state is not None or self._original_config is not None:
+        if self._original_state is not None or self._original_config is not None or self._original_context is not None:
             # Restore previous context if it existed
-            if self._original_state or self._original_config:
-                _current_context = AgentContext(self._original_state, self._original_config)
+            if self._original_state or self._original_config or self._original_context:
+                _current_context = AgentContext(self._original_state, self._original_config, self._original_context)
             else:
                 _current_context = None
         else:
@@ -51,6 +54,11 @@ class AgentContext:
     def update_config(self, updates: Dict[str, Any]):
         """Update config with new values."""
         self.config.update(updates)
+        self._mark_modified()
+    
+    def update_context(self, updates: Dict[str, Any]):
+        """Update context with new values."""
+        self.context.update(updates)
         self._mark_modified()
     
     def get_state_value(self, key: str, default: Any = None) -> Any:
@@ -69,6 +77,15 @@ class AgentContext:
     def set_config_value(self, key: str, value: Any):
         """Set a specific config value."""
         self.config[key] = value
+        self._mark_modified()
+    
+    def get_context_value(self, key: str, default: Any = None) -> Any:
+        """Get a specific context value."""
+        return self.context.get(key, default)
+    
+    def set_context_value(self, key: str, value: Any):
+        """Set a specific context value."""
+        self.context[key] = value
         self._mark_modified()
     
     def _mark_modified(self):
@@ -101,7 +118,8 @@ class AgentContext:
         """Get all context variables for prompt rendering."""
         return {
             **self.state,
-            **self.config
+            **self.config,
+            **self.context
         }
     
     def merge_context_variables(self, existing_context: Dict[str, Any]) -> Dict[str, Any]:
@@ -132,6 +150,13 @@ def get_config() -> Dict[str, Any]:
 def get_context() -> Optional[AgentContext]:
     """Get the current agent context."""
     return _current_context
+
+
+def get_context_dict() -> Dict[str, Any]:
+    """Get the current agent context dictionary."""
+    if _current_context is None:
+        raise RuntimeError("No agent context available. Make sure you're calling this within an agent context.")
+    return _current_context.context
 
 
 def update_state(**updates):

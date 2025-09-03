@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class Executor:
     """Orchestrates execution of agent tasks with parallel processing support."""
     
-    def __init__(self, agent_name: str, tool_registry: dict[str, Any], sub_agent_factories: dict[str, Callable],
+    def __init__(self, agent_name: str, tool_registry: dict[str, Any], sub_agent_factories: dict[str, Callable[[], Any]],
                  stop_tools: set[str], openai_client: Any, llm_config: Any, max_iterations: int = 100,
                  max_context_tokens: int = 128000, max_running_subagents: int = 5, 
                  retry_attempts: int = 5, token_counter: TokenCounter | None = None,
@@ -186,6 +186,11 @@ class Executor:
         if not parsed_response.tool_calls and not parsed_response.sub_agent_calls:
             return processed_response, False, None
         
+        # Get current context to pass to sub-agents
+        from ..agent_context import get_context
+        current_context = get_context()
+        context_dict = current_context.context.copy() if current_context else None
+        
         executor_id = str(uuid.uuid4())
         tool_executor = ThreadPoolExecutor()
         subagent_executor = ThreadPoolExecutor(max_workers=self.max_running_subagents)
@@ -207,7 +212,7 @@ class Executor:
             sub_agent_futures = {}
             for sub_agent_call in parsed_response.sub_agent_calls:
                 task_ctx = copy_context()
-                future = subagent_executor.submit(task_ctx.run, self._execute_sub_agent_call_safe, sub_agent_call, tracer)
+                future = subagent_executor.submit(task_ctx.run, self._execute_sub_agent_call_safe, sub_agent_call, context_dict, tracer)
                 sub_agent_futures[future] = ('sub_agent', sub_agent_call)
             
             # Combine all futures
@@ -239,9 +244,9 @@ class Executor:
                                     stop_tool_detected = True
                                     actual_result = {k: v for k, v in parsed_result.items() if k != '_is_stop_tool'}
                                     if 'result' in actual_result and len(actual_result) == 1:
-                                        stop_tool_result = actual_result['result']
+                                        stop_tool_result = str(actual_result['result'])
                                     else:
-                                        stop_tool_result = actual_result if actual_result else parsed_result
+                                        stop_tool_result = str(actual_result) if actual_result else str(parsed_result)
                                     logger.info(f"🛑 Stop tool '{tool_name}' result detected, will terminate after processing")
                             except (json.JSONDecodeError, TypeError):
                                 pass
@@ -303,14 +308,14 @@ class Executor:
         except Exception as e:
             return tool_call.tool_name, str(e), True
     
-    def _execute_sub_agent_call_safe(self, sub_agent_call: SubAgentCall, tracer: Tracer | None = None) -> tuple[str, str, bool]:
+    def _execute_sub_agent_call_safe(self, sub_agent_call: SubAgentCall, context: Optional[dict[str, Any]] = None, tracer: Tracer | None = None) -> tuple[str, str, bool]:
         """Safely execute a sub-agent call."""
         try:
             # Log sub-agent request to trace if enabled
             if tracer:
                 tracer.add_subagent_request(sub_agent_call.agent_name, sub_agent_call.message)
             
-            result = self.subagent_manager.call_sub_agent(sub_agent_call.agent_name, sub_agent_call.message)
+            result = self.subagent_manager.call_sub_agent(sub_agent_call.agent_name, sub_agent_call.message, context)
             
             # Log sub-agent response to trace if enabled
             if tracer:

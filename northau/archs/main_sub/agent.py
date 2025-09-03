@@ -246,7 +246,7 @@ class Agent:
             merged_context.update(context)
         
         # Create agent context
-        with AgentContext(state=merged_state, config=merged_config) as ctx:
+        with AgentContext(state=merged_state, config=merged_config, context=merged_context) as ctx:
             # Setup context modification callback to refresh system prompt
             def on_context_modified():
                 # Reset processed system prompt to force regeneration
