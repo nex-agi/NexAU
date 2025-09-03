@@ -264,14 +264,24 @@ def grep_tool(
             glob = file_name
             search_dir = file_dir
 
-        # Extract additional parameters
-        context_before = kwargs.get("-B")
-        context_after = kwargs.get("-A") 
-        context_around = kwargs.get("-C")
-        show_line_numbers = kwargs.get("-n", False)
-        case_insensitive = kwargs.get("-i", True)  # Default to case insensitive
+        # Extract additional parameters (support both old and new parameter names)
+        context_before = kwargs.get("context_before") or kwargs.get("-B")
+        context_after = kwargs.get("context_after") or kwargs.get("-A") 
+        context_around = kwargs.get("context_around") or kwargs.get("-C")
+        show_line_numbers = kwargs.get("show_line_numbers", kwargs.get("-n", False))
+        case_insensitive = kwargs.get("case_insensitive", kwargs.get("-i", True))  # Default to case insensitive
+        
+        # Ensure context parameters are integers if provided
+        if context_before is not None:
+            context_before = int(context_before)
+        if context_after is not None:
+            context_after = int(context_after)
+        if context_around is not None:
+            context_around = int(context_around)
         file_type = kwargs.get("type")
         head_limit = kwargs.get("head_limit")
+        if head_limit is not None:
+            head_limit = int(head_limit)
         multiline = kwargs.get("multiline", False)
         
         # Run ripgrep search
