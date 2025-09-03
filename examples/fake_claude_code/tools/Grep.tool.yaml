@@ -37,27 +37,27 @@ input_schema:
         -n line numbers, head_limit), "files_with_matches" shows file paths
         (supports head_limit), "count" shows match counts (supports head_limit).
         Defaults to "files_with_matches".
-    '-B':
-      type: number
+    context_before:
+      type: integer
       description: >-
         Number of lines to show before each match (rg -B). Requires output_mode:
         "content", ignored otherwise.
-    '-A':
-      type: number
+    context_after:
+      type: integer
       description: >-
         Number of lines to show after each match (rg -A). Requires output_mode:
         "content", ignored otherwise.
-    '-C':
-      type: number
+    context_around:
+      type: integer
       description: >-
         Number of lines to show before and after each match (rg -C). Requires
         output_mode: "content", ignored otherwise.
-    '-n':
+    show_line_numbers:
       type: boolean
       description: >-
         Show line numbers in output (rg -n). Requires output_mode: "content",
         ignored otherwise.
-    '-i':
+    case_insensitive:
       type: boolean
       description: Case insensitive search (rg -i)
     type:
@@ -66,7 +66,7 @@ input_schema:
         File type to search (rg --type). Common types: js, py, rust, go, java,
         etc. More efficient than include for standard file types.
     head_limit:
-      type: number
+      type: integer
       description: >-
         Limit output to first N lines/entries, equivalent to "| head -N". Works
         across all output modes: content (limits output lines),
