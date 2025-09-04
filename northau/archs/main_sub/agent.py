@@ -346,6 +346,10 @@ class Agent:
                     self.history.append({"role": "assistant", "content": error_message})
                     raise
     
+    def enqueue_message(self, message: dict[str, str]) -> None:
+        """Enqueue a message to be added to the history."""
+        self.executor.response_generator.enqueue_message(message)
+    
     def add_tool(self, tool) -> None:
         """Add a tool to the agent."""
         self.tools.append(tool)
