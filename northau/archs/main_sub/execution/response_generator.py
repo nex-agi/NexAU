@@ -2,7 +2,7 @@
 
 import logging
 import re
-from typing import Any
+from typing import Any, Callable
 
 from ..utils.xml_utils import XMLUtils
 from ..tracing.tracer import Tracer
@@ -17,7 +17,8 @@ class ResponseGenerator:
     """Handles LLM response generation with iteration control."""
     
     def __init__(self, agent_name: str, openai_client: Any, llm_config: Any, max_iterations: int = 100, 
-                 max_context_tokens: int = 128000, retry_attempts: int = 5, global_storage: Any = None):
+                 max_context_tokens: int = 128000, retry_attempts: int = 5, global_storage: Any = None,
+                 custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None):
         """Initialize response generator.
         
         Args:
@@ -28,6 +29,7 @@ class ResponseGenerator:
             max_context_tokens: Maximum context token limit
             retry_attempts: Number of retry attempts for API calls
             global_storage: Optional GlobalStorage instance for hooks
+            custom_llm_generator: Optional custom LLM generator function that takes (openai_client, kwargs) and returns a response
         """
         self.agent_name = agent_name
         self.openai_client = openai_client
@@ -36,6 +38,7 @@ class ResponseGenerator:
         self.max_context_tokens = max_context_tokens
         self.retry_attempts = retry_attempts
         self.global_storage = global_storage
+        self.custom_llm_generator = custom_llm_generator
         self.queued_messages = []
     
     def enqueue_message(self, message: dict[str, str]) -> None:
@@ -44,7 +47,7 @@ class ResponseGenerator:
     
     def generate_response(self, history: list[dict[str, str]], 
                          token_counter: Any, xml_processor: Any, tracer: Tracer | None = None) -> tuple[str, list[dict[str, str]]]:
-        """Generate response using OpenAI API with XML-based tool and sub-agent calls.
+        """Generate response using OpenAI API or custom LLM generator with XML-based tool and sub-agent calls.
         
         Args:
             history: Complete conversation history including system prompt and user message
@@ -240,13 +243,18 @@ class ResponseGenerator:
             raise RuntimeError(f"Error calling OpenAI API: {e}") from e
     
     def _call_openai_with_retry(self, **kwargs: Any) -> Any:
-        """Call OpenAI client with exponential backoff retry."""
+        """Call OpenAI client or custom LLM generator with exponential backoff retry."""
         import time
         
         backoff = 1
         for i in range(self.retry_attempts):
             try:
-                response = self.openai_client.chat.completions.create(**kwargs)
+                # Use custom LLM generator if provided, otherwise use OpenAI client
+                if self.custom_llm_generator:
+                    response = self.custom_llm_generator(self.openai_client, kwargs)
+                else:
+                    response = self.openai_client.chat.completions.create(**kwargs)
+                
                 response_content = response.choices[0].message.content
                 stop = kwargs.get('stop', [])
                 if stop:
@@ -259,7 +267,7 @@ class ResponseGenerator:
                 else:
                     raise Exception("No response content")
             except Exception as e:
-                logger.error(f"❌ OpenAI client call failed (attempt {i+1}/{self.retry_attempts}): {e}")
+                logger.error(f"❌ LLM call failed (attempt {i+1}/{self.retry_attempts}): {e}")
                 if i == self.retry_attempts - 1:
                     raise e
                 time.sleep(backoff)
@@ -289,3 +297,29 @@ class ResponseGenerator:
         else:
             return (f"🔄 Token Usage: {current_prompt_tokens}/{max_tokens} in the current prompt - {remaining_tokens} tokens left."
                     f"Continue your response if you have more to say, or if you need to make additional tool calls or sub-agent calls.")
+
+
+def bypass_llm_generator(openai_client: Any, kwargs: dict[str, Any]) -> Any:
+    """
+    Custom LLM generator that does nothing.
+    
+    Args:
+        openai_client: The OpenAI client instance (can be used or ignored)
+        kwargs: The parameters that would be passed to openai_client.chat.completions.create()
+        
+    Returns:
+        A response object with the same structure as OpenAI's response
+        (must have .choices[0].message.content attribute)
+    """
+    print(f"🔧 Custom LLM Generator called with {len(kwargs.get('messages', []))} messages")
+    
+    try:
+        # Call the original OpenAI API
+        response = openai_client.chat.completions.create(**kwargs)
+
+        return response
+        
+    except Exception as e:
+        print(f"❌ Bypass LLM generator error: {e}")
+        # You could implement custom fallback logic here
+        raise
