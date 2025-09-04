@@ -2,12 +2,13 @@
 
 import json
 import logging
-from typing import Dict, Any, Tuple, List, Optional
+from typing import Dict, Any, Tuple, List, Optional, Set
 import xml.etree.ElementTree as ET
 import html
 
 from ..utils.xml_utils import XMLParser, XMLUtils
 from ..tracing.tracer import Tracer
+from .hooks import ToolHookManager, AfterToolHookInput
 
 logger = logging.getLogger(__name__)
 
@@ -22,28 +23,31 @@ except ImportError:
 class ToolExecutor:
     """Handles tool execution with XML parsing and type conversion."""
     
-    def __init__(self, tool_registry: Dict[str, Any], stop_tools: set, langfuse_client=None):
+    def __init__(self, tool_registry: Dict[str, Any], stop_tools: Set[str], langfuse_client=None, tool_hook_manager: Optional[ToolHookManager] = None):
         """Initialize tool executor.
         
         Args:
             tool_registry: Dictionary mapping tool names to tool objects
             stop_tools: Set of tool names that should trigger execution stop
             langfuse_client: Optional Langfuse client for tracing
+            tool_hook_manager: Optional ToolHookManager for after-tool hooks
         """
         self.tool_registry = tool_registry
         self.stop_tools = stop_tools
         self.langfuse_client = langfuse_client
         self.xml_parser = XMLParser()
+        self.tool_hook_manager = tool_hook_manager
     
-    def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    def execute_tool(self, tool_name: str, parameters: Dict[str, Any], global_storage=None) -> Dict[str, Any]:
         """Execute a tool with given parameters.
         
         Args:
             tool_name: Name of the tool to execute
             parameters: Parameters to pass to the tool
+            global_storage: Optional GlobalStorage instance for hook access
             
         Returns:
-            Tool execution result
+            Tool execution result (possibly modified by hooks)
             
         Raises:
             ValueError: If tool is not found
@@ -75,6 +79,16 @@ class ToolExecutor:
             
             logger.info(f"✅ Tool '{tool_name}' executed successfully")
             
+            # Execute tool hooks if available
+            if self.tool_hook_manager:
+                hook_input = AfterToolHookInput(
+                    tool_name=tool_name,
+                    tool_input=parameters,
+                    tool_output=result,
+                    global_storage=global_storage
+                )
+                result = self.tool_hook_manager.execute_hooks(hook_input)
+            
             # Check if this is a stop tool
             if tool_name in self.stop_tools:
                 logger.info(f"🛑 Stop tool '{tool_name}' executed, marking for early termination")
@@ -91,12 +105,13 @@ class ToolExecutor:
             logger.error(f"❌ Tool '{tool_name}' execution failed: {e}")
             raise
     
-    def execute_tool_from_xml(self, xml_content: str, tracer: Optional[Tracer] = None) -> Tuple[str, str]:
+    def execute_tool_from_xml(self, xml_content: str, tracer: Optional[Tracer] = None, global_storage=None) -> Tuple[str, str]:
         """Execute a tool from XML content.
         
         Args:
             xml_content: XML content describing the tool call
             tracer: Optional tracer for logging
+            global_storage: Optional GlobalStorage instance for hook access
             
         Returns:
             Tuple of (tool_name, result_json)
@@ -153,7 +168,7 @@ class ToolExecutor:
                 tracer.add_tool_request(tool_name, parameters)
             
             # Execute tool
-            result = self.execute_tool(tool_name, parameters)
+            result = self.execute_tool(tool_name, parameters, global_storage)
             
             # Log tool response to trace if enabled
             if tracer:
@@ -164,18 +179,19 @@ class ToolExecutor:
         except ET.ParseError as e:
             raise ValueError(f"Invalid XML format: {e}")
     
-    def execute_tool_from_xml_safe(self, xml_content: str, tracer: Optional[Tracer] = None) -> Tuple[str, str, bool]:
+    def execute_tool_from_xml_safe(self, xml_content: str, tracer: Optional[Tracer] = None, global_storage=None) -> Tuple[str, str, bool]:
         """Safe wrapper for execute_tool_from_xml that handles exceptions.
         
         Args:
             xml_content: XML content describing the tool call
             tracer: Optional tracer for logging
+            global_storage: Optional GlobalStorage instance for hook access
             
         Returns:
             Tuple of (tool_name, result, is_error)
         """
         try:
-            tool_name, result = self.execute_tool_from_xml(xml_content, tracer)
+            tool_name, result = self.execute_tool_from_xml(xml_content, tracer, global_storage)
             return tool_name, result, False
         except Exception as e:
             # Extract tool name for error reporting using more robust parsing
