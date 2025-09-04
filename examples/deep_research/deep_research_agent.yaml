@@ -15,3 +15,7 @@ tools:
 sub_agents:
   - name: sub_deep_research_agent
     config_path: deep_research_agent.yaml
+after_tool_hooks:
+  - import: northau.archs.main_sub.execution.hooks:create_tool_logging_hook
+    params:
+      logger_name: "deep_research_tool_debug"

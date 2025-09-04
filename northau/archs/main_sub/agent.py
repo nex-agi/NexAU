@@ -86,6 +86,7 @@ class Agent:
         stop_tools: Optional[List[str]] = None,
         # Hook parameters
         after_model_hooks: Optional[List[Callable]] = None,
+        after_tool_hooks: Optional[List[Callable]] = None,
         # Global storage parameter
         global_storage: Optional[GlobalStorage] = None,
     ):
@@ -107,6 +108,7 @@ class Agent:
         
         # Store the hooks
         self.after_model_hooks = after_model_hooks
+        self.after_tool_hooks = after_tool_hooks
         
         # Initialize or use provided global storage
         self.global_storage = global_storage if global_storage is not None else GlobalStorage()
@@ -196,6 +198,7 @@ class Agent:
             token_counter=self.token_counter,
             langfuse_client=self.langfuse_client,
             after_model_hooks=self.after_model_hooks,
+            after_tool_hooks=self.after_tool_hooks,
             global_storage=self.global_storage
         )
         # Register this agent for cleanup
@@ -680,6 +683,7 @@ def create_agent(
     stop_tools: Optional[List[str]] = None,
     # Hook parameters
     after_model_hooks: Optional[List[Callable]] = None,
+    after_tool_hooks: Optional[List[Callable]] = None,
     # Global storage parameter
     global_storage: Optional[GlobalStorage] = None,
     **llm_kwargs
@@ -725,5 +729,6 @@ def create_agent(
         mcp_servers=mcp_servers,
         stop_tools=stop_tools,
         after_model_hooks=after_model_hooks,
+        after_tool_hooks=after_tool_hooks,
         global_storage=global_storage,
     )

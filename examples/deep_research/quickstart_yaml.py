@@ -2,8 +2,10 @@
 """Test the quick start example loading agent from YAML configuration."""
 
 import os
+import logging
 from datetime import datetime
 from pathlib import Path
+logging.basicConfig(level=logging.INFO)
 
 from northau.archs.config.config_loader import load_agent_config
 
@@ -25,12 +27,15 @@ def main():
             "max_tokens": 4096
         }
         
-        if os.getenv("LLM_MODEL"):
-            llm_config_overrides["model"] = os.getenv("LLM_MODEL")
-        if os.getenv("LLM_BASE_URL"):
-            llm_config_overrides["base_url"] = os.getenv("LLM_BASE_URL")
-        if os.getenv("LLM_API_KEY"):
-            llm_config_overrides["api_key"] = os.getenv("LLM_API_KEY")
+        model = os.getenv("LLM_MODEL")
+        if model:
+            llm_config_overrides["model"] = model
+        base_url = os.getenv("LLM_BASE_URL")
+        if base_url:
+            llm_config_overrides["base_url"] = base_url
+        api_key = os.getenv("LLM_API_KEY")
+        if api_key:
+            llm_config_overrides["api_key"] = api_key
         
         config_overrides = {
             "llm_config": llm_config_overrides
@@ -45,7 +50,7 @@ def main():
 
         print("\nTesting delegation with web research...")
         # web_message = "Call sub_deep_research_agent to get the information of what day is it today? and the stock price of Tencent on the day?"
-        web_message = "调研一下腾讯，拆解成多个调研子任务，并让多个 subagent 分别并行执行这些子任务"
+        web_message = "调研一下腾讯" #，拆解成多个调研子任务，并让多个 subagent 分别并行执行这些子任务"
         print(f"\nUser: {web_message}")
         print("\nAgent Response:")
         print("-" * 30)

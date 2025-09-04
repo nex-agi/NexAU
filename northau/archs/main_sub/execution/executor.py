@@ -16,7 +16,7 @@ from .batch_processor import BatchProcessor
 from .response_generator import ResponseGenerator
 from .response_parser import ResponseParser
 from .parse_structures import ParsedResponse, ToolCall, SubAgentCall, BatchAgentCall
-from .hooks import HookManager, AfterModelHook, AfterModelHookInput
+from .hooks import HookManager, AfterModelHook, ToolHookManager, AfterToolHook, AfterModelHookInput
 from ..tracing.tracer import Tracer
 from ..tracing.trace_dumper import TraceDumper
 from ..utils.token_counter import TokenCounter
@@ -32,6 +32,7 @@ class Executor:
                  max_context_tokens: int = 128000, max_running_subagents: int = 5, 
                  retry_attempts: int = 5, token_counter: TokenCounter | None = None,
                  langfuse_client: Any = None, after_model_hooks: list[AfterModelHook] | None = None,
+                 after_tool_hooks: list[AfterToolHook] | None = None,
                  global_storage: Any = None):
         """Initialize executor.
         
@@ -49,12 +50,14 @@ class Executor:
             token_counter: Optional token counter instance
             langfuse_client: Optional Langfuse client for tracing
             after_model_hooks: Optional list of hooks called after parsing LLM response
+            after_tool_hooks: Optional list of hooks called after tool execution
         """
         self.agent_name = agent_name
         self.max_running_subagents = max_running_subagents
         
         # Initialize components
-        self.tool_executor = ToolExecutor(tool_registry, stop_tools, langfuse_client)
+        tool_hook_manager = ToolHookManager(after_tool_hooks) if after_tool_hooks else None
+        self.tool_executor = ToolExecutor(tool_registry, stop_tools, langfuse_client, tool_hook_manager)
         self.tracer = Tracer(agent_name)
         self.subagent_manager = SubAgentManager(agent_name, sub_agent_factories, langfuse_client, global_storage, self.tracer)
         self.batch_processor = BatchProcessor(self.subagent_manager, max_running_subagents)
@@ -294,10 +297,7 @@ class Executor:
                     tool_call.tool_name, param_name, param_value
                 )
             
-            if global_storage is not None:
-                converted_params["global_storage"] = global_storage
-            
-            result = self.tool_executor.execute_tool(tool_call.tool_name, converted_params)
+            result = self.tool_executor.execute_tool(tool_call.tool_name, converted_params, global_storage)
             
             # Log tool response to trace if enabled
             if tracer:
