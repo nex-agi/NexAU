@@ -36,6 +36,11 @@ class ResponseGenerator:
         self.max_context_tokens = max_context_tokens
         self.retry_attempts = retry_attempts
         self.global_storage = global_storage
+        self.queued_messages = []
+    
+    def enqueue_message(self, message: dict[str, str]) -> None:
+        """Enqueue a message to be added to the history."""
+        self.queued_messages.append(message)
     
     def generate_response(self, history: list[dict[str, str]], 
                          token_counter: Any, xml_processor: Any, tracer: Tracer | None = None) -> tuple[str, list[dict[str, str]]]:
@@ -70,6 +75,12 @@ class ResponseGenerator:
                 # Call OpenAI API with LLM config parameters
                 api_params = self.llm_config.to_openai_params()
                 api_params['messages'] = messages
+                
+                logger.info(f"🔄 Queued messages: {self.queued_messages}")
+                
+                if self.queued_messages:
+                    messages.extend(self.queued_messages)
+                    self.queued_messages = []
                 
                 # Count current prompt tokens
                 current_prompt_tokens = token_counter(messages)
@@ -184,7 +195,7 @@ class ResponseGenerator:
                 messages = updated_messages
                 
                 # Check if a stop tool was executed
-                if should_stop:
+                if should_stop and len(self.queued_messages) == 0:
                     logger.info(f"🛑 Stop tool detected, returning stop tool result as final response")
                     # Return the stop tool result directly, formatted as JSON if it's not a string
                     if stop_tool_result is not None:
