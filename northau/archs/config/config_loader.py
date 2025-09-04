@@ -20,6 +20,38 @@ class ConfigError(Exception):
     pass
 
 
+def apply_agent_name_overrides(config: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Apply overrides based on agent names.
+    
+    Args:
+        config: The agent configuration dictionary
+        overrides: Dictionary where keys are agent names and values are override configs
+    
+    Returns:
+        Updated configuration with overrides applied
+    """
+    # Make a copy to avoid modifying the original
+    config = config.copy()
+    
+    # Get the main agent name
+    main_agent_name = config.get('name')
+    
+    # Apply overrides to main agent if name matches
+    if main_agent_name and main_agent_name in overrides:
+        agent_overrides = overrides[main_agent_name]
+        if isinstance(agent_overrides, dict):
+            for key, value in agent_overrides.items():
+                if isinstance(value, dict):
+                    config[key].update(value)
+                else:
+                    config[key] = value
+    
+    #TODO(hanzhenhua): can sub_agents config be override?
+
+    return config
+
+
 def load_agent_config(
     config_path: str,
     overrides: Optional[Dict[str, Any]] = None,
@@ -49,9 +81,9 @@ def load_agent_config(
         if not config:
             raise ConfigError(f"Empty or invalid configuration file: {config_path}")
         
-        # Apply overrides
+        # Apply overrides based on agent name
         if overrides:
-            config.update(overrides)
+            config = apply_agent_name_overrides(config, overrides)
         
         # Extract agent configuration
         agent_name = config.get('name', 'configured_agent')
@@ -176,7 +208,7 @@ def load_agent_config(
         sub_agent_configs = config.get('sub_agents', [])
         for sub_config in sub_agent_configs:
             try:
-                sub_agent = load_sub_agent_from_config(sub_config, path.parent)
+                sub_agent = load_sub_agent_from_config(sub_config, path.parent, overrides)
                 sub_agents.append(sub_agent)
             except Exception as e:
                 raise ConfigError(f"Error loading sub-agent '{sub_config.get('name', 'unknown')}': {e}")
@@ -260,7 +292,8 @@ def load_tool_from_config(tool_config: Dict[str, Any], base_path: Path) -> Tool:
 
 def load_sub_agent_from_config(
     sub_config: Dict[str, Any], 
-    base_path: Path
+    base_path: Path,
+    overrides: Optional[Dict[str, Any]] = None
 ) -> tuple[str, callable]:
     """
     Load a sub-agent factory from configuration.
@@ -268,6 +301,7 @@ def load_sub_agent_from_config(
     Args:
         sub_config: Sub-agent configuration dictionary
         base_path: Base path for resolving relative paths
+        overrides: Dictionary of configuration overrides to pass through
     
     Returns:
         Tuple of (agent_name, agent_factory)
@@ -286,7 +320,7 @@ def load_sub_agent_from_config(
     
     # Create factory function that loads agent when called
     def agent_factory(global_storage: Optional[GlobalStorage] = None):
-        return load_agent_config(str(config_path), global_storage=global_storage)
+        return load_agent_config(str(config_path), overrides=overrides, global_storage=global_storage)
     
     return (name, agent_factory)
 
