@@ -182,6 +182,33 @@ def load_agent_config(
                 except Exception as e:
                     raise ConfigError(f"Error loading tool hook {i}: {e}")
         
+        # Handle custom_llm_generator configuration
+        custom_llm_generator = None
+        if 'custom_llm_generator' in config:
+            llm_generator_config = config['custom_llm_generator']
+            if isinstance(llm_generator_config, str):
+                # Simple import string format
+                custom_llm_generator = import_from_string(llm_generator_config)
+            elif isinstance(llm_generator_config, dict):
+                # Dictionary format with import and optional parameters
+                import_string = llm_generator_config.get('import')
+                if not import_string:
+                    raise ConfigError("custom_llm_generator missing 'import' field")
+                
+                llm_generator_func = import_from_string(import_string)
+                
+                # Check if there are parameters to pass
+                params = llm_generator_config.get('params', {})
+                if params:
+                    # Create a wrapper function with the parameters
+                    def configured_llm_generator(openai_client, kwargs):
+                        return llm_generator_func(openai_client, kwargs, **params)
+                    custom_llm_generator = configured_llm_generator
+                else:
+                    custom_llm_generator = llm_generator_func
+            else:
+                raise ConfigError("custom_llm_generator configuration must be a string or dictionary")
+
         # Handle token counter configuration
         token_counter = None
         if 'token_counter' in config:
@@ -277,7 +304,8 @@ def load_agent_config(
             stop_tools=stop_tools,
             after_model_hooks=after_model_hooks,
             after_tool_hooks=after_tool_hooks,
-            global_storage=global_storage
+            global_storage=global_storage,
+            custom_llm_generator=custom_llm_generator
         )
         
         # Apply template context if provided and using Jinja templates

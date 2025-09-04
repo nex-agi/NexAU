@@ -89,6 +89,8 @@ class Agent:
         after_tool_hooks: Optional[List[Callable]] = None,
         # Global storage parameter
         global_storage: Optional[GlobalStorage] = None,
+        # Custom LLM generator parameter
+        custom_llm_generator: Optional[Callable[[Any, Dict[str, Any]], Any]] = None,
     ):
         """Initialize an agent with specified configuration."""
         self.name = name or f"agent_{id(self)}"
@@ -112,6 +114,9 @@ class Agent:
         
         # Initialize or use provided global storage
         self.global_storage = global_storage if global_storage is not None else GlobalStorage()
+        
+        # Store custom LLM generator
+        self.custom_llm_generator = custom_llm_generator
         
         # Handle LLM configuration
         self.llm_config = self._setup_llm_config(llm_config)
@@ -199,7 +204,8 @@ class Agent:
             langfuse_client=self.langfuse_client,
             after_model_hooks=self.after_model_hooks,
             after_tool_hooks=self.after_tool_hooks,
-            global_storage=self.global_storage
+            global_storage=self.global_storage,
+            custom_llm_generator=self.custom_llm_generator
         )
         # Register this agent for cleanup
         cleanup_manager.register_agent(self)
@@ -686,6 +692,8 @@ def create_agent(
     after_tool_hooks: Optional[List[Callable]] = None,
     # Global storage parameter
     global_storage: Optional[GlobalStorage] = None,
+    # Custom LLM generator parameter
+    custom_llm_generator: Optional[Callable[[Any, Dict[str, Any]], Any]] = None,
     **llm_kwargs
 ) -> Agent:
     """Create a new agent with specified configuration."""
@@ -731,4 +739,5 @@ def create_agent(
         after_model_hooks=after_model_hooks,
         after_tool_hooks=after_tool_hooks,
         global_storage=global_storage,
+        custom_llm_generator=custom_llm_generator,
     )
