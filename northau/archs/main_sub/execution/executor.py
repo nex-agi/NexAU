@@ -33,7 +33,7 @@ class Executor:
                  retry_attempts: int = 5, token_counter: TokenCounter | None = None,
                  langfuse_client: Any = None, after_model_hooks: list[AfterModelHook] | None = None,
                  after_tool_hooks: list[AfterToolHook] | None = None,
-                 global_storage: Any = None):
+                 global_storage: Any = None, custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None):
         """Initialize executor.
         
         Args:
@@ -51,6 +51,7 @@ class Executor:
             langfuse_client: Optional Langfuse client for tracing
             after_model_hooks: Optional list of hooks called after parsing LLM response
             after_tool_hooks: Optional list of hooks called after tool execution
+            custom_llm_generator: Optional custom LLM generator function
         """
         self.agent_name = agent_name
         self.max_running_subagents = max_running_subagents
@@ -64,7 +65,7 @@ class Executor:
         self.response_parser = ResponseParser()
         self.response_generator = ResponseGenerator(
             agent_name, openai_client, llm_config, max_iterations, 
-            max_context_tokens, retry_attempts, global_storage
+            max_context_tokens, retry_attempts, global_storage, custom_llm_generator
         )
         self.hook_manager = HookManager(after_model_hooks)
         
