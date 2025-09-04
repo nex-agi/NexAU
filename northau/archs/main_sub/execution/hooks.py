@@ -1,7 +1,7 @@
 """Hook interfaces and utilities for agent execution."""
 
 from northau.archs.main_sub.execution.parse_structures import ParsedResponse
-from typing import Protocol, TYPE_CHECKING
+from typing import Protocol, TYPE_CHECKING, Dict, Any
 from dataclasses import dataclass
 from .parse_structures import ParsedResponse
 
@@ -94,6 +94,84 @@ class AfterModelHook(Protocol):
         ...
 
 
+@dataclass
+class AfterToolHookInput:
+    """Input data passed to after_tool_hooks.
+    
+    This class encapsulates all the information that tool hooks receive:
+    - tool_name: The name of the tool that was executed
+    - tool_input: The parameters passed to the tool
+    - tool_output: The result returned by the tool
+    - global_storage: The agent's GlobalStorage instance for shared state
+    """
+    tool_name: str
+    tool_input: Dict[str, Any]
+    tool_output: Any
+    global_storage: 'GlobalStorage | None' = None
+
+
+@dataclass
+class AfterToolHookResult:
+    """Result returned by after_tool_hooks.
+    
+    This class encapsulates the modifications that a tool hook can make:
+    - tool_output: Modified tool output, or None if no changes
+    
+    If tool_output is None, it indicates the hook made no modifications.
+    """
+    tool_output: Any = None
+    
+    def has_modifications(self) -> bool:
+        """Check if this result contains any modifications."""
+        return self.tool_output is not None
+    
+    @classmethod
+    def no_changes(cls) -> 'AfterToolHookResult':
+        """Create an AfterToolHookResult indicating no modifications."""
+        return cls(tool_output=None)
+    
+    @classmethod
+    def with_modifications(cls, tool_output: Any) -> 'AfterToolHookResult':
+        """Create an AfterToolHookResult with modified tool output.
+        
+        Args:
+            tool_output: Modified tool output
+            
+        Returns:
+            AfterToolHookResult with the specified modifications
+        """
+        return cls(tool_output=tool_output)
+
+
+class AfterToolHook(Protocol):
+    """Protocol for after_tool_hook implementations.
+    
+    This hook is called after a tool is executed but before its result is processed.
+    It receives an AfterToolHookInput containing the tool execution details, allowing 
+    for inspection, modification, or additional processing of tool results.
+    """
+    
+    def __call__(self, hook_input: AfterToolHookInput) -> AfterToolHookResult:
+        """Process the tool execution result.
+        
+        Args:
+            hook_input: AfterToolHookInput containing:
+                - tool_name: The name of the executed tool
+                - tool_input: The parameters that were passed to the tool
+                - tool_output: The result returned by the tool
+                - global_storage: The agent's GlobalStorage instance for shared state access
+            
+        Returns:
+            AfterToolHookResult containing any modifications:
+            - AfterToolHookResult.tool_output: Modified tool output, or None to use original
+            
+            Use the class methods for convenient creation:
+            - AfterToolHookResult.no_changes(): No modifications
+            - AfterToolHookResult.with_modifications(tool_output=...): Modified output
+        """
+        ...
+
+
 def create_logging_hook(logger_name: str = "after_model_hook") -> AfterModelHook:
     """Create a simple logging hook for debugging purposes.
     
@@ -109,23 +187,28 @@ def create_logging_hook(logger_name: str = "after_model_hook") -> AfterModelHook
     def logging_hook(hook_input: AfterModelHookInput) -> HookResult:
         logger.info(f"🎣 ===== AFTER MODEL HOOK TRIGGERED =====")
         logger.info(f"🎣 Response length: {len(hook_input.original_response)} characters")
-        logger.info(f"🎣 Response summary: {hook_input.parsed_response.get_call_summary()}")
-        logger.info(f"🎣 Tool calls: {len(hook_input.parsed_response.tool_calls)}")
-        logger.info(f"🎣 Sub-agent calls: {len(hook_input.parsed_response.sub_agent_calls)}")
-        logger.info(f"🎣 Batch agent calls: {len(hook_input.parsed_response.batch_agent_calls)}")
-        logger.info(f"🎣 Is parallel tools: {hook_input.parsed_response.is_parallel_tools}")
-        logger.info(f"🎣 Is parallel sub-agents: {hook_input.parsed_response.is_parallel_sub_agents}")
+        
+        if hook_input.parsed_response is not None:
+            logger.info(f"🎣 Response summary: {hook_input.parsed_response.get_call_summary()}")
+            logger.info(f"🎣 Tool calls: {len(hook_input.parsed_response.tool_calls)}")
+            logger.info(f"🎣 Sub-agent calls: {len(hook_input.parsed_response.sub_agent_calls)}")
+            logger.info(f"🎣 Batch agent calls: {len(hook_input.parsed_response.batch_agent_calls)}")
+            logger.info(f"🎣 Is parallel tools: {hook_input.parsed_response.is_parallel_tools}")
+            logger.info(f"🎣 Is parallel sub-agents: {hook_input.parsed_response.is_parallel_sub_agents}")
+            
+            # Log details of each call
+            for i, tool_call in enumerate(hook_input.parsed_response.tool_calls):
+                logger.info(f"🎣 Tool call {i+1}: {tool_call.tool_name} with {len(tool_call.parameters)} parameters")
+            
+            for i, sub_agent_call in enumerate(hook_input.parsed_response.sub_agent_calls):
+                logger.info(f"🎣 Sub-agent call {i+1}: {sub_agent_call.agent_name}")
+            
+            for i, batch_call in enumerate(hook_input.parsed_response.batch_agent_calls):
+                logger.info(f"🎣 Batch call {i+1}: {batch_call.agent_name} on {batch_call.file_path}")
+        else:
+            logger.info(f"🎣 No parsed response available")
+        
         logger.info(f"🎣 Message history length: {len(hook_input.messages)} messages")
-        
-        # Log details of each call
-        for i, tool_call in enumerate(hook_input.parsed_response.tool_calls):
-            logger.info(f"🎣 Tool call {i+1}: {tool_call.tool_name} with {len(tool_call.parameters)} parameters")
-        
-        for i, sub_agent_call in enumerate(hook_input.parsed_response.sub_agent_calls):
-            logger.info(f"🎣 Sub-agent call {i+1}: {sub_agent_call.agent_name}")
-        
-        for i, batch_call in enumerate(hook_input.parsed_response.batch_agent_calls):
-            logger.info(f"🎣 Batch call {i+1}: {batch_call.agent_name} on {batch_call.file_path}")
         
         # Log recent message history for context
         for i, msg in enumerate(hook_input.messages[-3:]):  # Show last 3 messages
@@ -212,6 +295,9 @@ def create_filter_hook(allowed_tools: set[str] | None = None,
     logger = logging.getLogger("filter_hook")
     
     def filter_hook(hook_input: AfterModelHookInput) -> HookResult:
+        if hook_input.parsed_response is None:
+            return HookResult.no_changes()
+        
         parsed_response: ParsedResponse = hook_input.parsed_response
         modified = False
         
@@ -260,6 +346,173 @@ def create_filter_hook(allowed_tools: set[str] | None = None,
     return filter_hook
 
 
+def create_tool_logging_hook(logger_name: str = "after_tool_hook") -> AfterToolHook:
+    """Create a simple logging hook for tool execution debugging.
+    
+    Args:
+        logger_name: Name for the logger
+        
+    Returns:
+        A hook that logs tool execution details
+    """
+    import logging
+    logger = logging.getLogger(logger_name)
+    
+    def tool_logging_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
+        logger.info(f"🔧 ===== AFTER TOOL HOOK TRIGGERED =====")
+        logger.info(f"🔧 Tool name: {hook_input.tool_name}")
+        logger.info(f"🔧 Tool input: {hook_input.tool_input}")
+        logger.info(f"🔧 Tool output type: {type(hook_input.tool_output)}")
+        
+        # Log tool output (truncated if too long)
+        output_str = str(hook_input.tool_output)
+        if len(output_str) > 500:
+            logger.info(f"🔧 Tool output (truncated): {output_str[:500]}...")
+        else:
+            logger.info(f"🔧 Tool output: {output_str}")
+        
+        logger.info(f"🔧 ===== END AFTER TOOL HOOK =====")
+        
+        # Return no changes
+        return AfterToolHookResult.no_changes()
+    
+    return tool_logging_hook
+
+
+def create_tool_output_filter_hook(filter_keys: set[str]) -> AfterToolHook:
+    """Create a hook that filters sensitive keys from tool outputs.
+    
+    Args:
+        filter_keys: Set of keys to filter from dict outputs
+        
+    Returns:
+        A hook that removes specified keys from tool outputs
+    """
+    import logging
+    logger = logging.getLogger("tool_filter_hook")
+    
+    def tool_filter_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
+        if isinstance(hook_input.tool_output, dict):
+            filtered_output = {
+                k: v for k, v in hook_input.tool_output.items() 
+                if k not in filter_keys
+            }
+            
+            if len(filtered_output) != len(hook_input.tool_output):
+                filtered_count = len(hook_input.tool_output) - len(filtered_output)
+                logger.info(f"🔧 Filtered {filtered_count} sensitive keys from {hook_input.tool_name} output")
+                return AfterToolHookResult.with_modifications(tool_output=filtered_output)
+        
+        return AfterToolHookResult.no_changes()
+    
+    return tool_filter_hook
+
+
+def create_tool_result_transformer_hook(transform_func) -> AfterToolHook:
+    """Create a hook that transforms tool outputs using a custom function.
+    
+    Args:
+        transform_func: Function that takes (tool_name, tool_input, tool_output) and returns modified output
+        
+    Returns:
+        A hook that applies the transformation function
+    """
+    def tool_transformer_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
+        try:
+            transformed_output = transform_func(
+                hook_input.tool_name, 
+                hook_input.tool_input, 
+                hook_input.tool_output
+            )
+            
+            # Only return modifications if the output actually changed
+            if transformed_output != hook_input.tool_output:
+                return AfterToolHookResult.with_modifications(tool_output=transformed_output)
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger("tool_transformer_hook")
+            logger.warning(f"⚠️ Tool transformation failed for {hook_input.tool_name}: {e}")
+        
+        return AfterToolHookResult.no_changes()
+    
+    return tool_transformer_hook
+
+
+
+class ToolHookManager:
+    """Manages and executes multiple after tool hooks in sequence."""
+    
+    def __init__(self, hooks: list[AfterToolHook] | None = None):
+        """Initialize tool hook manager.
+        
+        Args:
+            hooks: List of tool hooks to execute
+        """
+        self.hooks: list[AfterToolHook] = hooks or []
+    
+    def add_hook(self, hook: AfterToolHook):
+        """Add a tool hook to the manager.
+        
+        Args:
+            hook: Tool hook to add
+        """
+        self.hooks.append(hook)
+    
+    def remove_hook(self, hook: AfterToolHook):
+        """Remove a tool hook from the manager.
+        
+        Args:
+            hook: Tool hook to remove
+        """
+        if hook in self.hooks:
+            self.hooks.remove(hook)
+    
+    def execute_hooks(self, hook_input: AfterToolHookInput) -> Any:
+        """Execute all tool hooks in sequence.
+        
+        Args:
+            hook_input: AfterToolHookInput containing tool execution details
+            
+        Returns:
+            Final tool output after all hooks have processed it
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        current_output = hook_input.tool_output
+        
+        for i, hook in enumerate(self.hooks):
+            try:
+                logger.info(f"🔧 Executing tool hook {i+1}/{len(self.hooks)}")
+                
+                # Create input for the hook with current output
+                hook_input.tool_output = current_output
+                
+                result = hook(hook_input)
+                
+                # Handle AfterToolHookResult
+                if result.has_modifications():
+                    current_output = result.tool_output
+                    logger.info(f"🔧 Tool hook {i+1} modified the tool output")
+                else:
+                    logger.info(f"🔧 Tool hook {i+1} made no modifications")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Tool hook {i+1} failed: {e}")
+                # Continue with other hooks even if one fails
+                continue
+        
+        return current_output
+    
+    def __bool__(self) -> bool:
+        """Check if there are any tool hooks."""
+        return len(self.hooks) > 0
+    
+    def __len__(self) -> int:
+        """Get the number of tool hooks."""
+        return len(self.hooks)
+
 
 class HookManager:
     """Manages and executes multiple after model hooks in sequence."""
@@ -289,13 +542,11 @@ class HookManager:
         if hook in self.hooks:
             self.hooks.remove(hook)
     
-    def execute_hooks(self, hook_input: AfterModelHookInput) -> tuple[ParsedResponse, list[dict[str, str]]]:
+    def execute_hooks(self, hook_input: AfterModelHookInput) -> tuple[ParsedResponse | None, list[dict[str, str]]]:
         """Execute all hooks in sequence.
         
         Args:
-            original_response: The original response from the LLM
-            parsed_response: The initial parsed structure
-            messages: The current conversation history
+            hook_input: AfterModelHookInput containing all hook input data
             
         Returns:
             Tuple of (final_parsed_response, final_messages) after all hooks have processed them

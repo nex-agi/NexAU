@@ -140,6 +140,48 @@ def load_agent_config(
                 except Exception as e:
                     raise ConfigError(f"Error loading hook {i}: {e}")
         
+        # Handle after_tool_hooks configuration
+        after_tool_hooks = None
+        if 'after_tool_hooks' in config:
+            hooks_config = config['after_tool_hooks']
+            after_tool_hooks = []
+            
+            if not isinstance(hooks_config, list):
+                raise ConfigError("'after_tool_hooks' must be a list")
+            
+            for i, hook_config in enumerate(hooks_config):
+                try:
+                    if isinstance(hook_config, str):
+                        # Simple import string format
+                        hook_func = import_from_string(hook_config)
+                        after_tool_hooks.append(hook_func)
+                    elif isinstance(hook_config, dict):
+                        # Dictionary format with import and optional parameters
+                        import_string = hook_config.get('import')
+                        if not import_string:
+                            raise ConfigError(f"Tool hook {i} missing 'import' field")
+                        
+                        hook_func = import_from_string(import_string)
+                        
+                        # Handle parameters if provided
+                        params = hook_config.get('params', {})
+                        if params:
+                            # For hooks that are factories (like create_* functions), call them with params
+                            if callable(hook_func):
+                                hook_instance = hook_func(**params)
+                                after_tool_hooks.append(hook_instance)
+                            else:
+                                raise ConfigError(f"Tool hook {i} is not callable and cannot accept parameters")
+                        else:
+                            after_tool_hooks.append(hook_func)
+                    elif callable(hook_config):
+                        # Direct callable function (e.g., from overrides)
+                        after_tool_hooks.append(hook_config)
+                    else:
+                        raise ConfigError(f"Tool hook {i} must be a string, dictionary, or callable")
+                except Exception as e:
+                    raise ConfigError(f"Error loading tool hook {i}: {e}")
+        
         # Handle token counter configuration
         token_counter = None
         if 'token_counter' in config:
@@ -234,6 +276,7 @@ def load_agent_config(
             initial_context=initial_context,
             stop_tools=stop_tools,
             after_model_hooks=after_model_hooks,
+            after_tool_hooks=after_tool_hooks,
             global_storage=global_storage
         )
         
