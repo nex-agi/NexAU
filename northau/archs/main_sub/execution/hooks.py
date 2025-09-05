@@ -19,6 +19,8 @@ class AfterModelHookInput:
     - messages: The current conversation history
     - global_storage: The agent's GlobalStorage instance for shared state
     """
+    agent_name: str
+    agent_id: str
     max_iterations: int
     current_iteration: int
     original_response: str
@@ -104,6 +106,8 @@ class AfterToolHookInput:
     - tool_output: The result returned by the tool
     - global_storage: The agent's GlobalStorage instance for shared state
     """
+    agent_name: str
+    agent_id: str
     tool_name: str
     tool_input: Dict[str, Any]
     tool_output: Any
@@ -156,6 +160,8 @@ class AfterToolHook(Protocol):
         
         Args:
             hook_input: AfterToolHookInput containing:
+                - agent_name: The name of the agent that executed the tool
+                - agent_id: The ID of the agent that executed the tool
                 - tool_name: The name of the executed tool
                 - tool_input: The parameters that were passed to the tool
                 - tool_output: The result returned by the tool
@@ -186,6 +192,8 @@ def create_logging_hook(logger_name: str = "after_model_hook") -> AfterModelHook
     
     def logging_hook(hook_input: AfterModelHookInput) -> HookResult:
         logger.info(f"🎣 ===== AFTER MODEL HOOK TRIGGERED =====")
+        logger.info(f"🎣 Agent name: {hook_input.agent_name}")
+        logger.info(f"🎣 Agent id: {hook_input.agent_id}")
         logger.info(f"🎣 Response length: {len(hook_input.original_response)} characters")
         
         if hook_input.parsed_response is not None:
@@ -360,6 +368,8 @@ def create_tool_logging_hook(logger_name: str = "after_tool_hook") -> AfterToolH
     
     def tool_logging_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
         logger.info(f"🔧 ===== AFTER TOOL HOOK TRIGGERED =====")
+        logger.info(f"🔧 Agent name: {hook_input.agent_name}")
+        logger.info(f"🔧 Agent id: {hook_input.agent_id}")
         logger.info(f"🔧 Tool name: {hook_input.tool_name}")
         logger.info(f"🔧 Tool input: {hook_input.tool_input}")
         logger.info(f"🔧 Tool output type: {type(hook_input.tool_output)}")
@@ -420,6 +430,8 @@ def create_tool_result_transformer_hook(transform_func) -> AfterToolHook:
     def tool_transformer_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
         try:
             transformed_output = transform_func(
+                hook_input.agent_name,
+                hook_input.agent_id,
                 hook_input.tool_name, 
                 hook_input.tool_input, 
                 hook_input.tool_output
