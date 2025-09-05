@@ -62,6 +62,11 @@ class ToolExecutor:
         
         tool = self.tool_registry[tool_name]
         try:
+            # Add global_storage to parameters if available
+            execution_params = parameters.copy()
+            if global_storage is not None:
+                execution_params['global_storage'] = global_storage
+            
             if self.langfuse_client:
                 try:
                     with self.langfuse_client.start_as_current_generation(
@@ -69,14 +74,14 @@ class ToolExecutor:
                         input=parameters,
                         metadata={"tool_name": tool_name, "type": "tool_execution"}
                     ) as generation:
-                        result = tool.execute(**parameters)
+                        result = tool.execute(**execution_params)
                         self.langfuse_client.update_current_generation(output=result)
                     self.langfuse_client.flush()
                 except Exception as langfuse_error:
                     logger.warning(f"⚠️ Langfuse tool tracing failed: {langfuse_error}")
-                    result = tool.execute(**parameters)
+                    result = tool.execute(**execution_params)
             else:
-                result = tool.execute(**parameters)
+                result = tool.execute(**execution_params)
             
             logger.info(f"✅ Tool '{tool_name}' executed successfully")
             
