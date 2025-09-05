@@ -38,10 +38,11 @@ class ToolExecutor:
         self.xml_parser = XMLParser()
         self.tool_hook_manager = tool_hook_manager
     
-    def execute_tool(self, tool_name: str, parameters: Dict[str, Any], global_storage=None) -> Dict[str, Any]:
+    def execute_tool(self, agent_name: str, agent_id: str, tool_name: str, parameters: Dict[str, Any], global_storage=None) -> Dict[str, Any]:
         """Execute a tool with given parameters.
         
         Args:
+            agent_id: ID of the agent
             tool_name: Name of the tool to execute
             parameters: Parameters to pass to the tool
             global_storage: Optional GlobalStorage instance for hook access
@@ -52,10 +53,10 @@ class ToolExecutor:
         Raises:
             ValueError: If tool is not found
         """
-        logger.info(f"🔧 Executing tool '{tool_name}' with parameters: {parameters}")
+        logger.info(f"🔧 Executing tool '{tool_name}' for agent '{agent_id}' with parameters: {parameters}")
         
         if tool_name not in self.tool_registry:
-            error_msg = f"Tool '{tool_name}' not found"
+            error_msg = f"Tool '{tool_name}' for agent '{agent_id}' not found"
             logger.error(f"❌ {error_msg}")
             raise ValueError(error_msg)
         
@@ -82,6 +83,8 @@ class ToolExecutor:
             # Execute tool hooks if available
             if self.tool_hook_manager:
                 hook_input = AfterToolHookInput(
+                    agent_name=agent_name,
+                    agent_id=agent_id,
                     tool_name=tool_name,
                     tool_input=parameters,
                     tool_output=result,
@@ -104,100 +107,7 @@ class ToolExecutor:
         except Exception as e:
             logger.error(f"❌ Tool '{tool_name}' execution failed: {e}")
             raise
-    
-    def execute_tool_from_xml(self, xml_content: str, tracer: Optional[Tracer] = None, global_storage=None) -> Tuple[str, str]:
-        """Execute a tool from XML content.
-        
-        Args:
-            xml_content: XML content describing the tool call
-            tracer: Optional tracer for logging
-            global_storage: Optional GlobalStorage instance for hook access
-            
-        Returns:
-            Tuple of (tool_name, result_json)
-        """
-        try:
-            # Parse XML using robust parsing
-            root = self.xml_parser.parse_xml_content(xml_content)
-            
-            # Get tool name
-            tool_name_elem = root.find('tool_name')
-            if tool_name_elem is None:
-                raise ValueError("Missing tool_name in tool_use XML")
-            
-            tool_name = (tool_name_elem.text or "").strip()
-            
-            # Get parameters
-            parameters = {}
-            params_elem = root.find('parameter')
-            if params_elem is not None:
-                for param in params_elem:
-                    param_name = param.tag
-                    
-                    # Check if parameter has child elements (nested XML structure)
-                    if len(param) > 0:
-                        # Parameter has child elements - parse as nested XML into dictionary
-                        param_value = self.xml_parser.parse_nested_xml_to_dict(param)
-                    else:
-                        # Handle both regular text and CDATA content, preserving whitespace for JSON
-                        if param.text is not None:
-                            param_value = param.text
-                            # If there's tail text, include it
-                            if param.tail:
-                                param_value = ''.join(param.itertext())
-                        else:
-                            # Handle case where content is in CDATA or mixed content
-                            param_value = ''.join(param.itertext()) or ""
-                        
-                        # Unescape HTML entities in parameter values
-                        param_value = html.unescape(param_value)
-                        
-                        # Don't strip whitespace for JSON parameters as it might be significant
-                        if param_value.strip().startswith(('{', '[')):
-                            # Likely JSON, preserve formatting but clean up excessive whitespace
-                            param_value = param_value.strip()
-                        else:
-                            param_value = param_value.strip()
-                    
-                    parameters[param_name] = self._convert_parameter_type(
-                        tool_name, param_name, param_value
-                    )
-            
-            # Log tool request to trace if enabled
-            if tracer:
-                tracer.add_tool_request(tool_name, parameters)
-            
-            # Execute tool
-            result = self.execute_tool(tool_name, parameters, global_storage)
-            
-            # Log tool response to trace if enabled
-            if tracer:
-                tracer.add_tool_response(tool_name, result)
-            
-            return tool_name, json.dumps(result, indent=2, ensure_ascii=False)
-            
-        except ET.ParseError as e:
-            raise ValueError(f"Invalid XML format: {e}")
-    
-    def execute_tool_from_xml_safe(self, xml_content: str, tracer: Optional[Tracer] = None, global_storage=None) -> Tuple[str, str, bool]:
-        """Safe wrapper for execute_tool_from_xml that handles exceptions.
-        
-        Args:
-            xml_content: XML content describing the tool call
-            tracer: Optional tracer for logging
-            global_storage: Optional GlobalStorage instance for hook access
-            
-        Returns:
-            Tuple of (tool_name, result, is_error)
-        """
-        try:
-            tool_name, result = self.execute_tool_from_xml(xml_content, tracer, global_storage)
-            return tool_name, result, False
-        except Exception as e:
-            # Extract tool name for error reporting using more robust parsing
-            tool_name = XMLUtils.extract_tool_name_from_xml(xml_content)
-            return tool_name, str(e), True
-    
+
     def _convert_parameter_type(self, tool_name: str, param_name: str, param_value):
         """Convert parameter value to the correct type based on tool schema.
         

@@ -3,6 +3,7 @@
 from typing import Dict, List, Optional, Tuple, Callable, Any, Union
 import logging
 from pathlib import Path
+import uuid
 from jinja2 import Template as Jinja2Template
 
 try:
@@ -104,6 +105,7 @@ class Agent:
         self.error_handler = error_handler
         self.retry_attempts = retry_attempts
         self.timeout = timeout
+        self.agent_id = str(uuid.uuid4())
         
         # Initialize stop tools list
         self.stop_tools = set(stop_tools or [])
@@ -191,6 +193,7 @@ class Agent:
         # Initialize executor with all components
         self.executor = Executor(
             agent_name=self.name,
+            agent_id=self.agent_id,
             tool_registry=self.tool_registry,
             sub_agent_factories=self.sub_agent_factories,
             stop_tools=self.stop_tools,

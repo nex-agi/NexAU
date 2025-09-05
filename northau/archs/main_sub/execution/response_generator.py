@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class ResponseGenerator:
     """Handles LLM response generation with iteration control."""
     
-    def __init__(self, agent_name: str, openai_client: Any, llm_config: Any, max_iterations: int = 100, 
+    def __init__(self, agent_name: str, agent_id: str, openai_client: Any, llm_config: Any, max_iterations: int = 100, 
                  max_context_tokens: int = 128000, retry_attempts: int = 5, global_storage: Any = None,
                  custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None):
         """Initialize response generator.
@@ -32,6 +32,7 @@ class ResponseGenerator:
             custom_llm_generator: Optional custom LLM generator function that takes (openai_client, kwargs) and returns a response
         """
         self.agent_name = agent_name
+        self.agent_id = agent_id
         self.openai_client = openai_client
         self.llm_config = llm_config
         self.max_iterations = max_iterations
@@ -185,6 +186,8 @@ class ResponseGenerator:
                 # Process tool calls and sub-agent calls
                 logger.info(f"⚙️ Processing tool/sub-agent calls for agent '{self.agent_name}'...")
                 after_model_hook_input = AfterModelHookInput(
+                    agent_name=self.agent_name,
+                    agent_id=self.agent_id,
                     max_iterations=self.max_iterations,
                     current_iteration=iteration,
                     original_response=assistant_response,

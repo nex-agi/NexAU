@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class Executor:
     """Orchestrates execution of agent tasks with parallel processing support."""
     
-    def __init__(self, agent_name: str, tool_registry: dict[str, Any], sub_agent_factories: dict[str, Callable[[], Any]],
+    def __init__(self, agent_name: str, agent_id: str, tool_registry: dict[str, Any], sub_agent_factories: dict[str, Callable[[], Any]],
                  stop_tools: set[str], openai_client: Any, llm_config: Any, max_iterations: int = 100,
                  max_context_tokens: int = 128000, max_running_subagents: int = 5, 
                  retry_attempts: int = 5, token_counter: TokenCounter | None = None,
@@ -38,6 +38,7 @@ class Executor:
         
         Args:
             agent_name: Name of the agent
+            agent_id: ID of the agent
             tool_registry: Dictionary of available tools
             sub_agent_factories: Dictionary of sub-agent factories
             stop_tools: Set of tool names that trigger execution stop
@@ -54,6 +55,7 @@ class Executor:
             custom_llm_generator: Optional custom LLM generator function
         """
         self.agent_name = agent_name
+        self.agent_id = agent_id
         self.max_running_subagents = max_running_subagents
         
         # Initialize components
@@ -64,7 +66,7 @@ class Executor:
         self.batch_processor = BatchProcessor(self.subagent_manager, max_running_subagents)
         self.response_parser = ResponseParser()
         self.response_generator = ResponseGenerator(
-            agent_name, openai_client, llm_config, max_iterations, 
+            agent_name, agent_id, openai_client, llm_config, max_iterations, 
             max_context_tokens, retry_attempts, global_storage, custom_llm_generator
         )
         self.hook_manager = HookManager(after_model_hooks)
@@ -172,7 +174,7 @@ class Executor:
         
         # Check if agent is shutting down
         if self._shutdown_event.is_set():
-            logger.warning(f"⚠️ Agent '{self.agent_name}' is shutting down, skipping new task execution")
+            logger.warning(f"⚠️ Agent '{self.agent_name}' ({self.agent_id}) is shutting down, skipping new task execution")
             return processed_response, False, None
         
         # Handle batch agent calls first (they take priority and are not parallelized)
@@ -298,7 +300,7 @@ class Executor:
                     tool_call.tool_name, param_name, param_value
                 )
             
-            result = self.tool_executor.execute_tool(tool_call.tool_name, converted_params, global_storage)
+            result = self.tool_executor.execute_tool(self.agent_name, self.agent_id, tool_call.tool_name, converted_params, global_storage)
             
             # Log tool response to trace if enabled
             if tracer:
