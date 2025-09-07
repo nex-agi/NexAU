@@ -106,7 +106,6 @@ class ResponseGenerator:
                 if calculated_max_tokens < 50:
                     logger.error(f"❌ Insufficient tokens for response ({calculated_max_tokens}). Stopping execution.")
                     final_response += f"\\n\\n[Error: Insufficient tokens for response ({calculated_max_tokens} tokens). Context too full.]"
-                    break
                 
                 # Set max_tokens based on calculation
                 api_params['max_tokens'] = calculated_max_tokens
@@ -145,6 +144,8 @@ class ResponseGenerator:
                 
                 logger.info(f"🧠 Calling LLM for agent '{self.agent_name}'...")
                 response = self._call_openai_with_retry(**api_params)
+                if response is None:
+                    break
                 if response and hasattr(response, 'choices') and response.choices:
                     assistant_response = response.choices[0].message.content
                 else:
@@ -256,6 +257,9 @@ class ResponseGenerator:
                 if self.custom_llm_generator:
                     response = self.custom_llm_generator(self.openai_client, kwargs)
                 else:
+                    if kwargs['max_tokens'] < 50:
+                        logger.error(f"❌ Max tokens ({kwargs['max_tokens']}) is less than 50. Stopping execution.")
+                        return None
                     response = self.openai_client.chat.completions.create(**kwargs)
                 
                 response_content = response.choices[0].message.content
