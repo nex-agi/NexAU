@@ -1,12 +1,13 @@
 """TodoWrite tool implementation for task management in agent context."""
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+from ...main_sub.agent_context import GlobalStorage
 import json
 import uuid
 from datetime import datetime
 
 
-def todo_write(todos: List[Dict[str, str]]) -> Dict[str, Any]:
+def todo_write(todos: List[Dict[str, str]], global_storage: Optional[GlobalStorage] = None) -> Dict[str, Any]:
     """
     Create and manage a structured task list for the current coding session.
     
@@ -25,13 +26,10 @@ def todo_write(todos: List[Dict[str, str]]) -> Dict[str, Any]:
         Dict containing the result of the operation
     """
     try:
-        from ...main_sub.agent_context import get_context, set_state_value, get_state_value
-        
-        context = get_context()
-        if not context:
+        if not global_storage:
             return {
                 "status": "error",
-                "error": "No agent context available"
+                "error": "No global storage available"
             }
         
         # Validate todo items
@@ -99,8 +97,8 @@ def todo_write(todos: List[Dict[str, str]]) -> Dict[str, Any]:
         #     }
         
         # Store the todo list in agent context
-        set_state_value("current_todos", validated_todos)
-        set_state_value("todos_last_updated", datetime.now().isoformat())
+        global_storage.set("current_todos", validated_todos)
+        global_storage.set("todos_last_updated", datetime.now().isoformat())
         
         # Generate summary for display
         total_todos = len(validated_todos)
@@ -117,101 +115,6 @@ def todo_write(todos: List[Dict[str, str]]) -> Dict[str, Any]:
                 "completed": completed_count
             },
             "todos": validated_todos
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-            "error_type": type(e).__name__
-        }
-
-
-def get_current_todos() -> Dict[str, Any]:
-    """
-    Get the current todo list from agent context.
-    
-    Returns:
-        Dict containing the current todo list or error
-    """
-    try:
-        from ...main_sub.agent_context import get_context, get_state_value
-        
-        context = get_context()
-        if not context:
-            return {
-                "status": "error",
-                "error": "No agent context available"
-            }
-        
-        todos = get_state_value("current_todos", [])
-        last_updated = get_state_value("todos_last_updated", "Never")
-        
-        if not todos:
-            return {
-                "status": "success",
-                "message": "No todos found",
-                "todos": [],
-                "summary": {
-                    "total": 0,
-                    "pending": 0,
-                    "in_progress": 0,
-                    "completed": 0
-                },
-                "last_updated": last_updated
-            }
-        
-        # Generate summary
-        total_todos = len(todos)
-        pending_count = sum(1 for todo in todos if todo["status"] == "pending")
-        in_progress_count = sum(1 for todo in todos if todo["status"] == "in_progress")
-        completed_count = sum(1 for todo in todos if todo["status"] == "completed")
-        
-        return {
-            "status": "success",
-            "todos": todos,
-            "summary": {
-                "total": total_todos,
-                "pending": pending_count,
-                "in_progress": in_progress_count,
-                "completed": completed_count
-            },
-            "last_updated": last_updated
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-            "error_type": type(e).__name__
-        }
-
-
-def clear_todos() -> Dict[str, Any]:
-    """
-    Clear all todos from the agent context.
-    
-    Returns:
-        Dict containing the result of the operation
-    """
-    try:
-        from ...main_sub.agent_context import get_context, set_state_value
-        
-        context = get_context()
-        if not context:
-            return {
-                "status": "error",
-                "error": "No agent context available"
-            }
-        
-        # Clear the todos
-        set_state_value("current_todos", [])
-        set_state_value("todos_last_updated", datetime.now().isoformat())
-        
-        return {
-            "status": "success",
-            "message": "All todos cleared",
-            "todos": []
         }
         
     except Exception as e:
