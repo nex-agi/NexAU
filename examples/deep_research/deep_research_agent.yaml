@@ -5,7 +5,7 @@ system_prompt_type: string
 llm_config:
   temperature: 0.7
   max_tokens: 4096
-custom_llm_generator: "northau.archs.main_sub.execution.response_generator:bypass_llm_generator"
+custom_llm_generator: "northau.archs.main_sub.execution.llm_caller:bypass_llm_generator"
 tools:
   - name: web_search
     yaml_path: ./tools/WebSearch.yaml

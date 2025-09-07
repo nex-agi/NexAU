@@ -78,6 +78,9 @@ class Agent:
         # Conversation history
         self.history = []
         
+        # Queue for messages to be processed in the next execution cycle
+        self.queued_messages = []
+        
         # Register for cleanup
         cleanup_manager.register_agent(self)
     
@@ -289,9 +292,9 @@ class Agent:
         """Call a sub-agent like a tool call."""
         return self.executor.subagent_manager.call_sub_agent(sub_agent_name, message, context)
     
-    def enqueue_message(self, message: Dict[str, str]) -> None:
+    def enqueue_message(self, message: dict[str, str]) -> None:
         """Enqueue a message to be added to the history."""
-        self.executor.response_generator.enqueue_message(message)
+        self.executor.enqueue_message(message)
     
     def _cleanup_agent(self) -> None:
         """Clean up this agent and all its running sub-agents."""

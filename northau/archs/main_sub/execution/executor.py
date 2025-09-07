@@ -81,6 +81,18 @@ class Executor:
         self._running_executors = {}  # Maps executor_id to ThreadPoolExecutor
         self._executor_lock = threading.Lock()
         self._shutdown_event = threading.Event()
+        
+        # Message queue for dynamic message enqueueing during execution
+        self.queued_messages = []
+    
+    def enqueue_message(self, message: dict[str, str]) -> None:
+        """Enqueue a message to be processed during execution.
+        
+        Args:
+            message: Message dictionary with 'role' and 'content' keys
+        """
+        self.queued_messages.append(message)
+        logger.info(f"📝 Message enqueued during execution: {message.get('role', 'unknown')} - {len(message.get('content', ''))[:50]}...")
     
     def execute(self, history: list[dict[str, str]], 
                dump_trace_path: str | None = None) -> tuple[str, list[dict[str, str]]]:
@@ -109,6 +121,12 @@ class Executor:
             
             while iteration < self.max_iterations:
                 logger.info(f"🔄 Iteration {iteration + 1}/{self.max_iterations} for agent '{self.agent_name}'")
+                
+                # Process any queued messages
+                if self.queued_messages:
+                    logger.info(f"📝 Processing {len(self.queued_messages)} queued messages")
+                    messages.extend(self.queued_messages)
+                    self.queued_messages = []
                 
                 # Count current prompt tokens
                 current_prompt_tokens = self.token_counter.count_tokens(messages)
@@ -188,7 +206,7 @@ class Executor:
                 messages = updated_messages
                 
                 # Check if a stop tool was executed
-                if should_stop:
+                if should_stop and len(self.queued_messages) == 0:
                     # Return the stop tool result directly, formatted as JSON if it's not a string
                     if stop_tool_result is not None:
                         logger.info(f"🛑 Stop tool detected, returning stop tool result as final response")
