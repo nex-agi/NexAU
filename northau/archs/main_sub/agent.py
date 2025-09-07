@@ -169,8 +169,7 @@ class Agent:
         context: Optional[Dict] = None,
         state: Optional[Dict[str, Any]] = None,
         config: Optional[Dict[str, Any]] = None,
-        dump_trace_path: Optional[str] = None,
-        return_final_state: bool = False,
+        dump_trace_path: Optional[str] = None
     ) -> Union[str, Tuple[str, Dict[str, Any]]]:
         """Run agent with a message and return response."""
         logger.info(f"🤖 Agent '{self.config.name}' starting execution")
@@ -190,7 +189,7 @@ class Agent:
             merged_context.update(context)
         
         # Create agent context
-        with AgentContext(state=merged_state, config=merged_config, context=merged_context) as ctx:
+        with AgentContext(context=merged_context) as ctx:
             if history:
                 self.history = history.copy()
             else:
@@ -254,12 +253,7 @@ class Agent:
                     self.history.append({"role": "assistant", "content": response})
                 
                 logger.info(f"✅ Agent '{self.config.name}' completed execution")
-                
-                if return_final_state:
-                    final_state = ctx.state.copy()
-                    return response, final_state
-                else:
-                    return response
+                return response
                 
             except Exception as e:
                 logger.error(f"❌ Agent '{self.config.name}' encountered error: {e}")
@@ -267,11 +261,7 @@ class Agent:
                 if self.config.error_handler:
                     error_response = self.config.error_handler(e, self, merged_context)
                     self.history.append({"role": "assistant", "content": error_response})
-                    if return_final_state:
-                        final_state = ctx.state.copy()
-                        return error_response, final_state
-                    else:
-                        return error_response
+                    return error_response
                 else:
                     error_message = f"Error: {str(e)}"
                     self.history.append({"role": "assistant", "content": error_message})

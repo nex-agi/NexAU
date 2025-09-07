@@ -117,8 +117,6 @@ class SubAgentManager:
                             result = sub_agent.run(
                                 message, 
                                 context=effective_context,
-                                state=current_context.state.copy(),
-                                config=current_context.config.copy(),
                                 dump_trace_path=sub_agent_trace_path
                             )
                             self.langfuse_client.update_current_generation(output=result)
@@ -128,16 +126,12 @@ class SubAgentManager:
                         result = sub_agent.run(
                             message, 
                             context=effective_context,
-                            state=current_context.state.copy(),
-                            config=current_context.config.copy(),
                             dump_trace_path=sub_agent_trace_path
                         )
                 else:
                     result = sub_agent.run(
                         message, 
                         context=effective_context,
-                        state=current_context.state.copy(),
-                        config=current_context.config.copy(),
                         dump_trace_path=sub_agent_trace_path
                     )
             else:
