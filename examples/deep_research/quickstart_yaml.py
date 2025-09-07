@@ -38,7 +38,9 @@ def main():
             llm_config_overrides["api_key"] = api_key
         
         config_overrides = {
-            "llm_config": llm_config_overrides
+            "deep_research_agent": {
+                "llm_config": llm_config_overrides
+            }
         }
         
         script_dir = Path(__file__).parent

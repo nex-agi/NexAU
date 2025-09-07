@@ -138,43 +138,26 @@ class PromptHandler:
         """Validate if a prompt type is supported."""
         return prompt_type in ["string", "file", "jinja"]
     
-    def get_default_context(self, agent) -> Dict[str, Any]:
-        """Get default context variables for template rendering."""
-        context = {
-            "agent_name": getattr(agent, 'name', 'unnamed_agent'),
-            "model": getattr(agent, 'model', 'unknown'),
-            "tools": [],
-            "sub_agents": [],
-            "timestamp": self._get_timestamp()
-        }
-        
-        # Add tool information
-        if hasattr(agent, 'tools') and agent.tools:
-            context["tools"] = [
-                {
-                    "name": tool.name,
-                    "description": getattr(tool, 'description', ''),
-                    "template_override": getattr(tool, 'template_override', None),
-                }
-                for tool in agent.tools
-            ]
-        
-        # Add sub-agent information
-        if hasattr(agent, 'sub_agent_factories') and agent.sub_agent_factories:
-            context["sub_agents"] = [
-                {
-                    "name": name,
-                    "description": f"Specialized agent for {name}-related tasks"
-                }
-                for name in agent.sub_agent_factories.keys()
-            ]
-        
-        return context
-    
     def _get_timestamp(self) -> str:
         """Get current timestamp."""
         from datetime import datetime
         return datetime.now().isoformat()
+    
+    def get_default_context(self, agent) -> Dict[str, Any]:
+        """Get default context for template rendering."""
+        context = {
+            'agent_name': getattr(agent, 'name', 'Unknown Agent'),
+            'timestamp': self._get_timestamp(),
+        }
+        
+        # Add agent-specific context if available
+        if hasattr(agent, 'config'):
+            context.update({
+                'agent_id': getattr(agent.config, 'agent_id', None),
+                'system_prompt_type': getattr(agent.config, 'system_prompt_type', 'string')
+            })
+        
+        return context
     
     def create_dynamic_prompt(
         self,
