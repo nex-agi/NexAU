@@ -81,8 +81,8 @@ class SubAgentManager:
                 sub_agent = sub_agent_factory()
                 sub_agent.global_storage = self.global_storage
                 # Also ensure the sub-agent's executor uses the same global storage
-                if hasattr(sub_agent, 'executor') and hasattr(sub_agent.executor, 'response_generator'):
-                    sub_agent.executor.response_generator.global_storage = self.global_storage
+                if hasattr(sub_agent, 'executor'):
+                    sub_agent.executor.global_storage = self.global_storage
                 if hasattr(sub_agent, 'executor') and hasattr(sub_agent.executor, 'subagent_manager'):
                     sub_agent.executor.subagent_manager.global_storage = self.global_storage
         else:
