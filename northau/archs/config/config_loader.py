@@ -87,7 +87,6 @@ def load_agent_config(
         
         # Extract agent configuration
         agent_name = config.get('name', 'configured_agent')
-        max_context = config.get('max_context', 100000)  # Backward compatibility
         max_context_tokens = config.get('max_context_tokens', 128000)
         max_running_subagents = config.get('max_running_subagents', 5)
         system_prompt = config.get('system_prompt')
@@ -238,29 +237,7 @@ def load_agent_config(
                 raise ConfigError("Token counter configuration must be a string or dictionary")
         
         # Handle LLM configuration
-        llm_config = None
-        if 'llm_config' in config:
-            # New format with llm_config section
-            llm_config = LLMConfig(**config['llm_config'])
-        else:
-            # Backward compatibility: extract LLM params from root level
-            llm_params = {}
-            for key in ['model', 'base_url', 'model_base_url', 'api_key', 'temperature', 
-                       'max_tokens', 'top_p', 'frequency_penalty', 'presence_penalty', 
-                       'timeout', 'max_retries', 'debug']:
-                value = config.get(key)
-                if value is not None:
-                    # Handle model_base_url -> base_url mapping
-                    if key == 'model_base_url':
-                        llm_params['base_url'] = value
-                    else:
-                        llm_params[key] = value
-            
-            if llm_params:
-                llm_config = LLMConfig(**llm_params)
-            else:
-                # Default LLM config
-                llm_config = LLMConfig()
+        llm_config = LLMConfig(**config['llm_config'])
         
         # Load tools
         tools = []
