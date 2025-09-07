@@ -7,6 +7,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
 from typing import Any, Callable, Optional
+from collections import defaultdict
 
 from northau.archs.main_sub.agent_context import GlobalStorage
 
@@ -205,6 +206,20 @@ class Executor:
         with self._executor_lock:
             self._running_executors[f"{executor_id}_tools"] = tool_executor
             self._running_executors[f"{executor_id}_subagents"] = subagent_executor
+            
+        # Handle duplicate tool_call_ids by adding suffixes
+        seen_tool_call_ids = defaultdict(int)
+        for tool_call in parsed_response.tool_calls:
+            if tool_call.tool_call_id in seen_tool_call_ids:
+                seen_tool_call_ids[tool_call.tool_call_id] += 1
+                tool_call.tool_call_id = f"{tool_call.tool_call_id}_{seen_tool_call_ids[tool_call.tool_call_id]}"
+                
+        # Handle duplicate sub_agent_call_ids by adding suffixes
+        seen_sub_agent_call_ids = defaultdict(int)
+        for sub_agent_call in parsed_response.sub_agent_calls:
+            if sub_agent_call.sub_agent_call_id in seen_sub_agent_call_ids:
+                seen_sub_agent_call_ids[sub_agent_call.sub_agent_call_id] += 1
+                sub_agent_call.sub_agent_call_id = f"{sub_agent_call.sub_agent_call_id}_{seen_sub_agent_call_ids[sub_agent_call.sub_agent_call_id]}"
         
         try:
             # Submit tool execution tasks
