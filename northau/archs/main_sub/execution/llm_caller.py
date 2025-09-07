@@ -127,3 +127,28 @@ class LLMCaller:
                     raise e
                 time.sleep(backoff)
                 backoff *= 2
+
+def bypass_llm_generator(openai_client: Any, kwargs: dict[str, Any]) -> Any:
+    """
+    Custom LLM generator that does nothing.
+    
+    Args:
+        openai_client: The OpenAI client instance (can be used or ignored)
+        kwargs: The parameters that would be passed to openai_client.chat.completions.create()
+        
+    Returns:
+        A response object with the same structure as OpenAI's response
+        (must have .choices[0].message.content attribute)
+    """
+    print(f"🔧 Custom LLM Generator called with {len(kwargs.get('messages', []))} messages")
+    
+    try:
+        # Call the original OpenAI API
+        response = openai_client.chat.completions.create(**kwargs)
+
+        return response
+        
+    except Exception as e:
+        print(f"❌ Bypass LLM generator error: {e}")
+        # You could implement custom fallback logic here
+        raise
