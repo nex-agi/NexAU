@@ -14,7 +14,7 @@ from northau.archs.main_sub.agent_context import GlobalStorage
 from .tool_executor import ToolExecutor
 from .subagent_manager import SubAgentManager
 from .batch_processor import BatchProcessor
-from .response_generator import ResponseGenerator
+from .llm_caller import LLMCaller
 from .response_parser import ResponseParser
 from .parse_structures import ParsedResponse, ToolCall, SubAgentCall, BatchAgentCall
 from .hooks import HookManager, AfterModelHook, ToolHookManager, AfterToolHook, AfterModelHookInput
@@ -66,11 +66,13 @@ class Executor:
         self.subagent_manager = SubAgentManager(agent_name, sub_agent_factories, langfuse_client, global_storage, self.tracer)
         self.batch_processor = BatchProcessor(self.subagent_manager, max_running_subagents)
         self.response_parser = ResponseParser()
-        self.response_generator = ResponseGenerator(
-            agent_name, agent_id, openai_client, llm_config, max_iterations, 
-            max_context_tokens, retry_attempts, global_storage, custom_llm_generator
-        )
+        self.llm_caller = LLMCaller(openai_client, llm_config, retry_attempts, custom_llm_generator)
         self.hook_manager = HookManager(after_model_hooks)
+        
+        # Execution parameters
+        self.max_iterations = max_iterations
+        self.max_context_tokens = max_context_tokens
+        self.global_storage = global_storage
         
         # Token counting
         self.token_counter = token_counter or TokenCounter()
@@ -96,13 +98,134 @@ class Executor:
             self.tracer.start_tracing(dump_trace_path)
         
         try:
-            # Generate response with tool/sub-agent execution
-            response, updated_messages = self.response_generator.generate_response(
-                history,
-                self.token_counter.count_tokens,
-                self._process_xml_calls,
-                self.tracer if dump_trace_path else None
-            )
+            # Use history directly as the single source of truth
+            messages = history.copy()
+            
+            # Loop until no more tool calls or sub-agent calls are made
+            iteration = 0
+            final_response = ""
+            
+            logger.info(f"🔄 Starting iterative execution loop for agent '{self.agent_name}'")
+            
+            while iteration < self.max_iterations:
+                logger.info(f"🔄 Iteration {iteration + 1}/{self.max_iterations} for agent '{self.agent_name}'")
+                
+                # Count current prompt tokens
+                current_prompt_tokens = self.token_counter.count_tokens(messages)
+                
+                force_stop_reason = None
+                # Check if prompt exceeds max context tokens - force stop if so
+                if current_prompt_tokens > self.max_context_tokens:
+                    logger.error(f"❌ Prompt tokens ({current_prompt_tokens}) exceed max_context_tokens ({self.max_context_tokens}). Stopping execution.")
+                    final_response += f"\\n\\n[Error: Prompt too long ({current_prompt_tokens} tokens) exceeds maximum context ({self.max_context_tokens} tokens). Execution stopped.]"
+                    force_stop_reason = "Prompt too long"
+                
+                # Calculate max_tokens dynamically based on available budget
+                available_tokens = self.max_context_tokens - current_prompt_tokens
+                
+                # Get desired max_tokens from LLM config or use reasonable default
+                desired_max_tokens = 4096  # Default value
+                calculated_max_tokens = min(desired_max_tokens, available_tokens)
+                
+                # Ensure we have at least some tokens for response
+                if calculated_max_tokens < 50:
+                    logger.error(f"❌ Insufficient tokens for response ({calculated_max_tokens}). Stopping execution.")
+                    final_response += f"\\n\\n[Error: Insufficient tokens for response ({calculated_max_tokens} tokens). Context too full.]"
+                    force_stop_reason = "Insufficient tokens"
+                
+                logger.info(f"🔢 Token usage: prompt={current_prompt_tokens}, max_tokens={calculated_max_tokens}, available={available_tokens}")
+                
+                # Log LLM request to trace if enabled
+                if dump_trace_path:
+                    self.tracer.add_llm_request(iteration + 1, {
+                        'messages': messages,
+                        'max_tokens': calculated_max_tokens
+                    })
+                
+                # Call LLM to get response
+                logger.info(f"🧠 Calling LLM for agent '{self.agent_name}' with {calculated_max_tokens} max tokens...")
+                assistant_response = self.llm_caller.call_llm(messages, calculated_max_tokens, force_stop_reason)
+                
+                # Log LLM response to trace if enabled
+                if dump_trace_path:
+                    # Create a mock response object for tracing compatibility
+                    mock_response = type('MockResponse', (), {
+                        'choices': [type('Choice', (), {
+                            'message': type('Message', (), {'content': assistant_response})()
+                        })()]
+                    })()
+                    self.tracer.add_llm_response(iteration + 1, mock_response)
+                
+                logger.info(f"💬 LLM Response for agent '{self.agent_name}': {assistant_response}")
+                
+                # Store this as the latest response (potential final response)
+                final_response = assistant_response
+                
+                # Parse response to check for actions
+                parsed_response = self.response_parser.parse_response(assistant_response)
+                
+                # Add the assistant's original response to conversation
+                messages.append({"role": "assistant", "content": assistant_response})
+                
+                # Process tool calls and sub-agent calls
+                logger.info(f"⚙️ Processing tool/sub-agent calls for agent '{self.agent_name}'...")
+                after_model_hook_input = AfterModelHookInput(
+                    agent_name=self.agent_name,
+                    agent_id=self.agent_id,
+                    max_iterations=self.max_iterations,
+                    current_iteration=iteration,
+                    original_response=assistant_response,
+                    parsed_response=parsed_response,
+                    messages=messages,
+                    global_storage=self.global_storage
+                )
+                
+                processed_response, should_stop, stop_tool_result, updated_messages = self._process_xml_calls(
+                    after_model_hook_input, tracer=self.tracer if dump_trace_path else None
+                )
+                
+                # Update messages with any modifications from hooks
+                messages = updated_messages
+                
+                # Check if a stop tool was executed
+                if should_stop:
+                    # Return the stop tool result directly, formatted as JSON if it's not a string
+                    if stop_tool_result is not None:
+                        logger.info(f"🛑 Stop tool detected, returning stop tool result as final response")
+                        if isinstance(stop_tool_result, str):
+                            return stop_tool_result, messages
+                        else:
+                            import json
+                            return json.dumps(stop_tool_result, indent=4, ensure_ascii=False), messages
+                    else:
+                        logger.info(f"🛑 No more tool calls, stop.")
+                        # Fallback to the processed response if no specific result
+                        return processed_response, messages
+                
+                # Extract just the tool results from processed_response
+                tool_results = processed_response.replace(assistant_response, "").strip()
+                
+                # Add tool results as user feedback with iteration context
+                remaining_iterations = self.max_iterations - iteration - 1
+                iteration_hint = self._build_iteration_hint(iteration + 1, self.max_iterations, remaining_iterations)
+                token_limit_hint = self._build_token_limit_hint(current_prompt_tokens, self.max_context_tokens, available_tokens, desired_max_tokens)
+                
+                if tool_results:
+                    messages.append({
+                        "role": "user", 
+                        "content": f"Tool execution results:\\n{tool_results}\\n\\n{iteration_hint}\\n\\n{token_limit_hint}"
+                    })
+                else:
+                    messages.append({
+                        "role": "user", 
+                        "content": f"{iteration_hint}\\n\\n{token_limit_hint}"
+                    })
+                
+                iteration += 1
+            
+            # Add note if max iterations reached
+            if iteration >= self.max_iterations:
+                final_response += "\\n\\n[Note: Maximum iteration limit reached]"
             
             # Dump trace if enabled
             if dump_trace_path:
@@ -110,7 +233,7 @@ class Executor:
                 if trace_data:
                     TraceDumper.dump_trace_to_file(trace_data, dump_trace_path, self.agent_name)
             
-            return response, updated_messages
+            return final_response, messages
             
         except Exception as e:
             # Add error to trace if enabled
@@ -119,8 +242,8 @@ class Executor:
                 trace_data = self.tracer.get_trace_data()
                 if trace_data:
                     TraceDumper.dump_trace_to_file(trace_data, dump_trace_path, self.agent_name)
-            # Return original history even on error so calling code can still update
-            raise
+            # Re-raise with more context
+            raise RuntimeError(f"Error in agent execution: {e}") from e
         finally:
             if dump_trace_path:
                 self.tracer.stop_tracing()
@@ -151,9 +274,10 @@ class Executor:
                 parsed_response, current_messages = self.hook_manager.execute_hooks(hook_input)
             except Exception as e:
                 logger.warning(f"⚠️ Hook execution failed: {e}")
+                # Keep original parsed_response if hook fails
         
         # If no calls found after hooks, return original response
-        if not parsed_response.has_calls():
+        if not parsed_response or not parsed_response.has_calls():
             return hook_input.original_response, True, None, current_messages
         
         # Phase 2: Execute all parsed calls
@@ -383,6 +507,31 @@ class Executor:
             self._running_executors.clear()
         
         logger.info(f"✅ Executor cleanup completed for agent '{self.agent_name}'")
+    
+    def _build_iteration_hint(self, current_iteration: int, max_iterations: int, remaining_iterations: int) -> str:
+        """Build a hint message for the LLM about iteration status."""
+        if remaining_iterations <= 1:
+            return (f"⚠️ WARNING: This is iteration {current_iteration}/{max_iterations}. "
+                   f"You have only {remaining_iterations} iteration(s) remaining. "
+                   f"Please provide a conclusive response and avoid making additional tool calls or sub-agent calls "
+                   f"unless absolutely critical. Focus on summarizing your findings and providing final recommendations.")
+        elif remaining_iterations <= 3:
+            return (f"🔄 Iteration {current_iteration}/{max_iterations} - {remaining_iterations} iterations remaining. "
+                   f"Please be mindful of the remaining steps and work towards a conclusion.")
+        else:
+            return (f"🔄 Iteration {current_iteration}/{max_iterations} - Continue your response if you have more to say, "
+                   f"or if you need to make additional tool calls or sub-agent calls.")
+    
+    def _build_token_limit_hint(self, current_prompt_tokens: int, max_tokens: int, remaining_tokens: int, desired_max_tokens: int) -> str:
+        """Build a hint message for the LLM about token limit."""
+        if remaining_tokens < 3 * desired_max_tokens:
+            return (f"⚠️ WARNING: Token usage is approaching the limit {current_prompt_tokens}/{max_tokens}."
+                   f"You have only {remaining_tokens} tokens left."
+                   f"Please be mindful of the token limit and avoid making additional tool calls or sub-agent calls "
+                   f"unless absolutely critical. Focus on summarizing your findings and providing final recommendations.")
+        else:
+            return (f"🔄 Token Usage: {current_prompt_tokens}/{max_tokens} in the current prompt - {remaining_tokens} tokens left."
+                    f"Continue your response if you have more to say, or if you need to make additional tool calls or sub-agent calls.")
     
     def add_tool(self, tool: Any) -> None:
         """Add a tool to the executor.
