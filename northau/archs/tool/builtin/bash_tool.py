@@ -6,6 +6,7 @@ import os
 import subprocess
 import time
 from typing import Dict, Any, Optional
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,8 @@ MAX_TIMEOUT = 600000      # 10 minutes in milliseconds
 def bash_tool(
     command: str,
     timeout: Optional[int] = None,
-    description: Optional[str] = None
+    description: Optional[str] = None,
+    global_storage: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """
     Execute a bash command in a persistent shell session with proper handling and security measures.
@@ -32,6 +34,9 @@ def bash_tool(
         Dict containing execution results
     """
     start_time = time.time()
+    
+    storage = global_storage._storage
+    workspace = storage.get('workspace', None)
     
     # Validate timeout
     if timeout is None:
@@ -80,7 +85,7 @@ def bash_tool(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=os.getcwd(),
+            cwd=workspace or os.getcwd(),
             env=os.environ.copy()
         )
         

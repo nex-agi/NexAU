@@ -3,6 +3,7 @@
 from typing import Dict, Any, Union, List
 from dataclasses import dataclass
 from enum import Enum
+import hashlib
 
 
 class CallType(Enum):
@@ -18,6 +19,12 @@ class ToolCall:
     tool_name: str
     parameters: Dict[str, Any]
     xml_content: str  # Original XML for error reporting
+    tool_call_id: str | None = None
+    
+    def __post_init__(self):
+        if self.tool_call_id is None:
+            self.tool_call_id = hashlib.md5((
+                self.tool_name + self.xml_content).encode('utf-8')).hexdigest()
 
 
 @dataclass
@@ -26,6 +33,12 @@ class SubAgentCall:
     agent_name: str
     message: str
     xml_content: str  # Original XML for error reporting
+    sub_agent_call_id: str | None = None
+    
+    def __post_init__(self):
+        if self.sub_agent_call_id is None:
+            self.sub_agent_call_id = hashlib.md5((
+                self.agent_name + self.xml_content).encode('utf-8')).hexdigest()
 
 
 @dataclass
@@ -36,6 +49,12 @@ class BatchAgentCall:
     data_format: str
     message_template: str
     xml_content: str  # Original XML for error reporting
+    batch_agent_call_id: str | None = None
+    
+    def __post_init__(self):
+        if self.batch_agent_call_id is None:
+            self.batch_agent_call_id = hashlib.md5((
+                self.agent_name + self.xml_content).encode('utf-8')).hexdigest()
 
 
 # Union type for all call types
