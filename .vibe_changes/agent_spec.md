@@ -268,23 +268,23 @@ description: >-
   Usage:
   - You must use your `Read` tool at least once in the conversation before
   editing. This tool will error if you attempt an edit without reading the file.
-  
+
   - When editing text from Read tool output, ensure you preserve the exact
   indentation (tabs/spaces) as it appears AFTER the line number prefix. The line
   number prefix format is: spaces + line number + tab. Everything after that tab
   is the actual file content to match. Never include any part of the line number
   prefix in the old_string or new_string.
-  
+
   - ALWAYS prefer editing existing files in the codebase. NEVER write new files
   unless explicitly required.
-  
+
   - Only use emojis if the user explicitly requests it. Avoid adding emojis to
   files unless asked.
-  
+
   - The edit will FAIL if `old_string` is not unique in the file. Either provide
   a larger string with more surrounding context to make it unique or use
   `replace_all` to change every instance of `old_string`.
-  
+
   - Use `replace_all` for replacing and renaming strings across the file. This
   parameter is useful if you want to rename a variable for instance.
 input_schema:
@@ -321,17 +321,17 @@ def file_edit(file_path: str, old_string: str, new_string: str, replace_all: boo
     """Implementation of file editing logic"""
     with open(file_path, 'r') as f:
         content = f.read()
-    
+
     if replace_all:
         new_content = content.replace(old_string, new_string)
     else:
         if content.count(old_string) != 1:
             raise ValueError("old_string must be unique in file")
         new_content = content.replace(old_string, new_string, 1)
-    
+
     with open(file_path, 'w') as f:
         f.write(new_content)
-    
+
     return {"status": "success", "message": f"File {file_path} updated"}
 
 # Bind YAML definition to Python implementation
@@ -423,7 +423,7 @@ main_agent = create_agent(
 
 # Examples of other compatible endpoints:
 # Ollama (local): model_base_url="http://localhost:11434/v1"
-# LM Studio (local): model_base_url="http://localhost:1234/v1"  
+# LM Studio (local): model_base_url="http://localhost:1234/v1"
 # Together AI: model_base_url="https://api.together.xyz/v1"
 # Groq: model_base_url="https://api.groq.com/openai/v1"
 
@@ -583,11 +583,11 @@ input_schema:
 def custom_tool_implementation(param1: str, param2: int = 42):
     """
     Implement your tool logic here.
-    
+
     Args:
         param1: Description of param1
         param2: Description of param2
-    
+
     Returns:
         Dict with result data
     """
@@ -612,22 +612,22 @@ agent = create_agent(tools=[custom_tool])
 ```python
 def create_domain_agent(domain_config):
     """Factory function for domain-specific agents"""
-    
+
     # Load domain-specific tools
     tools = []
     for tool_config in domain_config['tools']:
         tool = Tool.from_yaml(
-            tool_config['yaml_path'], 
+            tool_config['yaml_path'],
             binding=tool_config['implementation']
         )
         tools.append(tool)
-    
+
     # Create sub-agents if needed
     sub_agents = []
     for sub_config in domain_config.get('sub_agents', []):
         sub_agent = create_domain_agent(sub_config)
         sub_agents.append((sub_config['name'], sub_agent))
-    
+
     return create_agent(
         name=domain_config['name'],
         tools=tools,
@@ -672,7 +672,7 @@ def create_agent(
 ) -> Agent:
     """
     Create a new agent with specified configuration.
-    
+
     Args:
         name: Optional identifier for the agent
         tools: List of Tool objects available to this agent
@@ -685,7 +685,7 @@ def create_agent(
         error_handler: Custom error handling function
         retry_attempts: Number of retries on failure
         timeout: Task timeout in seconds
-    
+
     Returns:
         Configured Agent instance
     """
@@ -705,7 +705,7 @@ class Tool:
         timeout: Optional[int] = None
     ):
         """Initialize a tool with schema and implementation."""
-        
+
     @classmethod
     def from_yaml(
         cls,
@@ -714,10 +714,10 @@ class Tool:
         **kwargs
     ) -> 'Tool':
         """Load tool definition from YAML file and bind to implementation."""
-        
+
     def execute(self, **params) -> Dict:
         """Execute the tool with given parameters."""
-        
+
     def validate_params(self, params: Dict) -> bool:
         """Validate parameters against schema."""
 ```
@@ -733,7 +733,7 @@ class Agent:
         context: Optional[Dict] = None
     ) -> str:
         """Run agent with a message and return response."""
-        
+
     def stream(
         self,
         message: str,
@@ -741,13 +741,13 @@ class Agent:
         context: Optional[Dict] = None
     ) -> Iterator[str]:
         """Stream agent response in chunks."""
-        
+
     def add_tool(self, tool: Tool) -> None:
         """Add a tool to the agent."""
-        
+
     def add_sub_agent(self, name: str, agent: 'Agent') -> None:
         """Add a sub-agent for delegation."""
-        
+
     def call_sub_agent(
         self,
         sub_agent_name: str,

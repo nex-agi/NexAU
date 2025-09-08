@@ -1,94 +1,106 @@
 #!/usr/bin/env python3
 """Test the quick start example from the specification."""
-
 import os
 from datetime import datetime
 from pathlib import Path
 
+from northau.archs.llm import LLMConfig
 from northau.archs.main_sub import create_agent
+from northau.archs.main_sub.execution.hooks import AfterModelHookInput
+from northau.archs.main_sub.execution.hooks import HookResult
 from northau.archs.tool import Tool
 from northau.archs.tool.builtin.todo_write import todo_write
-from northau.archs.tool.builtin.web_tool import web_search, web_read
-from northau.archs.llm import LLMConfig
-from northau.archs.main_sub.execution.hooks import AfterModelHookInput, HookResult
+from northau.archs.tool.builtin.web_tool import web_read
+from northau.archs.tool.builtin.web_tool import web_search
+
 
 def get_date():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
 
 def create_increase_global_counter_hook():
     def increase_global_counter_hook(hook_input: AfterModelHookInput) -> HookResult:
         if hook_input.global_storage is not None:
-            with hook_input.global_storage.lock_key("counter"):
-                counter = hook_input.global_storage.get("counter", 0)
+            with hook_input.global_storage.lock_key('counter'):
+                counter = hook_input.global_storage.get('counter', 0)
                 print(f"Increase global counter: {counter}")
-                hook_input.global_storage.set("counter", counter + 1)
+                hook_input.global_storage.set('counter', counter + 1)
             return HookResult.no_changes()
         return HookResult.no_changes()
     return increase_global_counter_hook
 
+
 def main():
     """Test the quick start example."""
-    print("Testing Northau Framework Quick Start Example")
-    print("=" * 50)
-    
+    print('Testing Northau Framework Quick Start Example')
+    print('=' * 50)
+
     try:
         # Create tools
         script_dir = Path(__file__).parent
-        print("Creating tools...")
-        web_search_tool = Tool.from_yaml(str(script_dir / "tools/WebSearch.yaml"), binding=web_search)
-        web_read_tool = Tool.from_yaml(str(script_dir / "tools/WebRead.yaml"), binding=web_read)
-        todo_write_tool = Tool.from_yaml(str(script_dir / "tools/TodoWrite.tool.yaml"), binding=todo_write)
-        print("✓ Tools created successfully")
-        
+        print('Creating tools...')
+        web_search_tool = Tool.from_yaml(
+            str(script_dir / 'tools/WebSearch.yaml'), binding=web_search,
+        )
+        web_read_tool = Tool.from_yaml(
+            str(script_dir / 'tools/WebRead.yaml'), binding=web_read,
+        )
+        todo_write_tool = Tool.from_yaml(
+            str(script_dir / 'tools/TodoWrite.tool.yaml'), binding=todo_write,
+        )
+        print('✓ Tools created successfully')
+
         # Create sub-agents
         llm_config = LLMConfig(
-            model=os.getenv("LLM_MODEL"),
-            base_url=os.getenv("LLM_BASE_URL"),
-            api_key=os.getenv("LLM_API_KEY"),
+            model=os.getenv('LLM_MODEL'),
+            base_url=os.getenv('LLM_BASE_URL'),
+            api_key=os.getenv('LLM_API_KEY'),
         )
-        print("\nCreating sub-agents...")
-        
-        system_prompt = "Date: {{date}}. You are a deep research agent. You are given a message and you need to search for the information that matches the message. Use the web_search and web_read tools to get the information. Wait for the web_read tool to finish before you continue your response. Before searching, you need to use todo_write_tool to write a todo list to track the research progress. When completing a task, you need to update the todo list. Todo list: {{current_todos}}"
-        
+        print('\nCreating sub-agents...')
+
+        system_prompt = 'Date: {{date}}. You are a deep research agent. You are given a message and you need to search for the information that matches the message. Use the web_search and web_read tools to get the information. Wait for the web_read tool to finish before you continue your response. Before searching, you need to use todo_write_tool to write a todo list to track the research progress. When completing a task, you need to update the todo list. Todo list: {{current_todos}}'
+
         def sub_agent_factory():
             return create_agent(
-                name="sub_deep_research_agent",
+                name='sub_deep_research_agent',
                 tools=[web_search_tool, web_read_tool, todo_write_tool],
                 llm_config=llm_config,
                 system_prompt=system_prompt,
                 after_model_hooks=[create_increase_global_counter_hook()],
             )
-        
+
         deep_research_agent = create_agent(
-            name="deep_research_agent",
+            name='deep_research_agent',
             tools=[web_search_tool, web_read_tool, todo_write_tool],
             llm_config=llm_config,
             system_prompt=system_prompt,
-            sub_agents=[("sub_deep_research_agent", sub_agent_factory)],
+            sub_agents=[('sub_deep_research_agent', sub_agent_factory)],
             after_model_hooks=[create_increase_global_counter_hook()],
         )
-        print("✓ Sub-agents created successfully")
+        print('✓ Sub-agents created successfully')
 
-        print("\nTesting delegation with web research...")
-        web_message = "调研一下腾讯，拆解成多个调研子任务，并让多个 subagent 分别并行执行这些子任务"
+        print('\nTesting delegation with web research...')
+        web_message = '调研一下腾讯，拆解成多个调研子任务，并让多个 subagent 分别并行执行这些子任务'
         print(f"\nUser: {web_message}")
-        print("\nAgent Response:")
-        print("-" * 30)
-        
-        response = deep_research_agent.run(web_message, context={
-            "date": get_date(),
-        })
+        print('\nAgent Response:')
+        print('-' * 30)
+
+        response = deep_research_agent.run(
+            web_message, context={
+                'date': get_date(),
+            },
+        )
         print(response)
-        
+
     except Exception as e:
         print(f"✗ Error: {e}")
         import traceback
         traceback.print_exc()
         return False
-    
+
     return True
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     success = main()
     exit(0 if success else 1)

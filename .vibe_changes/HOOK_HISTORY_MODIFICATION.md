@@ -64,14 +64,14 @@ The new `HookResult` class provides a type-safe way to return modifications from
 class HookResult:
     parsed_response: ParsedResponse | None = None
     messages: list[dict[str, str]] | None = None
-    
+
     def has_modifications(self) -> bool: ...
-    
+
     @classmethod
     def no_changes(cls) -> 'HookResult': ...
-    
+
     @classmethod
-    def with_modifications(cls, parsed_response: ParsedResponse | None = None, 
+    def with_modifications(cls, parsed_response: ParsedResponse | None = None,
                           messages: list[dict[str, str]] | None = None) -> 'HookResult': ...
 ```
 
@@ -109,9 +109,9 @@ def create_context_hook() -> AfterModelHook:
                 "content": f"About to execute {len(hook_input.parsed_response.tool_calls)} tool(s)"
             })
             return HookResult.with_modifications(messages=modified_messages)  # Only modify messages
-        
+
         return HookResult.no_changes()  # No modifications
-    
+
     return context_hook
 ```
 
@@ -122,7 +122,7 @@ def create_combined_hook(allowed_tools: set[str]) -> AfterModelHook:
     def combined_hook(hook_input: AfterModelHookInput) -> HookResult:
         # Filter tool calls
         filtered_calls = [call for call in hook_input.parsed_response.tool_calls if call.tool_name in allowed_tools]
-        
+
         if len(filtered_calls) != len(hook_input.parsed_response.tool_calls):
             # Create modified parsed response
             modified_parsed = ParsedResponse(
@@ -130,18 +130,18 @@ def create_combined_hook(allowed_tools: set[str]) -> AfterModelHook:
                 tool_calls=filtered_calls,
                 # ... other fields
             )
-            
+
             # Add context message about filtering
             modified_messages = hook_input.messages.copy()
             modified_messages.append({
                 "role": "system",
                 "content": f"Filtered out {len(hook_input.parsed_response.tool_calls) - len(filtered_calls)} disallowed tools"
             })
-            
+
             return HookResult.with_modifications(parsed_response=modified_parsed, messages=modified_messages)
-        
+
         return HookResult.no_changes()
-    
+
     return combined_hook
 ```
 
@@ -204,7 +204,7 @@ def my_hook(hook_input: AfterModelHookInput) -> HookResult:
     original_response = hook_input.original_response
     parsed_response = hook_input.parsed_response
     messages = hook_input.messages
-    
+
     # ... existing logic (unchanged)
     if modified_parsed_response:
         return HookResult.with_modifications(parsed_response=modified_parsed_response)

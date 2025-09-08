@@ -10,7 +10,6 @@ This tool provides safe file reading capabilities with features like:
 
 Based on the TypeScript FileReadTool implementation.
 """
-
 import base64
 import json
 import logging
@@ -18,10 +17,11 @@ import mimetypes
 import os
 import time
 from pathlib import Path
-from typing import Annotated, Dict, List, Optional, Tuple, Union
+from typing import Optional
+from typing import Union
 
-# Import file state management for read/write coordination
 from .file_state import update_file_timestamp
+# Import file state management for read/write coordination
 
 logger = logging.getLogger(__name__)
 
@@ -32,73 +32,76 @@ MAX_OUTPUT_SIZE = 0.25 * 1024 * 1024  # 0.25MB in bytes
 MAX_IMAGE_SIZE = 3.75 * 1024 * 1024  # 3.75MB in bytes
 
 # Common image extensions
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
+IMAGE_EXTENSIONS = {
+    '.png', '.jpg', '.jpeg',
+    '.gif', '.bmp', '.webp', '.tiff', '.tif',
+}
 
 # Common text file extensions for syntax highlighting hints
 TEXT_EXTENSIONS = {
-    ".py",
-    ".js",
-    ".ts",
-    ".tsx",
-    ".jsx",
-    ".html",
-    ".css",
-    ".scss",
-    ".sass",
-    ".json",
-    ".xml",
-    ".yaml",
-    ".yml",
-    ".md",
-    ".txt",
-    ".csv",
-    ".sql",
-    ".sh",
-    ".bash",
-    ".zsh",
-    ".fish",
-    ".ps1",
-    ".bat",
-    ".cmd",
-    ".c",
-    ".cpp",
-    ".h",
-    ".hpp",
-    ".java",
-    ".go",
-    ".rs",
-    ".rb",
-    ".php",
-    ".swift",
-    ".kt",
-    ".scala",
-    ".clj",
-    ".hs",
-    ".ml",
-    ".fs",
-    ".r",
-    ".m",
-    ".mm",
-    ".pl",
-    ".pm",
-    ".lua",
-    ".vim",
-    ".el",
-    ".lisp",
-    ".scm",
-    ".rkt",
-    ".jl",
-    ".nim",
-    ".cr",
-    ".d",
-    ".zig",
-    ".odin",
-    ".v",
-    ".dart",
-    ".ex",
-    ".exs",
-    ".erl",
-    ".hrl",
+    '.py',
+    '.js',
+    '.ts',
+    '.tsx',
+    '.jsx',
+    '.html',
+    '.css',
+    '.scss',
+    '.sass',
+    '.json',
+    '.xml',
+    '.yaml',
+    '.yml',
+    '.md',
+    '.txt',
+    '.csv',
+    '.sql',
+    '.sh',
+    '.bash',
+    '.zsh',
+    '.fish',
+    '.ps1',
+    '.bat',
+    '.cmd',
+    '.c',
+    '.cpp',
+    '.h',
+    '.hpp',
+    '.java',
+    '.go',
+    '.rs',
+    '.rb',
+    '.php',
+    '.swift',
+    '.kt',
+    '.scala',
+    '.clj',
+    '.hs',
+    '.ml',
+    '.fs',
+    '.r',
+    '.m',
+    '.mm',
+    '.pl',
+    '.pm',
+    '.lua',
+    '.vim',
+    '.el',
+    '.lisp',
+    '.scm',
+    '.rkt',
+    '.jl',
+    '.nim',
+    '.cr',
+    '.d',
+    '.zig',
+    '.odin',
+    '.v',
+    '.dart',
+    '.ex',
+    '.exs',
+    '.erl',
+    '.hrl',
 }
 
 
@@ -115,11 +118,11 @@ def detect_file_encoding(file_path: str) -> str:
     try:
         import chardet
 
-        with open(file_path, "rb") as f:
+        with open(file_path, 'rb') as f:
             raw_data = f.read(10000)  # Read first 10KB for detection
             result = chardet.detect(raw_data)
-            encoding = result["encoding"]
-            if encoding and result["confidence"] > 0.7:
+            encoding = result['encoding']
+            if encoding and result['confidence'] > 0.7:
                 return encoding
     except ImportError:
         # chardet not available, use fallback
@@ -128,7 +131,7 @@ def detect_file_encoding(file_path: str) -> str:
         logger.warning(f"Error detecting encoding for {file_path}: {e}")
 
     # Fallback to utf-8
-    return "utf-8"
+    return 'utf-8'
 
 
 def find_similar_file(file_path: str) -> Optional[str]:
@@ -168,7 +171,7 @@ def is_image_file(file_path: str) -> bool:
 def is_text_file(file_path: str) -> bool:
     """Check if file is a text file based on extension."""
     ext = Path(file_path).suffix.lower()
-    return ext in TEXT_EXTENSIONS or ext == "" or ext == ".txt"
+    return ext in TEXT_EXTENSIONS or ext == '' or ext == '.txt'
 
 
 def get_file_language(file_path: str) -> str:
@@ -176,74 +179,74 @@ def get_file_language(file_path: str) -> str:
     ext = Path(file_path).suffix.lower()
 
     language_map = {
-        ".py": "python",
-        ".js": "javascript",
-        ".ts": "typescript",
-        ".tsx": "typescript",
-        ".jsx": "javascript",
-        ".html": "html",
-        ".css": "css",
-        ".scss": "scss",
-        ".sass": "sass",
-        ".json": "json",
-        ".xml": "xml",
-        ".yaml": "yaml",
-        ".yml": "yaml",
-        ".md": "markdown",
-        ".sql": "sql",
-        ".sh": "bash",
-        ".bash": "bash",
-        ".zsh": "bash",
-        ".fish": "fish",
-        ".ps1": "powershell",
-        ".bat": "batch",
-        ".cmd": "batch",
-        ".c": "c",
-        ".cpp": "cpp",
-        ".h": "c",
-        ".hpp": "cpp",
-        ".java": "java",
-        ".go": "go",
-        ".rs": "rust",
-        ".rb": "ruby",
-        ".php": "php",
-        ".swift": "swift",
-        ".kt": "kotlin",
-        ".scala": "scala",
-        ".clj": "clojure",
-        ".hs": "haskell",
-        ".ml": "ocaml",
-        ".fs": "fsharp",
-        ".r": "r",
-        ".m": "objective-c",
-        ".mm": "objective-c",
-        ".pl": "perl",
-        ".pm": "perl",
-        ".lua": "lua",
-        ".vim": "vim",
-        ".el": "elisp",
-        ".lisp": "lisp",
-        ".scm": "scheme",
-        ".rkt": "racket",
-        ".jl": "julia",
-        ".nim": "nim",
-        ".cr": "crystal",
-        ".d": "d",
-        ".zig": "zig",
-        ".v": "v",
-        ".dart": "dart",
-        ".ex": "elixir",
-        ".exs": "elixir",
-        ".erl": "erlang",
-        ".hrl": "erlang",
+        '.py': 'python',
+        '.js': 'javascript',
+        '.ts': 'typescript',
+        '.tsx': 'typescript',
+        '.jsx': 'javascript',
+        '.html': 'html',
+        '.css': 'css',
+        '.scss': 'scss',
+        '.sass': 'sass',
+        '.json': 'json',
+        '.xml': 'xml',
+        '.yaml': 'yaml',
+        '.yml': 'yaml',
+        '.md': 'markdown',
+        '.sql': 'sql',
+        '.sh': 'bash',
+        '.bash': 'bash',
+        '.zsh': 'bash',
+        '.fish': 'fish',
+        '.ps1': 'powershell',
+        '.bat': 'batch',
+        '.cmd': 'batch',
+        '.c': 'c',
+        '.cpp': 'cpp',
+        '.h': 'c',
+        '.hpp': 'cpp',
+        '.java': 'java',
+        '.go': 'go',
+        '.rs': 'rust',
+        '.rb': 'ruby',
+        '.php': 'php',
+        '.swift': 'swift',
+        '.kt': 'kotlin',
+        '.scala': 'scala',
+        '.clj': 'clojure',
+        '.hs': 'haskell',
+        '.ml': 'ocaml',
+        '.fs': 'fsharp',
+        '.r': 'r',
+        '.m': 'objective-c',
+        '.mm': 'objective-c',
+        '.pl': 'perl',
+        '.pm': 'perl',
+        '.lua': 'lua',
+        '.vim': 'vim',
+        '.el': 'elisp',
+        '.lisp': 'lisp',
+        '.scm': 'scheme',
+        '.rkt': 'racket',
+        '.jl': 'julia',
+        '.nim': 'nim',
+        '.cr': 'crystal',
+        '.d': 'd',
+        '.zig': 'zig',
+        '.v': 'v',
+        '.dart': 'dart',
+        '.ex': 'elixir',
+        '.exs': 'elixir',
+        '.erl': 'erlang',
+        '.hrl': 'erlang',
     }
 
-    return language_map.get(ext, "text")
+    return language_map.get(ext, 'text')
 
 
 def read_text_content(
-    file_path: str, offset: int = 0, limit: Optional[int] = None
-) -> Tuple[str, int, int]:
+    file_path: str, offset: int = 0, limit: Optional[int] = None,
+) -> tuple[str, int, int]:
     """
     Read text content from file with offset and limit support.
 
@@ -258,7 +261,7 @@ def read_text_content(
     encoding = detect_file_encoding(file_path)
 
     try:
-        with open(file_path, "r", encoding=encoding) as f:
+        with open(file_path, encoding=encoding) as f:
             lines = f.readlines()
 
         total_lines = len(lines)
@@ -277,11 +280,11 @@ def read_text_content(
         truncated_lines = []
         for line in lines:
             if len(line) > MAX_LINE_LENGTH:
-                truncated_lines.append(line[:MAX_LINE_LENGTH] + "...\n")
+                truncated_lines.append(line[:MAX_LINE_LENGTH] + '...\n')
             else:
                 truncated_lines.append(line)
 
-        content = "".join(truncated_lines)
+        content = ''.join(truncated_lines)
 
         return content, lines_read, total_lines
 
@@ -289,7 +292,7 @@ def read_text_content(
         logger.error(f"Unicode decode error reading {file_path}: {e}")
         # Try with latin-1 as fallback
         try:
-            with open(file_path, "r", encoding="latin-1") as f:
+            with open(file_path, encoding='latin-1') as f:
                 lines = f.readlines()
 
             total_lines = len(lines)
@@ -298,13 +301,15 @@ def read_text_content(
             if limit is not None:
                 lines = lines[:limit]
 
-            content = "".join(lines[:limit] if limit else lines)
+            content = ''.join(lines[:limit] if limit else lines)
             return content, len(lines), total_lines
         except Exception as fallback_e:
-            raise Exception(f"Could not read file with any encoding: {e}, {fallback_e}")
+            raise Exception(
+                f"Could not read file with any encoding: {e}, {fallback_e}",
+            )
 
 
-def read_image_file(file_path: str) -> Dict:
+def read_image_file(file_path: str) -> dict:
     """
     Read and encode image file to base64.
 
@@ -337,18 +342,21 @@ def read_image_file(file_path: str) -> Dict:
                             new_width = int((width * max_dimension) / height)
 
                         img = img.resize(
-                            (new_width, new_height), Image.Resampling.LANCZOS
+                            (new_width, new_height), Image.Resampling.LANCZOS,
                         )
 
                     # Convert to RGB if necessary and save as JPEG
-                    if img.mode in ("RGBA", "LA", "P"):
-                        rgb_img = Image.new("RGB", img.size, (255, 255, 255))
-                        if img.mode == "P":
-                            img = img.convert("RGBA")
+                    if img.mode in ('RGBA', 'LA', 'P'):
+                        rgb_img = Image.new('RGB', img.size, (255, 255, 255))
+                        if img.mode == 'P':
+                            img = img.convert('RGBA')
                         rgb_img.paste(
                             img,
                             mask=(
-                                img.split()[-1] if img.mode in ("RGBA", "LA") else None
+                                img.split()[-1] if img.mode in (
+                                    'RGBA',
+                                    'LA',
+                                ) else None
                             ),
                         )
                         img = rgb_img
@@ -357,63 +365,66 @@ def read_image_file(file_path: str) -> Dict:
                     import io
 
                     img_bytes = io.BytesIO()
-                    img.save(img_bytes, format="JPEG", quality=80, optimize=True)
+                    img.save(
+                        img_bytes, format='JPEG',
+                        quality=80, optimize=True,
+                    )
                     img_data = img_bytes.getvalue()
 
                     return {
-                        "type": "image",
-                        "base64": base64.b64encode(img_data).decode("utf-8"),
-                        "media_type": "image/jpeg",
-                        "original_size": file_size,
-                        "compressed_size": len(img_data),
-                        "compressed": True,
+                        'type': 'image',
+                        'base64': base64.b64encode(img_data).decode('utf-8'),
+                        'media_type': 'image/jpeg',
+                        'original_size': file_size,
+                        'compressed_size': len(img_data),
+                        'compressed': True,
                     }
 
             except ImportError:
                 return {
-                    "error": (
+                    'error': (
                         f"Image file too large ({file_size} bytes > {MAX_IMAGE_SIZE} bytes) and PIL not available for compression"
-                    )
+                    ),
                 }
             except Exception as e:
                 logger.warning(f"Failed to compress image {file_path}: {e}")
                 return {
-                    "error": (
+                    'error': (
                         f"Image file too large ({file_size} bytes > {MAX_IMAGE_SIZE} bytes) and compression failed: {str(e)}"
-                    )
+                    ),
                 }
 
         # Read original file
-        with open(file_path, "rb") as f:
+        with open(file_path, 'rb') as f:
             image_data = f.read()
 
         # Determine MIME type
         mime_type, _ = mimetypes.guess_type(file_path)
-        if not mime_type or not mime_type.startswith("image/"):
+        if not mime_type or not mime_type.startswith('image/'):
             ext = Path(file_path).suffix.lower()
             mime_type_map = {
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".png": "image/png",
-                ".gif": "image/gif",
-                ".bmp": "image/bmp",
-                ".webp": "image/webp",
-                ".tiff": "image/tiff",
-                ".tif": "image/tiff",
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.png': 'image/png',
+                '.gif': 'image/gif',
+                '.bmp': 'image/bmp',
+                '.webp': 'image/webp',
+                '.tiff': 'image/tiff',
+                '.tif': 'image/tiff',
             }
-            mime_type = mime_type_map.get(ext, "image/jpeg")
+            mime_type = mime_type_map.get(ext, 'image/jpeg')
 
         return {
-            "type": "image",
-            "base64": base64.b64encode(image_data).decode("utf-8"),
-            "media_type": mime_type,
-            "original_size": file_size,
-            "compressed": False,
+            'type': 'image',
+            'base64': base64.b64encode(image_data).decode('utf-8'),
+            'media_type': mime_type,
+            'original_size': file_size,
+            'compressed': False,
         }
 
     except Exception as e:
         logger.error(f"Error reading image file {file_path}: {e}")
-        return {"error": f"Failed to read image file: {str(e)}"}
+        return {'error': f"Failed to read image file: {str(e)}"}
 
 
 def add_line_numbers(content: str, start_line: int = 1) -> str:
@@ -439,7 +450,7 @@ def add_line_numbers(content: str, start_line: int = 1) -> str:
         line_num = start_line + i
         numbered_lines.append(f"{line_num:>{width}}: {line}")
 
-    return "\n".join(numbered_lines)
+    return '\n'.join(numbered_lines)
 
 
 def file_read_tool(
@@ -488,11 +499,11 @@ def file_read_tool(
 
             return json.dumps(
                 {
-                    "error": error_msg,
-                    "file_path": file_path,
-                    "exists": False,
-                    "similar_file": similar_file,
-                    "duration_ms": int((time.time() - start_time) * 1000),
+                    'error': error_msg,
+                    'file_path': file_path,
+                    'exists': False,
+                    'similar_file': similar_file,
+                    'duration_ms': int((time.time() - start_time) * 1000),
                 },
                 indent=2,
                 ensure_ascii=False,
@@ -502,10 +513,10 @@ def file_read_tool(
         if os.path.isdir(file_path):
             return json.dumps(
                 {
-                    "error": f"Path is a directory, not a file: {file_path}",
-                    "file_path": file_path,
-                    "is_directory": True,
-                    "duration_ms": int((time.time() - start_time) * 1000),
+                    'error': f"Path is a directory, not a file: {file_path}",
+                    'file_path': file_path,
+                    'is_directory': True,
+                    'duration_ms': int((time.time() - start_time) * 1000),
                 },
                 indent=2,
                 ensure_ascii=False,
@@ -515,9 +526,9 @@ def file_read_tool(
         if not os.access(file_path, os.R_OK):
             return json.dumps(
                 {
-                    "error": f"No read permission for file: {file_path}",
-                    "file_path": file_path,
-                    "duration_ms": int((time.time() - start_time) * 1000),
+                    'error': f"No read permission for file: {file_path}",
+                    'file_path': file_path,
+                    'duration_ms': int((time.time() - start_time) * 1000),
                 },
                 indent=2,
                 ensure_ascii=False,
@@ -530,14 +541,14 @@ def file_read_tool(
         if is_image_file(file_path):
             image_result = read_image_file(file_path)
 
-            if "error" in image_result:
+            if 'error' in image_result:
                 return json.dumps(
                     {
-                        "error": image_result["error"],
-                        "file_path": file_path,
-                        "file_size": file_size,
-                        "file_type": "image",
-                        "duration_ms": int((time.time() - start_time) * 1000),
+                        'error': image_result['error'],
+                        'file_path': file_path,
+                        'file_size': file_size,
+                        'file_type': 'image',
+                        'duration_ms': int((time.time() - start_time) * 1000),
                     },
                     indent=2,
                     ensure_ascii=False,
@@ -547,15 +558,15 @@ def file_read_tool(
 
             return json.dumps(
                 {
-                    "type": "image",
-                    "file_path": file_path,
-                    "file_size": file_size,
-                    "base64": image_result["base64"],
-                    "media_type": image_result["media_type"],
-                    "compressed": image_result.get("compressed", False),
-                    "original_size": image_result.get("original_size", file_size),
-                    "compressed_size": image_result.get("compressed_size"),
-                    "duration_ms": duration_ms,
+                    'type': 'image',
+                    'file_path': file_path,
+                    'file_size': file_size,
+                    'base64': image_result['base64'],
+                    'media_type': image_result['media_type'],
+                    'compressed': image_result.get('compressed', False),
+                    'original_size': image_result.get('original_size', file_size),
+                    'compressed_size': image_result.get('compressed_size'),
+                    'duration_ms': duration_ms,
                 },
                 indent=2,
                 ensure_ascii=False,
@@ -568,14 +579,14 @@ def file_read_tool(
 
             return json.dumps(
                 {
-                    "error": (
+                    'error': (
                         f"File content ({size_kb}KB) exceeds maximum allowed size ({max_size_kb}KB). Please use offset and limit parameters to read specific portions of the file, or use the grep tool to search for specific content."
                     ),
-                    "file_path": file_path,
-                    "file_size": file_size,
-                    "file_type": "text",
-                    "max_size": MAX_OUTPUT_SIZE,
-                    "duration_ms": int((time.time() - start_time) * 1000),
+                    'file_path': file_path,
+                    'file_size': file_size,
+                    'file_type': 'text',
+                    'max_size': MAX_OUTPUT_SIZE,
+                    'duration_ms': int((time.time() - start_time) * 1000),
                 },
                 indent=2,
                 ensure_ascii=False,
@@ -588,7 +599,7 @@ def file_read_tool(
             int_limit = int(limit) if limit is not None else None
 
             content, lines_read, total_lines = read_text_content(
-                file_path, internal_offset, int_limit
+                file_path, internal_offset, int_limit,
             )
 
             # Check content size after reading
@@ -598,14 +609,14 @@ def file_read_tool(
 
                 return json.dumps(
                     {
-                        "error": (
+                        'error': (
                             f"File content ({size_kb}KB) exceeds maximum allowed size ({max_size_kb}KB) after reading. Please use smaller offset and limit parameters."
                         ),
-                        "file_path": file_path,
-                        "file_size": file_size,
-                        "content_size": len(content),
-                        "file_type": "text",
-                        "duration_ms": int((time.time() - start_time) * 1000),
+                        'file_path': file_path,
+                        'file_size': file_size,
+                        'content_size': len(content),
+                        'file_type': 'text',
+                        'duration_ms': int((time.time() - start_time) * 1000),
                     },
                     indent=2,
                     ensure_ascii=False,
@@ -627,22 +638,22 @@ def file_read_tool(
 
             return json.dumps(
                 {
-                    "type": "text",
-                    "file_path": file_path,
-                    "file_size": file_size,
-                    "content": content_with_lines,
-                    "lines_read": lines_read,
-                    "total_lines": total_lines,
-                    "start_line": start_line_num,
-                    "end_line": (
+                    'type': 'text',
+                    'file_path': file_path,
+                    'file_size': file_size,
+                    'content': content_with_lines,
+                    'lines_read': lines_read,
+                    'total_lines': total_lines,
+                    'start_line': start_line_num,
+                    'end_line': (
                         start_line_num + lines_read - 1
                         if lines_read > 0
                         else start_line_num
                     ),
-                    "truncated": truncated,
-                    "language": get_file_language(file_path),
-                    "encoding": detect_file_encoding(file_path),
-                    "duration_ms": duration_ms,
+                    'truncated': truncated,
+                    'language': get_file_language(file_path),
+                    'encoding': detect_file_encoding(file_path),
+                    'duration_ms': duration_ms,
                 },
                 indent=2,
                 ensure_ascii=False,
@@ -652,11 +663,11 @@ def file_read_tool(
             logger.error(f"Error reading text file {file_path}: {e}")
             return json.dumps(
                 {
-                    "error": f"Failed to read text file: {str(e)}",
-                    "file_path": file_path,
-                    "file_size": file_size,
-                    "file_type": "text",
-                    "duration_ms": int((time.time() - start_time) * 1000),
+                    'error': f"Failed to read text file: {str(e)}",
+                    'file_path': file_path,
+                    'file_size': file_size,
+                    'file_type': 'text',
+                    'duration_ms': int((time.time() - start_time) * 1000),
                 },
                 indent=2,
                 ensure_ascii=False,
@@ -666,9 +677,9 @@ def file_read_tool(
         logger.error(f"Unexpected error in file_read_tool: {e}")
         return json.dumps(
             {
-                "error": f"Unexpected error: {str(e)}",
-                "file_path": file_path,
-                "duration_ms": int((time.time() - start_time) * 1000),
+                'error': f"Unexpected error: {str(e)}",
+                'file_path': file_path,
+                'duration_ms': int((time.time() - start_time) * 1000),
             },
             indent=2,
             ensure_ascii=False,
@@ -679,15 +690,15 @@ def file_read_tool(
 def main():
     result = file_read_tool.invoke(
         {
-            "file_path": (
-                "/gpfs/users/chenlu/north-deer-flow/src/tools/file_tools/test.json"
+            'file_path': (
+                '/gpfs/users/chenlu/north-deer-flow/src/tools/file_tools/test.json'
             ),
-            "offset": 20,
-            "limit": 50,
-        }
+            'offset': 20,
+            'limit': 50,
+        },
     )
     print(result)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

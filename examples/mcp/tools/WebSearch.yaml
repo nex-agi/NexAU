@@ -1,7 +1,7 @@
 name: WebSearch
 description: >-
   Search the web for information.
-  
+
   Usage:
   - Search for information on the web
   - Returns search results with titles, URLs, and snippets

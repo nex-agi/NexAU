@@ -1,37 +1,36 @@
 #!/usr/bin/env python3
 """Example demonstrating Amap Maps MCP server integration with Northau agents."""
-
 import os
 
-from northau.archs.main_sub.agent import create_agent
 from northau.archs.llm import LLMConfig
+from northau.archs.main_sub.agent import create_agent
 
 
 def main():
     """Demonstrate Github MCP"""
-    
+
     # GitHub MCP server configuration
     # This uses the stdio protocol with the official GitHub MCP server
     mcp_servers = [
         {
-            "name": "github",
-            "type": "stdio",
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-github"],
-            "env": {
-                "GITHUB_PERSONAL_ACCESS_TOKEN": "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"
+            'name': 'github',
+            'type': 'stdio',
+            'command': 'npx',
+            'args': ['-y', '@modelcontextprotocol/server-github'],
+            'env': {
+                'GITHUB_PERSONAL_ACCESS_TOKEN': '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',
             },
-            "timeout": 30
-        }
+            'timeout': 30,
+        },
     ]
-    
+
     llm_config = LLMConfig(
-        model=os.getenv("LLM_MODEL"),
-        base_url=os.getenv("LLM_BASE_URL"),
-        api_key=os.getenv("LLM_API_KEY"),
+        model=os.getenv('LLM_MODEL'),
+        base_url=os.getenv('LLM_BASE_URL'),
+        api_key=os.getenv('LLM_API_KEY'),
     )
-    
-    print("📋 Configured Github MCP Server:")
+
+    print('📋 Configured Github MCP Server:')
     for server in mcp_servers:
         print(f"   - {server['name']}")
         print(f"     Type: {server['type']}")
@@ -45,14 +44,14 @@ def main():
             print(f"     Headers: {server['headers']}")
         print(f"     Timeout: {server.get('timeout', 30)}s")
     print()
-    
+
     try:
         # Create an agent with Github MCP server
-        print("🤖 Creating agent with Github MCP server...")
+        print('🤖 Creating agent with Github MCP server...')
         agent = create_agent(
-            name="github_agent",
+            name='github_agent',
             system_prompt="""You are an AI agent with access to Github services through MCP.
-            
+
 You can use Github tools to:
 Toolset	Description
 context	Strongly recommended: Tools that provide context about the current user and GitHub context you are operating in
@@ -75,31 +74,34 @@ Explain what you're doing and provide context for the results.""",
             mcp_servers=mcp_servers,
             llm_config=llm_config,
         )
-        
-        print("✅ Agent created successfully!")
+
+        print('✅ Agent created successfully!')
         print(f"   Agent name: {agent.name}")
         print(f"   Total tools available: {len(agent.tools)}")
-        
+
         # List available tools
         if agent.tools:
-            print("\n🗺️  Available Github tools:")
+            print('\n🗺️  Available Github tools:')
             for tool in agent.tools:
-                print(f"   - {tool.name}: {getattr(tool, 'description', 'No description')}")
+                print(
+                    f"   - {tool.name}: {getattr(tool, 'description', 'No description')}",
+                )
         else:
-            print("\n⚠️  No tools available")
-        
+            print('\n⚠️  No tools available')
 
-        response = agent.run("https://github.com/china-qijizhifeng/northau/tree/main 的代码结构是什么样的？")
+        response = agent.run(
+            'https://github.com/china-qijizhifeng/northau/tree/main 的代码结构是什么样的？',
+        )
         print(response)
-        
+
     except Exception as e:
         print(f"❌ Error creating agent with GitHub MCP server: {e}")
-        print("\nNote: This error might occur if:")
-        print("- Node.js/npm is not installed")
-        print("- Network connectivity issues")
-        print("- Invalid GitHub Personal Access Token")
-        print("- GitHub server is not accessible")
+        print('\nNote: This error might occur if:')
+        print('- Node.js/npm is not installed')
+        print('- Network connectivity issues')
+        print('- Invalid GitHub Personal Access Token')
+        print('- GitHub server is not accessible')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
