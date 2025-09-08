@@ -1,13 +1,15 @@
 """TodoWrite tool implementation for task management in agent context."""
 
-from typing import Dict, Any, List, Optional
-from ...main_sub.agent_context import GlobalStorage
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 import json
 import uuid
 from datetime import datetime
 
+if TYPE_CHECKING:
+    from ...main_sub.agent_state import AgentState
 
-def todo_write(todos: List[Dict[str, str]], global_storage: Optional[GlobalStorage] = None) -> Dict[str, Any]:
+
+def todo_write(todos: List[Dict[str, str]], agent_state: Optional['AgentState'] = None) -> Dict[str, Any]:
     """
     Create and manage a structured task list for the current coding session.
     
@@ -26,10 +28,10 @@ def todo_write(todos: List[Dict[str, str]], global_storage: Optional[GlobalStora
         Dict containing the result of the operation
     """
     try:
-        if not global_storage:
+        if not agent_state:
             return {
                 "status": "error",
-                "error": "No global storage available"
+                "error": "Agent state not available"
             }
         
         # Validate todo items
@@ -97,8 +99,8 @@ def todo_write(todos: List[Dict[str, str]], global_storage: Optional[GlobalStora
         #     }
         
         # Store the todo list in agent context
-        global_storage.set("current_todos", validated_todos)
-        global_storage.set("todos_last_updated", datetime.now().isoformat())
+        agent_state.set_global_value("current_todos", validated_todos)
+        agent_state.set_global_value("todos_last_updated", datetime.now().isoformat())
         
         # Generate summary for display
         total_todos = len(validated_todos)

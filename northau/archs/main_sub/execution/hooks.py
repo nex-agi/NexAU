@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from .parse_structures import ParsedResponse
 
 if TYPE_CHECKING:
-    from ..agent_context import GlobalStorage
+    from ..agent_state import AgentState
 
 
 @dataclass
@@ -14,19 +14,17 @@ class AfterModelHookInput:
     """Input data passed to after_model_hooks.
     
     This class encapsulates all the information that hooks receive:
+    - agent_state: The AgentState containing agent context and global storage
     - original_response: The raw response from the LLM
     - parsed_response: The parsed structure containing tool/agent calls
     - messages: The current conversation history
-    - global_storage: The agent's GlobalStorage instance for shared state
     """
-    agent_name: str
-    agent_id: str
+    agent_state: 'AgentState'
     max_iterations: int
     current_iteration: int
     original_response: str
     parsed_response: ParsedResponse | None
     messages: list[dict[str, str]]
-    global_storage: 'GlobalStorage | None' = None
 
 
 @dataclass
@@ -79,10 +77,10 @@ class AfterModelHook(Protocol):
         
         Args:
             hook_input: AfterModelHookInput containing:
+                - agent_state: The AgentState containing agent context and global storage
                 - original_response: The original response from the LLM
                 - parsed_response: The parsed structure containing all tool/agent calls
                 - messages: The current conversation history (list of message dicts)
-                - global_storage: The agent's GlobalStorage instance for shared state access
             
         Returns:
             HookResult containing any modifications:
@@ -101,17 +99,15 @@ class AfterToolHookInput:
     """Input data passed to after_tool_hooks.
     
     This class encapsulates all the information that tool hooks receive:
+    - agent_state: The AgentState containing agent context and global storage
     - tool_name: The name of the tool that was executed
     - tool_input: The parameters passed to the tool
     - tool_output: The result returned by the tool
-    - global_storage: The agent's GlobalStorage instance for shared state
     """
-    agent_name: str
-    agent_id: str
+    agent_state: 'AgentState'
     tool_name: str
     tool_input: Dict[str, Any]
     tool_output: Any
-    global_storage: 'GlobalStorage | None' = None
 
 
 @dataclass
@@ -160,12 +156,10 @@ class AfterToolHook(Protocol):
         
         Args:
             hook_input: AfterToolHookInput containing:
-                - agent_name: The name of the agent that executed the tool
-                - agent_id: The ID of the agent that executed the tool
+                - agent_state: The AgentState containing agent context and global storage
                 - tool_name: The name of the executed tool
                 - tool_input: The parameters that were passed to the tool
                 - tool_output: The result returned by the tool
-                - global_storage: The agent's GlobalStorage instance for shared state access
             
         Returns:
             AfterToolHookResult containing any modifications:
@@ -192,8 +186,8 @@ def create_logging_hook(logger_name: str = "after_model_hook") -> AfterModelHook
     
     def logging_hook(hook_input: AfterModelHookInput) -> HookResult:
         logger.info(f"🎣 ===== AFTER MODEL HOOK TRIGGERED =====")
-        logger.info(f"🎣 Agent name: {hook_input.agent_name}")
-        logger.info(f"🎣 Agent id: {hook_input.agent_id}")
+        logger.info(f"🎣 Agent name: {hook_input.agent_state.agent_name}")
+        logger.info(f"🎣 Agent id: {hook_input.agent_state.agent_id}")
         logger.info(f"🎣 Response length: {len(hook_input.original_response)} characters")
         
         if hook_input.parsed_response is not None:
@@ -368,8 +362,8 @@ def create_tool_logging_hook(logger_name: str = "after_tool_hook") -> AfterToolH
     
     def tool_logging_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
         logger.info(f"🔧 ===== AFTER TOOL HOOK TRIGGERED =====")
-        logger.info(f"🔧 Agent name: {hook_input.agent_name}")
-        logger.info(f"🔧 Agent id: {hook_input.agent_id}")
+        logger.info(f"🔧 Agent name: {hook_input.agent_state.agent_name}")
+        logger.info(f"🔧 Agent id: {hook_input.agent_state.agent_id}")
         logger.info(f"🔧 Tool name: {hook_input.tool_name}")
         logger.info(f"🔧 Tool input: {hook_input.tool_input}")
         logger.info(f"🔧 Tool output type: {type(hook_input.tool_output)}")
@@ -430,8 +424,8 @@ def create_tool_result_transformer_hook(transform_func) -> AfterToolHook:
     def tool_transformer_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
         try:
             transformed_output = transform_func(
-                hook_input.agent_name,
-                hook_input.agent_id,
+                hook_input.agent_state.agent_name,
+                hook_input.agent_state.agent_id,
                 hook_input.tool_name, 
                 hook_input.tool_input, 
                 hook_input.tool_output
