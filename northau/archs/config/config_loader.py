@@ -84,12 +84,6 @@ class AgentBuilder:
         self.agent_params['system_prompt'] = self.config.get('system_prompt')
         self.agent_params['system_prompt_type'] = self.config.get('system_prompt_type', 'string')
         self.agent_params['initial_context'] = self.config.get('context', {})
-        self.agent_params['initial_state'] = self.config.get('state', {})
-        
-        # Merge context into initial_config for backward compatibility
-        initial_config = self.config.get('config', {})
-        initial_config.update(self.agent_params['initial_context'])
-        self.agent_params['initial_config'] = initial_config
         
         self.agent_params['stop_tools'] = self.config.get('stop_tools', [])
         
@@ -287,6 +281,10 @@ class AgentBuilder:
         Returns:
             Configured Agent instance
         """
+        if global_storage is None:
+            global_storage = GlobalStorage()
+        logger.info(f"updating global_storage from config: {self.config.get('global_storage', {})}")
+        global_storage.update(self.config.get('global_storage', {}))
         return create_agent(
             global_storage=global_storage,
             **self.agent_params

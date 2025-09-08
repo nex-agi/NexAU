@@ -2,9 +2,12 @@
 
 import json
 import logging
-from typing import Dict, Any, Tuple, List, Optional, Set
+from typing import Dict, Any, Tuple, List, Optional, Set, TYPE_CHECKING
 import xml.etree.ElementTree as ET
 import html
+
+if TYPE_CHECKING:
+    from ..agent_state import AgentState
 
 from ..utils.xml_utils import XMLParser, XMLUtils
 from ..tracing.tracer import Tracer
@@ -38,14 +41,13 @@ class ToolExecutor:
         self.xml_parser = XMLParser()
         self.tool_hook_manager = tool_hook_manager
     
-    def execute_tool(self, agent_name: str, agent_id: str, tool_name: str, parameters: Dict[str, Any], global_storage=None) -> Dict[str, Any]:
+    def execute_tool(self, agent_state: 'AgentState', tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a tool with given parameters.
         
         Args:
-            agent_id: ID of the agent
+            agent_state: AgentState containing agent context and global storage
             tool_name: Name of the tool to execute
             parameters: Parameters to pass to the tool
-            global_storage: Optional GlobalStorage instance for hook access
             
         Returns:
             Tool execution result (possibly modified by hooks)
@@ -53,19 +55,18 @@ class ToolExecutor:
         Raises:
             ValueError: If tool is not found
         """
-        logger.info(f"🔧 Executing tool '{tool_name}' for agent '{agent_id}' with parameters: {parameters}")
+        logger.info(f"🔧 Executing tool '{tool_name}' for agent '{agent_state.agent_id}' with parameters: {parameters}")
         
         if tool_name not in self.tool_registry:
-            error_msg = f"Tool '{tool_name}' for agent '{agent_id}' not found"
+            error_msg = f"Tool '{tool_name}' for agent '{agent_state.agent_id}' not found"
             logger.error(f"❌ {error_msg}")
             raise ValueError(error_msg)
         
         tool = self.tool_registry[tool_name]
         try:
-            # Add global_storage to parameters if available
+            # Add agent_state to parameters
             execution_params = parameters.copy()
-            if global_storage is not None:
-                execution_params['global_storage'] = global_storage
+            execution_params['agent_state'] = agent_state
             
             if self.langfuse_client:
                 try:
@@ -88,12 +89,10 @@ class ToolExecutor:
             # Execute tool hooks if available
             if self.tool_hook_manager:
                 hook_input = AfterToolHookInput(
-                    agent_name=agent_name,
-                    agent_id=agent_id,
+                    agent_state=agent_state,
                     tool_name=tool_name,
                     tool_input=parameters,
-                    tool_output=result,
-                    global_storage=global_storage
+                    tool_output=result
                 )
                 result = self.tool_hook_manager.execute_hooks(hook_input)
             
