@@ -5,8 +5,11 @@ import logging
 import os
 import subprocess
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING
 import threading
+
+if TYPE_CHECKING:
+    from ...main_sub.agent_state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +23,7 @@ def bash_tool(
     command: str,
     timeout: Optional[int] = None,
     description: Optional[str] = None,
-    global_storage: Optional[dict] = None,
+    agent_state: Optional['AgentState'] = None,
 ) -> Dict[str, Any]:
     """
     Execute a bash command in a persistent shell session with proper handling and security measures.
@@ -29,14 +32,16 @@ def bash_tool(
         command: The bash command to execute (required)
         timeout: Optional timeout in milliseconds (max 600000ms / 10 minutes)
         description: Clear, concise description of what this command does in 5-10 words
+        agent_state: AgentState containing agent context and global storage
     
     Returns:
         Dict containing execution results
     """
     start_time = time.time()
     
-    storage = global_storage._storage
-    workspace = storage.get('workspace', None)
+    workspace = None
+    if agent_state:
+        workspace = agent_state.get_global_value('workspace', None)
     
     # Validate timeout
     if timeout is None:
