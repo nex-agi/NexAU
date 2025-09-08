@@ -54,6 +54,9 @@ class Tool:
         if "global_storage" in input_schema:
             raise ValueError(f"Tool definition of `{name}` contains 'global_storage' field in {yaml_path}, which will be injected by the framework, please remove it from the tool definition.")
         
+        if "agent_state" in input_schema:
+            raise ValueError(f"Tool definition of `{name}` contains 'agent_state' field in {yaml_path}, which will be injected by the framework, please remove it from the tool definition.")
+        
         template_override = tool_def.get('template_override', None)
         
         if not name:
@@ -71,17 +74,22 @@ class Tool:
     
     def execute(self, **params) -> Dict:
         """Execute the tool with given parameters."""
-        # Handle global_storage parameter
+        # Handle agent_state parameter
         filtered_params = params.copy()
-        if 'global_storage' in params:
-            # Check if the function signature accepts global_storage
+        if 'agent_state' in params:
+            # Check if the function signature accepts agent_state
             sig = inspect.signature(self.implementation)
-            if 'global_storage' not in sig.parameters:
-                # Remove global_storage if function doesn't accept it
-                filtered_params.pop('global_storage', None)
+            if 'agent_state' not in sig.parameters:
+                # Remove agent_state if function doesn't accept it
+                filtered_params.pop('agent_state', None)
+                
+                # For backwards compatibility, check if function accepts global_storage
+                if 'global_storage' in sig.parameters:
+                    agent_state = params['agent_state']
+                    filtered_params['global_storage'] = agent_state.global_storage
         
-        # Validate parameters (excluding global_storage for schema validation)
-        validation_params = {k: v for k, v in filtered_params.items() if k != 'global_storage'}
+        # Validate parameters (excluding agent_state and global_storage for schema validation)
+        validation_params = {k: v for k, v in filtered_params.items() if k not in ('agent_state', 'global_storage')}
         if not self.validate_params(validation_params):
             raise ValueError(f"Invalid parameters for tool '{self.name}': {validation_params}")
         

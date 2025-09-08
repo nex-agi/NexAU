@@ -23,6 +23,7 @@ except ImportError:
 from .config import AgentConfig, ExecutionConfig
 from .execution.executor import Executor
 from .agent_context import AgentContext, GlobalStorage
+from .agent_state import AgentState
 from .utils.cleanup_manager import cleanup_manager
 from .utils.token_counter import TokenCounter
 from .prompt_builder import PromptBuilder
@@ -205,6 +206,14 @@ class Agent:
             # Add user message to history
             self.history.append({"role": "user", "content": message})
             
+            # Create the AgentState instance
+            agent_state = AgentState(
+                agent_name=self.config.name,
+                agent_id=self.config.agent_id,
+                context=ctx,
+                global_storage=self.global_storage
+            )
+            
             try:
                 # Execute using the executor
                 if self.langfuse_client:
@@ -224,7 +233,7 @@ class Agent:
                         ) as span:
                             logger.info(f"📊 Created Langfuse span for agent: {self.config.name}")
                             
-                            response, updated_messages = self.executor.execute(self.history, dump_trace_path)
+                            response, updated_messages = self.executor.execute(self.history, agent_state, dump_trace_path)
                             self.history = updated_messages
                             
                             self.langfuse_client.update_current_span(
@@ -242,10 +251,10 @@ class Agent:
                         
                     except Exception as langfuse_error:
                         logger.warning(f"⚠️ Langfuse tracing failed: {langfuse_error}")
-                        response, updated_messages = self.executor.execute(self.history, dump_trace_path)
+                        response, updated_messages = self.executor.execute(self.history, agent_state, dump_trace_path)
                         self.history = updated_messages
                 else:
-                    response, updated_messages = self.executor.execute(self.history, dump_trace_path)
+                    response, updated_messages = self.executor.execute(self.history, agent_state, dump_trace_path)
                     self.history = updated_messages
                 
                 # Add final assistant response to history if not already included

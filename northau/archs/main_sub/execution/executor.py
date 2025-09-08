@@ -6,10 +6,11 @@ import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, TYPE_CHECKING
 from collections import defaultdict
 
-from northau.archs.main_sub.agent_context import GlobalStorage
+if TYPE_CHECKING:
+    from ..agent_state import AgentState
 
 from .tool_executor import ToolExecutor
 from .subagent_manager import SubAgentManager
@@ -92,14 +93,15 @@ class Executor:
             message: Message dictionary with 'role' and 'content' keys
         """
         self.queued_messages.append(message)
-        logger.info(f"📝 Message enqueued during execution: {message.get('role', 'unknown')} - {len(message.get('content', ''))[:50]}...")
+        logger.info(f"📝 Message enqueued during execution: {message.get('role', 'unknown')} - {message.get('content', '')[:50]}...")
     
-    def execute(self, history: list[dict[str, str]], 
+    def execute(self, history: list[dict[str, str]], agent_state: 'AgentState',
                dump_trace_path: str | None = None) -> tuple[str, list[dict[str, str]]]:
         """Execute agent task with full orchestration.
         
         Args:
             history: Complete conversation history including system prompt and user message
+            agent_state: AgentState containing agent context and global storage
             dump_trace_path: Optional path to dump execution trace
             
         Returns:
@@ -188,14 +190,12 @@ class Executor:
                 # Process tool calls and sub-agent calls
                 logger.info(f"⚙️ Processing tool/sub-agent calls for agent '{self.agent_name}'...")
                 after_model_hook_input = AfterModelHookInput(
-                    agent_name=self.agent_name,
-                    agent_id=self.agent_id,
+                    agent_state=agent_state,
                     max_iterations=self.max_iterations,
                     current_iteration=iteration,
                     original_response=assistant_response,
                     parsed_response=parsed_response,
-                    messages=messages,
-                    global_storage=self.global_storage
+                    messages=messages
                 )
                 
                 processed_response, should_stop, stop_tool_result, updated_messages = self._process_xml_calls(
@@ -300,14 +300,15 @@ class Executor:
         
         # Phase 2: Execute all parsed calls
         logger.info(f"⚡ Phase 2: Executing {parsed_response.get_call_summary()}")
-        processed_response, should_stop, stop_tool_result = self._execute_parsed_calls(parsed_response, hook_input.global_storage, tracer = tracer)
+        processed_response, should_stop, stop_tool_result = self._execute_parsed_calls(parsed_response, hook_input.agent_state, tracer = tracer)
         return processed_response, should_stop, stop_tool_result, current_messages
     
-    def _execute_parsed_calls(self, parsed_response: ParsedResponse, global_storage: Optional[GlobalStorage] = None, tracer: Optional[Tracer] = None) -> tuple[str, bool, str | None]:
+    def _execute_parsed_calls(self, parsed_response: ParsedResponse, agent_state: 'AgentState', tracer: Optional[Tracer] = None) -> tuple[str, bool, str | None]:
         """Execute all parsed calls in parallel.
         
         Args:
             parsed_response: ParsedResponse containing all calls to execute
+            agent_state: AgentState containing agent context and global storage
             tracer: Optional tracer for logging
             
         Returns:
@@ -368,7 +369,7 @@ class Executor:
             tool_futures = {}
             for tool_call in parsed_response.tool_calls:
                 task_ctx = copy_context()
-                future = tool_executor.submit(task_ctx.run, self._execute_tool_call_safe, tool_call, global_storage, tracer)
+                future = tool_executor.submit(task_ctx.run, self._execute_tool_call_safe, tool_call, agent_state, tracer)
                 tool_futures[future] = ('tool', tool_call)
             
             # Submit sub-agent execution tasks
@@ -443,7 +444,7 @@ class Executor:
         
         return processed_response, stop_tool_detected, stop_tool_result
     
-    def _execute_tool_call_safe(self, tool_call: ToolCall, global_storage: Optional[GlobalStorage] = None, tracer: Optional[Tracer] = None) -> tuple[str, str, bool]:
+    def _execute_tool_call_safe(self, tool_call: ToolCall, agent_state: 'AgentState', tracer: Optional[Tracer] = None) -> tuple[str, str, bool]:
         """Safely execute a tool call."""
         try:
             # Log tool request to trace if enabled
@@ -457,7 +458,7 @@ class Executor:
                     tool_call.tool_name, param_name, param_value
                 )
             
-            result = self.tool_executor.execute_tool(self.agent_name, self.agent_id, tool_call.tool_name, converted_params, global_storage)
+            result = self.tool_executor.execute_tool(agent_state, tool_call.tool_name, converted_params)
             
             # Log tool response to trace if enabled
             if tracer:

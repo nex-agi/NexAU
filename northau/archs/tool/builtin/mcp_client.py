@@ -523,9 +523,9 @@ class MCPTool(Tool):
     
     def execute(self, **kwargs) -> Dict[str, Any]:
         """Execute the MCP tool synchronously (for backward compatibility)."""
-        # Filter out global_storage parameter as it's not needed for MCP tools
-        # and causes JSON serialization errors
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k != 'global_storage'}
+        # Filter out agent_state and global_storage parameters as they're not needed for MCP tools
+        # and cause JSON serialization errors
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ('agent_state', 'global_storage')}
         return self._execute_sync(**filtered_kwargs)
     
     async def _execute_async(self, **kwargs) -> Dict[str, Any]:
