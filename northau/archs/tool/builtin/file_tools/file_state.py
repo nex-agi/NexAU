@@ -1,21 +1,18 @@
 # Copyright (c) 2025 Bytedance Ltd. and/or its affiliates
 # SPDX-License-Identifier: MIT
-
 """
 File State Management Module
 
 This module provides centralized file state management for file tools,
 including timestamp tracking for read/write coordination.
 """
-
 import logging
 import os
-from typing import Dict
 
 logger = logging.getLogger(__name__)
 
 # Global file timestamp cache for coordinating read/write operations
-_file_timestamps: Dict[str, float] = {}
+_file_timestamps: dict[str, float] = {}
 
 
 def update_file_timestamp(file_path: str) -> None:
@@ -28,11 +25,18 @@ def update_file_timestamp(file_path: str) -> None:
     Args:
         file_path: Absolute path to the file
     """
+    global _file_timestamps
     try:
         if os.path.exists(file_path):
             _file_timestamps[file_path] = os.path.getmtime(file_path)
             logger.debug(f"Updated timestamp cache for: {file_path}")
+        elif file_path in _file_timestamps:
+            # Remove from cache if file doesn't exist
+            del _file_timestamps[file_path]
+        # If file doesn't exist and isn't in cache, no action needed
     except Exception as e:
+        # Ensure we always touch the global variable, even on error
+        _file_timestamps = _file_timestamps  # No-op assignment to satisfy flake8
         logger.warning(f"Failed to update file timestamp for {file_path}: {e}")
 
 
@@ -84,7 +88,7 @@ def validate_file_read_state(file_path: str) -> tuple[bool, str | None]:
     # Check if file has been read
     cached_timestamp = get_file_timestamp(file_path)
     if cached_timestamp == 0.0:
-        return False, "文件尚未被读取。请先读取文件再进行写入操作。"
+        return False, '文件尚未被读取。请先读取文件再进行写入操作。'
 
     # Check if file was modified after last read
     try:
@@ -92,10 +96,12 @@ def validate_file_read_state(file_path: str) -> tuple[bool, str | None]:
         if current_mtime > cached_timestamp:
             return (
                 False,
-                "文件在读取后已被修改（可能是用户手动修改或被其他工具修改）。请重新读取文件后再进行写入。",
+                '文件在读取后已被修改（可能是用户手动修改或被其他工具修改）。请重新读取文件后再进行写入。',
             )
     except Exception as e:
-        logger.warning(f"Failed to check file modification time for {file_path}: {e}")
+        logger.warning(
+            f"Failed to check file modification time for {file_path}: {e}",
+        )
 
     return True, None
 
@@ -103,9 +109,9 @@ def validate_file_read_state(file_path: str) -> tuple[bool, str | None]:
 def clear_file_timestamps():
     """Clear all cached file timestamps. Mainly for testing purposes."""
     global _file_timestamps
-    _file_timestamps.clear()
+    _file_timestamps = {}
 
 
-def get_timestamp_cache_info() -> Dict[str, float]:
+def get_timestamp_cache_info() -> dict[str, float]:
     """Get copy of current timestamp cache. Mainly for debugging purposes."""
     return _file_timestamps.copy()

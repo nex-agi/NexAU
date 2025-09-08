@@ -1,28 +1,29 @@
 """Agent state management for unified state container."""
+from typing import Any
 
-from typing import Dict, Any, Optional
-from .agent_context import GlobalStorage, AgentContext
+from .agent_context import AgentContext
+from .agent_context import GlobalStorage
 
 
 class AgentState:
     """A unified container for an agent's runtime state.
-    
+
     This class encapsulates all runtime state for an agent, including:
     - agent_name: The name of the agent
     - agent_id: The unique identifier of the agent
     - context: The AgentContext instance for runtime context management
     - global_storage: The GlobalStorage instance for persistent state
     """
-    
+
     def __init__(
         self,
         agent_name: str,
         agent_id: str,
         context: AgentContext,
-        global_storage: GlobalStorage
+        global_storage: GlobalStorage,
     ):
         """Initialize agent state.
-        
+
         Args:
             agent_name: The name of the agent
             agent_id: The unique identifier of the agent
@@ -36,11 +37,11 @@ class AgentState:
 
     def get_context_value(self, key: str, default: Any = None) -> Any:
         """Get a value from the context.
-        
+
         Args:
             key: The context key to retrieve
             default: Default value if key not found
-            
+
         Returns:
             The context value or default
         """
@@ -48,7 +49,7 @@ class AgentState:
 
     def set_context_value(self, key: str, value: Any) -> None:
         """Set a value in the context.
-        
+
         Args:
             key: The context key to set
             value: The value to set
@@ -57,11 +58,11 @@ class AgentState:
 
     def get_global_value(self, key: str, default: Any = None) -> Any:
         """Get a value from the global_storage.
-        
+
         Args:
             key: The global storage key to retrieve
             default: Default value if key not found
-            
+
         Returns:
             The global storage value or default
         """
@@ -69,17 +70,17 @@ class AgentState:
 
     def set_global_value(self, key: str, value: Any) -> None:
         """Set a value in the global_storage.
-        
+
         Args:
             key: The global storage key to set
             value: The value to set
         """
         self.global_storage.set(key, value)
-    
+
     def __repr__(self) -> str:
         """String representation of the agent state."""
         return f"AgentState(agent_name='{self.agent_name}', agent_id='{self.agent_id}')"
-    
+
     def __str__(self) -> str:
         """Human-readable string representation."""
         context_keys = len(self.context.context)

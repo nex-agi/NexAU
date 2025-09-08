@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """Example demonstrating MiniMax MCP server integration with Northau agents."""
-
-from typing import Any
-
-
-import os
 import logging
+import os
 
-from northau.archs.main_sub.agent import create_agent
 from northau.archs.llm import LLMConfig
-from northau.archs.tool import Tool
-from northau.archs.tool.builtin.feishu import upload_feishu_file, send_feishu_message, get_feishu_chat_list
-from northau.archs.tool.builtin.bash_tool import bash_tool
-from northau.archs.tool.builtin.web_tool import web_search, web_read
+from northau.archs.main_sub.agent import create_agent
 from northau.archs.main_sub.execution.hooks import create_tool_after_approve_hook
+from northau.archs.tool import Tool
+from northau.archs.tool.builtin.bash_tool import bash_tool
+from northau.archs.tool.builtin.feishu import get_feishu_chat_list
+from northau.archs.tool.builtin.feishu import send_feishu_message
+from northau.archs.tool.builtin.feishu import upload_feishu_file
+from northau.archs.tool.builtin.web_tool import web_read
+from northau.archs.tool.builtin.web_tool import web_search
 
 # Configure logging for hooks to ensure they appear
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-hook_logger = logging.getLogger("minimax_agent_hooks")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+)
+hook_logger = logging.getLogger('minimax_agent_hooks')
 hook_logger.setLevel(logging.INFO)
-
 
 
 def main():
@@ -29,47 +30,67 @@ def main():
     # This uses the stdio protocol with the official GitHub MCP server
     mcp_servers = [
         {
-            "name": "MiniMax",
-            "type": "stdio",
-            "command": "uvx",
-            "args": [
-                "minimax-mcp",
-                "-y"
+            'name': 'MiniMax',
+            'type': 'stdio',
+            'command': 'uvx',
+            'args': [
+                'minimax-mcp',
+                '-y',
             ],
-            "env": {
-                "MINIMAX_API_KEY": os.getenv("MINIMAX_API_KEY"),
-                "MINIMAX_MCP_BASE_PATH": os.getcwd(),
-                "MINIMAX_API_HOST": "https://api.minimax.chat",
-                "MINIMAX_API_RESOURCE_MODE": "url"
+            'env': {
+                'MINIMAX_API_KEY': os.getenv('MINIMAX_API_KEY'),
+                'MINIMAX_MCP_BASE_PATH': os.getcwd(),
+                'MINIMAX_API_HOST': 'https://api.minimax.chat',
+                'MINIMAX_API_RESOURCE_MODE': 'url',
             },
-            "timeout": 30
+            'timeout': 30,
         },
     ]
 
     src_dir = os.path.dirname(os.path.abspath(__file__))
 
-    feishu_upload_file_tool = Tool.from_yaml(os.path.join(
-        src_dir, "tools/feishu_upload_file.yaml"), binding=upload_feishu_file)
-    feishu_send_message_tool = Tool.from_yaml(os.path.join(
-        src_dir, "tools/feishu_send_message.yaml"), binding=send_feishu_message)
-    get_feishu_chat_list_tool = Tool.from_yaml(os.path.join(
-        src_dir, "tools/get_feishu_chat_list.yaml"), binding=get_feishu_chat_list)
-    configured_bash_tool = Tool.from_yaml(os.path.join(
-        src_dir, "tools/Bash.tool.yaml"), binding=bash_tool)
-    web_search_tool = Tool.from_yaml(os.path.join(
-        src_dir, "tools/WebSearch.yaml"), binding=web_search)
-    web_read_tool = Tool.from_yaml(os.path.join(
-        src_dir, "tools/WebRead.yaml"), binding=web_read)
-    tools = [feishu_upload_file_tool, feishu_send_message_tool,
-             get_feishu_chat_list_tool, configured_bash_tool, web_search_tool, web_read_tool]
+    feishu_upload_file_tool = Tool.from_yaml(
+        os.path.join(
+            src_dir, 'tools/feishu_upload_file.yaml',
+        ), binding=upload_feishu_file,
+    )
+    feishu_send_message_tool = Tool.from_yaml(
+        os.path.join(
+            src_dir, 'tools/feishu_send_message.yaml',
+        ), binding=send_feishu_message,
+    )
+    get_feishu_chat_list_tool = Tool.from_yaml(
+        os.path.join(
+            src_dir, 'tools/get_feishu_chat_list.yaml',
+        ), binding=get_feishu_chat_list,
+    )
+    configured_bash_tool = Tool.from_yaml(
+        os.path.join(
+            src_dir, 'tools/Bash.tool.yaml',
+        ), binding=bash_tool,
+    )
+    web_search_tool = Tool.from_yaml(
+        os.path.join(
+            src_dir, 'tools/WebSearch.yaml',
+        ), binding=web_search,
+    )
+    web_read_tool = Tool.from_yaml(
+        os.path.join(
+            src_dir, 'tools/WebRead.yaml',
+        ), binding=web_read,
+    )
+    tools = [
+        feishu_upload_file_tool, feishu_send_message_tool,
+        get_feishu_chat_list_tool, configured_bash_tool, web_search_tool, web_read_tool,
+    ]
 
     llm_config = LLMConfig(
-        model=os.getenv("LLM_MODEL"),
-        base_url=os.getenv("LLM_BASE_URL"),
-        api_key=os.getenv("LLM_API_KEY"),
+        model=os.getenv('LLM_MODEL'),
+        base_url=os.getenv('LLM_BASE_URL'),
+        api_key=os.getenv('LLM_API_KEY'),
     )
 
-    print("📋 Configured MiniMax MCP Server:")
+    print('📋 Configured MiniMax MCP Server:')
     for server in mcp_servers:
         print(f"   - {server['name']}")
         print(f"     Type: {server['type']}")
@@ -86,9 +107,9 @@ def main():
 
     try:
         # Create an agent with Github MCP server
-        print("🤖 Creating agent with MiniMax MCP server...")
+        print('🤖 Creating agent with MiniMax MCP server...')
         agent = create_agent(
-            name="minimax_agent",
+            name='minimax_agent',
             system_prompt="""You are an AI agent with access to MiniMax MCP, feishu tools, bash tool, and web search tool.
 
 You can also use feishu tools to upload files and send messages to feishu.
@@ -119,24 +140,25 @@ Today is {{date}}.
             mcp_servers=mcp_servers,
             llm_config=llm_config,
             tools=tools,
-            after_model_hooks=[create_tool_after_approve_hook("WebSearch")]
+            after_model_hooks=[create_tool_after_approve_hook('WebSearch')],
         )
 
-        print("✅ Agent created successfully!")
+        print('✅ Agent created successfully!')
         print(f"   Agent name: {agent.name}")
         print(f"   Total tools available: {len(agent.tools)}")
 
         # List available tools
         if agent.tools:
-            print("\n🗺️  Available MiniMax tools:")
+            print('\n🗺️  Available MiniMax tools:')
             for tool in agent.tools:
                 print(
-                    f"   - {tool.name}: {getattr(tool, 'description', 'No description')}")
+                    f"   - {tool.name}: {getattr(tool, 'description', 'No description')}",
+                )
         else:
-            print("\n⚠️  No tools available")
+            print('\n⚠️  No tools available')
 
 #         content = """
-#         早安呀，亲爱的小伙伴们！我是小北~ 
+#         早安呀，亲爱的小伙伴们！我是小北~
 
 # 【今日上海天气小播报 - 8月8日】
 
@@ -163,7 +185,11 @@ Today is {{date}}.
 # —— 爱你们的小北
 #         """
 #         response = agent.run(f"帮我生成一段语音并发送到飞书群 bot测试群 里，内容是：{content}")
-        response = agent.run("WebSearch 和 WebRead 工具，搜索并整理今天的最新的 LLM 相关的资讯，然后用MiniMax的生成语音功能制造一个语音，并发语音消息到飞书的 bot测试群 里", context={"date": "2025年 8 月 27 日"})
+        response = agent.run(
+            'WebSearch 和 WebRead 工具，搜索并整理今天的最新的 LLM 相关的资讯，然后用MiniMax的生成语音功能制造一个语音，并发语音消息到飞书的 bot测试群 里', context={
+                'date': '2025年 8 月 27 日',
+            },
+        )
         # response = agent.run("/Users/hanzhenhua/Desktop/tts_1754551121_7gneh8.mp3 帮我转成 opus并发送到飞书群 bot 测试群里")
         # response = agent.run("帮我获取飞书群列表")
         # response = agent.run("帮我上传/Users/hanzhenhua/Desktop/tts_1754551121_7gneh8.opus文件到飞书，注意要用 opus 格式，需要带 duration （可以用ffproobe 拿），并用语音消息发送到飞书群 bot 测试群里")
@@ -171,12 +197,12 @@ Today is {{date}}.
 
     except Exception as e:
         print(f"❌ Error creating agent with GitHub MCP server: {e}")
-        print("\nNote: This error might occur if:")
-        print("- Node.js/npm is not installed")
-        print("- Network connectivity issues")
-        print("- Invalid GitHub Personal Access Token")
-        print("- GitHub server is not accessible")
+        print('\nNote: This error might occur if:')
+        print('- Node.js/npm is not installed')
+        print('- Network connectivity issues')
+        print('- Invalid GitHub Personal Access Token')
+        print('- GitHub server is not accessible')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

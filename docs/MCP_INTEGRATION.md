@@ -34,7 +34,7 @@ Wrapper class that adapts MCP tools to the Northau Tool interface:
 ```python
 class MCPTool(Tool):
     """Wrapper for MCP tools to conform to Northau Tool interface."""
-    
+
     def __init__(self, mcp_tool: MCPToolType, client_session: ClientSession):
         self.mcp_tool = mcp_tool
         self.client_session = client_session
@@ -52,7 +52,7 @@ Core client for managing connections to MCP servers:
 ```python
 class MCPClient:
     """Client for connecting to and managing MCP servers."""
-    
+
     def __init__(self):
         self.servers: Dict[str, MCPServerConfig] = {}
         self.sessions: Dict[str, ClientSession] = {}
@@ -65,10 +65,10 @@ High-level manager for MCP operations:
 ```python
 class MCPManager:
     """High-level manager for MCP operations."""
-    
+
     def add_server(self, name: str, server_type: str = "stdio", ...):
         """Add an MCP server configuration."""
-        
+
     async def initialize_servers(self) -> Dict[str, List[MCPTool]]:
         """Initialize all configured servers and discover their tools."""
 ```
@@ -90,7 +90,7 @@ mcp_servers = [
     },
     {
         "name": "amap-maps",
-        "type": "http", 
+        "type": "http",
         "url": "https://mcp.amap.com/mcp?key=your-api-key"
     }
 ]
@@ -163,7 +163,7 @@ The MCP integration plugs into the Northau framework at several points:
 The integration includes comprehensive tests:
 
 - `test_mcp_integration.py`: Basic functionality tests
-- `examples/mcp_agent_example.py`: General MCP usage example  
+- `examples/mcp_agent_example.py`: General MCP usage example
 - `examples/mcp_amap_example.py`: Amap Maps specific example
 
 ## Dependencies

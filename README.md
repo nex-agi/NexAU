@@ -81,14 +81,14 @@ def main():
     # Create tools with YAML configurations
     web_search_tool = Tool.from_yaml("tools/WebSearch.yaml", binding=web_search)
     web_read_tool = Tool.from_yaml("tools/WebRead.yaml", binding=web_read)
-    
+
     # Configure LLM
     llm_config = LLMConfig(
         model=os.getenv("LLM_MODEL"),
         base_url=os.getenv("LLM_BASE_URL"),
         api_key=os.getenv("LLM_API_KEY")
     )
-    
+
     # Create the agent
     research_agent = create_agent(
         name="research_agent",
@@ -96,7 +96,7 @@ def main():
         llm_config=llm_config,
         system_prompt="You are a research agent. Use web_search and web_read tools to find information.",
     )
-    
+
     # Run the agent
     response = research_agent.run(
         "What's the latest news about AI developments?",
@@ -152,12 +152,12 @@ def main():
             "temperature": 0.7
         }
     }
-    
+
     agent = load_agent_config(
         "agents/my_agent.yaml",
         overrides=config_overrides
     )
-    
+
     # Use the agent
     response = agent.run(
         "Research the latest developments in quantum computing",
@@ -213,7 +213,7 @@ def my_custom_tool(param1: str, param2: int = 10) -> str:
 name: MyCustomTool
 description: >-
   Description of what this tool does.
-  
+
   Usage guidelines and examples.
 
 input_schema:
@@ -291,31 +291,31 @@ from typing import Any, Dict
 def my_custom_generator(openai_client: Any, kwargs: Dict[str, Any]) -> Any:
     """
     Custom LLM generator function.
-    
+
     Args:
         openai_client: The OpenAI client instance
         kwargs: Parameters that would be passed to openai_client.chat.completions.create()
-        
+
     Returns:
         Response object with same structure as OpenAI's response
     """
     # Add custom logic here
     print(f"🔧 Processing request with {len(kwargs.get('messages', []))} messages")
-    
+
     # Modify parameters if needed
     modified_kwargs = kwargs.copy()
     if modified_kwargs.get('temperature', 0.7) > 0.5:
         modified_kwargs['temperature'] = 0.3  # Lower temperature for more focused responses
         print("🎯 Adjusted temperature for better focus")
-    
+
     # Call the LLM (you can use any provider here)
     response = openai_client.chat.completions.create(**modified_kwargs)
-    
+
     # Add custom post-processing
     if response and hasattr(response, 'choices') and response.choices:
         content = response.choices[0].message.content
         print(f"📊 Generated response: {len(content)} characters")
-    
+
     return response
 ```
 
@@ -375,7 +375,7 @@ tools: []
 For parameterized generators, create a function that accepts the parameters:
 
 ```python
-def parameterized_generator(openai_client: Any, kwargs: Dict[str, Any], 
+def parameterized_generator(openai_client: Any, kwargs: Dict[str, Any],
                           min_temperature: float = 0.2,
                           max_temperature: float = 0.8,
                           add_context: bool = False,
@@ -383,12 +383,12 @@ def parameterized_generator(openai_client: Any, kwargs: Dict[str, Any],
     """Parameterized custom LLM generator."""
     if log_requests:
         print(f"🔍 LLM Request: {kwargs.get('model', 'unknown')} model")
-    
+
     # Clamp temperature within specified range
     current_temp = kwargs.get('temperature', 0.7)
     modified_kwargs = kwargs.copy()
     modified_kwargs['temperature'] = max(min_temperature, min(max_temperature, current_temp))
-    
+
     if add_context:
         # Add custom context to system message
         messages = modified_kwargs.get('messages', [])
@@ -396,7 +396,7 @@ def parameterized_generator(openai_client: Any, kwargs: Dict[str, Any],
             enhanced_content = f"{messages[0]['content']}\n\nAdditional Context: Focus on providing detailed, accurate responses."
             modified_kwargs['messages'] = messages.copy()
             modified_kwargs['messages'][0] = {'role': 'system', 'content': enhanced_content}
-    
+
     return openai_client.chat.completions.create(**modified_kwargs)
 ```
 
@@ -410,14 +410,14 @@ def research_generator(openai_client: Any, kwargs: Dict[str, Any]) -> Any:
     # Lower temperature for more focused responses
     modified_kwargs = kwargs.copy()
     modified_kwargs['temperature'] = min(kwargs.get('temperature', 0.7), 0.3)
-    
+
     # Add research context
     messages = kwargs.get('messages', [])
     if messages and messages[0].get('role') == 'system':
         research_prompt = f"{messages[0]['content']}\n\nIMPORTANT: Provide accurate, well-researched responses with citations when possible."
         modified_kwargs['messages'] = messages.copy()
         modified_kwargs['messages'][0] = {'role': 'system', 'content': research_prompt}
-    
+
     return openai_client.chat.completions.create(**modified_kwargs)
 ```
 
@@ -427,7 +427,7 @@ def research_generator(openai_client: Any, kwargs: Dict[str, Any]) -> Any:
 def multi_provider_generator(openai_client: Any, kwargs: Dict[str, Any]) -> Any:
     """Generator that can switch between different LLM providers."""
     model = kwargs.get('model', 'gpt-4')
-    
+
     if model.startswith('claude'):
         # Use Anthropic client
         # (You would implement Anthropic client logic here)
@@ -453,19 +453,19 @@ def caching_generator(openai_client: Any, kwargs: Dict[str, Any]) -> Any:
     """Generator with response caching."""
     # Create cache key from request
     cache_key = hashlib.md5(json.dumps(kwargs, sort_keys=True).encode()).hexdigest()
-    
+
     # Check cache first
     if cache_key in cache:
         print("💾 Using cached response")
         return cache[cache_key]
-    
+
     # Generate new response
     response = openai_client.chat.completions.create(**kwargs)
-    
+
     # Cache the response
     cache[cache_key] = response
     print("🆕 Generated and cached new response")
-    
+
     return response
 ```
 
@@ -588,16 +588,16 @@ from northau.archs.main_sub.agent_context import get_state, get_config, get_cont
 
 def my_stateful_tool(param1: str) -> dict:
     """Example tool that accesses and modifies agent state."""
-    
+
     # Get current agent state and config
     current_state = get_state()  # Returns Dict[str, Any]
     current_config = get_config()  # Returns Dict[str, Any]
-    
+
     # Access specific values with defaults
     from northau.archs.main_sub.agent_context import get_state_value, get_config_value
     user_name = get_state_value("user_name", "anonymous")
     debug_mode = get_config_value("debug", False)
-    
+
     return {"result": f"Processing {param1} for user {user_name}"}
 ```
 
@@ -605,26 +605,26 @@ def my_stateful_tool(param1: str) -> dict:
 
 ```python
 from northau.archs.main_sub.agent_context import (
-    update_state, update_config, 
+    update_state, update_config,
     set_state_value, set_config_value
 )
 
 def learning_tool(new_info: str) -> dict:
     """Tool that learns and updates agent state."""
-    
+
     # Update multiple state values at once
     update_state(
         last_learned=new_info,
         learning_count=get_state_value("learning_count", 0) + 1
     )
-    
+
     # Update individual values
     set_state_value("last_update_time", datetime.now().isoformat())
-    
+
     # Modify config (affects agent behavior)
     if get_state_value("learning_count", 0) > 10:
         set_config_value("expert_mode", True)
-    
+
     return {"result": f"Learned: {new_info}"}
 
 ```
@@ -636,31 +636,31 @@ from northau.archs.main_sub.agent_context import get_context
 
 def context_aware_tool(action: str) -> dict:
     """Tool that uses the full context object for advanced operations."""
-    
+
     # Get the full context object
     ctx = get_context()
     if ctx is None:
         return {"error": "No agent context available"}
-    
+
     # Access context data
     all_state = ctx.state
     all_config = ctx.config
-    
+
     # Check if context was recently modified
     if ctx.is_modified():
         # Context was changed by another tool
         pass
-    
+
     # Add a callback for when context changes
     def on_context_change():
         print("Context was modified!")
-    
+
     ctx.add_modification_callback(on_context_change)
-    
+
     # Modify context
     ctx.update_state({"tool_action": action})
     ctx.set_config_value("last_tool", "context_aware_tool")
-    
+
     return {"result": f"Executed {action} with full context awareness"}
 ```
 
@@ -674,7 +674,7 @@ from northau.archs.main_sub.agent_context import (
 
 def session_manager(action: str, data: dict = None) -> dict:
     """Manage user session state across tool calls."""
-    
+
     if action == "start_session":
         session_id = f"session_{datetime.now().timestamp()}"
         update_state(
@@ -684,7 +684,7 @@ def session_manager(action: str, data: dict = None) -> dict:
             session_data=data or {}
         )
         return {"result": f"Started session {session_id}"}
-    
+
     elif action == "log_action":
         actions = get_state_value("user_actions", [])
         actions.append({
@@ -693,27 +693,27 @@ def session_manager(action: str, data: dict = None) -> dict:
             "details": data.get("details", {})
         })
         set_state_value("user_actions", actions)
-        
+
         # Adjust agent behavior based on session length
         if len(actions) > 20:
             # Long session - make agent more concise
             from northau.archs.main_sub.agent_context import update_config
             update_config(max_tokens=1000)
-            
+
         return {"result": f"Logged action: {data.get('action')}"}
-    
+
     elif action == "get_session_info":
         session_id = get_state_value("session_id", "no-session")
         actions_count = len(get_state_value("user_actions", []))
         session_start = get_state_value("session_start", "unknown")
-        
+
         return {
             "session_id": session_id,
             "actions_count": actions_count,
             "session_start": session_start,
             "current_config": get_config_value("max_tokens", "default")
         }
-    
+
     return {"error": f"Unknown session action: {action}"}
 ```
 
@@ -762,7 +762,7 @@ mcp_servers = [
 agent = create_agent(
     name="amap_agent",
     system_prompt="""You are an AI agent with access to Amap Maps services through MCP.
-    
+
 You can use Amap Maps tools to:
 - Search for locations and points of interest
 - Get directions and navigation information
@@ -813,9 +813,9 @@ def create_context_hook() -> AfterModelHook:
                 "content": f"[HOOK] About to execute {len(hook_input.parsed_response.tool_calls)} tool(s)"
             })
             return HookResult.with_modifications(messages=modified_messages)
-        
+
         return HookResult.no_changes()
-    
+
     return context_hook
 
 # Use with agent
@@ -863,7 +863,7 @@ from northau.archs.main_sub.execution.hooks import create_tool_after_approve_hoo
 
 tool_after_approve_hook = create_tool_after_approve_hook(
     tool_name='WebSearch'
-) 
+)
 ```
 
 
@@ -875,14 +875,14 @@ def create_safety_hook() -> AfterModelHook:
     def safety_hook(hook_input: AfterModelHookInput) -> HookResult:
         if not hook_input.parsed_response:
             return HookResult.no_changes()
-            
+
         # Filter out potentially dangerous tools
         dangerous_tools = {'system_command', 'file_delete', 'network_access'}
         safe_calls = [
             call for call in hook_input.parsed_response.tool_calls
             if call.tool_name not in dangerous_tools
         ]
-        
+
         if len(safe_calls) != len(hook_input.parsed_response.tool_calls):
             # Create modified parsed response
             from northau.archs.main_sub.execution.parse_structures import ParsedResponse
@@ -894,7 +894,7 @@ def create_safety_hook() -> AfterModelHook:
                 is_parallel_tools=hook_input.parsed_response.is_parallel_tools,
                 is_parallel_sub_agents=hook_input.parsed_response.is_parallel_sub_agents
             )
-            
+
             # Add safety message
             modified_messages = hook_input.messages.copy()
             filtered_count = len(hook_input.parsed_response.tool_calls) - len(safe_calls)
@@ -902,14 +902,14 @@ def create_safety_hook() -> AfterModelHook:
                 "role": "system",
                 "content": f"[SAFETY] Blocked {filtered_count} potentially dangerous tool calls"
             })
-            
+
             return HookResult.with_modifications(
                 parsed_response=modified_parsed,
                 messages=modified_messages
             )
-        
+
         return HookResult.no_changes()
-    
+
     return safety_hook
 ```
 
@@ -919,7 +919,7 @@ def create_conversation_manager_hook() -> AfterModelHook:
     def conversation_manager_hook(hook_input: AfterModelHookInput) -> HookResult:
         # Add iteration warnings when approaching limit
         remaining = hook_input.max_iterations - hook_input.current_iteration
-        
+
         if remaining <= 2:
             modified_messages = hook_input.messages.copy()
             modified_messages.append({
@@ -927,7 +927,7 @@ def create_conversation_manager_hook() -> AfterModelHook:
                 "content": f"[WARNING] Only {remaining} iterations remaining. Please provide a conclusive response."
             })
             return HookResult.with_modifications(messages=modified_messages)
-        
+
         # Add conversation length management
         if len(hook_input.messages) > 20:
             modified_messages = hook_input.messages.copy()
@@ -936,9 +936,9 @@ def create_conversation_manager_hook() -> AfterModelHook:
                 "content": "[INFO] Long conversation detected. Consider summarizing key points."
             })
             return HookResult.with_modifications(messages=modified_messages)
-        
+
         return HookResult.no_changes()
-    
+
     return conversation_manager_hook
 ```
 
@@ -948,7 +948,7 @@ def create_business_logic_hook(user_permissions: set[str]) -> AfterModelHook:
     def business_logic_hook(hook_input: AfterModelHookInput) -> HookResult:
         if not hook_input.parsed_response:
             return HookResult.no_changes()
-            
+
         # Apply business rules based on user permissions
         allowed_calls = []
         for call in hook_input.parsed_response.tool_calls:
@@ -958,7 +958,7 @@ def create_business_logic_hook(user_permissions: set[str]) -> AfterModelHook:
                 continue  # Skip unauthorized file operations
             else:
                 allowed_calls.append(call)
-        
+
         if len(allowed_calls) != len(hook_input.parsed_response.tool_calls):
             # Create modified response with business logic applied
             from northau.archs.main_sub.execution.parse_structures import ParsedResponse
@@ -970,11 +970,11 @@ def create_business_logic_hook(user_permissions: set[str]) -> AfterModelHook:
                 is_parallel_tools=hook_input.parsed_response.is_parallel_tools,
                 is_parallel_sub_agents=hook_input.parsed_response.is_parallel_sub_agents
             )
-            
+
             return HookResult.with_modifications(parsed_response=modified_parsed)
-        
+
         return HookResult.no_changes()
-    
+
     return business_logic_hook
 ```
 
@@ -1061,10 +1061,10 @@ def create_tool_output_logger() -> AfterToolHook:
         print(f"🔧 Tool '{hook_input.tool_name}' executed")
         print(f"   Input: {hook_input.tool_input}")
         print(f"   Output: {hook_input.tool_output}")
-        
+
         # Return no modifications - just log
         return AfterToolHookResult.no_changes()
-    
+
     return tool_logger_hook
 
 # Use with agent
@@ -1101,14 +1101,14 @@ tools:
     yaml_path: ./tools/WebSearch.yaml
     binding: northau.archs.tool.builtin.web_tool:web_search
   - name: web_read
-    yaml_path: ./tools/WebRead.yaml  
+    yaml_path: ./tools/WebRead.yaml
     binding: northau.archs.tool.builtin.web_tool:web_read
 after_tool_hooks:
   # Simple logging hook
   - import: northau.archs.main_sub.execution.hooks:create_tool_logging_hook
     params:
       logger_name: "research_tool_debug"
-  
+
   # Custom transformer
   - import: my_module.hooks:create_custom_tool_transformer
     params:
@@ -1123,25 +1123,25 @@ after_tool_hooks:
 def create_tool_validation_hook() -> AfterToolHook:
     def validation_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
         tool_output = hook_input.tool_output
-        
+
         # Validate web search results
         if hook_input.tool_name == "web_search":
             if isinstance(tool_output, dict) and "results" in tool_output:
                 # Filter out invalid results
                 valid_results = [
-                    r for r in tool_output["results"] 
+                    r for r in tool_output["results"]
                     if r.get("title") and r.get("link")
                 ]
-                
+
                 if len(valid_results) != len(tool_output["results"]):
                     modified_output = tool_output.copy()
                     modified_output["results"] = valid_results
                     modified_output["filtered_count"] = len(tool_output["results"]) - len(valid_results)
-                    
+
                     return AfterToolHookResult.with_modifications(tool_output=modified_output)
-        
+
         return AfterToolHookResult.no_changes()
-    
+
     return validation_hook
 ```
 
@@ -1211,23 +1211,23 @@ from northau.archs.main_sub.agent_context import GlobalStorage
 
 def my_tool_with_storage(param1: str, global_storage: GlobalStorage) -> dict:
     """Tool that uses global storage for persistent data."""
-    
+
     # Get values from global storage
     user_count = global_storage.get("user_count", 0)
     session_data = global_storage.get("session_data", {})
-    
+
     # Update values
     global_storage.set("user_count", user_count + 1)
     global_storage.update({
         "last_tool_used": "my_tool_with_storage",
         "last_param": param1
     })
-    
+
     # Use key-specific locking for concurrent access
     with global_storage.lock_key("counter"):
         current = global_storage.get("counter", 0)
         global_storage.set("counter", current + 1)
-    
+
     # Lock multiple keys at once
     with global_storage.lock_multiple("key1", "key2"):
         # Safely access key1 and key2 exclusively
@@ -1235,7 +1235,7 @@ def my_tool_with_storage(param1: str, global_storage: GlobalStorage) -> dict:
         val2 = global_storage.get("key2", 0)
         global_storage.set("key1", val1 + 1)
         global_storage.set("key2", val2 + 1)
-    
+
     return {"result": f"Processed {param1}, total users: {user_count + 1}"}
 
 def my_tool_without_storage(param1: str) -> dict:
@@ -1259,18 +1259,18 @@ def create_storage_hook() -> AfterModelHook:
         ctx = get_context()
         if ctx and hasattr(ctx, 'global_storage'):
             storage = ctx.global_storage
-            
+
             # Track hook executions
             hook_count = storage.get("hook_executions", 0)
             storage.set("hook_executions", hook_count + 1)
-            
+
             # Store recent tool calls for analysis
             if hook_input.parsed_response and hook_input.parsed_response.tool_calls:
                 recent_tools = storage.get("recent_tool_calls", [])
                 recent_tools.extend([call.tool_name for call in hook_input.parsed_response.tool_calls])
                 # Keep only last 10 tool calls
                 storage.set("recent_tool_calls", recent_tools[-10:])
-                
+
                 # Add context message with tool usage stats
                 modified_messages = hook_input.messages.copy()
                 total_tools = len(recent_tools)
@@ -1279,11 +1279,11 @@ def create_storage_hook() -> AfterModelHook:
                     "role": "system",
                     "content": f"[STATS] Hook #{hook_count + 1}: {total_tools} total tools used, {unique_tools} unique"
                 })
-                
+
                 return HookResult.with_modifications(messages=modified_messages)
-        
+
         return HookResult.no_changes()
-    
+
     return storage_hook
 ```
 
@@ -1321,15 +1321,15 @@ from datetime import datetime
 
 def session_analytics(action: str, data: dict = None, global_storage: GlobalStorage = None) -> dict:
     """Advanced session analytics using global storage."""
-    
+
     if action == "start_session":
         session_id = f"session_{datetime.now().timestamp()}"
-        
+
         # Use locking for session initialization
         with global_storage.lock_key("session_counter"):
             session_num = global_storage.get("session_counter", 0) + 1
             global_storage.set("session_counter", session_num)
-        
+
         global_storage.update({
             "current_session": session_id,
             "session_start": datetime.now().isoformat(),
@@ -1338,14 +1338,14 @@ def session_analytics(action: str, data: dict = None, global_storage: GlobalStor
             f"{session_id}_tools_used": {},
             f"{session_id}_errors": []
         })
-        
+
         return {"session_id": session_id, "session_number": session_num}
-    
+
     elif action == "log_event":
         session_id = global_storage.get("current_session")
         if not session_id:
             return {"error": "No active session"}
-        
+
         # Thread-safe event logging
         with global_storage.lock_key(f"{session_id}_events"):
             events = global_storage.get(f"{session_id}_events", [])
@@ -1355,22 +1355,22 @@ def session_analytics(action: str, data: dict = None, global_storage: GlobalStor
                 "details": data.get("details", {})
             })
             global_storage.set(f"{session_id}_events", events)
-        
+
         return {"result": f"Logged event for session {session_id}"}
-    
+
     elif action == "get_analytics":
         session_id = global_storage.get("current_session", "no-session")
-        
+
         # Safely read analytics data
         with global_storage.lock_multiple(
-            f"{session_id}_events", 
-            f"{session_id}_tools_used", 
+            f"{session_id}_events",
+            f"{session_id}_tools_used",
             f"{session_id}_errors"
         ):
             events = global_storage.get(f"{session_id}_events", [])
             tools = global_storage.get(f"{session_id}_tools_used", {})
             errors = global_storage.get(f"{session_id}_errors", [])
-        
+
         return {
             "session_id": session_id,
             "events_count": len(events),
@@ -1379,7 +1379,7 @@ def session_analytics(action: str, data: dict = None, global_storage: GlobalStor
             "errors_count": len(errors),
             "session_start": global_storage.get("session_start", "unknown")
         }
-    
+
     return {"error": f"Unknown action: {action}"}
 ```
 

@@ -1,12 +1,12 @@
 """LLM configuration class for handling model-related arguments."""
-
-from typing import Dict, Any, Optional
 import os
+from typing import Any
+from typing import Optional
 
 
 class LLMConfig:
     """Configuration class for LLM-related parameters."""
-    
+
     def __init__(
         self,
         model: Optional[str] = None,
@@ -20,11 +20,11 @@ class LLMConfig:
         timeout: Optional[float] = None,
         max_retries: int = 3,
         debug: bool = False,
-        **kwargs
+        **kwargs,
     ):
         """
         Initialize LLM configuration.
-        
+
         Args:
             model: Model name/identifier
             base_url: API base URL (e.g., https://api.openai.com/v1)
@@ -50,43 +50,43 @@ class LLMConfig:
         self.timeout = timeout
         self.max_retries = max_retries
         self.debug = debug
-        
+
         # Store additional parameters
         self.extra_params = kwargs
-    
+
     def _get_model_from_env(self) -> str:
         """Get model from environment variables."""
         # Try common environment variable names for model
         env_vars = [
             'LLM_MODEL',
-            'OPENAI_MODEL', 
-            'MODEL'
+            'OPENAI_MODEL',
+            'MODEL',
         ]
-        
+
         for var in env_vars:
             model = os.getenv(var)
             if model:
                 return model
-        
+
         # Default fallback
-        return "gpt-4"
-    
+        return 'gpt-4'
+
     def _get_base_url_from_env(self) -> Optional[str]:
         """Get base URL from environment variables."""
         # Try common environment variable names for base URL
         env_vars = [
             'LLM_BASE_URL',
             'OPENAI_BASE_URL',
-            'BASE_URL'
+            'BASE_URL',
         ]
-        
+
         for var in env_vars:
             url = os.getenv(var)
             if url:
                 return url
-        
+
         return None
-    
+
     def _get_api_key_from_env(self) -> Optional[str]:
         """Get API key from environment variables."""
         # Try common environment variable names
@@ -94,20 +94,20 @@ class LLMConfig:
             'LLM_API_KEY',
             'OPENAI_API_KEY',
             'API_KEY',
-            'ANTHROPIC_API_KEY'
+            'ANTHROPIC_API_KEY',
         ]
-        
+
         for var in env_vars:
             key = os.getenv(var)
             if key:
                 return key
-        
+
         return None
-    
-    def to_openai_params(self) -> Dict[str, Any]:
+
+    def to_openai_params(self) -> dict[str, Any]:
         """Convert to OpenAI client parameters."""
         params = {}
-        
+
         # Model parameters
         if self.model:
             params['model'] = self.model
@@ -121,16 +121,16 @@ class LLMConfig:
             params['frequency_penalty'] = self.frequency_penalty
         if self.presence_penalty is not None:
             params['presence_penalty'] = self.presence_penalty
-        
+
         # Add extra parameters
         params.update(self.extra_params)
-        
+
         return params
-    
-    def to_client_kwargs(self) -> Dict[str, Any]:
+
+    def to_client_kwargs(self) -> dict[str, Any]:
         """Convert to OpenAI client initialization kwargs."""
         kwargs = {}
-        
+
         if self.api_key:
             kwargs['api_key'] = self.api_key
         if self.base_url:
@@ -139,27 +139,27 @@ class LLMConfig:
             kwargs['timeout'] = self.timeout
         if self.max_retries:
             kwargs['max_retries'] = self.max_retries
-        
+
         return kwargs
-    
+
     def get_param(self, key: str, default: Any = None) -> Any:
         """Get a parameter value."""
         if hasattr(self, key):
             return getattr(self, key)
         return self.extra_params.get(key, default)
-    
+
     def set_param(self, key: str, value: Any) -> None:
         """Set a parameter value."""
         if hasattr(self, key):
             setattr(self, key, value)
         else:
             self.extra_params[key] = value
-    
+
     def update(self, **kwargs) -> None:
         """Update configuration with new parameters."""
         for key, value in kwargs.items():
             self.set_param(key, value)
-    
+
     def copy(self) -> 'LLMConfig':
         """Create a copy of this configuration."""
         return LLMConfig(
@@ -174,11 +174,11 @@ class LLMConfig:
             timeout=self.timeout,
             max_retries=self.max_retries,
             debug=self.debug,
-            **self.extra_params
+            **self.extra_params,
         )
-    
+
     def __repr__(self) -> str:
         return f"LLMConfig(model='{self.model}', base_url='{self.base_url}', temperature={self.temperature})"
-    
+
     def __str__(self) -> str:
         return self.__repr__()

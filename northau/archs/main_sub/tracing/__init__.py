@@ -1,6 +1,5 @@
 """Tracing modules for agent execution tracking."""
-
-from .tracer import Tracer
 from .trace_dumper import TraceDumper
+from .tracer import Tracer
 
 __all__ = ['Tracer', 'TraceDumper']

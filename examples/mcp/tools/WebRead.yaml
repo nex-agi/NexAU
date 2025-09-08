@@ -1,7 +1,7 @@
 name: WebRead
 description: >-
   Fetch and read content from a web URL.
-  
+
   Usage:
   - Fetch web pages and extract content
   - Can extract plain text from HTML
