@@ -20,7 +20,7 @@ description: >-
   5. After receiving new instructions - Immediately capture user requirements
      as todos
   6. When you start working on a task - Mark it as in_progress BEFORE beginning
-     work. Ideally you should only have one todo as in_progress at a time
+     work. You can have multiple tasks in progress simultaneously if needed
   7. After completing a task - Mark it as completed and add any new follow-up
      tasks discovered during implementation
 
@@ -202,15 +202,15 @@ description: >-
 
   1. **Task States**: Use these states to track progress:
      - pending: Task not yet started
-     - in_progress: Currently working on (limit to ONE task at a time)
+     - in_progress: Currently working on (can have multiple simultaneously)
      - completed: Task finished successfully
 
   2. **Task Management**:
      - Update task status in real-time as you work
      - Mark tasks complete IMMEDIATELY after finishing (don't batch
        completions)
-     - Only have ONE task in_progress at any time
-     - Complete current tasks before starting new ones
+     - You can have multiple tasks in progress simultaneously
+     - Complete tasks as you finish them
      - Remove tasks that are no longer relevant from the list entirely
 
   3. **Task Completion Requirements**:
@@ -232,6 +232,29 @@ description: >-
   When in doubt, use this tool. Being proactive with task management
   demonstrates attentiveness and ensures you complete all requirements
   successfully.
+
+  ## Todo Array Parameters Explanation
+
+  The `todos` array contains task objects with the following parameters:
+
+  - **id** (required): A unique identifier for each task. Can be any string value
+    like "1", "task_1", "feature_a", etc. Used to track and update specific tasks.
+
+  - **content** (required): The description of what needs to be done. Should be
+    clear, specific, and actionable. Examples: "Create user registration form",
+    "Fix login validation bug", "Add unit tests for UserService".
+
+  - **status** (optional, default: "pending"): The current state of the task.
+    Possible values:
+    - "pending": Task is created but not yet started
+    - "in_progress": Task is currently being worked on
+    - "completed": Task has been finished successfully
+
+  - **priority** (optional, default: "medium"): The importance level of the task.
+    Possible values:
+    - "high": Critical task that should be done first
+    - "medium": Standard priority task
+    - "low": Lower priority task that can be done later
 
   ## Example:
   <tool_use>
@@ -262,18 +285,18 @@ input_schema:
               - pending
               - in_progress
               - completed
+            default: pending
           priority:
             type: string
             enum:
               - high
               - medium
               - low
+            default: medium
           id:
             type: string
         required:
           - content
-          - status
-          - priority
           - id
         additionalProperties: false
       description: The updated todo list
