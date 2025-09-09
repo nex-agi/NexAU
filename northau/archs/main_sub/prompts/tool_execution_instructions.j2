@@ -5,11 +5,12 @@ When you use tools or sub-agents, include the XML blocks in your response and I 
 CRITICAL CONSTRAINT: You MUST output only ONE type of tool call XML at a time. DO NOT mix different types of tool calls in a single response.
 
 Valid tool call types (use only ONE per response):
-1. Single tool: <tool_use>
-2. Single sub_agent: <sub_agent>
-3. Parallel tools only: <use_parallel_tool_calls>
-4. Parallel tools and sub_agents: <use_parallel_sub_agents>
-5. Batch agent processing: <use_batch_agent>
+1. Single tool or sub_agent: <tool_use>
+2. Parallel tools or sub_agents or mixture of them: <use_parallel_tool_calls>
+3. Batch agent processing: <use_batch_agent>
+
+IMPORTANT: each response should only contain ONE type of tool call XML.
+If you generate </tool_use>, </use_parallel_tool_calls>, </use_batch_agent>, you should stop your response immediately.
 
 IMPORTANT: After outputting any tool call XML block, you MUST STOP and WAIT for the tool execution results before continuing your response. Do NOT continue generating text after tool calls until you receive the results.
 
@@ -22,38 +23,30 @@ For single tool execution:
 </tool_use>
 
 For single sub_agent delegation:
-<sub_agent>
-  <agent_name>agent_name</agent_name>
-  <message>task description</message>
-</sub_agent>
+<tool_use>
+  <tool_name>agent:{agent_name}</tool_name>
+  <parameter>
+    <message>task description</message>
+  </parameter>
+</tool_use>
 
-For parallel execution of multiple tools, use:
+For parallel execution of multiple tools or sub_agents or mixture of them, use:
 <use_parallel_tool_calls>
 <parallel_tool>
   <tool_name>tool1</tool_name>
   <parameter>...</parameter>
 </parallel_tool>
 <parallel_tool>
-  <tool_name>tool2</tool_name>
-  <parameter>...</parameter>
+  <tool_name>agent:{agent_name}</tool_name>
+  <parameter>
+    <message>task description</message>
+  </parameter>
 </parallel_tool>
 </use_parallel_tool_calls>
 
-For parallel execution of tools and sub-agents together, use:
-<use_parallel_sub_agents>
-<parallel_agent>
-  <agent_name>agent1</agent_name>
-  <message>task description</message>
-</parallel_agent>
-<parallel_tool>
-  <tool_name>tool1</tool_name>
-  <parameter>...</parameter>
-</parallel_tool>
-</use_parallel_sub_agents>
-
 For batch processing multiple data items with an agent, use:
 <use_batch_agent>
-  <agent_name>agent_name</agent_name>
+  <tool_name>agent:{agent_name}</tool_name>
   <input_data_source>
     <file_name>/absolute/path/to/file.jsonl</file_name>
     <format>jsonl</format>
@@ -75,4 +68,3 @@ EXECUTION FLOW REMINDER:
 3. Wait for the execution results to be provided to you
 4. Only then continue with analysis of the results and next steps
 5. Never generate additional content after XML blocks until results are returned
-6. NEVER mix different tool call types (e.g., don't use both <tool_use> and <sub_agent> in the same response)

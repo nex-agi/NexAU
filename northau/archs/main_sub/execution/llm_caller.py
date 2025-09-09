@@ -57,9 +57,7 @@ class LLMCaller:
         # Add XML stop sequences to prevent malformed XML
         xml_stop_sequences = [
             '</tool_use>',
-            '</sub_agent>',
             '</use_parallel_tool_calls>',
-            '</use_parallel_sub_agents>',
             '</use_batch_agent>',
         ]
 

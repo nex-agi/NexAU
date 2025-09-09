@@ -263,7 +263,7 @@ Your goal is to help users accomplish their tasks efficiently by:
         return """
 
 CRITICAL TOOL EXECUTION INSTRUCTIONS:
-IMPORTANT: After outputting any tool call XML block (e.g., <tool_use>, <sub_agent>, etc.), you MUST STOP and WAIT for the tool execution results before continuing your response. Do NOT continue generating text after tool calls until you receive the results.
+IMPORTANT: After outputting any tool call XML block (e.g., <tool_use> etc.), you MUST STOP and WAIT for the tool execution results before continuing your response. Do NOT continue generating text after tool calls until you receive the results.
 
 EXECUTION FLOW:
 1. When you output XML tool/agent blocks, STOP your response immediately
@@ -389,9 +389,11 @@ EXECUTION FLOW:
             docs.append(f"\\n### {name}")
             docs.append(f"Specialized agent for {name}-related tasks")
             docs.append('Usage:')
-            docs.append('<sub_agent>')
-            docs.append(f"  <agent_name>{name}</agent_name>")
-            docs.append('  <message>task description</message>')
-            docs.append('</sub_agent>')
+            docs.append('<tool_use>')
+            docs.append(f"  <tool_name>agent:{name}</tool_name>")
+            docs.append('  <parameter>')
+            docs.append('    <message>task description</message>')
+            docs.append('  </parameter>')
+            docs.append('</tool_use>')
 
         return '\\n'.join(docs)
