@@ -10,10 +10,9 @@ from mcp import ClientSession
 from mcp import StdioServerParameters
 from mcp.types import Tool as MCPToolType
 
-from ..tool import Tool
+from ..tool import Tool, cache_result
 
 logger = logging.getLogger(__name__)
-
 
 class HTTPMCPSession:
     """HTTP MCP session that handles MCP streamable HTTP with session management."""
@@ -323,6 +322,8 @@ class MCPServerConfig:
     url: Optional[str] = None
     headers: Optional[dict[str, str]] = None
     timeout: Optional[float] = 30
+    # result cache
+    use_cache: bool = False
 
 
 class MCPTool(Tool):
@@ -344,6 +345,9 @@ class MCPTool(Tool):
         else:
             # For stdio sessions, store the server config for recreation
             self._session_params = server_config
+            
+        if server_config and server_config.use_cache:
+            self._execute_sync = cache_result(self._execute_sync)
 
         # Convert MCP tool to Northau tool format
         super().__init__(
@@ -564,6 +568,7 @@ class MCPTool(Tool):
             k: v for k, v in kwargs.items(
             ) if k not in ('agent_state', 'global_storage')
         }
+        filtered_kwargs = dict(sorted(filtered_kwargs.items(), key=lambda x: x[0]))
         return self._execute_sync(**filtered_kwargs)
 
     async def _execute_async(self, **kwargs) -> dict[str, Any]:
@@ -964,7 +969,7 @@ class MCPManager:
         self.auto_connect = True
 
     def add_server(
-        self, name: str, server_type: str = 'stdio',
+        self, name: str, server_type: str = 'stdio', use_cache: bool = False,
         command: Optional[str] = None, args: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None, url: Optional[str] = None,
         headers: Optional[dict[str, str]] = None, timeout: Optional[float] = None,
@@ -979,6 +984,7 @@ class MCPManager:
             url=url,
             headers=headers,
             timeout=timeout,
+            use_cache=use_cache,
         )
         self.client.add_server(config)
 
@@ -1048,6 +1054,7 @@ async def initialize_mcp_tools(server_configs: list[dict[str, Any]]) -> list[Too
             url=config.get('url'),
             headers=config.get('headers'),
             timeout=config.get('timeout'),
+            use_cache=config.get('use_cache', False),
         )
 
     # Initialize servers and discover tools

@@ -115,11 +115,11 @@ def bash_tool(
 
         # Prepare output
         result = {
-            'status': 'success' if process.returncode == 0 else 'error',
-            'command': command,
-            'exit_code': process.returncode,
-            'duration_ms': duration_ms,
-            'working_directory': os.getcwd(),
+            "status": "success" if process.returncode == 0 else "error",
+            "command": command,
+            "exit_code": process.returncode,
+            "duration_ms": duration_ms,
+            "working_directory": workspace or os.getcwd()
         }
 
         # Add description if provided
