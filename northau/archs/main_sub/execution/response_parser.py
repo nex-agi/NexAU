@@ -122,30 +122,9 @@ class ResponseParser:
             if params_elem is not None:
                 for param in params_elem:
                     param_name = param.tag
-
-                    # Check if parameter has child elements (nested XML structure)
-                    if len(param) > 0:
-                        param_value = self.xml_parser.parse_nested_xml_to_dict(
-                            param,
-                        )
-                    else:
-                        # Handle both regular text and CDATA content
-                        if param.text is not None:
-                            param_value = param.text
-                            if param.tail:
-                                param_value = ''.join(param.itertext())
-                        else:
-                            param_value = ''.join(param.itertext()) or ''
-
-                        import html
-                        param_value = html.unescape(param_value)
-
-                        if param_value.strip().startswith(('{', '[')):
-                            param_value = param_value.strip()
-                        else:
-                            param_value = param_value.strip()
-
+                    param_value = param.text
                     parameters[param_name] = param_value
+
 
             return ToolCall(
                 tool_name=tool_name,
