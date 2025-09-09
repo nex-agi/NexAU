@@ -13,6 +13,9 @@ tools:
   - name: web_read
     yaml_path: ./tools/WebRead.yaml
     binding: northau.archs.tool.builtin.web_tool:web_read
+  - name: todo_write
+    yaml_path: ./tools/TodoWrite.tool.yaml
+    binding: northau.archs.tool.builtin.todo_write:todo_write
 sub_agents:
   - name: sub_deep_research_agent
     config_path: deep_research_agent.yaml

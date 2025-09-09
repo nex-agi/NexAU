@@ -287,20 +287,25 @@ class Executor:
                 iteration_hint = self._build_iteration_hint(
                     iteration + 1, self.max_iterations, remaining_iterations,
                 )
-                token_limit_hint = self._build_token_limit_hint(
-                    current_prompt_tokens, self.max_context_tokens, available_tokens, desired_max_tokens,
-                )
 
                 if tool_results:
                     messages.append({
                         'role': 'user',
-                        'content': f"Tool execution results:\\n{tool_results}\\n\\n{iteration_hint}\\n\\n{token_limit_hint}",
+                        'content': f"Tool execution results:\n{tool_results}\n\n{iteration_hint}",
                     })
                 else:
                     messages.append({
                         'role': 'user',
-                        'content': f"{iteration_hint}\\n\\n{token_limit_hint}",
+                        'content': f"{iteration_hint}",
                     })
+                current_prompt_tokens = self.token_counter.count_tokens(
+                    messages,
+                )
+
+                token_limit_hint = self._build_token_limit_hint(
+                    current_prompt_tokens, self.max_context_tokens, available_tokens, desired_max_tokens,
+                )
+                messages[-1]['content'] += f"\n\n{token_limit_hint}"
 
                 iteration += 1
 

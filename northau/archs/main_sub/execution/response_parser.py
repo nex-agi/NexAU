@@ -53,11 +53,6 @@ class ResponseParser:
             parallel_tool_calls_pattern, response, re.DOTALL,
         )
 
-        parallel_sub_agents_pattern = r'<use_parallel_sub_agents>(.*?)</use_parallel_sub_agents>'
-        parallel_sub_agents_match = re.search(
-            parallel_sub_agents_pattern, response, re.DOTALL,
-        )
-
         if parallel_tool_calls_match:
             logger.info('🔧⚡ Found parallel tool calls')
             is_parallel_tools = True
@@ -68,33 +63,13 @@ class ResponseParser:
             )
             for tool_xml in tool_matches:
                 tool_call = self._parse_tool_call(tool_xml)
-                if tool_call:
-                    tool_calls.append(tool_call)
-
-        elif parallel_sub_agents_match:
-            logger.info('🤖⚡ Found parallel sub-agents')
-            is_parallel_sub_agents = True
-            parallel_content = parallel_sub_agents_match.group(1)
-
-            # Extract tool calls within parallel sub-agents
-            tool_pattern = r'<parallel_tool>(.*?)</parallel_tool>'
-            tool_matches = re.findall(
-                tool_pattern, parallel_content, re.DOTALL,
-            )
-            for tool_xml in tool_matches:
-                tool_call = self._parse_tool_call(tool_xml)
-                if tool_call:
-                    tool_calls.append(tool_call)
-
-            # Extract sub-agent calls within parallel sub-agents
-            sub_agent_pattern = r'<parallel_agent>(.*?)</parallel_agent>'
-            sub_agent_matches = re.findall(
-                sub_agent_pattern, parallel_content, re.DOTALL,
-            )
-            for sub_agent_xml in sub_agent_matches:
-                sub_agent_call = self._parse_sub_agent_call(sub_agent_xml)
-                if sub_agent_call:
-                    sub_agent_calls.append(sub_agent_call)
+                if tool_call.tool_name.startswith('agent:'):
+                    sub_agent_call = self._parse_sub_agent_call(tool_xml)
+                    if sub_agent_call:
+                        sub_agent_calls.append(sub_agent_call)
+                else:
+                    if tool_call:
+                        tool_calls.append(tool_call)
 
         else:
             # Fall back to individual tool calls and sub-agent calls
@@ -105,18 +80,16 @@ class ResponseParser:
             tool_matches = re.findall(tool_pattern, response, re.DOTALL)
             for tool_xml in tool_matches:
                 tool_call = self._parse_tool_call(tool_xml)
-                if tool_call:
-                    tool_calls.append(tool_call)
-
-            # Find individual sub-agent calls
-            sub_agent_pattern = r'<sub_agent>(.*?)</sub_agent>'
-            sub_agent_matches = re.findall(
-                sub_agent_pattern, response, re.DOTALL,
-            )
-            for sub_agent_xml in sub_agent_matches:
-                sub_agent_call = self._parse_sub_agent_call(sub_agent_xml)
-                if sub_agent_call:
-                    sub_agent_calls.append(sub_agent_call)
+                logger.info(
+                    f"🔍 Parsed tool call: {tool_call} with tool_name: {tool_call.tool_name}",
+                )
+                if tool_call.tool_name.startswith('agent:'):
+                    sub_agent_call = self._parse_sub_agent_call(tool_xml)
+                    if sub_agent_call:
+                        sub_agent_calls.append(sub_agent_call)
+                else:
+                    if tool_call:
+                        tool_calls.append(tool_call)
 
         parsed_response = ParsedResponse(
             original_response=response,
@@ -214,20 +187,24 @@ class ResponseParser:
             root = self.xml_parser.parse_xml_content(xml_content)
 
             # Get agent name
-            agent_name_elem = root.find('agent_name')
+            agent_name_elem = root.find('tool_name')
             if agent_name_elem is None:
                 logger.warning('❌ Missing agent_name in sub-agent XML')
                 return None
 
             agent_name = (agent_name_elem.text or '').strip()
+            agent_name = agent_name.replace('agent:', '')
 
-            # Get message
-            message_elem = root.find('message')
-            if message_elem is None:
-                logger.warning('❌ Missing message in sub-agent XML')
-                return None
+            # Get parameters
+            parameters = {}
+            params_elem = root.find('parameter')
+            if params_elem is not None:
+                for param in params_elem:
+                    param_name = param.tag
+                    param_value = param.text
+                    parameters[param_name] = param_value
 
-            message = (message_elem.text or '').strip()
+            message = parameters.get('message', '')
 
             return SubAgentCall(
                 agent_name=agent_name,

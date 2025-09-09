@@ -123,7 +123,6 @@ def todo_write(todos: list[dict[str, str]], agent_state: Optional['AgentState'] 
                 'in_progress': in_progress_count,
                 'completed': completed_count,
             },
-            'todos': validated_todos,
         }
 
     except Exception as e:
