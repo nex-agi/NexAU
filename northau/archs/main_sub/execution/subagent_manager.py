@@ -13,7 +13,7 @@ from ..utils.xml_utils import XMLUtils
 logger = logging.getLogger(__name__)
 
 try:
-    from langfuse.client import Langfuse
+    from langfuse import Langfuse
     _langfuse_available = True
 except ImportError:
     _langfuse_available = False

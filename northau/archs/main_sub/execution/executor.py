@@ -173,7 +173,7 @@ class Executor:
                 available_tokens = self.max_context_tokens - current_prompt_tokens
 
                 # Get desired max_tokens from LLM config or use reasonable default
-                desired_max_tokens = 4096  # Default value
+                desired_max_tokens = 16384  # Default value
                 calculated_max_tokens = min(
                     desired_max_tokens, available_tokens,
                 )
