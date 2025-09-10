@@ -98,6 +98,7 @@ class Executor:
         self._running_executors = {}  # Maps executor_id to ThreadPoolExecutor
         self._executor_lock = threading.Lock()
         self._shutdown_event = threading.Event()
+        self.stop_signal = False
 
         # Message queue for dynamic message enqueueing during execution
         self.queued_messages = []
@@ -130,6 +131,9 @@ class Executor:
         Returns:
             Tuple of (agent_response, updated_messages_history)
         """
+        # Reset the stop signal
+        self.stop_signal = False
+        
         # Initialize tracing if requested
         if dump_trace_path:
             self.tracer.start_tracing(dump_trace_path)
@@ -150,6 +154,14 @@ class Executor:
                 logger.info(
                     f"🔄 Iteration {iteration + 1}/{self.max_iterations} for agent '{self.agent_name}'",
                 )
+                
+                logger.info(f"Agent name {self.agent_name} Current stop_signal: {self.stop_signal}")
+                if self.stop_signal:
+                    logger.info(
+                        f"❗️ Stop signal received, stopping execution",
+                    )
+                    return "Stop signal received.", messages
+                    
 
                 # Process any queued messages
                 if self.queued_messages:
@@ -632,6 +644,7 @@ class Executor:
     def cleanup(self) -> None:
         """Clean up executor resources."""
         logger.info(f"🧹 Cleaning up executor for agent '{self.agent_name}'...")
+        self.stop_signal = True
 
         # Save trace data if available before cleanup
         if self.tracer.is_tracing():

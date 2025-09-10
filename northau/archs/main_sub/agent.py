@@ -332,7 +332,7 @@ class Agent:
         """Enqueue a message to be added to the history."""
         self.executor.enqueue_message(message)
 
-    def _cleanup_agent(self) -> None:
+    def stop(self) -> None:
         """Clean up this agent and all its running sub-agents."""
         logger.info(
             f"🧹 Cleaning up agent '{self.config.name}' and its sub-agents...",
@@ -343,7 +343,7 @@ class Agent:
     def __del__(self):
         """Destructor to ensure cleanup when agent is garbage collected."""
         try:
-            self._cleanup_agent()
+            self.stop()
         except Exception:
             pass  # Avoid exceptions during garbage collection
 
