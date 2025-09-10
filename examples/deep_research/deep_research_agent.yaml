@@ -16,6 +16,9 @@ tools:
   - name: todo_write
     yaml_path: ./tools/TodoWrite.tool.yaml
     binding: northau.archs.tool.builtin.todo_write:todo_write
+  - name: file_write
+    yaml_path: ./tools/Write.tool.yaml
+    binding: northau.archs.tool.builtin.file_tools.file_write_tool:file_write_tool
 sub_agents:
   - name: sub_deep_research_agent
     config_path: deep_research_agent.yaml
