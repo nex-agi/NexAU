@@ -38,7 +38,7 @@ class Executor:
         max_context_tokens: int = 128000, max_running_subagents: int = 5,
         retry_attempts: int = 5, token_counter: TokenCounter | None = None,
         langfuse_client: Any = None, after_model_hooks: list[AfterModelHook] | None = None,
-        after_tool_hooks: list[AfterToolHook] | None = None,
+        after_tool_hooks: list[AfterToolHook] | None = None, serial_tool_name: list[str] | None = None,
         global_storage: Any = None, custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None,
     ):
         """Initialize executor.
@@ -47,6 +47,7 @@ class Executor:
             agent_name: Name of the agent
             agent_id: ID of the agent
             tool_registry: Dictionary of available tools
+            serial_tool_name: List of tool names that should be executed serially
             sub_agent_factories: Dictionary of sub-agent factories
             stop_tools: Set of tool names that trigger execution stop
             openai_client: OpenAI client instance
@@ -97,9 +98,13 @@ class Executor:
         self._running_executors = {}  # Maps executor_id to ThreadPoolExecutor
         self._executor_lock = threading.Lock()
         self._shutdown_event = threading.Event()
+        self.stop_signal = False
 
         # Message queue for dynamic message enqueueing during execution
         self.queued_messages = []
+
+        # Serial tool name
+        self.serial_tool_name = serial_tool_name
 
     def enqueue_message(self, message: dict[str, str]) -> None:
         """Enqueue a message to be processed during execution.
@@ -126,6 +131,9 @@ class Executor:
         Returns:
             Tuple of (agent_response, updated_messages_history)
         """
+        # Reset the stop signal
+        self.stop_signal = False
+        
         # Initialize tracing if requested
         if dump_trace_path:
             self.tracer.start_tracing(dump_trace_path)
@@ -146,6 +154,14 @@ class Executor:
                 logger.info(
                     f"🔄 Iteration {iteration + 1}/{self.max_iterations} for agent '{self.agent_name}'",
                 )
+                
+                logger.info(f"Agent name {self.agent_name} Current stop_signal: {self.stop_signal}")
+                if self.stop_signal:
+                    logger.info(
+                        f"❗️ Stop signal received, stopping execution",
+                    )
+                    return "Stop signal received.", messages
+                    
 
                 # Process any queued messages
                 if self.queued_messages:
@@ -173,7 +189,7 @@ class Executor:
                 available_tokens = self.max_context_tokens - current_prompt_tokens
 
                 # Get desired max_tokens from LLM config or use reasonable default
-                desired_max_tokens = 4096  # Default value
+                desired_max_tokens = 16384  # Default value
                 calculated_max_tokens = min(
                     desired_max_tokens, available_tokens,
                 )
@@ -460,6 +476,9 @@ class Executor:
                 )
                 tool_futures[future] = ('tool', tool_call)
 
+                if tool_call.tool_name in self.serial_tool_name:
+                    future.result()
+
             # Submit sub-agent execution tasks
             sub_agent_futures = {}
             for sub_agent_call in parsed_response.sub_agent_calls:
@@ -625,6 +644,7 @@ class Executor:
     def cleanup(self) -> None:
         """Clean up executor resources."""
         logger.info(f"🧹 Cleaning up executor for agent '{self.agent_name}'...")
+        self.stop_signal = True
 
         # Save trace data if available before cleanup
         if self.tracer.is_tracing():

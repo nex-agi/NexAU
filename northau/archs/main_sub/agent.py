@@ -72,6 +72,7 @@ class Agent:
 
         # Build tool registry for quick lookup
         self.tool_registry = {tool.name: tool for tool in self.config.tools}
+        self.serial_tool_name = [tool.name for tool in self.config.tools if tool.disable_parallel]
 
         # Initialize prompt builder
         self.prompt_builder = PromptBuilder()
@@ -158,6 +159,7 @@ class Agent:
             agent_name=self.config.name,
             agent_id=self.config.agent_id,
             tool_registry=self.tool_registry,
+            serial_tool_name=self.serial_tool_name,
             sub_agent_factories=self.config.sub_agent_factories,
             stop_tools=self.config.stop_tools,
             openai_client=self.openai_client,
@@ -330,7 +332,7 @@ class Agent:
         """Enqueue a message to be added to the history."""
         self.executor.enqueue_message(message)
 
-    def _cleanup_agent(self) -> None:
+    def stop(self) -> None:
         """Clean up this agent and all its running sub-agents."""
         logger.info(
             f"🧹 Cleaning up agent '{self.config.name}' and its sub-agents...",
@@ -341,7 +343,7 @@ class Agent:
     def __del__(self):
         """Destructor to ensure cleanup when agent is garbage collected."""
         try:
-            self._cleanup_agent()
+            self.stop()
         except Exception:
             pass  # Avoid exceptions during garbage collection
 

@@ -13,7 +13,7 @@ from ..utils.xml_utils import XMLUtils
 logger = logging.getLogger(__name__)
 
 try:
-    from langfuse.client import Langfuse
+    from langfuse import Langfuse
     _langfuse_available = True
 except ImportError:
     _langfuse_available = False
@@ -40,6 +40,7 @@ class SubAgentManager:
         self.main_tracer = main_tracer
         self.xml_parser = XMLParser()
         self._shutdown_event = threading.Event()
+        self.running_sub_agents = {}
 
     def call_sub_agent(self, sub_agent_name: str, message: str, context: Optional[dict[str, Any]] = None) -> str:
         """Call a sub-agent like a tool call.
@@ -95,6 +96,7 @@ class SubAgentManager:
                     sub_agent.executor.subagent_manager.global_storage = self.global_storage
         else:
             sub_agent = sub_agent_factory()
+        self.running_sub_agents[sub_agent.config.agent_id] = sub_agent
 
         try:
             # Generate sub-agent trace path if main agent has tracing enabled
@@ -164,6 +166,7 @@ class SubAgentManager:
             logger.info(
                 f"✅ Sub-agent '{sub_agent_name}' returned result to agent '{self.agent_name}'",
             )
+            self.running_sub_agents.pop(sub_agent.config.agent_id)
             return result
 
         except Exception as e:
@@ -237,6 +240,11 @@ class SubAgentManager:
     def shutdown(self):
         """Signal shutdown to prevent new sub-agent tasks."""
         self._shutdown_event.set()
+        for sub_agent_id, sub_agent in self.running_sub_agents.items():
+            try:
+                sub_agent.stop()
+            except Exception as e:
+                logger.error(f"❌ Error shutting down sub-agent {sub_agent_id}: {e}")
 
     def add_sub_agent(self, name: str, agent_factory: Callable[[], Any]):
         """Add a sub-agent factory for delegation.
