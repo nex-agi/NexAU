@@ -38,7 +38,7 @@ class Executor:
         max_context_tokens: int = 128000, max_running_subagents: int = 5,
         retry_attempts: int = 5, token_counter: TokenCounter | None = None,
         langfuse_client: Any = None, after_model_hooks: list[AfterModelHook] | None = None,
-        after_tool_hooks: list[AfterToolHook] | None = None,
+        after_tool_hooks: list[AfterToolHook] | None = None, serial_tool_name: list[str] | None = None,
         global_storage: Any = None, custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None,
     ):
         """Initialize executor.
@@ -47,6 +47,7 @@ class Executor:
             agent_name: Name of the agent
             agent_id: ID of the agent
             tool_registry: Dictionary of available tools
+            serial_tool_name: List of tool names that should be executed serially
             sub_agent_factories: Dictionary of sub-agent factories
             stop_tools: Set of tool names that trigger execution stop
             openai_client: OpenAI client instance
@@ -100,6 +101,9 @@ class Executor:
 
         # Message queue for dynamic message enqueueing during execution
         self.queued_messages = []
+
+        # Serial tool name
+        self.serial_tool_name = serial_tool_name
 
     def enqueue_message(self, message: dict[str, str]) -> None:
         """Enqueue a message to be processed during execution.
@@ -459,6 +463,9 @@ class Executor:
                     task_ctx.run, self._execute_tool_call_safe, tool_call, agent_state, tracer,
                 )
                 tool_futures[future] = ('tool', tool_call)
+
+                if tool_call.tool_name in self.serial_tool_name:
+                    future.result()
 
             # Submit sub-agent execution tasks
             sub_agent_futures = {}

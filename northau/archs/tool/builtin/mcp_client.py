@@ -324,6 +324,8 @@ class MCPServerConfig:
     timeout: Optional[float] = 30
     # result cache
     use_cache: bool = False
+    # disable parallel
+    disable_parallel: bool = False
 
 
 class MCPTool(Tool):
@@ -355,6 +357,7 @@ class MCPTool(Tool):
             description=mcp_tool.description or '',
             input_schema=mcp_tool.inputSchema,
             implementation=self._execute_sync,
+            disable_parallel=server_config.disable_parallel
         )
 
     async def _get_thread_local_session(self) -> Union[ClientSession, HTTPMCPSession]:
@@ -438,8 +441,15 @@ class MCPTool(Tool):
                         await self.process.stdin.drain()
 
                         # Read the initialize response
-                        response_line = await self.process.stdout.readline()
-                        response = json.loads(response_line.decode().strip())
+                        while True:
+                            try:
+                                response_line = await asyncio.wait_for(self.process.stdout.readline(), timeout=60)
+                                response = json.loads(response_line.decode().strip())
+                                break
+                            except asyncio.TimeoutError:
+                                raise RuntimeError('MCP initialization timeout')
+                            except json.JSONDecodeError:
+                                continue
 
                         if 'error' in response:
                             raise Exception(
@@ -711,8 +721,15 @@ class MCPClient:
                         await self.process.stdin.drain()
 
                         # Read the initialize response
-                        response_line = await self.process.stdout.readline()
-                        response = json.loads(response_line.decode().strip())
+                        while True:
+                            try:
+                                response_line = await asyncio.wait_for(self.process.stdout.readline(), timeout=60)
+                                response = json.loads(response_line.decode().strip())
+                                break
+                            except asyncio.TimeoutError:
+                                raise RuntimeError('MCP initialization timeout')
+                            except json.JSONDecodeError:
+                                continue
 
                         if 'error' in response:
                             raise Exception(
@@ -973,6 +990,7 @@ class MCPManager:
         command: Optional[str] = None, args: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None, url: Optional[str] = None,
         headers: Optional[dict[str, str]] = None, timeout: Optional[float] = None,
+        disable_parallel: bool = False,
     ) -> None:
         """Add an MCP server configuration."""
         config = MCPServerConfig(
@@ -985,6 +1003,7 @@ class MCPManager:
             headers=headers,
             timeout=timeout,
             use_cache=use_cache,
+            disable_parallel=disable_parallel,
         )
         self.client.add_server(config)
 
@@ -1055,6 +1074,7 @@ async def initialize_mcp_tools(server_configs: list[dict[str, Any]]) -> list[Too
             headers=config.get('headers'),
             timeout=config.get('timeout'),
             use_cache=config.get('use_cache', False),
+            disable_parallel=config.get('disable_parallel', False),
         )
 
     # Initialize servers and discover tools

@@ -59,6 +59,7 @@ class Tool:
         input_schema: dict,
         implementation: Callable,
         use_cache: bool = False,
+        disable_parallel: bool = False,
         template_override: Optional[str] = None,
         timeout: Optional[int] = None,
     ):
@@ -69,6 +70,7 @@ class Tool:
         self.implementation = implementation
         self.template_override = template_override
         self.timeout = timeout
+        self.disable_parallel = disable_parallel
         
         if use_cache:
             self.implementation = cache_result(self.implementation)
@@ -96,6 +98,7 @@ class Tool:
         description = tool_def.get('description', '')
         input_schema = tool_def.get('input_schema', {})
         use_cache = tool_def.get('use_cache', False)
+        disable_parallel = tool_def.get('disable_parallel', False)
         
         if 'global_storage' in input_schema:
             raise ValueError(
@@ -121,6 +124,7 @@ class Tool:
             input_schema=input_schema,
             implementation=binding,
             use_cache=use_cache,
+            disable_parallel=disable_parallel,
             template_override=template_override,
             **kwargs,
         )
