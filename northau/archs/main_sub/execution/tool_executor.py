@@ -14,7 +14,7 @@ from .hooks import ToolHookManager, AfterToolHookInput
 logger = logging.getLogger(__name__)
 
 try:
-    from langfuse.client import Langfuse
+    from langfuse import Langfuse
     LANGFUSE_AVAILABLE = True
 except ImportError:
     LANGFUSE_AVAILABLE = False
@@ -114,7 +114,11 @@ class ToolExecutor:
                 else:
                     # Wrap non-dict results to include the marker
                     result = {'result': result, '_is_stop_tool': True}
-
+                    
+            if result.get("status") == "error" and result.get('_is_stop_tool', False):
+                logger.error(f"❌ Finish Tool '{tool_name}' execution failed, will continue.")
+                result['_is_stop_tool'] = False
+            
             return result
 
         except Exception as e:

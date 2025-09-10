@@ -1,12 +1,52 @@
 """Tool implementation for the Northau framework."""
+
+import os
+import json
+import yaml
+import jsonschema
 import inspect
 import traceback
+import functools
+from typing import Callable, Optional
 from pathlib import Path
-from typing import Callable
-from typing import Optional
+from diskcache import Cache
 
-import jsonschema
-import yaml
+from northau.northau.archs.main_sub.agent_state import AgentState
+
+
+cache = Cache('./.tool_cache')
+def cache_result(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if hasattr(func, '__self__'):
+            self = func.__self__
+            method = f"{self.__class__.__name__}."
+        else:
+            method = ""
+        method += func.__name__
+        
+        args = [
+            arg for arg in args if not isinstance(arg, AgentState)
+        ]
+        
+        kwargs = {
+            k: v for k, v in kwargs.items() if not isinstance(v, AgentState)
+        }
+            
+        key = json.dumps({
+            'method': method,
+            'args': args,
+            'kwargs': kwargs
+        }, sort_keys=True, default=str, ensure_ascii=False)
+        
+        result = cache.get(key)
+        if result is None:
+            # 只有缓存中没有时才执行函数
+            result = func(*args, **kwargs)
+            cache.set(key, result)
+        
+        return result
+    return wrapper
 
 
 class Tool:
@@ -18,6 +58,8 @@ class Tool:
         description: str,
         input_schema: dict,
         implementation: Callable,
+        use_cache: bool = False,
+        disable_parallel: bool = False,
         template_override: Optional[str] = None,
         timeout: Optional[int] = None,
     ):
@@ -28,6 +70,10 @@ class Tool:
         self.implementation = implementation
         self.template_override = template_override
         self.timeout = timeout
+        self.disable_parallel = disable_parallel
+        
+        if use_cache:
+            self.implementation = cache_result(self.implementation)
 
         # Validate schema
         self._validate_schema()
@@ -51,7 +97,9 @@ class Tool:
         name = tool_def.get('name')
         description = tool_def.get('description', '')
         input_schema = tool_def.get('input_schema', {})
-
+        use_cache = tool_def.get('use_cache', False)
+        disable_parallel = tool_def.get('disable_parallel', False)
+        
         if 'global_storage' in input_schema:
             raise ValueError(
                 f"Tool definition of `{name}` contains 'global_storage' field in {yaml_path}, which will be injected by the framework, please remove it from the tool definition.",
@@ -75,6 +123,8 @@ class Tool:
             description=description,
             input_schema=input_schema,
             implementation=binding,
+            use_cache=use_cache,
+            disable_parallel=disable_parallel,
             template_override=template_override,
             **kwargs,
         )

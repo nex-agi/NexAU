@@ -69,8 +69,7 @@ class CleanupManager:
 
         for agent in agents_to_cleanup:
             try:
-                if hasattr(agent, '_cleanup_agent'):
-                    agent._cleanup_agent()
+                agent.stop()
             except Exception as e:
                 logger.error(
                     f"❌ Error cleaning up agent {getattr(agent, 'name', 'unknown')}: {e}",
