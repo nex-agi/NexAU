@@ -88,19 +88,13 @@ class Tracer:
         }
         self.add_entry(entry)
 
-    def add_llm_response(self, iteration: int, response) -> None:
+    def add_llm_response(self, iteration: int, response_content: str) -> None:
         """Add LLM response trace entry."""
         entry = {
             'type': 'llm_response',
             'iteration': iteration,
             'response': {
-                'content': response.choices[0].message.content,
-                'usage': response.usage.model_dump() if response.usage else None,
-                'model': response.model,
-                'finish_reason': response.choices[0].finish_reason,
-                'prompt_tokens': response.usage.prompt_tokens if response.usage else None,
-                'completion_tokens': response.usage.completion_tokens if response.usage else None,
-                'total_tokens': response.usage.total_tokens if response.usage else None,
+                'content': response_content,
             },
         }
         self.add_entry(entry)
