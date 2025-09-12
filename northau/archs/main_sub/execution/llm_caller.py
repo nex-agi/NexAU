@@ -1,8 +1,10 @@
 """Simple LLM API caller component."""
 import logging
 import time
-from typing import Any
+from typing import Any, Optional
 from typing import Callable
+from ..agent_state import AgentState
+from .stop_reason import AgentStopReason
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,7 @@ class LLMCaller:
         self.retry_attempts = retry_attempts
         self.custom_llm_generator = custom_llm_generator
 
-    def call_llm(self, messages: list[dict[str, str]], max_tokens: int, force_stop_reason: str | None = None) -> str:
+    def call_llm(self, messages: list[dict[str, str]], max_tokens: int, force_stop_reason: Optional[AgentStopReason] = None, agent_state: Optional[AgentState] = None) -> str:
         """Call LLM with the given messages and return response content.
 
         Args:
@@ -81,15 +83,13 @@ class LLMCaller:
         logger.info(f"🧠 Calling LLM with {max_tokens} max tokens...")
 
         # Call LLM with retry
-        response = self._call_with_retry(
-            force_stop_reason=force_stop_reason, **api_params,
+        response_content = self._call_with_retry(
+            force_stop_reason=force_stop_reason, agent_state=agent_state, **api_params,
         )
+        if response_content is None:
+            return None
 
-        if response and hasattr(response, 'choices') and response.choices:
-            assistant_response = response.choices[0].message.content
-        else:
-            raise RuntimeError('Invalid response from OpenAI API')
-
+        assistant_response = response_content
         # Add back XML closing tags if they were removed by stop sequences
         from ..utils.xml_utils import XMLUtils
         assistant_response = XMLUtils.restore_closing_tags(assistant_response)
@@ -102,11 +102,13 @@ class LLMCaller:
 
         return assistant_response
 
-    def _call_with_retry(self, force_stop_reason: str | None = None, **kwargs: Any) -> Any:
+    def _call_with_retry(self, force_stop_reason: Optional[AgentStopReason] = None, agent_state: Optional[AgentState] = None, **kwargs: Any) -> Any:
         """Call OpenAI client or custom LLM generator with exponential backoff retry."""
-        if force_stop_reason:
+        from .executor import AgentStopReason
+
+        if force_stop_reason != AgentStopReason.SUCCESS:
             logger.info(
-                f"🛑 LLM call forced to stop due to {force_stop_reason}",
+                f"🛑 LLM call forced to stop due to {force_stop_reason.name}",
             )
 
         backoff = 1
@@ -114,26 +116,23 @@ class LLMCaller:
             try:
                 # Use custom LLM generator if provided, otherwise use OpenAI client
                 if self.custom_llm_generator:
-                    response = self.custom_llm_generator(
-                        self.openai_client, kwargs,
+                    response_content = self.custom_llm_generator(
+                        self.openai_client, kwargs, force_stop_reason, agent_state
                     )
                 else:
-                    if force_stop_reason:
+                    if force_stop_reason != AgentStopReason.SUCCESS:
                         return None
                     response = self.openai_client.chat.completions.create(
                         **kwargs,
                     )
-
-                response_content = response.choices[0].message.content
+                    response_content = response.choices[0].message.content
                 stop = kwargs.get('stop', [])
                 if stop:
                     for s in stop:
                         response_content = response_content.split(s)[0]
-                        response_content = response_content.strip()
-                        response.choices[0].message.content = response_content
 
                 if response_content:
-                    return response
+                    return response_content
                 else:
                     raise Exception('No response content')
 
