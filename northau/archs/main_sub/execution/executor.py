@@ -25,6 +25,7 @@ from .hooks import HookManager, AfterModelHook, ToolHookManager, AfterToolHook, 
 from ..tracing.tracer import Tracer
 from ..tracing.trace_dumper import TraceDumper
 from ..utils.token_counter import TokenCounter
+from .stop_reason import AgentStopReason
 
 logger = logging.getLogger(__name__)
 
@@ -176,14 +177,14 @@ class Executor:
                     messages,
                 )
 
-                force_stop_reason = None
+                force_stop_reason = AgentStopReason.SUCCESS
                 # Check if prompt exceeds max context tokens - force stop if so
                 if current_prompt_tokens > self.max_context_tokens:
                     logger.error(
                         f"❌ Prompt tokens ({current_prompt_tokens}) exceed max_context_tokens ({self.max_context_tokens}). Stopping execution.",
                     )
                     final_response += f"\\n\\n[Error: Prompt too long ({current_prompt_tokens} tokens) exceeds maximum context ({self.max_context_tokens} tokens). Execution stopped.]"
-                    force_stop_reason = 'Prompt too long'
+                    force_stop_reason = AgentStopReason.CONTEXT_TOKEN_LIMIT
 
                 # Calculate max_tokens dynamically based on available budget
                 available_tokens = self.max_context_tokens - current_prompt_tokens
@@ -200,7 +201,14 @@ class Executor:
                         f"❌ Insufficient tokens for response ({calculated_max_tokens}). Stopping execution.",
                     )
                     final_response += f"\\n\\n[Error: Insufficient tokens for response ({calculated_max_tokens} tokens). Context too full.]"
-                    force_stop_reason = 'Insufficient tokens'
+                    force_stop_reason = AgentStopReason.CONTEXT_TOKEN_LIMIT
+                
+                if iteration == self.max_iterations - 1:
+                    logger.error(
+                        f"❌ Maximum iteration limit reached. Stopping execution.",
+                    )
+                    final_response += f"\\n\\n[Error: Maximum iteration limit reached.]"
+                    force_stop_reason = AgentStopReason.MAX_ITERATIONS_REACHED
 
                 logger.info(
                     f"🔢 Token usage: prompt={current_prompt_tokens}, max_tokens={calculated_max_tokens}, available={available_tokens}",
@@ -220,24 +228,15 @@ class Executor:
                     f"🧠 Calling LLM for agent '{self.agent_name}' with {calculated_max_tokens} max tokens...",
                 )
                 assistant_response = self.llm_caller.call_llm(
-                    messages, calculated_max_tokens, force_stop_reason,
+                    messages, calculated_max_tokens, force_stop_reason, agent_state
                 )
+                if assistant_response is None:
+                    break
 
                 # Log LLM response to trace if enabled
                 if dump_trace_path:
                     # Create a mock response object for tracing compatibility
-                    mock_response = type(
-                        'MockResponse', (), {
-                            'choices': [
-                                type(
-                                    'Choice', (), {
-                                        'message': type('Message', (), {'content': assistant_response})(),
-                                    },
-                                )(),
-                            ],
-                        },
-                    )()
-                    self.tracer.add_llm_response(iteration + 1, mock_response)
+                    self.tracer.add_llm_response(iteration + 1, assistant_response)
 
                 logger.info(
                     f"💬 LLM Response for agent '{self.agent_name}': {assistant_response}",
@@ -283,15 +282,20 @@ class Executor:
                         logger.info(
                             '🛑 Stop tool detected, returning stop tool result as final response',
                         )
+                        force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
                         if isinstance(stop_tool_result, str):
-                            return stop_tool_result, messages
+                            final_response = stop_tool_result
+                            break
                         else:
                             import json
-                            return json.dumps(stop_tool_result, indent=4, ensure_ascii=False), messages
+                            final_response = json.dumps(stop_tool_result, indent=4, ensure_ascii=False)
+                            break
                     else:
                         logger.info('🛑 No more tool calls, stop.')
+                        force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
                         # Fallback to the processed response if no specific result
-                        return processed_response, messages
+                        final_response = processed_response
+                        break
 
                 # Extract just the tool results from processed_response
                 tool_results = processed_response.replace(
@@ -327,8 +331,15 @@ class Executor:
 
             # Add note if max iterations reached
             if iteration >= self.max_iterations:
+                force_stop_reason = AgentStopReason.MAX_ITERATIONS_REACHED
                 final_response += '\\n\\n[Note: Maximum iteration limit reached]'
 
+            logger.info(
+                f"🔄 Force stop reason: {force_stop_reason.name}",
+            )
+            logger.info(
+                f"🔄 Final response for agent '{self.agent_name}': {final_response}",
+            )
             # Dump trace if enabled
             if dump_trace_path:
                 trace_data = self.tracer.get_trace_data()
@@ -341,6 +352,17 @@ class Executor:
 
         except Exception as e:
             # Add error to trace if enabled
+            force_stop_reason = AgentStopReason.ERROR_OCCURRED
+            final_response = f"Error: {str(e)}"
+            logger.error(
+                f"🔄 Force stop reason: {force_stop_reason.name}",
+            )
+            logger.error(
+                f"🔄 Final response for agent '{self.agent_name}': {final_response}",
+            )
+            logger.error(
+                f"❌ Error in agent execution: {e}",
+            )
             if dump_trace_path:
                 self.tracer.add_error(e)
                 trace_data = self.tracer.get_trace_data()
@@ -525,13 +547,17 @@ class Executor:
                                         k: v for k, v in parsed_result.items() if k != '_is_stop_tool'
                                     }
                                     if 'result' in actual_result and len(actual_result) == 1:
-                                        stop_tool_result = str(
+                                        stop_tool_result = json.dumps(
                                             actual_result['result'],
+                                            ensure_ascii=False,
+                                            indent=4,
                                         )
                                     else:
-                                        stop_tool_result = str(
+                                        stop_tool_result = json.dumps(
                                             actual_result,
-                                        ) if actual_result else str(parsed_result)
+                                            ensure_ascii=False,
+                                            indent=4,
+                                        ) if actual_result else json.dumps(parsed_result, ensure_ascii=False, indent=4)
                                     logger.info(
                                         f"🛑 Stop tool '{tool_name}' result detected, will terminate after processing",
                                     )
