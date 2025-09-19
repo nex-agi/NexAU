@@ -81,8 +81,13 @@ class Tracer:
                 'messages': [
                     {
                         'role': msg['role'],
-                        'content': msg['content'][:1000] + '...' if len(msg['content']) > 1000 else msg['content'],
-                    } for msg in api_params.get('messages', [])
+                        'content': (
+                            msg['content'][:1000] + '...'
+                            if len(msg['content']) > 1000
+                            else msg['content']
+                        ),
+                    }
+                    for msg in api_params.get('messages', [])
                 ],
             },
         }
@@ -162,7 +167,9 @@ class Tracer:
         with self._trace_lock:
             return self._dump_trace_path
 
-    def generate_sub_agent_trace_path(self, sub_agent_name: str, main_trace_path: str) -> Optional[str]:
+    def generate_sub_agent_trace_path(
+        self, sub_agent_name: str, main_trace_path: str,
+    ) -> Optional[str]:
         """Generate trace path for sub-agent based on main agent's trace path."""
         try:
             # Get unique sub-agent ID

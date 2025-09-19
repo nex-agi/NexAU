@@ -23,6 +23,7 @@ dotenv.load_dotenv()
 
 class ConfigError(Exception):
     """Exception raised for configuration errors."""
+
     pass
 
 
@@ -41,7 +42,9 @@ class AgentBuilder:
         self.agent_params: dict[str, Any] = {}
         self.overrides: Optional[dict[str, Any]] = None
 
-    def _import_and_instantiate(self, hook_config: Union[str, dict[str, Any]]) -> Callable:
+    def _import_and_instantiate(
+        self, hook_config: Union[str, dict[str, Any]],
+    ) -> Callable:
         """Import and instantiate a hook from configuration.
 
         Args:
@@ -88,14 +91,17 @@ class AgentBuilder:
         """
         self.agent_params['name'] = self.config.get('name', 'configured_agent')
         self.agent_params['max_context_tokens'] = self.config.get(
-            'max_context_tokens', 128000,
+            'max_context_tokens',
+            128000,
         )
         self.agent_params['max_running_subagents'] = self.config.get(
-            'max_running_subagents', 5,
+            'max_running_subagents',
+            5,
         )
         self.agent_params['system_prompt'] = self.config.get('system_prompt')
         self.agent_params['system_prompt_type'] = self.config.get(
-            'system_prompt_type', 'string',
+            'system_prompt_type',
+            'string',
         )
         self.agent_params['initial_context'] = self.config.get('context', {})
 
@@ -110,39 +116,45 @@ class AgentBuilder:
             Self for method chaining
         """
         mcp_servers = self.config.get('mcp_servers', [])
-        
+
         if not isinstance(mcp_servers, list):
             raise ConfigError("'mcp_servers' must be a list")
-        
+
         # Validate each MCP server configuration
         for i, server_config in enumerate(mcp_servers):
             if not isinstance(server_config, dict):
-                raise ConfigError(f"MCP server configuration {i} must be a dictionary")
-            
+                raise ConfigError(
+                    f"MCP server configuration {i} must be a dictionary",
+                )
+
             # Validate required fields
             if 'name' not in server_config:
-                raise ConfigError(f"MCP server configuration {i} missing 'name' field")
-            
+                raise ConfigError(
+                    f"MCP server configuration {i} missing 'name' field",
+                )
+
             if 'type' not in server_config:
-                raise ConfigError(f"MCP server configuration {i} missing 'type' field")
-            
+                raise ConfigError(
+                    f"MCP server configuration {i} missing 'type' field",
+                )
+
             server_type = server_config['type']
             if server_type not in ['stdio', 'http', 'sse']:
                 raise ConfigError(
                     f"MCP server configuration {i} has invalid type '{server_type}'. "
-                    "Must be one of: stdio, http, sse"
+                    'Must be one of: stdio, http, sse',
                 )
-            
+
             # Validate type-specific requirements
             if server_type == 'stdio':
                 if 'command' not in server_config:
                     raise ConfigError(
-                        f"MCP server configuration {i} of type 'stdio' missing 'command' field"
+                        f"MCP server configuration {i} of type 'stdio' missing 'command' field",
                     )
             elif server_type in ['http', 'sse']:
                 if 'url' not in server_config:
                     raise ConfigError(
-                        f"MCP server configuration {i} of type '{server_type}' missing 'url' field"
+                        f"MCP server configuration {i} of type '{server_type}' missing 'url' field",
                     )
 
         self.agent_params['mcp_servers'] = mcp_servers
@@ -223,7 +235,9 @@ class AgentBuilder:
         for sub_config in sub_agent_configs:
             try:
                 sub_agent = load_sub_agent_from_config(
-                    sub_config, self.base_path, self.overrides,
+                    sub_config,
+                    self.base_path,
+                    self.overrides,
                 )
                 sub_agents.append(sub_agent)
             except Exception as e:
@@ -273,6 +287,7 @@ class AgentBuilder:
                     # Create a wrapper function with the parameters
                     def configured_llm_generator(openai_client, kwargs):
                         return llm_generator_func(openai_client, kwargs, **params)
+
                     custom_llm_generator = configured_llm_generator
                 else:
                     custom_llm_generator = llm_generator_func
@@ -307,6 +322,7 @@ class AgentBuilder:
                     # Create a wrapper function with the parameters
                     def configured_token_counter(messages):
                         return token_counter_func(messages, **params)
+
                     token_counter = configured_token_counter
                 else:
                     token_counter = token_counter_func
@@ -327,11 +343,16 @@ class AgentBuilder:
         """
         system_prompt = self.agent_params.get('system_prompt')
         system_prompt_type = self.agent_params.get(
-            'system_prompt_type', 'string',
+            'system_prompt_type',
+            'string',
         )
 
         # Convert system_prompt from relative path to absolute path
-        if system_prompt and system_prompt_type in ['file', 'jinja'] and not Path(system_prompt).is_absolute():
+        if (
+            system_prompt
+            and system_prompt_type in ['file', 'jinja']
+            and not Path(system_prompt).is_absolute()
+        ):
             system_prompt = self.base_path / system_prompt
             if not Path(system_prompt).exists():
                 raise ConfigError(
@@ -374,7 +395,9 @@ class AgentBuilder:
         )
 
 
-def apply_agent_name_overrides(config: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+def apply_agent_name_overrides(
+    config: dict[str, Any], overrides: dict[str, Any],
+) -> dict[str, Any]:
     """
     Apply overrides based on agent names.
 
@@ -447,14 +470,14 @@ def load_agent_config(
 
         agent = (
             builder.set_overrides(overrides)
-                   .build_core_properties()
-                   .build_llm_config()
-                   .build_mcp_servers()
-                   .build_hooks()
-                   .build_tools()
-                   .build_sub_agents()
-                   .build_system_prompt_path()
-                   .get_agent(global_storage)
+            .build_core_properties()
+            .build_llm_config()
+            .build_mcp_servers()
+            .build_hooks()
+            .build_tools()
+            .build_sub_agents()
+            .build_system_prompt_path()
+            .get_agent(global_storage)
         )
 
         # Apply template context if provided and using Jinja templates
@@ -502,6 +525,7 @@ def load_tool_from_config(tool_config: dict[str, Any], base_path: Path) -> Tool:
     if binding:
         binding_func = import_from_string(binding)
     else:
+
         def binding_func(x):
             return x
 
@@ -541,7 +565,9 @@ def load_sub_agent_from_config(
 
     # Create factory function that loads agent when called
     def agent_factory(global_storage: Optional[GlobalStorage] = None):
-        return load_agent_config(str(config_path), overrides=overrides, global_storage=global_storage)
+        return load_agent_config(
+            str(config_path), overrides=overrides, global_storage=global_storage,
+        )
 
     return (name, agent_factory)
 
@@ -639,12 +665,18 @@ def validate_config_schema(config: dict[str, Any]) -> bool:
 
     for i, server_config in enumerate(mcp_servers):
         if not isinstance(server_config, dict):
-            raise ConfigError(f"MCP server configuration {i} must be a dictionary")
+            raise ConfigError(
+                f"MCP server configuration {i} must be a dictionary",
+            )
 
         if 'name' not in server_config:
-            raise ConfigError(f"MCP server configuration {i} missing 'name' field")
+            raise ConfigError(
+                f"MCP server configuration {i} missing 'name' field",
+            )
 
         if 'type' not in server_config:
-            raise ConfigError(f"MCP server configuration {i} missing 'type' field")
+            raise ConfigError(
+                f"MCP server configuration {i} missing 'type' field",
+            )
 
     return True

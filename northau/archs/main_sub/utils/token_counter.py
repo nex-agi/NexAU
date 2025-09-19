@@ -6,6 +6,7 @@ logger = logging.getLogger(__name__)
 
 try:
     import tiktoken
+
     TIKTOKEN_AVAILABLE = True
 except ImportError:
     TIKTOKEN_AVAILABLE = False
@@ -49,7 +50,8 @@ class TokenCounter:
                     # Add tokens for role and content
                     total_tokens += len(
                         encoding.encode(
-                            message.get('content', ''), disallowed_special=(),
+                            message.get('content', ''),
+                            disallowed_special=(),
                         ),
                     )
                 return total_tokens
@@ -63,6 +65,7 @@ class TokenCounter:
 
     def _create_fallback_counter(self) -> Callable[[list[dict[str, str]]], int]:
         """Create fallback counter using character approximation."""
+
         def fallback_message_counter(messages: list[dict[str, str]]) -> int:
             """Fallback token counter using character approximation."""
             total_tokens = 0

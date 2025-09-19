@@ -1,20 +1,22 @@
 """Tool implementation for the Northau framework."""
-
-import os
-import json
-import yaml
-import jsonschema
-import inspect
-import traceback
 import functools
-from typing import Callable, Optional
+import inspect
+import json
+import traceback
 from pathlib import Path
+from typing import Callable
+from typing import Optional
+
+import jsonschema
+import yaml
 from diskcache import Cache
 
 from northau.archs.main_sub.agent_state import AgentState
 
 
 cache = Cache('./.tool_cache')
+
+
 def cache_result(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -22,30 +24,31 @@ def cache_result(func):
             self = func.__self__
             method = f"{self.__class__.__name__}."
         else:
-            method = ""
+            method = ''
         method += func.__name__
-        
-        args = [
-            arg for arg in args if not isinstance(arg, AgentState)
-        ]
-        
+
+        args = [arg for arg in args if not isinstance(arg, AgentState)]
+
         kwargs = {
-            k: v for k, v in kwargs.items() if not isinstance(v, AgentState)
+            k: v for k, v in kwargs.items(
+            ) if not isinstance(v, AgentState)
         }
-            
-        key = json.dumps({
-            'method': method,
-            'args': args,
-            'kwargs': kwargs
-        }, sort_keys=True, default=str, ensure_ascii=False)
-        
+
+        key = json.dumps(
+            {'method': method, 'args': args, 'kwargs': kwargs},
+            sort_keys=True,
+            default=str,
+            ensure_ascii=False,
+        )
+
         result = cache.get(key)
         if result is None:
             # 只有缓存中没有时才执行函数
             result = func(*args, **kwargs)
             cache.set(key, result)
-        
+
         return result
+
     return wrapper
 
 
@@ -71,7 +74,7 @@ class Tool:
         self.template_override = template_override
         self.timeout = timeout
         self.disable_parallel = disable_parallel
-        
+
         if use_cache:
             self.implementation = cache_result(self.implementation)
 
@@ -99,7 +102,7 @@ class Tool:
         input_schema = tool_def.get('input_schema', {})
         use_cache = tool_def.get('use_cache', False)
         disable_parallel = tool_def.get('disable_parallel', False)
-        
+
         if 'global_storage' in input_schema:
             raise ValueError(
                 f"Tool definition of `{name}` contains 'global_storage' field in {yaml_path}, which will be injected by the framework, please remove it from the tool definition.",
@@ -147,8 +150,9 @@ class Tool:
 
         # Validate parameters (excluding agent_state and global_storage for schema validation)
         validation_params = {
-            k: v for k, v in filtered_params.items(
-            ) if k not in ('agent_state', 'global_storage')
+            k: v
+            for k, v in filtered_params.items()
+            if k not in ('agent_state', 'global_storage')
         }
         if not self.validate_params(validation_params):
             raise ValueError(
@@ -224,7 +228,9 @@ class Tool:
         }
 
     def __repr__(self) -> str:
-        return f"Tool(name='{self.name}', implementation={self.implementation.__name__})"
+        return (
+            f"Tool(name='{self.name}', implementation={self.implementation.__name__})"
+        )
 
     def __str__(self) -> str:
         return f"Tool '{self.name}': {self.description[:50]}{'...' if len(self.description) > 50 else ''}"

@@ -20,7 +20,9 @@ class AgentContext:
     def __enter__(self):
         """Enter the context and set the thread-local context."""
         global _current_context
-        self._original_context = _current_context.context.copy() if _current_context else {}
+        self._original_context = (
+            _current_context.context.copy() if _current_context else {}
+        )
 
         # Set current context
         _current_context = self
@@ -82,7 +84,9 @@ class AgentContext:
         """Get all context variables for prompt rendering."""
         return self.context.copy()
 
-    def merge_context_variables(self, existing_context: dict[str, Any]) -> dict[str, Any]:
+    def merge_context_variables(
+        self, existing_context: dict[str, Any],
+    ) -> dict[str, Any]:
         """Merge context variables with existing context, giving priority to context vars."""
         merged = existing_context.copy()
         merged.update(self.get_context_variables())
@@ -221,7 +225,8 @@ class GlobalStorage:
     def lock_multiple(self, *keys: str):
         """Context manager to lock multiple keys for exclusive access."""
         locks = [
-            self._get_lock(key) for key in sorted(
+            self._get_lock(key)
+            for key in sorted(
                 keys,
             )
         ]  # Sort to prevent deadlock

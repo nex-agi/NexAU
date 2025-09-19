@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from langfuse import Langfuse
+
     LANGFUSE_AVAILABLE = True
 except ImportError:
     LANGFUSE_AVAILABLE = False
@@ -24,7 +25,13 @@ except ImportError:
 class ToolExecutor:
     """Handles tool execution with XML parsing and type conversion."""
 
-    def __init__(self, tool_registry: dict[str, Any], stop_tools: set[str], langfuse_client=None, tool_hook_manager: Optional[ToolHookManager] = None):
+    def __init__(
+        self,
+        tool_registry: dict[str, Any],
+        stop_tools: set[str],
+        langfuse_client=None,
+        tool_hook_manager: Optional[ToolHookManager] = None,
+    ):
         """Initialize tool executor.
 
         Args:
@@ -39,7 +46,9 @@ class ToolExecutor:
         self.xml_parser = XMLParser()
         self.tool_hook_manager = tool_hook_manager
 
-    def execute_tool(self, agent_state: 'AgentState', tool_name: str, parameters: dict[str, Any]) -> dict[str, Any]:
+    def execute_tool(
+        self, agent_state: 'AgentState', tool_name: str, parameters: dict[str, Any],
+    ) -> dict[str, Any]:
         """Execute a tool with given parameters.
 
         Args:
@@ -58,7 +67,9 @@ class ToolExecutor:
         )
 
         if tool_name not in self.tool_registry:
-            error_msg = f"Tool '{tool_name}' for agent '{agent_state.agent_id}' not found"
+            error_msg = (
+                f"Tool '{tool_name}' for agent '{agent_state.agent_id}' not found"
+            )
             logger.error(f"❌ {error_msg}")
             raise ValueError(error_msg)
 
@@ -114,11 +125,13 @@ class ToolExecutor:
                 else:
                     # Wrap non-dict results to include the marker
                     result = {'result': result, '_is_stop_tool': True}
-                    
-            if result.get("status") == "error" and result.get('_is_stop_tool', False):
-                logger.error(f"❌ Finish Tool '{tool_name}' execution failed, will continue.")
+
+            if result.get('status') == 'error' and result.get('_is_stop_tool', False):
+                logger.error(
+                    f"❌ Finish Tool '{tool_name}' execution failed, will continue.",
+                )
                 result['_is_stop_tool'] = False
-            
+
             return result
 
         except Exception as e:

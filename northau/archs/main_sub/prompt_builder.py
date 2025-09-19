@@ -68,7 +68,8 @@ class PromptBuilder:
         try:
             # Get base system prompt
             base_prompt = self._get_base_system_prompt(
-                agent_config, runtime_context,
+                agent_config,
+                runtime_context,
             )
 
             # Build capabilities documentation
@@ -100,7 +101,8 @@ class PromptBuilder:
         try:
             # Build context for template rendering
             context = self._build_template_context(
-                agent_config, runtime_context,
+                agent_config,
+                runtime_context,
             )
 
             # Process the system prompt
@@ -173,7 +175,9 @@ Your goal is to help users accomplish their tasks efficiently by:
             for tool in tools:
                 tool_info = {
                     'name': tool.name,
-                    'description': getattr(tool, 'description', 'No description available'),
+                    'description': getattr(
+                        tool, 'description', 'No description available',
+                    ),
                     'template_override': getattr(tool, 'template_override', None),
                     'parameters': self._extract_tool_parameters(tool),
                 }
@@ -205,7 +209,7 @@ Your goal is to help users accomplish their tasks efficiently by:
             sub_agents_context = [
                 {
                     'name': name,
-                    'description': f'Specialized agent for {name}-related tasks',
+                    'description': f"Specialized agent for {name}-related tasks",
                 }
                 for name in sub_agent_factories.keys()
             ]
@@ -236,13 +240,15 @@ Your goal is to help users accomplish their tasks efficiently by:
 
             python_type = _get_python_type_from_json_schema(param_type)
 
-            parameters.append({
-                'name': param_name,
-                'description': param_desc,
-                'type': python_type,
-                'required': is_required,
-                'default': default_value,
-            })
+            parameters.append(
+                {
+                    'name': param_name,
+                    'description': param_desc,
+                    'type': python_type,
+                    'required': is_required,
+                    'default': default_value,
+                },
+            )
 
         return parameters
 
@@ -377,7 +383,9 @@ EXECUTION FLOW:
 
         return '\\n'.join(docs)
 
-    def _build_subagents_documentation_fallback(self, sub_agent_factories: dict[str, Any]) -> str:
+    def _build_subagents_documentation_fallback(
+        self, sub_agent_factories: dict[str, Any],
+    ) -> str:
         """Fallback method for building sub-agents documentation."""
         if not sub_agent_factories:
             return ''

@@ -17,12 +17,14 @@ import yaml
 
 LLM_FRIENDLY_MAX_DEPTH = os.getenv('LLM_FRIENDLY_MAX_DEPTH', 5)
 LLM_FRIENDLY_MAX_SIZE_IN_BYTES = os.getenv(
-    'LLM_FRIENDLY_MAX_SIZE_IN_BYTES', 5000,
+    'LLM_FRIENDLY_MAX_SIZE_IN_BYTES',
+    5000,
 )
 LLM_FRIENDLY_MAX_ARRAY_LENGTH = os.getenv('LLM_FRIENDLY_MAX_ARRAY_LENGTH', 10)
 LLM_FRIENDLY_MAX_DICT_KEYS = os.getenv('LLM_FRIENDLY_MAX_DICT_KEYS', 10)
 LLM_FRIENDLY_MAX_STRING_LENGTH = os.getenv(
-    'LLM_FRIENDLY_MAX_STRING_LENGTH', 200,
+    'LLM_FRIENDLY_MAX_STRING_LENGTH',
+    200,
 )
 LLM_FRIENDLY_MAX_SAMPLE_ROWS = os.getenv('LLM_FRIENDLY_MAX_SAMPLE_ROWS', 10)
 
@@ -43,7 +45,8 @@ class DataFrameFormatter:
 
     @staticmethod
     def format_dataframe_with_types(
-        df: pd.DataFrame, sample_rows: int = 5,
+        df: pd.DataFrame,
+        sample_rows: int = 5,
     ) -> dict[str, Any]:
         """
         Format DataFrame with detailed type information for each column.
@@ -223,7 +226,8 @@ class FileFormatHandler:
             file = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
             # Read only the first LLM_FRIENDLY_MAX_SIZE_IN_BYTES * 2 bytes
             content = file.read(LLM_FRIENDLY_MAX_SIZE_IN_BYTES * 2).decode(
-                'utf-8', errors='replace',
+                'utf-8',
+                errors='replace',
             )
             file.close()
             f.close()
@@ -243,7 +247,9 @@ class FileFormatHandler:
             return int(
                 subprocess.check_output(
                     ['wc', '-l', path],
-                ).decode('utf-8').split()[0],
+                )
+                .decode('utf-8')
+                .split()[0],
             )
         except (subprocess.CalledProcessError, FileNotFoundError):
             # Fallback to Python method if wc command fails
@@ -265,7 +271,9 @@ class FileFormatHandler:
             return int(
                 subprocess.check_output(
                     ['du', '-b', path],
-                ).decode('utf-8').split()[0],
+                )
+                .decode('utf-8')
+                .split()[0],
             )
         except (subprocess.CalledProcessError, FileNotFoundError):
             # Fallback to Python method for cross-platform compatibility
@@ -275,7 +283,9 @@ class FileFormatHandler:
 class DataNormalizer:
     @staticmethod
     def normalize_to_size(
-        obj: Any, max_depth: int = 3, max_size_in_bytes: int = 100_000,
+        obj: Any,
+        max_depth: int = 3,
+        max_size_in_bytes: int = 100_000,
     ) -> Any:
         """
         Normalize object to fit within specified size constraints.
@@ -382,7 +392,10 @@ class DataNormalizer:
             if hasattr(obj, 'to_dict'):
                 try:
                     return DataNormalizer.normalize(
-                        obj.to_dict(), max_depth, current_depth, visited,
+                        obj.to_dict(),
+                        max_depth,
+                        current_depth,
+                        visited,
                     )
                 except Exception:
                     return '[Object with to_dict error]'
@@ -399,7 +412,9 @@ class DataNormalizer:
                     return obj
 
                 effective_max_depth = getattr(
-                    obj, '__sentry_override_normalization_depth__', max_depth,
+                    obj,
+                    '__sentry_override_normalization_depth__',
+                    max_depth,
                 )
 
                 for i, key in enumerate(keys[:max_props]):
@@ -427,7 +442,10 @@ class DataNormalizer:
                 for i in range(min(length, max_items)):
                     result.append(
                         DataNormalizer.normalize(
-                            obj[i], max_depth, current_depth + 1, visited,
+                            obj[i],
+                            max_depth,
+                            current_depth + 1,
+                            visited,
                         ),
                     )
 
@@ -454,7 +472,10 @@ class DataNormalizer:
                 for i, key in enumerate(keys[:max_props]):
                     try:
                         result[key] = DataNormalizer.normalize(
-                            obj[key], max_depth, current_depth + 1, visited,
+                            obj[key],
+                            max_depth,
+                            current_depth + 1,
+                            visited,
                         )
                     except Exception:
                         result[key] = '[Error accessing property]'
@@ -536,8 +557,10 @@ class DataNormalizer:
                     length += len(str(key)) + 3  # "key":
                     length += (
                         DataNormalizer._estimate_json_length(
-                            value, visited,
-                        ) + 1
+                            value,
+                            visited,
+                        )
+                        + 1
                     )  # comma
                 return length
 
@@ -642,7 +665,8 @@ def read_file(
         if isinstance(content, pd.DataFrame):
             length = len(content)
             content = formatter.format_dataframe_with_types(
-                content, sample_rows=min(LLM_FRIENDLY_MAX_SAMPLE_ROWS, length),
+                content,
+                sample_rows=min(LLM_FRIENDLY_MAX_SAMPLE_ROWS, length),
             )
             if length > LLM_FRIENDLY_MAX_SAMPLE_ROWS:
                 content['note'] = (
@@ -680,7 +704,9 @@ if __name__ == '__main__1':
 
     normalizer = DataNormalizer()
     normalized = normalizer.normalize_to_size(
-        test_data, max_depth=5, max_size_in_bytes=1500,
+        test_data,
+        max_depth=5,
+        max_size_in_bytes=1500,
     )
 
     print('Normalized data:')

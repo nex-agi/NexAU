@@ -62,8 +62,11 @@ class BatchProcessor:
             file_path = (file_name_elem.text or '').strip()
 
             format_elem = input_data_elem.find('format')
-            data_format = (format_elem.text or 'jsonl').strip(
-            ) if format_elem is not None else 'jsonl'
+            data_format = (
+                (format_elem.text or 'jsonl').strip()
+                if format_elem is not None
+                else 'jsonl'
+            )
 
             # Get message template
             message_elem = root.find('message')
@@ -83,14 +86,18 @@ class BatchProcessor:
                 return 'Batch processing completed: 0 items processed (file was created but empty)'
 
             # Execute batch processing
-            return self._process_batch_data(agent_name, file_path, data_format, message_template)
+            return self._process_batch_data(
+                agent_name, file_path, data_format, message_template,
+            )
 
         except ET.ParseError as e:
             raise ValueError(f"Invalid XML format: {e}")
         except Exception as e:
             raise ValueError(f"Batch processing error: {e}")
 
-    def _process_batch_data(self, agent_name: str, file_path: str, data_format: str, message_template: str) -> str:
+    def _process_batch_data(
+        self, agent_name: str, file_path: str, data_format: str, message_template: str,
+    ) -> str:
         """Process batch data from file and execute agent calls in parallel.
 
         Args:
@@ -150,40 +157,51 @@ class BatchProcessor:
                 # Render message template with data
                 try:
                     rendered_message = self._render_message_template(
-                        message_template, data,
+                        message_template,
+                        data,
                     )
                     # Propagate current tracing context into the worker thread
                     task_ctx = copy_context()
                     future = executor.submit(
-                        task_ctx.run, self._execute_batch_item_safe, agent_name, rendered_message, line_num,
+                        task_ctx.run,
+                        self._execute_batch_item_safe,
+                        agent_name,
+                        rendered_message,
+                        line_num,
                     )
                     futures[future] = (line_num, data)
                 except Exception as e:
-                    results.append({
-                        'line': line_num,
-                        'status': 'error',
-                        'error': f"Template rendering failed: {e}",
-                        'data': data,
-                    })
+                    results.append(
+                        {
+                            'line': line_num,
+                            'status': 'error',
+                            'error': f"Template rendering failed: {e}",
+                            'data': data,
+                        },
+                    )
 
             # Collect results as they complete
             for future in as_completed(futures):
                 line_num, data = futures[future]
                 try:
                     result = future.result()
-                    results.append({
-                        'line': line_num,
-                        'status': 'success',
-                        'result': result,
-                        'data': data,
-                    })
+                    results.append(
+                        {
+                            'line': line_num,
+                            'status': 'success',
+                            'result': result,
+                            'data': data,
+                        },
+                    )
                 except Exception as e:
-                    results.append({
-                        'line': line_num,
-                        'status': 'error',
-                        'error': str(e),
-                        'data': data,
-                    })
+                    results.append(
+                        {
+                            'line': line_num,
+                            'status': 'error',
+                            'error': str(e),
+                            'data': data,
+                        },
+                    )
 
         # Sort results by line number
         results.sort(key=lambda x: x['line'])
@@ -212,7 +230,9 @@ class BatchProcessor:
         }
 
         if remaining_count > 0:
-            detailed_results['note'] = f"Showing first 3 results. {remaining_count} additional results not displayed to keep response concise."
+            detailed_results['note'] = (
+                f"Showing first 3 results. {remaining_count} additional results not displayed to keep response concise."
+            )
 
         return json.dumps(detailed_results, indent=2, ensure_ascii=False)
 
@@ -248,7 +268,9 @@ class BatchProcessor:
                 f"Template key '{missing_key}' not found in data. Available keys: {available_keys}",
             )
 
-    def _execute_batch_item_safe(self, agent_name: str, message: str, line_num: int) -> str:
+    def _execute_batch_item_safe(
+        self, agent_name: str, message: str, line_num: int,
+    ) -> str:
         """Safely execute a single batch item.
 
         Args:

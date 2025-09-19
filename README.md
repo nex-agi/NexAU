@@ -678,17 +678,17 @@ Hooks receive an `AfterModelHookInput` containing:
 - `max_iterations`: Maximum allowed iterations
 - `current_iteration`: Current iteration number
 
-Hooks return a `HookResult` that can modify:
+Hooks return a `AfterModelHookResult` that can modify:
 - `parsed_response`: Filter or modify tool/agent calls
 - `messages`: Add context or modify conversation history
 
 #### Basic Hook Usage
 
 ```python
-from northau.archs.main_sub.execution.hooks import AfterModelHook, HookResult, AfterModelHookInput
+from northau.archs.main_sub.execution.hooks import AfterModelHook, AfterModelHookResult, AfterModelHookInput
 
 def create_context_hook() -> AfterModelHook:
-    def context_hook(hook_input: AfterModelHookInput) -> HookResult:
+    def context_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
         if hook_input.parsed_response and hook_input.parsed_response.tool_calls:
             # Add context message before tool execution
             modified_messages = hook_input.messages.copy()
@@ -696,9 +696,9 @@ def create_context_hook() -> AfterModelHook:
                 "role": "system",
                 "content": f"[HOOK] About to execute {len(hook_input.parsed_response.tool_calls)} tool(s)"
             })
-            return HookResult.with_modifications(messages=modified_messages)
+            return AfterModelHookResult.with_modifications(messages=modified_messages)
 
-        return HookResult.no_changes()
+        return AfterModelHookResult.no_changes()
 
     return context_hook
 
@@ -756,9 +756,9 @@ tool_after_approve_hook = create_tool_after_approve_hook(
 ##### Safety and Compliance Hook
 ```python
 def create_safety_hook() -> AfterModelHook:
-    def safety_hook(hook_input: AfterModelHookInput) -> HookResult:
+    def safety_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
         if not hook_input.parsed_response:
-            return HookResult.no_changes()
+            return AfterModelHookResult.no_changes()
 
         # Filter out potentially dangerous tools
         dangerous_tools = {'system_command', 'file_delete', 'network_access'}
@@ -787,12 +787,12 @@ def create_safety_hook() -> AfterModelHook:
                 "content": f"[SAFETY] Blocked {filtered_count} potentially dangerous tool calls"
             })
 
-            return HookResult.with_modifications(
+            return AfterModelHookResult.with_modifications(
                 parsed_response=modified_parsed,
                 messages=modified_messages
             )
 
-        return HookResult.no_changes()
+        return AfterModelHookResult.no_changes()
 
     return safety_hook
 ```
@@ -800,7 +800,7 @@ def create_safety_hook() -> AfterModelHook:
 ##### Conversation Management Hook
 ```python
 def create_conversation_manager_hook() -> AfterModelHook:
-    def conversation_manager_hook(hook_input: AfterModelHookInput) -> HookResult:
+    def conversation_manager_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
         # Add iteration warnings when approaching limit
         remaining = hook_input.max_iterations - hook_input.current_iteration
 
@@ -810,7 +810,7 @@ def create_conversation_manager_hook() -> AfterModelHook:
                 "role": "system",
                 "content": f"[WARNING] Only {remaining} iterations remaining. Please provide a conclusive response."
             })
-            return HookResult.with_modifications(messages=modified_messages)
+            return AfterModelHookResult.with_modifications(messages=modified_messages)
 
         # Add conversation length management
         if len(hook_input.messages) > 20:
@@ -819,9 +819,9 @@ def create_conversation_manager_hook() -> AfterModelHook:
                 "role": "system",
                 "content": "[INFO] Long conversation detected. Consider summarizing key points."
             })
-            return HookResult.with_modifications(messages=modified_messages)
+            return AfterModelHookResult.with_modifications(messages=modified_messages)
 
-        return HookResult.no_changes()
+        return AfterModelHookResult.no_changes()
 
     return conversation_manager_hook
 ```
@@ -829,9 +829,9 @@ def create_conversation_manager_hook() -> AfterModelHook:
 ##### Custom Business Logic Hook
 ```python
 def create_business_logic_hook(user_permissions: set[str]) -> AfterModelHook:
-    def business_logic_hook(hook_input: AfterModelHookInput) -> HookResult:
+    def business_logic_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
         if not hook_input.parsed_response:
-            return HookResult.no_changes()
+            return AfterModelHookResult.no_changes()
 
         # Apply business rules based on user permissions
         allowed_calls = []
@@ -855,9 +855,9 @@ def create_business_logic_hook(user_permissions: set[str]) -> AfterModelHook:
                 is_parallel_sub_agents=hook_input.parsed_response.is_parallel_sub_agents
             )
 
-            return HookResult.with_modifications(parsed_response=modified_parsed)
+            return AfterModelHookResult.with_modifications(parsed_response=modified_parsed)
 
-        return HookResult.no_changes()
+        return AfterModelHookResult.no_changes()
 
     return business_logic_hook
 ```
@@ -891,22 +891,22 @@ Hooks are executed in the order they are provided:
 
 ```python
 # No modifications
-return HookResult.no_changes()
+return AfterModelHookResult.no_changes()
 
 # Only modify parsed response
-return HookResult.with_modifications(parsed_response=modified_parsed)
+return AfterModelHookResult.with_modifications(parsed_response=modified_parsed)
 
 # Only modify messages
-return HookResult.with_modifications(messages=modified_messages)
+return AfterModelHookResult.with_modifications(messages=modified_messages)
 
 # Modify both
-return HookResult.with_modifications(
+return AfterModelHookResult.with_modifications(
     parsed_response=modified_parsed,
     messages=modified_messages
 )
 
 # Direct construction (also valid)
-return HookResult(parsed_response=modified_parsed, messages=modified_messages)
+return AfterModelHookResult(parsed_response=modified_parsed, messages=modified_messages)
 ```
 
 #### Use Cases
@@ -1134,11 +1134,11 @@ def my_tool_without_storage(param1: str) -> dict:
 Hooks can access global storage through the agent context:
 
 ```python
-from northau.archs.main_sub.execution.hooks import AfterModelHook, HookResult, AfterModelHookInput
+from northau.archs.main_sub.execution.hooks import AfterModelHook, AfterModelHookResult, AfterModelHookInput
 from northau.archs.main_sub.agent_context import get_context
 
 def create_storage_hook() -> AfterModelHook:
-    def storage_hook(hook_input: AfterModelHookInput) -> HookResult:
+    def storage_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
         # Access global storage through context
         ctx = get_context()
         if ctx and hasattr(ctx, 'global_storage'):
@@ -1164,9 +1164,9 @@ def create_storage_hook() -> AfterModelHook:
                     "content": f"[STATS] Hook #{hook_count + 1}: {total_tools} total tools used, {unique_tools} unique"
                 })
 
-                return HookResult.with_modifications(messages=modified_messages)
+                return AfterModelHookResult.with_modifications(messages=modified_messages)
 
-        return HookResult.no_changes()
+        return AfterModelHookResult.no_changes()
 
     return storage_hook
 ```

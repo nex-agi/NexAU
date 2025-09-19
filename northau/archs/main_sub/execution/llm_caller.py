@@ -1,8 +1,10 @@
 """Simple LLM API caller component."""
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 from typing import Callable
+from typing import Optional
+
 from ..agent_state import AgentState
 from .stop_reason import AgentStopReason
 
@@ -13,12 +15,20 @@ class LLMCaller:
     """Handles LLM API calls with retry logic."""
 
     def __init__(
-        self, openai_client: Any, llm_config: Any, retry_attempts: int = 5,
-        custom_llm_generator: Callable[
-            [
-            Any, dict[str, Any],
-            ], Any,
-        ] | None = None,
+        self,
+        openai_client: Any,
+        llm_config: Any,
+        retry_attempts: int = 5,
+        custom_llm_generator: (
+            Callable[
+                [
+                    Any,
+                    dict[str, Any],
+                ],
+                Any,
+            ]
+            | None
+        ) = None,
     ):
         """Initialize LLM caller.
 
@@ -33,7 +43,13 @@ class LLMCaller:
         self.retry_attempts = retry_attempts
         self.custom_llm_generator = custom_llm_generator
 
-    def call_llm(self, messages: list[dict[str, str]], max_tokens: int, force_stop_reason: Optional[AgentStopReason] = None, agent_state: Optional[AgentState] = None) -> str:
+    def call_llm(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        force_stop_reason: Optional[AgentStopReason] = None,
+        agent_state: Optional[AgentState] = None,
+    ) -> str:
         """Call LLM with the given messages and return response content.
 
         Args:
@@ -84,7 +100,9 @@ class LLMCaller:
 
         # Call LLM with retry
         response_content = self._call_with_retry(
-            force_stop_reason=force_stop_reason, agent_state=agent_state, **api_params,
+            force_stop_reason=force_stop_reason,
+            agent_state=agent_state,
+            **api_params,
         )
         if response_content is None:
             return None
@@ -92,6 +110,7 @@ class LLMCaller:
         assistant_response = response_content
         # Add back XML closing tags if they were removed by stop sequences
         from ..utils.xml_utils import XMLUtils
+
         assistant_response = XMLUtils.restore_closing_tags(assistant_response)
 
         # Debug logging for LLM response
@@ -102,7 +121,12 @@ class LLMCaller:
 
         return assistant_response
 
-    def _call_with_retry(self, force_stop_reason: Optional[AgentStopReason] = None, agent_state: Optional[AgentState] = None, **kwargs: Any) -> Any:
+    def _call_with_retry(
+        self,
+        force_stop_reason: Optional[AgentStopReason] = None,
+        agent_state: Optional[AgentState] = None,
+        **kwargs: Any,
+    ) -> Any:
         """Call OpenAI client or custom LLM generator with exponential backoff retry."""
         from .executor import AgentStopReason
 
@@ -117,7 +141,7 @@ class LLMCaller:
                 # Use custom LLM generator if provided, otherwise use OpenAI client
                 if self.custom_llm_generator:
                     response_content = self.custom_llm_generator(
-                        self.openai_client, kwargs, force_stop_reason, agent_state
+                        self.openai_client, kwargs, force_stop_reason, agent_state,
                     )
                 else:
                     if force_stop_reason != AgentStopReason.SUCCESS:
@@ -146,7 +170,12 @@ class LLMCaller:
                 backoff *= 2
 
 
-def bypass_llm_generator(openai_client: Any, kwargs: dict[str, Any]) -> Any:
+def bypass_llm_generator(
+    openai_client: Any,
+    kwargs: dict[str, Any],
+    force_stop_reason: str,
+    agent_state: AgentState,
+) -> Any:
     """
     Custom LLM generator that does nothing.
 

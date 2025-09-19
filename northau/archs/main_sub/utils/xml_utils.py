@@ -1,10 +1,8 @@
 """XML parsing utilities for agent tool and sub-agent calls."""
 import html
-import json
 import logging
 import re
 import xml.etree.ElementTree as ET
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +24,10 @@ class XMLUtils:
         ]
 
         for open_tag, close_tag in tag_pairs:
-            if open_tag in restored_response and not restored_response.rstrip().endswith(close_tag):
+            if (
+                open_tag in restored_response
+                and not restored_response.rstrip().endswith(close_tag)
+            ):
                 # Count open and close tags
                 open_count = restored_response.count(open_tag)
                 close_count = restored_response.count(close_tag)
@@ -40,7 +41,9 @@ class XMLUtils:
         """Extract tool name from potentially malformed XML using multiple strategies."""
         # Strategy 1: Try simple regex extraction
         tool_name_match = re.search(
-            r'<tool_name>\s*([^<]+)\s*</tool_name>', xml_content, re.IGNORECASE | re.DOTALL,
+            r'<tool_name>\s*([^<]+)\s*</tool_name>',
+            xml_content,
+            re.IGNORECASE | re.DOTALL,
         )
         if tool_name_match:
             return tool_name_match.group(1).strip()
@@ -66,7 +69,7 @@ class XMLUtils:
                 tag_match = re.search(r'<(\w+)>[^<]*$', line.strip())
                 if tag_match:
                     tag_name = tag_match.group(1)
-                    lines[i] = line.rstrip() + f'</{tag_name}>'
+                    lines[i] = line.rstrip() + f"</{tag_name}>"
 
             cleaned_xml = '\n'.join(lines)
             root = ET.fromstring(f"<root>{cleaned_xml}</root>")
@@ -83,7 +86,9 @@ class XMLUtils:
         """Extract agent name from potentially malformed XML using multiple strategies."""
         # Strategy 1: Try simple regex extraction
         agent_name_match = re.search(
-            r'<agent_name>\s*([^<]+)\s*</agent_name>', xml_content, re.IGNORECASE | re.DOTALL,
+            r'<agent_name>\s*([^<]+)\s*</agent_name>',
+            xml_content,
+            re.IGNORECASE | re.DOTALL,
         )
         if agent_name_match:
             return agent_name_match.group(1).strip()
@@ -109,7 +114,7 @@ class XMLUtils:
                 tag_match = re.search(r'<(\w+)>[^<]*$', line.strip())
                 if tag_match:
                     tag_name = tag_match.group(1)
-                    lines[i] = line.rstrip() + f'</{tag_name}>'
+                    lines[i] = line.rstrip() + f"</{tag_name}>"
 
             cleaned_xml = '\n'.join(lines)
             root = ET.fromstring(f"<root>{cleaned_xml}</root>")
@@ -130,7 +135,9 @@ class XMLParser:
         # Strategy 0: Always preprocess parameter content with CDATA
         # This ensures parameter values are treated as plain text
         try:
-            preprocessed_xml = self._wrap_parameter_content_in_cdata(xml_content)
+            preprocessed_xml = self._wrap_parameter_content_in_cdata(
+                xml_content,
+            )
             return ET.fromstring(f"<root>{preprocessed_xml}</root>")
         except ET.ParseError as e:
             logger.warning(
@@ -147,6 +154,7 @@ class XMLParser:
 
         # Strategy 1.5: Handle JSON content and URLs within XML parameters (legacy fallback)
         try:
+
             def handle_json_param_content(match):
                 param_name = match.group(1)
                 param_content = match.group(2).strip()
@@ -157,9 +165,12 @@ class XMLParser:
                     return f"<{param_name}><![CDATA[{param_content}]]></{param_name}>"
                 # Check if content looks like a URL or contains characters that need escaping
                 elif (
-                    'http' in param_content or 'www.' in param_content
-                    or '%' in param_content or '&' in param_content
-                    or '<' in param_content or '>' in param_content
+                    'http' in param_content
+                    or 'www.' in param_content
+                    or '%' in param_content
+                    or '&' in param_content
+                    or '<' in param_content
+                    or '>' in param_content
                 ):
                     # Wrap URL or complex content in CDATA to preserve it
                     return f"<{param_name}><![CDATA[{param_content}]]></{param_name}>"
@@ -172,24 +183,29 @@ class XMLParser:
             # Find and handle parameter content within parameters block
             escaped_xml = xml_content
             params_match = re.search(
-                r'<parameter>(.*?)</parameter>', xml_content, re.DOTALL,
+                r'<parameter>(.*?)</parameter>',
+                xml_content,
+                re.DOTALL,
             )
             if params_match:
                 params_content = params_match.group(1)
                 # Pattern to match individual parameter tags with their content
                 param_pattern = r'<(\w+)>(.*?)</\1>'
                 escaped_params = re.sub(
-                    param_pattern, handle_json_param_content, params_content, flags=re.DOTALL,
+                    param_pattern,
+                    handle_json_param_content,
+                    params_content,
+                    flags=re.DOTALL,
                 )
                 escaped_xml = xml_content.replace(
-                    params_match.group(1), escaped_params,
+                    params_match.group(1),
+                    escaped_params,
                 )
 
             return ET.fromstring(f"<root>{escaped_xml}</root>")
 
         except ET.ParseError:
             pass
-
 
         # Final fallback: raise with detailed error
         raise ValueError(
@@ -198,38 +214,39 @@ class XMLParser:
 
     def _wrap_parameter_content_in_cdata(self, xml_content: str) -> str:
         """Wrap all parameter element content in CDATA to treat as plain text."""
+
         # Find all <parameter>...</parameter> blocks
         def wrap_parameter_block(match):
             parameter_content = match.group(1)
-            
+
             # Within each parameter block, find individual parameter elements
             def wrap_individual_param(param_match):
                 param_name = param_match.group(1)
                 param_content = param_match.group(2)
-                
+
                 # Skip if already wrapped in CDATA
                 if '[CDATA[' in param_content:
                     return param_match.group(0)
-                
+
                 # Wrap the content in CDATA
                 return f"<{param_name}><![CDATA[{param_content}]]></{param_name}>"
-            
+
             # Apply CDATA wrapping to all individual parameters
             wrapped_content = re.sub(
                 r'<(\w+)>(.*?)</\1>',
                 wrap_individual_param,
                 parameter_content,
-                flags=re.DOTALL
+                flags=re.DOTALL,
             )
-            
+
             return f"<parameter>{wrapped_content}</parameter>"
-        
+
         # Apply to all parameter blocks
         result = re.sub(
             r'<parameter>(.*?)</parameter>',
             wrap_parameter_block,
             xml_content,
-            flags=re.DOTALL
+            flags=re.DOTALL,
         )
-        
+
         return result

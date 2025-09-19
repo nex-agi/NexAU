@@ -8,6 +8,7 @@ from typing import Union
 
 class CallType(Enum):
     """Types of executable calls."""
+
     TOOL = 'tool'
     SUB_AGENT = 'sub_agent'
     BATCH_AGENT = 'batch_agent'
@@ -16,6 +17,7 @@ class CallType(Enum):
 @dataclass
 class ToolCall:
     """Represents a parsed tool call."""
+
     tool_name: str
     parameters: dict[str, Any]
     xml_content: str  # Original XML for error reporting
@@ -23,14 +25,15 @@ class ToolCall:
 
     def __post_init__(self):
         if self.tool_call_id is None:
-            self.tool_call_id = hashlib.md5((
-                self.tool_name + self.xml_content
-            ).encode('utf-8')).hexdigest()
+            self.tool_call_id = hashlib.md5(
+                (self.tool_name + self.xml_content).encode('utf-8'),
+            ).hexdigest()
 
 
 @dataclass
 class SubAgentCall:
     """Represents a parsed sub-agent call."""
+
     agent_name: str
     message: str
     xml_content: str  # Original XML for error reporting
@@ -38,14 +41,15 @@ class SubAgentCall:
 
     def __post_init__(self):
         if self.sub_agent_call_id is None:
-            self.sub_agent_call_id = hashlib.md5((
-                self.agent_name + self.xml_content
-            ).encode('utf-8')).hexdigest()
+            self.sub_agent_call_id = hashlib.md5(
+                (self.agent_name + self.xml_content).encode('utf-8'),
+            ).hexdigest()
 
 
 @dataclass
 class BatchAgentCall:
     """Represents a parsed batch agent call."""
+
     agent_name: str
     file_path: str
     data_format: str
@@ -55,9 +59,9 @@ class BatchAgentCall:
 
     def __post_init__(self):
         if self.batch_agent_call_id is None:
-            self.batch_agent_call_id = hashlib.md5((
-                self.agent_name + self.xml_content
-            ).encode('utf-8')).hexdigest()
+            self.batch_agent_call_id = hashlib.md5(
+                (self.agent_name + self.xml_content).encode('utf-8'),
+            ).hexdigest()
 
 
 # Union type for all call types
@@ -67,6 +71,7 @@ ExecutableCall = Union[ToolCall, SubAgentCall, BatchAgentCall]
 @dataclass
 class ParsedResponse:
     """Container for all parsed calls from an LLM response."""
+
     original_response: str
     tool_calls: list[ToolCall]
     sub_agent_calls: list[SubAgentCall]

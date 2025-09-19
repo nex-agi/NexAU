@@ -10,22 +10,26 @@ from contextvars import copy_context
 from typing import Any
 from typing import Callable
 from typing import Optional
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from ..agent_state import AgentState
-
-from .tool_executor import ToolExecutor
-from .subagent_manager import SubAgentManager
-from .batch_processor import BatchProcessor
-from .llm_caller import LLMCaller
-from .response_parser import ResponseParser
-from .parse_structures import ParsedResponse, ToolCall, SubAgentCall, BatchAgentCall
-from .hooks import HookManager, AfterModelHook, ToolHookManager, AfterToolHook, AfterModelHookInput
-from ..tracing.tracer import Tracer
-from ..tracing.trace_dumper import TraceDumper
-from ..utils.token_counter import TokenCounter
-from .stop_reason import AgentStopReason
+from northau.archs.main_sub.agent_state import AgentState
+from northau.archs.main_sub.execution.batch_processor import BatchProcessor
+from northau.archs.main_sub.execution.hooks import AfterModelHook
+from northau.archs.main_sub.execution.hooks import AfterModelHookInput
+from northau.archs.main_sub.execution.hooks import AfterToolHook
+from northau.archs.main_sub.execution.hooks import HookManager
+from northau.archs.main_sub.execution.hooks import ToolHookManager
+from northau.archs.main_sub.execution.llm_caller import LLMCaller
+from northau.archs.main_sub.execution.parse_structures import BatchAgentCall
+from northau.archs.main_sub.execution.parse_structures import ParsedResponse
+from northau.archs.main_sub.execution.parse_structures import SubAgentCall
+from northau.archs.main_sub.execution.parse_structures import ToolCall
+from northau.archs.main_sub.execution.response_parser import ResponseParser
+from northau.archs.main_sub.execution.stop_reason import AgentStopReason
+from northau.archs.main_sub.execution.subagent_manager import SubAgentManager
+from northau.archs.main_sub.execution.tool_executor import ToolExecutor
+from northau.archs.main_sub.tracing.trace_dumper import TraceDumper
+from northau.archs.main_sub.tracing.tracer import Tracer
+from northau.archs.main_sub.utils.token_counter import TokenCounter
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +38,29 @@ class Executor:
     """Orchestrates execution of agent tasks with parallel processing support."""
 
     def __init__(
-        self, agent_name: str, agent_id: str, tool_registry: dict[str, Any], sub_agent_factories: dict[str, Callable[[], Any]],
-        stop_tools: set[str], openai_client: Any, llm_config: Any, max_iterations: int = 100,
-        max_context_tokens: int = 128000, max_running_subagents: int = 5,
-        retry_attempts: int = 5, token_counter: TokenCounter | None = None,
-        langfuse_client: Any = None, after_model_hooks: list[AfterModelHook] | None = None,
-        after_tool_hooks: list[AfterToolHook] | None = None, serial_tool_name: list[str] | None = None,
-        global_storage: Any = None, custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None,
+        self,
+        agent_name: str,
+        agent_id: str,
+        tool_registry: dict[str, Any],
+        sub_agent_factories: dict[str, Callable[[], Any]],
+        stop_tools: set[str],
+        openai_client: Any,
+        llm_config: Any,
+        max_iterations: int = 100,
+        max_context_tokens: int = 128000,
+        max_running_subagents: int = 5,
+        retry_attempts: int = 5,
+        token_counter: TokenCounter | None = None,
+        langfuse_client: Any = None,
+        after_model_hooks: list[AfterModelHook] | None = None,
+        after_tool_hooks: list[AfterToolHook] | None = None,
+        serial_tool_name: list[str] | None = None,
+        global_storage: Any = None,
+        custom_llm_generator: Callable[
+            [
+            Any, dict[str, Any],
+            ], Any,
+        ] | None = None,
     ):
         """Initialize executor.
 
@@ -68,22 +88,37 @@ class Executor:
         self.max_running_subagents = max_running_subagents
 
         # Initialize components
-        tool_hook_manager = ToolHookManager(
-            after_tool_hooks,
-        ) if after_tool_hooks else None
+        tool_hook_manager = (
+            ToolHookManager(
+                after_tool_hooks,
+            )
+            if after_tool_hooks
+            else None
+        )
         self.tool_executor = ToolExecutor(
-            tool_registry, stop_tools, langfuse_client, tool_hook_manager,
+            tool_registry,
+            stop_tools,
+            langfuse_client,
+            tool_hook_manager,
         )
         self.tracer = Tracer(agent_name)
         self.subagent_manager = SubAgentManager(
-            agent_name, sub_agent_factories, langfuse_client, global_storage, self.tracer,
+            agent_name,
+            sub_agent_factories,
+            langfuse_client,
+            global_storage,
+            self.tracer,
         )
         self.batch_processor = BatchProcessor(
-            self.subagent_manager, max_running_subagents,
+            self.subagent_manager,
+            max_running_subagents,
         )
         self.response_parser = ResponseParser()
         self.llm_caller = LLMCaller(
-            openai_client, llm_config, retry_attempts, custom_llm_generator,
+            openai_client,
+            llm_config,
+            retry_attempts,
+            custom_llm_generator,
         )
         self.hook_manager = HookManager(after_model_hooks)
 
@@ -119,7 +154,9 @@ class Executor:
         )
 
     def execute(
-        self, history: list[dict[str, str]], agent_state: 'AgentState',
+        self,
+        history: list[dict[str, str]],
+        agent_state: 'AgentState',
         dump_trace_path: str | None = None,
     ) -> tuple[str, list[dict[str, str]]]:
         """Execute agent task with full orchestration.
@@ -134,7 +171,7 @@ class Executor:
         """
         # Reset the stop signal
         self.stop_signal = False
-        
+
         # Initialize tracing if requested
         if dump_trace_path:
             self.tracer.start_tracing(dump_trace_path)
@@ -155,14 +192,15 @@ class Executor:
                 logger.info(
                     f"🔄 Iteration {iteration + 1}/{self.max_iterations} for agent '{self.agent_name}'",
                 )
-                
-                logger.info(f"Agent name {self.agent_name} Current stop_signal: {self.stop_signal}")
+
+                logger.info(
+                    f"Agent name {self.agent_name} Current stop_signal: {self.stop_signal}",
+                )
                 if self.stop_signal:
                     logger.info(
-                        f"❗️ Stop signal received, stopping execution",
+                        '❗️ Stop signal received, stopping execution',
                     )
-                    return "Stop signal received.", messages
-                    
+                    return 'Stop signal received.', messages
 
                 # Process any queued messages
                 if self.queued_messages:
@@ -192,7 +230,8 @@ class Executor:
                 # Get desired max_tokens from LLM config or use reasonable default
                 desired_max_tokens = 16384  # Default value
                 calculated_max_tokens = min(
-                    desired_max_tokens, available_tokens,
+                    desired_max_tokens,
+                    available_tokens,
                 )
 
                 # Ensure we have at least some tokens for response
@@ -202,12 +241,12 @@ class Executor:
                     )
                     final_response += f"\\n\\n[Error: Insufficient tokens for response ({calculated_max_tokens} tokens). Context too full.]"
                     force_stop_reason = AgentStopReason.CONTEXT_TOKEN_LIMIT
-                
+
                 if iteration == self.max_iterations - 1:
                     logger.error(
-                        f"❌ Maximum iteration limit reached. Stopping execution.",
+                        '❌ Maximum iteration limit reached. Stopping execution.',
                     )
-                    final_response += f"\\n\\n[Error: Maximum iteration limit reached.]"
+                    final_response += '\\n\\n[Error: Maximum iteration limit reached.]'
                     force_stop_reason = AgentStopReason.MAX_ITERATIONS_REACHED
 
                 logger.info(
@@ -217,7 +256,8 @@ class Executor:
                 # Log LLM request to trace if enabled
                 if dump_trace_path:
                     self.tracer.add_llm_request(
-                        iteration + 1, {
+                        iteration + 1,
+                        {
                             'messages': messages,
                             'max_tokens': calculated_max_tokens,
                         },
@@ -228,7 +268,7 @@ class Executor:
                     f"🧠 Calling LLM for agent '{self.agent_name}' with {calculated_max_tokens} max tokens...",
                 )
                 assistant_response = self.llm_caller.call_llm(
-                    messages, calculated_max_tokens, force_stop_reason, agent_state
+                    messages, calculated_max_tokens, force_stop_reason, agent_state,
                 )
                 if assistant_response is None:
                     break
@@ -236,7 +276,9 @@ class Executor:
                 # Log LLM response to trace if enabled
                 if dump_trace_path:
                     # Create a mock response object for tracing compatibility
-                    self.tracer.add_llm_response(iteration + 1, assistant_response)
+                    self.tracer.add_llm_response(
+                        iteration + 1, assistant_response,
+                    )
 
                 logger.info(
                     f"💬 LLM Response for agent '{self.agent_name}': {assistant_response}",
@@ -268,8 +310,11 @@ class Executor:
                     messages=messages,
                 )
 
-                processed_response, should_stop, stop_tool_result, updated_messages = self._process_xml_calls(
-                    after_model_hook_input, tracer=self.tracer if dump_trace_path else None,
+                processed_response, should_stop, stop_tool_result, updated_messages = (
+                    self._process_xml_calls(
+                        after_model_hook_input,
+                        tracer=self.tracer if dump_trace_path else None,
+                    )
                 )
 
                 # Update messages with any modifications from hooks
@@ -288,7 +333,10 @@ class Executor:
                             break
                         else:
                             import json
-                            final_response = json.dumps(stop_tool_result, indent=4, ensure_ascii=False)
+
+                            final_response = json.dumps(
+                                stop_tool_result, indent=4, ensure_ascii=False,
+                            )
                             break
                     else:
                         logger.info('🛑 No more tool calls, stop.')
@@ -299,31 +347,41 @@ class Executor:
 
                 # Extract just the tool results from processed_response
                 tool_results = processed_response.replace(
-                    assistant_response, '',
+                    assistant_response,
+                    '',
                 ).strip()
 
                 # Add tool results as user feedback with iteration context
                 remaining_iterations = self.max_iterations - iteration - 1
                 iteration_hint = self._build_iteration_hint(
-                    iteration + 1, self.max_iterations, remaining_iterations,
+                    iteration + 1,
+                    self.max_iterations,
+                    remaining_iterations,
                 )
 
                 if tool_results:
-                    messages.append({
-                        'role': 'user',
-                        'content': f"Tool execution results:\n{tool_results}\n\n{iteration_hint}",
-                    })
+                    messages.append(
+                        {
+                            'role': 'user',
+                            'content': f"Tool execution results:\n{tool_results}\n\n{iteration_hint}",
+                        },
+                    )
                 else:
-                    messages.append({
-                        'role': 'user',
-                        'content': f"{iteration_hint}",
-                    })
+                    messages.append(
+                        {
+                            'role': 'user',
+                            'content': f"{iteration_hint}",
+                        },
+                    )
                 current_prompt_tokens = self.token_counter.count_tokens(
                     messages,
                 )
 
                 token_limit_hint = self._build_token_limit_hint(
-                    current_prompt_tokens, self.max_context_tokens, available_tokens, desired_max_tokens,
+                    current_prompt_tokens,
+                    self.max_context_tokens,
+                    available_tokens,
+                    desired_max_tokens,
                 )
                 messages[-1]['content'] += f"\n\n{token_limit_hint}"
 
@@ -345,7 +403,9 @@ class Executor:
                 trace_data = self.tracer.get_trace_data()
                 if trace_data:
                     TraceDumper.dump_trace_to_file(
-                        trace_data, dump_trace_path, self.agent_name,
+                        trace_data,
+                        dump_trace_path,
+                        self.agent_name,
                     )
 
             return final_response, messages
@@ -368,7 +428,9 @@ class Executor:
                 trace_data = self.tracer.get_trace_data()
                 if trace_data:
                     TraceDumper.dump_trace_to_file(
-                        trace_data, dump_trace_path, self.agent_name,
+                        trace_data,
+                        dump_trace_path,
+                        self.agent_name,
                     )
             # Re-raise with more context
             raise RuntimeError(f"Error in agent execution: {e}") from e
@@ -376,7 +438,9 @@ class Executor:
             if dump_trace_path:
                 self.tracer.stop_tracing()
 
-    def _process_xml_calls(self, hook_input: AfterModelHookInput, tracer: Tracer | None = None) -> tuple[str, bool, str | None, list[dict[str, str]]]:
+    def _process_xml_calls(
+        self, hook_input: AfterModelHookInput, tracer: Tracer | None = None,
+    ) -> tuple[str, bool, str | None, list[dict[str, str]]]:
         """Process XML tool calls and sub-agent calls using two-phase approach.
 
         Args:
@@ -419,11 +483,18 @@ class Executor:
             f"⚡ Phase 2: Executing {parsed_response.get_call_summary()}",
         )
         processed_response, should_stop, stop_tool_result = self._execute_parsed_calls(
-            parsed_response, hook_input.agent_state, tracer=tracer,
+            parsed_response,
+            hook_input.agent_state,
+            tracer=tracer,
         )
         return processed_response, should_stop, stop_tool_result, current_messages
 
-    def _execute_parsed_calls(self, parsed_response: ParsedResponse, agent_state: 'AgentState', tracer: Optional[Tracer] = None) -> tuple[str, bool, str | None]:
+    def _execute_parsed_calls(
+        self,
+        parsed_response: ParsedResponse,
+        agent_state: 'AgentState',
+        tracer: Optional[Tracer] = None,
+    ) -> tuple[str, bool, str | None]:
         """Execute all parsed calls in parallel.
 
         Args:
@@ -460,6 +531,7 @@ class Executor:
 
         # Get current context to pass to sub-agents
         from ..agent_context import get_context
+
         current_context = get_context()
         context_dict = current_context.context.copy() if current_context else None
 
@@ -494,7 +566,11 @@ class Executor:
             for tool_call in parsed_response.tool_calls:
                 task_ctx = copy_context()
                 future = tool_executor.submit(
-                    task_ctx.run, self._execute_tool_call_safe, tool_call, agent_state, tracer,
+                    task_ctx.run,
+                    self._execute_tool_call_safe,
+                    tool_call,
+                    agent_state,
+                    tracer,
                 )
                 tool_futures[future] = ('tool', tool_call)
 
@@ -506,7 +582,12 @@ class Executor:
             for sub_agent_call in parsed_response.sub_agent_calls:
                 task_ctx = copy_context()
                 future = subagent_executor.submit(
-                    task_ctx.run, self._execute_sub_agent_call_safe, sub_agent_call, context_dict, tracer,
+                    task_ctx.run,
+                    self._execute_sub_agent_call_safe,
+                    sub_agent_call,
+                    context_dict,
+                    tracer,
+                    parent_agent_state=agent_state,
                 )
                 sub_agent_futures[future] = ('sub_agent', sub_agent_call)
 
@@ -541,23 +622,38 @@ class Executor:
                             # Check if this tool result indicates a stop tool was executed
                             try:
                                 parsed_result = json.loads(result)
-                                if isinstance(parsed_result, dict) and parsed_result.get('_is_stop_tool'):
+                                if isinstance(
+                                    parsed_result, dict,
+                                ) and parsed_result.get('_is_stop_tool'):
                                     stop_tool_detected = True
                                     actual_result = {
-                                        k: v for k, v in parsed_result.items() if k != '_is_stop_tool'
+                                        k: v
+                                        for k, v in parsed_result.items()
+                                        if k != '_is_stop_tool'
                                     }
-                                    if 'result' in actual_result and len(actual_result) == 1:
+                                    if (
+                                        'result' in actual_result
+                                        and len(actual_result) == 1
+                                    ):
                                         stop_tool_result = json.dumps(
                                             actual_result['result'],
                                             ensure_ascii=False,
                                             indent=4,
                                         )
                                     else:
-                                        stop_tool_result = json.dumps(
-                                            actual_result,
-                                            ensure_ascii=False,
-                                            indent=4,
-                                        ) if actual_result else json.dumps(parsed_result, ensure_ascii=False, indent=4)
+                                        stop_tool_result = (
+                                            json.dumps(
+                                                actual_result,
+                                                ensure_ascii=False,
+                                                indent=4,
+                                            )
+                                            if actual_result
+                                            else json.dumps(
+                                                parsed_result,
+                                                ensure_ascii=False,
+                                                indent=4,
+                                            )
+                                        )
                                     logger.info(
                                         f"🛑 Stop tool '{tool_name}' result detected, will terminate after processing",
                                     )
@@ -602,51 +698,78 @@ class Executor:
                 finally:
                     self._running_executors.pop(f"{executor_id}_tools", None)
                     self._running_executors.pop(
-                        f"{executor_id}_subagents", None,
+                        f"{executor_id}_subagents",
+                        None,
                     )
 
         return processed_response, stop_tool_detected, stop_tool_result
 
-    def _execute_tool_call_safe(self, tool_call: ToolCall, agent_state: 'AgentState', tracer: Optional[Tracer] = None) -> tuple[str, str, bool]:
+    def _execute_tool_call_safe(
+        self,
+        tool_call: ToolCall,
+        agent_state: 'AgentState',
+        tracer: Optional[Tracer] = None,
+    ) -> tuple[str, str, bool]:
         """Safely execute a tool call."""
         try:
             # Log tool request to trace if enabled
             if tracer:
                 tracer.add_tool_request(
-                    tool_call.tool_name, tool_call.parameters,
+                    tool_call.tool_name,
+                    tool_call.parameters,
                 )
 
             # Convert parameters to correct types and execute
             converted_params = {}
             for param_name, param_value in tool_call.parameters.items():
-                converted_params[param_name] = self.tool_executor._convert_parameter_type(
-                    tool_call.tool_name, param_name, param_value,
+                converted_params[param_name] = (
+                    self.tool_executor._convert_parameter_type(
+                        tool_call.tool_name,
+                        param_name,
+                        param_value,
+                    )
                 )
 
             result = self.tool_executor.execute_tool(
-                agent_state, tool_call.tool_name, converted_params,
+                agent_state,
+                tool_call.tool_name,
+                converted_params,
             )
 
             # Log tool response to trace if enabled
             if tracer:
                 tracer.add_tool_response(tool_call.tool_name, result)
 
-            return tool_call.tool_name, json.dumps(result, indent=2, ensure_ascii=False), False
+            return (
+                tool_call.tool_name,
+                json.dumps(result, indent=2, ensure_ascii=False),
+                False,
+            )
 
         except Exception as e:
             return tool_call.tool_name, str(e), True
 
-    def _execute_sub_agent_call_safe(self, sub_agent_call: SubAgentCall, context: Optional[dict[str, Any]] = None, tracer: Tracer | None = None) -> tuple[str, str, bool]:
+    def _execute_sub_agent_call_safe(
+        self,
+        sub_agent_call: SubAgentCall,
+        context: Optional[dict[str, Any]] = None,
+        tracer: Tracer | None = None,
+        parent_agent_state: Optional[AgentState] = None,
+    ) -> tuple[str, str, bool]:
         """Safely execute a sub-agent call."""
         try:
             # Log sub-agent request to trace if enabled
             if tracer:
                 tracer.add_subagent_request(
-                    sub_agent_call.agent_name, sub_agent_call.message,
+                    sub_agent_call.agent_name,
+                    sub_agent_call.message,
                 )
 
             result = self.subagent_manager.call_sub_agent(
-                sub_agent_call.agent_name, sub_agent_call.message, context,
+                sub_agent_call.agent_name,
+                sub_agent_call.message,
+                context,
+                parent_agent_state=parent_agent_state,
             )
 
             # Log sub-agent response to trace if enabled
@@ -679,7 +802,9 @@ class Executor:
             dump_path = self.tracer.get_dump_path()
             if trace_data and dump_path:
                 TraceDumper.dump_trace_to_file(
-                    trace_data, dump_path, self.agent_name,
+                    trace_data,
+                    dump_path,
+                    self.agent_name,
                 )
 
         # Signal shutdown to prevent new tasks
@@ -705,30 +830,48 @@ class Executor:
             f"✅ Executor cleanup completed for agent '{self.agent_name}'",
         )
 
-    def _build_iteration_hint(self, current_iteration: int, max_iterations: int, remaining_iterations: int) -> str:
+    def _build_iteration_hint(
+        self, current_iteration: int, max_iterations: int, remaining_iterations: int,
+    ) -> str:
         """Build a hint message for the LLM about iteration status."""
         if remaining_iterations <= 1:
-            return (f"⚠️ WARNING: This is iteration {current_iteration}/{max_iterations}. "
-                    f"You have only {remaining_iterations} iteration(s) remaining. "
-                    f"Please provide a conclusive response and avoid making additional tool calls or sub-agent calls "
-                    f"unless absolutely critical. Focus on summarizing your findings and providing final recommendations.")
+            return (
+                f"⚠️ WARNING: This is iteration {current_iteration}/{max_iterations}. "
+                f"You have only {remaining_iterations} iteration(s) remaining. "
+                f"Please provide a conclusive response and avoid making additional tool calls or sub-agent calls "
+                f"unless absolutely critical. Focus on summarizing your findings and providing final recommendations."
+            )
         elif remaining_iterations <= 3:
-            return (f"🔄 Iteration {current_iteration}/{max_iterations} - {remaining_iterations} iterations remaining. "
-                    f"Please be mindful of the remaining steps and work towards a conclusion.")
+            return (
+                f"🔄 Iteration {current_iteration}/{max_iterations} - {remaining_iterations} iterations remaining. "
+                f"Please be mindful of the remaining steps and work towards a conclusion."
+            )
         else:
-            return (f"🔄 Iteration {current_iteration}/{max_iterations} - Continue your response if you have more to say, "
-                    f"or if you need to make additional tool calls or sub-agent calls.")
+            return (
+                f"🔄 Iteration {current_iteration}/{max_iterations} - Continue your response if you have more to say, "
+                f"or if you need to make additional tool calls or sub-agent calls."
+            )
 
-    def _build_token_limit_hint(self, current_prompt_tokens: int, max_tokens: int, remaining_tokens: int, desired_max_tokens: int) -> str:
+    def _build_token_limit_hint(
+        self,
+        current_prompt_tokens: int,
+        max_tokens: int,
+        remaining_tokens: int,
+        desired_max_tokens: int,
+    ) -> str:
         """Build a hint message for the LLM about token limit."""
         if remaining_tokens < 3 * desired_max_tokens:
-            return (f"⚠️ WARNING: Token usage is approaching the limit {current_prompt_tokens}/{max_tokens}."
-                    f"You have only {remaining_tokens} tokens left."
-                    f"Please be mindful of the token limit and avoid making additional tool calls or sub-agent calls "
-                    f"unless absolutely critical. Focus on summarizing your findings and providing final recommendations.")
+            return (
+                f"⚠️ WARNING: Token usage is approaching the limit {current_prompt_tokens}/{max_tokens}."
+                f"You have only {remaining_tokens} tokens left."
+                f"Please be mindful of the token limit and avoid making additional tool calls or sub-agent calls "
+                f"unless absolutely critical. Focus on summarizing your findings and providing final recommendations."
+            )
         else:
-            return (f"🔄 Token Usage: {current_prompt_tokens}/{max_tokens} in the current prompt - {remaining_tokens} tokens left."
-                    f"Continue your response if you have more to say, or if you need to make additional tool calls or sub-agent calls.")
+            return (
+                f"🔄 Token Usage: {current_prompt_tokens}/{max_tokens} in the current prompt - {remaining_tokens} tokens left."
+                f"Continue your response if you have more to say, or if you need to make additional tool calls or sub-agent calls."
+            )
 
     def add_tool(self, tool: Any) -> None:
         """Add a tool to the executor.

@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from northau.archs.config.config_loader import load_agent_config
+
 logging.basicConfig(level=logging.INFO)
 
 
@@ -54,13 +55,16 @@ def main():
         print('\nTesting delegation with web research...')
         # web_message = "Call sub_deep_research_agent to get the information of what day is it today? and the stock price of Tencent on the day?"
         # web_message = '做一个孙悟空介绍的的html网页/Users/hanzhenhua/north-agent4agent/northau/wukong.html'
-        web_message = "List all commits in https://github.com/china-qijizhifeng/bp-sandbox"
+        web_message = (
+            'List all commits in https://github.com/china-qijizhifeng/bp-sandbox'
+        )
         print(f"\nUser: {web_message}")
         print('\nAgent Response:')
         print('-' * 30)
 
         response = deep_research_agent.run(
-            web_message, context={
+            web_message,
+            context={
                 'date': get_date(),
             },
         )
@@ -69,6 +73,7 @@ def main():
     except Exception as e:
         print(f"✗ Error: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 

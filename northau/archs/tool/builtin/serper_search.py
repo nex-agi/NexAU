@@ -21,7 +21,10 @@ class SerperSearch:
         }
 
     def search(
-        self, query: str, search_type: str = 'search', num_results: int = 10,
+        self,
+        query: str,
+        search_type: str = 'search',
+        num_results: int = 10,
     ) -> list[dict[str, Any]] | str:
         if search_type not in self.result_key_for_type.keys():
             return f"Invalid search type: {search_type}. Serper search type should be one of {self.result_key_for_type.keys()}"
@@ -43,13 +46,16 @@ class SerperSearch:
                     ),
                 ) as client:
                     response = client.post(
-                        self.base_url + search_type, headers=headers, json=payload,
+                        self.base_url + search_type,
+                        headers=headers,
+                        json=payload,
                     )
                     response.raise_for_status()
 
                     data = response.json()
                     results = data.get(
-                        self.result_key_for_type[search_type], [],
+                        self.result_key_for_type[search_type],
+                        [],
                     )
                     results = results[:num_results]
                     for result in results:

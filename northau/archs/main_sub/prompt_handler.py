@@ -143,6 +143,7 @@ class PromptHandler:
     def _get_timestamp(self) -> str:
         """Get current timestamp."""
         from datetime import datetime
+
         return datetime.now().isoformat()
 
     def get_default_context(self, agent) -> dict[str, Any]:
@@ -154,10 +155,14 @@ class PromptHandler:
 
         # Add agent-specific context if available
         if hasattr(agent, 'config'):
-            context.update({
-                'agent_id': getattr(agent.config, 'agent_id', None),
-                'system_prompt_type': getattr(agent.config, 'system_prompt_type', 'string'),
-            })
+            context.update(
+                {
+                    'agent_id': getattr(agent.config, 'agent_id', None),
+                    'system_prompt_type': getattr(
+                        agent.config, 'system_prompt_type', 'string',
+                    ),
+                },
+            )
 
         return context
 
