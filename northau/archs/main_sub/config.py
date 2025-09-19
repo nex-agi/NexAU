@@ -44,6 +44,7 @@ class AgentConfig:
     # Hook parameters
     after_model_hooks: Optional[list[Callable]] = None
     after_tool_hooks: Optional[list[Callable]] = None
+    before_model_hooks: Optional[list[Callable]] = None
 
     # Advanced features
     error_handler: Optional[Callable] = None

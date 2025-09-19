@@ -179,6 +179,7 @@ class Agent:
             langfuse_client=self.langfuse_client,
             after_model_hooks=self.config.after_model_hooks,
             after_tool_hooks=self.config.after_tool_hooks,
+            before_model_hooks=self.config.before_model_hooks,
             global_storage=self.global_storage,
             custom_llm_generator=self.config.custom_llm_generator,
         )
@@ -393,6 +394,7 @@ def create_agent(
     # Hook parameters
     after_model_hooks: Optional[list[Callable]] = None,
     after_tool_hooks: Optional[list[Callable]] = None,
+    before_model_hooks: Optional[list[Callable]] = None,
     # Global storage parameter
     global_storage: Optional[GlobalStorage] = None,
     # Custom LLM generator parameter
@@ -430,6 +432,7 @@ def create_agent(
         mcp_servers=mcp_servers,
         after_model_hooks=after_model_hooks,
         after_tool_hooks=after_tool_hooks,
+        before_model_hooks=before_model_hooks,
         error_handler=error_handler,
         token_counter=token_counter,
         custom_llm_generator=custom_llm_generator,

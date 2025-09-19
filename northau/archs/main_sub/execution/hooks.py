@@ -11,22 +11,68 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class AfterModelHookInput:
-    """Input data passed to after_model_hooks.
+class BeforeModelHookInput:
+    """Input data passed to before_model_hooks.
 
     This class encapsulates all the information that hooks receive:
     - agent_state: The AgentState containing agent context and global storage
-    - original_response: The raw response from the LLM
-    - parsed_response: The parsed structure containing tool/agent calls
     - messages: The current conversation history
+    - max_iterations: The maximum number of iterations
+    - current_iteration: The current iteration
     """
 
     agent_state: 'AgentState'
     max_iterations: int
     current_iteration: int
+    messages: list[dict[str, str]]
+
+
+@dataclass
+class AfterModelHookInput(BeforeModelHookInput):
+    """Input data passed to after_model_hooks.
+
+    This class encapsulates all the information that hooks receive:
+    - original_response: The raw response from the LLM
+    - parsed_response: The parsed structure containing tool/agent calls
+    """
     original_response: str
     parsed_response: ParsedResponse | None
-    messages: list[dict[str, str]]
+
+
+@dataclass
+class BeforeModelHookResult:
+    """Result returned by before_model_hooks.
+
+    This class encapsulates the modifications that a hook can make:
+    - messages: Modified conversation history, or None if no changes
+
+    If both fields are None, it indicates the hook made no modifications.
+    """
+    messages: list[dict[str, str]] | None = None
+
+    def has_modifications(self) -> bool:
+        """Check if this result contains any modifications."""
+        return self.messages is not None
+
+    @classmethod
+    def no_changes(cls) -> 'BeforeModelHookResult':
+        """Create a BeforeModelHookResult indicating no modifications."""
+        return cls(messages=None)
+
+    @classmethod
+    def with_modifications(
+        cls,
+        messages: list[dict[str, str]] | None = None,
+    ) -> 'BeforeModelHookResult':
+        """Create a BeforeModelHookResult with specified modifications.
+
+        Args:
+            messages: Modified message history, or None if no changes
+
+        Returns:
+            BeforeModelHookResult with the specified modifications
+        """
+        return cls(messages=messages)
 
 
 @dataclass
@@ -70,6 +116,35 @@ class AfterModelHookResult:
         return cls(parsed_response=parsed_response, messages=messages)
 
 
+class BeforeModelHook(Protocol):
+    """Protocol for before_model_hook implementations.
+
+    This hook is called before the LLM response is parsed but before execution.
+    It receives an BeforeModelHookInput containing all the relevant data, allowing
+    for inspection, modification, or additional processing.
+    """
+
+    def __call__(self, hook_input: BeforeModelHookInput) -> BeforeModelHookResult:
+        """Process the LLM response, parsed calls, and conversation history.
+
+        Args:
+            hook_input: BeforeModelHookInput containing:
+                - agent_state: The AgentState containing agent context and global storage
+                - max_iterations: The maximum number of iterations
+                - current_iteration: The current iteration
+                - messages: The current conversation history (list of message dicts)
+
+        Returns:
+            BeforeModelHookResult containing any modifications:
+            - BeforeModelHookResult.messages: Modified message history, or None to use original
+
+            Use the class methods for convenient creation:
+            - BeforeModelHookResult.no_changes(): No modifications
+            - BeforeModelHookResult.with_modifications(messages=...): Any combination of modifications
+        """
+        ...
+
+
 class AfterModelHook(Protocol):
     """Protocol for after_model_hook implementations.
 
@@ -84,9 +159,11 @@ class AfterModelHook(Protocol):
         Args:
             hook_input: AfterModelHookInput containing:
                 - agent_state: The AgentState containing agent context and global storage
+                - max_iterations: The maximum number of iterations
+                - current_iteration: The current iteration
+                - messages: The current conversation history (list of message dicts)
                 - original_response: The original response from the LLM
                 - parsed_response: The parsed structure containing all tool/agent calls
-                - messages: The current conversation history (list of message dicts)
 
         Returns:
             AfterModelHookResult containing any modifications:
@@ -277,9 +354,7 @@ def create_remaining_reminder_hook(
 
     logger = logging.getLogger(logger_name)
 
-    def remaining_reminder_hook(
-        hook_input: AfterModelHookInput,
-    ) -> AfterModelHookResult:
+    def remaining_reminder_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
         logger.info(
             f"🎣 Remaining iterations: {hook_input.max_iterations - hook_input.current_iteration}",
         )
@@ -302,10 +377,7 @@ def create_tool_after_approve_hook(tool_name: str) -> AfterModelHook:
     Args:
         tool_name: The name of the tool to run
     """
-
-    def tool_after_approve_hook(
-        hook_input: AfterModelHookInput,
-    ) -> AfterModelHookResult:
+    def tool_after_approve_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
         if hook_input.parsed_response and hook_input.parsed_response.tool_calls:
             tool_call_to_remove = []
             for tool_call in hook_input.parsed_response.tool_calls:
@@ -331,9 +403,7 @@ def create_tool_after_approve_hook(tool_name: str) -> AfterModelHook:
                     for call in hook_input.parsed_response.tool_calls
                     if call not in tool_call_to_remove
                 ]
-            return AfterModelHookResult.with_modifications(
-                parsed_response=hook_input.parsed_response,
-            )
+            return AfterModelHookResult.with_modifications(parsed_response=hook_input.parsed_response)
         return AfterModelHookResult.no_changes()
 
     return tool_after_approve_hook
@@ -413,9 +483,7 @@ def create_filter_hook(
 
         # Return modified response if changes were made
         if modified:
-            return AfterModelHookResult.with_modifications(
-                parsed_response=parsed_response,
-            )
+            return AfterModelHookResult.with_modifications(parsed_response=parsed_response)
         else:
             return AfterModelHookResult.no_changes()
 
@@ -637,22 +705,23 @@ class HookManager:
         if hook in self.hooks:
             self.hooks.remove(hook)
 
-    def execute_hooks(
-        self, hook_input: AfterModelHookInput,
-    ) -> tuple[ParsedResponse | None, list[dict[str, str]]]:
+    def execute_hooks(self, hook_input: AfterModelHookInput | BeforeModelHookInput):
         """Execute all hooks in sequence.
 
         Args:
-            hook_input: AfterModelHookInput containing all hook input data
-
-        Returns:
-            Tuple of (final_parsed_response, final_messages) after all hooks have processed them
+            hook_input: AfterModelHookInput or BeforeModelHookInput containing all hook input data
         """
         import logging
 
         logger = logging.getLogger(__name__)
+        
+        if isinstance(hook_input, AfterModelHookInput):
+            hook_type = "after"
+        else:
+            hook_type = "before"
 
-        current_parsed = hook_input.parsed_response
+        if hook_type == "after":
+            current_parsed = hook_input.parsed_response
         current_messages = hook_input.messages
 
         for i, hook in enumerate(self.hooks):
@@ -660,14 +729,15 @@ class HookManager:
                 logger.info(f"🎣 Executing hook {i + 1}/{len(self.hooks)}")
 
                 # Create input for the hook
-                hook_input.parsed_response = current_parsed
+                if hook_type == "after":
+                    hook_input.parsed_response = current_parsed
                 hook_input.messages = current_messages
 
                 result = hook(hook_input)
 
                 # Handle AfterModelHookResult
                 if result.has_modifications():
-                    if result.parsed_response is not None:
+                    if hook_type == "after" and result.parsed_response is not None:
                         current_parsed = result.parsed_response
                         logger.info(
                             f"🎣 Hook {i + 1} modified the parsed response",
@@ -686,7 +756,10 @@ class HookManager:
                 # Continue with other hooks even if one fails
                 continue
 
-        return current_parsed, current_messages
+        if hook_type == "after":
+            return current_parsed, current_messages
+        else:
+            return current_messages
 
     def __bool__(self) -> bool:
         """Check if there are any hooks."""
