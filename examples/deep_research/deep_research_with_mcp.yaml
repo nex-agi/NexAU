@@ -1,0 +1,54 @@
+name: deep_research_agent_with_mcp
+max_context: 100000
+system_prompt: "Date: {{date}}. You are a deep research agent with access to MCP servers. You are given a message and you need to search for the information that matches the message. Use the web_search, web_read tools, and MCP tools to get comprehensive information. Wait for tools to finish before you continue your response."
+system_prompt_type: string
+llm_config:
+  temperature: 0.7
+  max_tokens: 4096
+custom_llm_generator: "northau.archs.main_sub.execution.llm_caller:bypass_llm_generator"
+
+# MCP servers configuration
+mcp_servers:
+  - name: github
+    type: stdio
+    command: npx
+    args: ['-y', '@modelcontextprotocol/server-github']
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "xxxx"
+    timeout: 30
+  
+  - name: amap-maps
+    type: http
+    url: "https://mcp.amap.com/mcp?key=your_amap_key_here"
+    headers:
+      Content-Type: "application/json"
+      Accept: "application/json, text/event-stream"
+    timeout: 30
+
+tools:
+  - name: web_search
+    yaml_path: ./tools/WebSearch.yaml
+    binding: northau.archs.tool.builtin.web_tool:web_search
+  - name: web_read
+    yaml_path: ./tools/WebRead.yaml
+    binding: northau.archs.tool.builtin.web_tool:web_read
+  - name: todo_write
+    yaml_path: ./tools/TodoWrite.tool.yaml
+    binding: northau.archs.tool.builtin.todo_write:todo_write
+  - name: file_write
+    yaml_path: ./tools/Write.tool.yaml
+    binding: northau.archs.tool.builtin.file_tools.file_write_tool:file_write_tool
+
+sub_agents:
+  - name: sub_deep_research_agent
+    config_path: deep_research_agent.yaml
+
+after_tool_hooks:
+  - import: northau.archs.main_sub.execution.hooks:create_tool_logging_hook
+    params:
+      logger_name: "deep_research_tool_debug"
+
+after_model_hooks:
+  - import: northau.archs.main_sub.execution.hooks:create_logging_hook
+    params:
+      logger_name: "deep_research_model_debug"
