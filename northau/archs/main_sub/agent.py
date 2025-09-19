@@ -9,7 +9,7 @@ from typing import Union
 try:
     from langfuse import Langfuse
     try:
-        from langfuse.openai import openai
+        from langfuse import openai
     except ImportError:
         import openai
     LANGFUSE_AVAILABLE = True

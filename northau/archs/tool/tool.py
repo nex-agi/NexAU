@@ -11,7 +11,7 @@ from typing import Callable, Optional
 from pathlib import Path
 from diskcache import Cache
 
-from northau.northau.archs.main_sub.agent_state import AgentState
+from northau.archs.main_sub.agent_state import AgentState
 
 
 cache = Cache('./.tool_cache')
