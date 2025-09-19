@@ -1,5 +1,6 @@
 """Agent state management for unified state container."""
 from typing import Any
+from typing import Optional
 
 from .agent_context import AgentContext
 from .agent_context import GlobalStorage
@@ -21,6 +22,7 @@ class AgentState:
         agent_id: str,
         context: AgentContext,
         global_storage: GlobalStorage,
+        parent_agent_state: Optional['AgentState'] = None,
     ):
         """Initialize agent state.
 
@@ -34,6 +36,7 @@ class AgentState:
         self.agent_id = agent_id
         self.context = context
         self.global_storage = global_storage
+        self.parent_agent_state = parent_agent_state
 
     def get_context_value(self, key: str, default: Any = None) -> Any:
         """Get a value from the context.

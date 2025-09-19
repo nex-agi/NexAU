@@ -131,7 +131,9 @@ def _run_ripgrep(
                 f"Ripgrep error (code {result.returncode}): {result.stderr}",
             )
             raise subprocess.CalledProcessError(
-                result.returncode, cmd, result.stderr,
+                result.returncode,
+                cmd,
+                result.stderr,
             )
 
         duration_ms = int((time.time() - start_time) * 1000)
@@ -143,7 +145,8 @@ def _run_ripgrep(
 
 
 def _sort_files_by_modification_time(
-    filenames: list[str], search_path: str,
+    filenames: list[str],
+    search_path: str,
 ) -> list[str]:
     """
     Sort files by modification time (newest first), with filename as tiebreaker.
@@ -273,11 +276,14 @@ def grep_tool(
         context_after = kwargs.get('context_after') or kwargs.get('-A')
         context_around = kwargs.get('context_around') or kwargs.get('-C')
         show_line_numbers = kwargs.get(
-            'show_line_numbers', kwargs.get('-n', False),
+            'show_line_numbers',
+            kwargs.get('-n', False),
         )
         case_insensitive = kwargs.get(
-            'case_insensitive', kwargs.get(
-                '-i', True,
+            'case_insensitive',
+            kwargs.get(
+                '-i',
+                True,
             ),
         )  # Default to case insensitive
 
@@ -334,7 +340,8 @@ def grep_tool(
             if results:
                 try:
                     final_results = _sort_files_by_modification_time(
-                        results, search_dir,
+                        results,
+                        search_dir,
                     )
                 except Exception as e:
                     logger.warning(f"Failed to sort by modification time: {e}")
@@ -407,11 +414,17 @@ def grep_tool(
             )
         else:
             if output_mode == 'content':
-                result['message'] = f"Found {result_count} matching line{'s' if result_count != 1 else ''}."
+                result['message'] = (
+                    f"Found {result_count} matching line{'s' if result_count != 1 else ''}."
+                )
             elif output_mode == 'count':
-                result['message'] = f"Found match counts for {result_count} file{'s' if result_count != 1 else ''}."
+                result['message'] = (
+                    f"Found match counts for {result_count} file{'s' if result_count != 1 else ''}."
+                )
             else:
-                result['message'] = f"Found {result_count} file{'s' if result_count != 1 else ''} matching the pattern."
+                result['message'] = (
+                    f"Found {result_count} file{'s' if result_count != 1 else ''} matching the pattern."
+                )
 
         logger.info(
             f"Grep search completed: found {result_count} results in {total_duration_ms}ms (mode: {output_mode})",
@@ -429,13 +442,20 @@ def grep_tool(
                     truncated_result['filenames'] = final_results[:items_to_keep]
                     truncated_result['num_files'] = items_to_keep
                     truncated_result['truncated_output'] = True
-                    truncated_result['remaining_files'] = len(
-                        final_results,
-                    ) - items_to_keep
-                    truncated_result['message'] = f"Found {items_to_keep} files (truncated: {len(final_results) - items_to_keep} more files not shown)"
+                    truncated_result['remaining_files'] = (
+                        len(
+                            final_results,
+                        )
+                        - items_to_keep
+                    )
+                    truncated_result['message'] = (
+                        f"Found {items_to_keep} files (truncated: {len(final_results) - items_to_keep} more files not shown)"
+                    )
 
                     test_json = json.dumps(
-                        truncated_result, indent=2, ensure_ascii=False,
+                        truncated_result,
+                        indent=2,
+                        ensure_ascii=False,
                     )
                     if len(test_json) <= 10000:
                         return test_json
@@ -448,13 +468,20 @@ def grep_tool(
                     truncated_result['content'] = final_results[:items_to_keep]
                     truncated_result['num_lines'] = items_to_keep
                     truncated_result['truncated_output'] = True
-                    truncated_result['remaining_lines'] = len(
-                        final_results,
-                    ) - items_to_keep
-                    truncated_result['message'] = f"Found {items_to_keep} lines (truncated: {len(final_results) - items_to_keep} more lines not shown)"
+                    truncated_result['remaining_lines'] = (
+                        len(
+                            final_results,
+                        )
+                        - items_to_keep
+                    )
+                    truncated_result['message'] = (
+                        f"Found {items_to_keep} lines (truncated: {len(final_results) - items_to_keep} more lines not shown)"
+                    )
 
                     test_json = json.dumps(
-                        truncated_result, indent=2, ensure_ascii=False,
+                        truncated_result,
+                        indent=2,
+                        ensure_ascii=False,
                     )
                     if len(test_json) <= 1000:
                         return test_json
@@ -467,15 +494,20 @@ def grep_tool(
                     truncated_result['counts'] = final_results[:items_to_keep]
                     truncated_result['num_files'] = items_to_keep
                     truncated_result['truncated_output'] = True
-                    truncated_result['remaining_files'] = len(
-                        final_results,
-                    ) - items_to_keep
-                    truncated_result[
-                        'message'
-                    ] = f"Found counts for {items_to_keep} files (truncated: {len(final_results) - items_to_keep} more files not shown)"
+                    truncated_result['remaining_files'] = (
+                        len(
+                            final_results,
+                        )
+                        - items_to_keep
+                    )
+                    truncated_result['message'] = (
+                        f"Found counts for {items_to_keep} files (truncated: {len(final_results) - items_to_keep} more files not shown)"
+                    )
 
                     test_json = json.dumps(
-                        truncated_result, indent=2, ensure_ascii=False,
+                        truncated_result,
+                        indent=2,
+                        ensure_ascii=False,
                     )
                     if len(test_json) <= 1000:
                         return test_json
@@ -574,7 +606,8 @@ class GrepSearchTool:
             # Sort results
             if results:
                 sorted_filenames = _sort_files_by_modification_time(
-                    results, search_dir,
+                    results,
+                    search_dir,
                 )
             else:
                 sorted_filenames = []
@@ -677,7 +710,8 @@ def main():
     print('\n📋 测试 4: 搜索不存在的模式')
     try:
         result = grep_tool(
-            pattern='this_pattern_should_never_exist_12345_xyz', path='.',
+            pattern='this_pattern_should_never_exist_12345_xyz',
+            path='.',
         )
         result_dict = json.loads(result)
 
@@ -695,7 +729,9 @@ def main():
     try:
         grep_search = GrepSearchTool(max_results=5)
         result = grep_search.search(
-            pattern='class', path='.', include_pattern='*.py',
+            pattern='class',
+            path='.',
+            include_pattern='*.py',
         )
 
         if result['success']:
@@ -711,7 +747,8 @@ def main():
     print('\n📋 测试 6: 无效目录测试')
     try:
         result = grep_tool(
-            pattern='test', path='/this/directory/does/not/exist',
+            pattern='test',
+            path='/this/directory/does/not/exist',
         )
         result_dict = json.loads(result)
 

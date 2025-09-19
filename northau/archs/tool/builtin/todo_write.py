@@ -8,7 +8,9 @@ if TYPE_CHECKING:
     from ...main_sub.agent_state import AgentState
 
 
-def todo_write(todos: list[dict[str, str]], agent_state: Optional['AgentState'] = None) -> dict[str, Any]:
+def todo_write(
+    todos: list[dict[str, str]], agent_state: Optional['AgentState'] = None,
+) -> dict[str, Any]:
     """
     Create and manage a structured task list for the current coding session.
 
@@ -102,7 +104,8 @@ def todo_write(todos: list[dict[str, str]], agent_state: Optional['AgentState'] 
         # Store the todo list in agent context
         agent_state.set_global_value('current_todos', validated_todos)
         agent_state.set_global_value(
-            'todos_last_updated', datetime.now().isoformat(),
+            'todos_last_updated',
+            datetime.now().isoformat(),
         )
 
         # Generate summary for display

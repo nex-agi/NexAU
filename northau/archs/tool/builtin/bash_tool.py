@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # Maximum output length to prevent overwhelming responses
 MAX_OUTPUT_LENGTH = 30000
 DEFAULT_TIMEOUT = 120000  # 2 minutes in milliseconds
-MAX_TIMEOUT = 600000      # 10 minutes in milliseconds
+MAX_TIMEOUT = 600000  # 10 minutes in milliseconds
 
 
 def bash_tool(
@@ -66,8 +66,17 @@ def bash_tool(
 
     # Security warnings for potentially dangerous commands
     dangerous_patterns = [
-        'rm -rf /', 'sudo rm', 'rm -rf ~', 'mkfs', 'fdisk', 'dd if=',
-        '> /dev/', 'shutdown', 'reboot', 'halt', 'poweroff',
+        'rm -rf /',
+        'sudo rm',
+        'rm -rf ~',
+        'mkfs',
+        'fdisk',
+        'dd if=',
+        '> /dev/',
+        'shutdown',
+        'reboot',
+        'halt',
+        'poweroff',
     ]
 
     command_lower = command.lower().strip()
@@ -115,11 +124,11 @@ def bash_tool(
 
         # Prepare output
         result = {
-            "status": "success" if process.returncode == 0 else "error",
-            "command": command,
-            "exit_code": process.returncode,
-            "duration_ms": duration_ms,
-            "working_directory": workspace or os.getcwd()
+            'status': 'success' if process.returncode == 0 else 'error',
+            'command': command,
+            'exit_code': process.returncode,
+            'duration_ms': duration_ms,
+            'working_directory': workspace or os.getcwd(),
         }
 
         # Add description if provided
@@ -191,7 +200,11 @@ class BashTool:
     Provides session persistence and better error handling.
     """
 
-    def __init__(self, max_output_length: int = MAX_OUTPUT_LENGTH, default_timeout: int = DEFAULT_TIMEOUT):
+    def __init__(
+        self,
+        max_output_length: int = MAX_OUTPUT_LENGTH,
+        default_timeout: int = DEFAULT_TIMEOUT,
+    ):
         self.max_output_length = max_output_length
         self.default_timeout = default_timeout
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -236,7 +249,9 @@ class BashTool:
             if original_cwd:
                 os.chdir(original_cwd)
 
-    def execute_multiple(self, commands: list[str], timeout: Optional[int] = None) -> list[dict[str, Any]]:
+    def execute_multiple(
+        self, commands: list[str], timeout: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
         """
         Execute multiple commands in sequence.
 
@@ -298,7 +313,8 @@ def main():
     print('\n📋 测试 3: 超时测试')
     try:
         result = bash_tool(
-            'sleep 1', timeout=500,
+            'sleep 1',
+            timeout=500,
             description='Sleep with short timeout',
         )
         if result['status'] == 'timeout':
@@ -313,7 +329,10 @@ def main():
     print('\n📋 测试 4: 安全检查')
     try:
         result = bash_tool('rm -rf /', description='Dangerous command test')
-        if result['status'] == 'error' and 'dangerous' in result.get('error', '').lower():
+        if (
+            result['status'] == 'error'
+            and 'dangerous' in result.get('error', '').lower()
+        ):
             print('✅ 正确阻止了危险命令')
             print(f"⚠️  错误信息: {result['error']}")
         else:
@@ -326,7 +345,8 @@ def main():
     try:
         bash_tool_instance = BashTool()
         result = bash_tool_instance.execute(
-            'pwd', description='Print working directory',
+            'pwd',
+            description='Print working directory',
         )
         if result['status'] == 'success':
             print('✅ 类实现工作正常')

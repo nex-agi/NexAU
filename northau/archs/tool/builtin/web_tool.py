@@ -28,7 +28,10 @@ class SerperSearch:
         }
 
     def search(
-        self, query: str, search_type: str = 'search', num_results: int = 10,
+        self,
+        query: str,
+        search_type: str = 'search',
+        num_results: int = 10,
     ) -> list[dict[str, Any]] | str:
         if search_type not in self.result_key_for_type.keys():
             return f"Invalid search type: {search_type}. Serper search type should be one of {self.result_key_for_type.keys()}"
@@ -50,13 +53,16 @@ class SerperSearch:
                     ),
                 ) as client:
                     response = client.post(
-                        self.base_url + search_type, headers=headers, json=payload,
+                        self.base_url + search_type,
+                        headers=headers,
+                        json=payload,
                     )
                     response.raise_for_status()
 
                     data = response.json()
                     results = data.get(
-                        self.result_key_for_type[search_type], [],
+                        self.result_key_for_type[search_type],
+                        [],
                     )
                     results = results[:num_results]
                     for result in results:
@@ -118,7 +124,10 @@ class HtmlParser:
         try:
             with httpx.Client() as client:
                 response = client.post(
-                    self.base_url, json={'url': url}, headers=headers, timeout=30,
+                    self.base_url,
+                    json={'url': url},
+                    headers=headers,
+                    timeout=30,
                 )
         except Exception as e:
             logger.warning(f"Failed to parser {url} with error: {e}")
@@ -253,6 +262,7 @@ def web_read(
         if 'html' in content_type.lower():
             try:
                 from bs4 import BeautifulSoup
+
                 soup = BeautifulSoup(content, 'html.parser')
 
                 # Remove script and style elements
@@ -265,8 +275,7 @@ def web_read(
                 # Clean up text
                 lines = (line.strip() for line in text.splitlines())
                 chunks = (
-                    phrase.strip()
-                    for line in lines for phrase in line.split('  ')
+                    phrase.strip() for line in lines for phrase in line.split('  ')
                 )
                 text = ' '.join(chunk for chunk in chunks if chunk)
 
@@ -274,7 +283,9 @@ def web_read(
                 result['title'] = soup.title.string if soup.title else ''
 
             except ImportError:
-                result['note'] = 'BeautifulSoup not available. Install with: pip install beautifulsoup4'
+                result['note'] = (
+                    'BeautifulSoup not available. Install with: pip install beautifulsoup4'
+                )
             except Exception as e:
                 result['text_extraction_error'] = str(e)
 

@@ -29,8 +29,9 @@ def _match_ignore_patterns(path: str, ignore_patterns: list[str]) -> bool:
 
     for pattern in ignore_patterns:
         # Check both the full path and just the filename
-        if python_glob.fnmatch.fnmatch(path, pattern) or \
-           python_glob.fnmatch.fnmatch(path_obj.name, pattern):
+        if python_glob.fnmatch.fnmatch(path, pattern) or python_glob.fnmatch.fnmatch(
+            path_obj.name, pattern,
+        ):
             return True
 
     return False
@@ -176,7 +177,8 @@ def ls_tool(
         # Sort items: directories first, then files, both alphabetically
         items.sort(
             key=lambda x: (
-                not x.get('is_dir', False), x.get('name', '').lower(),
+                not x.get('is_dir', False),
+                x.get('name', '').lower(),
             ),
         )
 
@@ -201,11 +203,15 @@ def ls_tool(
         # Add summary message
         if len(items) == 0:
             if ignored_count > 0:
-                result['message'] = f"Directory is empty (ignored {ignored_count} items)"
+                result['message'] = (
+                    f"Directory is empty (ignored {ignored_count} items)"
+                )
             else:
                 result['message'] = 'Directory is empty'
         else:
-            result['message'] = f"Found {len(directories)} directories and {len(files)} files"
+            result['message'] = (
+                f"Found {len(directories)} directories and {len(files)} files"
+            )
             if ignored_count > 0:
                 result['message'] += f" (ignored {ignored_count} items)"
             if error_count > 0:
@@ -225,15 +231,20 @@ def ls_tool(
                 truncated_result['items'] = items[:items_to_keep]
                 truncated_result['total_items'] = items_to_keep
                 truncated_result['truncated_output'] = True
-                truncated_result['remaining_items'] = len(
-                    items,
-                ) - items_to_keep
+                truncated_result['remaining_items'] = (
+                    len(
+                        items,
+                    )
+                    - items_to_keep
+                )
                 truncated_result[
                     'message'
                 ] += f" (Output truncated: showing {items_to_keep} of {len(items)} items)"
 
                 test_json = json.dumps(
-                    truncated_result, indent=2, ensure_ascii=False,
+                    truncated_result,
+                    indent=2,
+                    ensure_ascii=False,
                 )
                 if len(test_json) <= 10000:
                     return truncated_result
@@ -342,7 +353,10 @@ class LSTool:
             if item.get('is_dir') and not item.get('error'):
                 subdir_path = item['path']
                 subdir_result = self._list_recursive(
-                    subdir_path, ignore_patterns, max_depth, current_depth + 1,
+                    subdir_path,
+                    ignore_patterns,
+                    max_depth,
+                    current_depth + 1,
                 )
                 item['contents'] = subdir_result
 
@@ -404,7 +418,9 @@ class LSTool:
 
             if item.get('is_dir') and 'contents' in item:
                 self._collect_files_by_extension(
-                    item['contents'], extension, matching_files,
+                    item['contents'],
+                    extension,
+                    matching_files,
                 )
 
 
@@ -501,7 +517,9 @@ def main():
     try:
         ls_tool_instance = LSTool()
         result = ls_tool_instance.find_files_by_extension(
-            current_dir, 'py', recursive=False,
+            current_dir,
+            'py',
+            recursive=False,
         )
 
         if result['status'] == 'success':

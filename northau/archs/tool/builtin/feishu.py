@@ -30,6 +30,7 @@ from lark_oapi.api.im.v1 import ListMessageResponse
 from lark_oapi.api.im.v1 import ReplyMessageRequest
 from lark_oapi.api.im.v1 import ReplyMessageRequestBody
 from lark_oapi.api.im.v1 import ReplyMessageResponse
+
 # from lark_oapi.api.wiki.v2 import *
 # except ImportError:
 #     # 当直接运行此文件时，使用绝对导入
@@ -148,7 +149,8 @@ def get_user_id_by_feishu_id(feishu_id: str) -> Optional[str]:
     try:
         # 获取API基础URL，默认为本地环境
         xiaobei_api_base_url = os.getenv(
-            'XIAOBEI_API_BASE_URL', 'http://localhost:8000',
+            'XIAOBEI_API_BASE_URL',
+            'http://localhost:8000',
         )
 
         url = f"{xiaobei_api_base_url}/api/v1/admin/get-user-by-feishu-id"
@@ -220,13 +222,16 @@ def cleanup_temp_file(temp_file_path: str):
 
 def get_feishu_chat_list(
     sort_type: Annotated[
-        str, '群组排序方式 - ByCreateTimeAsc/ByActiveTimeDesc (default ByCreateTimeAsc)',
+        str,
+        '群组排序方式 - ByCreateTimeAsc/ByActiveTimeDesc (default ByCreateTimeAsc)',
     ] = 'ByCreateTimeAsc',
     page_size: Annotated[
-        int, '分页大小，限制一次请求返回的数据条目数 (default 20, max 100)',
+        int,
+        '分页大小，限制一次请求返回的数据条目数 (default 20, max 100)',
     ] = 20,
     user_id_type: Annotated[
-        Optional[str], '用户ID类型 - open_id/union_id/user_id (default open_id)',
+        Optional[str],
+        '用户ID类型 - open_id/union_id/user_id (default open_id)',
     ] = None,
     page_token: Annotated[Optional[str], '分页标记，用于获取下一页数据'] = None,
 ) -> str:
@@ -398,8 +403,11 @@ def extract_post_text(content_obj: dict) -> str:
 
         # 检查是否是带语言标识的格式 (如 {"zh_cn": {...}})
         has_lang_format = any(
-            key in content_obj for key in [
-                'zh_cn', 'en_us', 'ja_jp',
+            key in content_obj
+            for key in [
+                'zh_cn',
+                'en_us',
+                'ja_jp',
             ]
         )
 
@@ -668,13 +676,16 @@ def _extract_element_text(element: dict) -> str:
 def get_feishu_message_list(
     container_id: Annotated[str, 'Container ID - 群聊或单聊的ID，或话题ID'],
     container_id_type: Annotated[
-        str, "Container type: 'chat' for 单聊/群聊, 'thread' for 话题 (default 'chat')",
+        str,
+        "Container type: 'chat' for 单聊/群聊, 'thread' for 话题 (default 'chat')",
     ] = 'chat',
     page_size: Annotated[
-        int, '分页大小，单次请求返回的数据条目数 (default 20, range 1-50)',
+        int,
+        '分页大小，单次请求返回的数据条目数 (default 20, range 1-50)',
     ] = 20,
     sort_type: Annotated[
-        str, '排序方式: ByCreateTimeAsc 或 ByCreateTimeDesc (default ByCreateTimeAsc)',
+        str,
+        '排序方式: ByCreateTimeAsc 或 ByCreateTimeDesc (default ByCreateTimeAsc)',
     ] = 'ByCreateTimeAsc',
     start_time: Annotated[
         Optional[str],
@@ -686,7 +697,8 @@ def get_feishu_message_list(
     ] = None,
     page_token: Annotated[Optional[str], '分页标记，用于获取下一页数据'] = None,
     format_messages: Annotated[
-        bool, '是否格式化消息显示用户名和时间 (default True)',
+        bool,
+        '是否格式化消息显示用户名和时间 (default True)',
     ] = True,
 ) -> str:
     """获取指定会话(单聊/群聊/话题)内的历史消息。注意：机器人必须在被查询的群组中才能获取消息。"""
@@ -800,7 +812,8 @@ def get_feishu_message_list(
                     create_time = message.get('create_time', '')
                     sender_id = message.get('sender', {}).get('id', '')
                     sender_type = message.get(
-                        'sender', {},
+                        'sender',
+                        {},
                     ).get('sender_type', '')
                     msg_type = message.get('msg_type', '')
                     content_text = ''
@@ -838,38 +851,46 @@ def get_feishu_message_list(
                                     # 优先检查常见的文本字段
                                     if content_obj.get('text'):
                                         content_text = content_obj.get(
-                                            'text', '',
+                                            'text',
+                                            '',
                                         )
                                     elif content_obj.get('content'):
                                         content_text = content_obj.get(
-                                            'content', '',
+                                            'content',
+                                            '',
                                         )
                                     elif content_obj.get('message'):
                                         content_text = content_obj.get(
-                                            'message', '',
+                                            'message',
+                                            '',
                                         )
                                     elif content_obj.get('template'):
                                         # 飞书系统消息通常有template字段，尝试格式化
                                         template = content_obj.get(
-                                            'template', '',
+                                            'template',
+                                            '',
                                         )
                                         from_user = content_obj.get(
-                                            'from_user', [],
+                                            'from_user',
+                                            [],
                                         )
                                         to_chatters = content_obj.get(
-                                            'to_chatters', [],
+                                            'to_chatters',
+                                            [],
                                         )
 
                                         # 替换常见的模板变量
                                         if from_user:
                                             template = template.replace(
-                                                '{from_user}', ', '.join(
+                                                '{from_user}',
+                                                ', '.join(
                                                     from_user,
                                                 ),
                                             )
                                         if to_chatters:
                                             template = template.replace(
-                                                '{to_chatters}', ', '.join(
+                                                '{to_chatters}',
+                                                ', '.join(
                                                     to_chatters,
                                                 ),
                                             )
@@ -883,14 +904,17 @@ def get_feishu_message_list(
                                                 'divider_text',
                                             ] and isinstance(value, str):
                                                 template = template.replace(
-                                                    f"{{{key}}}", value,
+                                                    f"{{{key}}}",
+                                                    value,
                                                 )
 
                                         # 移除未替换的模板变量
                                         import re
 
                                         template = re.sub(
-                                            r'\{[^}]*\}', '[信息不可用]', template,
+                                            r'\{[^}]*\}',
+                                            '[信息不可用]',
+                                            template,
                                         )
 
                                         content_text = template
@@ -925,7 +949,8 @@ def get_feishu_message_list(
                     user_name = '未知用户'
                     if sender_type == 'user' and sender_id:
                         user_name = user_mapping.get(
-                            sender_id, f"用户ID:{sender_id}",
+                            sender_id,
+                            f"用户ID:{sender_id}",
                         )
                         # 如果用户映射中找不到，可能是权限问题或新用户
                         if user_name == f"用户ID:{sender_id}":
@@ -979,7 +1004,8 @@ def send_feishu_message(
         '消息类型 - text/post/image/interactive/audio/media/file/share_chat/share_user/sticker',
     ] = 'text',
     receive_id_type: Annotated[
-        str, '接收者ID类型 - open_id/user_id/union_id/email/chat_id',
+        str,
+        '接收者ID类型 - open_id/user_id/union_id/email/chat_id',
     ] = 'open_id',
 ) -> str:
     """发送消息到指定用户或群组。统一的消息发送接口，支持多种消息类型。
@@ -1131,7 +1157,8 @@ def send_feishu_message(
             except json.JSONDecodeError:
                 # 如果不是JSON格式，包装成文本消息格式
                 final_content = json.dumps(
-                    {'text': content}, ensure_ascii=False,
+                    {'text': content},
+                    ensure_ascii=False,
                 )
 
         elif msg_type == 'post':
@@ -1612,7 +1639,8 @@ def upload_feishu_file(
                         pass
 
                     return json.dumps(
-                        {'error': '上传失败', 'message': error_msg}, ensure_ascii=False,
+                        {'error': '上传失败', 'message': error_msg},
+                        ensure_ascii=False,
                     )
 
                 # 处理业务结果
@@ -1627,7 +1655,8 @@ def upload_feishu_file(
         error_msg = f"上传飞书文件失败. Error: {repr(e)}"
         logger.error(error_msg)
         return json.dumps(
-            {'error': '上传异常', 'message': error_msg}, ensure_ascii=False,
+            {'error': '上传异常', 'message': error_msg},
+            ensure_ascii=False,
         )
 
 
@@ -1676,7 +1705,8 @@ def reply_to_feishu_message(
             except json.JSONDecodeError:
                 # 如果不是JSON格式，包装成文本消息格式
                 final_content = json.dumps(
-                    {'text': content}, ensure_ascii=False,
+                    {'text': content},
+                    ensure_ascii=False,
                 )
         elif msg_type in [
             'post',
@@ -1779,10 +1809,12 @@ def reply_to_feishu_message(
 def search_users_in_chat(
     chat_id: Annotated[str, '群组ID，获取该群组中所有用户信息'],
     member_id_type: Annotated[
-        str, '成员ID类型 - user_id/union_id/open_id/app_id (default open_id)',
+        str,
+        '成员ID类型 - user_id/union_id/open_id/app_id (default open_id)',
     ] = 'open_id',
     page_size: Annotated[
-        int, '分页大小，单次请求返回的数据条目数 (default 100, max 100)',
+        int,
+        '分页大小，单次请求返回的数据条目数 (default 100, max 100)',
     ] = 100,
     page_token: Annotated[Optional[str], '分页标记，用于获取下一页数据'] = None,
 ) -> str:
@@ -1871,7 +1903,8 @@ def search_users_in_chat(
 def get_user_info_by_id(
     user_id: Annotated[str, '用户ID'],
     user_id_type: Annotated[
-        str, '用户ID类型 - open_id/user_id/union_id (default open_id)',
+        str,
+        '用户ID类型 - open_id/user_id/union_id (default open_id)',
     ] = 'open_id',
     department_id_type: Annotated[
         str,
@@ -2038,7 +2071,8 @@ def get_user_id_by_name(name: Annotated[str, '要查找的用户姓名']) -> str
         error_msg = f"查找用户信息失败. Error: {repr(e)}"
         logger.error(error_msg)
         return json.dumps(
-            {'error': '查找失败', 'message': error_msg}, ensure_ascii=False,
+            {'error': '查找失败', 'message': error_msg},
+            ensure_ascii=False,
         )
 
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from northau.archs.llm import LLMConfig
 from northau.archs.main_sub import create_agent
 from northau.archs.main_sub.execution.hooks import AfterModelHookInput
-from northau.archs.main_sub.execution.hooks import HookResult
+from northau.archs.main_sub.execution.hooks import AfterModelHookResult
 from northau.archs.tool import Tool
 from northau.archs.tool.builtin.todo_write import todo_write
 from northau.archs.tool.builtin.web_tool import web_read
@@ -19,14 +19,17 @@ def get_date():
 
 
 def create_increase_global_counter_hook():
-    def increase_global_counter_hook(hook_input: AfterModelHookInput) -> HookResult:
+    def increase_global_counter_hook(
+        hook_input: AfterModelHookInput,
+    ) -> AfterModelHookResult:
         if hook_input.global_storage is not None:
             with hook_input.global_storage.lock_key('counter'):
                 counter = hook_input.global_storage.get('counter', 0)
                 print(f"Increase global counter: {counter}")
                 hook_input.global_storage.set('counter', counter + 1)
-            return HookResult.no_changes()
-        return HookResult.no_changes()
+            return AfterModelHookResult.no_changes()
+        return AfterModelHookResult.no_changes()
+
     return increase_global_counter_hook
 
 
@@ -40,13 +43,16 @@ def main():
         script_dir = Path(__file__).parent
         print('Creating tools...')
         web_search_tool = Tool.from_yaml(
-            str(script_dir / 'tools/WebSearch.yaml'), binding=web_search,
+            str(script_dir / 'tools/WebSearch.yaml'),
+            binding=web_search,
         )
         web_read_tool = Tool.from_yaml(
-            str(script_dir / 'tools/WebRead.yaml'), binding=web_read,
+            str(script_dir / 'tools/WebRead.yaml'),
+            binding=web_read,
         )
         todo_write_tool = Tool.from_yaml(
-            str(script_dir / 'tools/TodoWrite.tool.yaml'), binding=todo_write,
+            str(script_dir / 'tools/TodoWrite.tool.yaml'),
+            binding=todo_write,
         )
         print('✓ Tools created successfully')
 
@@ -86,7 +92,8 @@ def main():
         print('-' * 30)
 
         response = deep_research_agent.run(
-            web_message, context={
+            web_message,
+            context={
                 'date': get_date(),
             },
         )
@@ -95,6 +102,7 @@ def main():
     except Exception as e:
         print(f"✗ Error: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 

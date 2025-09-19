@@ -132,13 +132,20 @@ def glob_tool(
                 truncated_result['filenames'] = files[:files_to_keep]
                 truncated_result['num_files'] = files_to_keep
                 truncated_result['truncated_output'] = True
-                truncated_result['remaining_files'] = len(
-                    files,
-                ) - files_to_keep
-                truncated_result['message'] = f"Found {files_to_keep} files (truncated: {len(files) - files_to_keep} more files not shown)"
+                truncated_result['remaining_files'] = (
+                    len(
+                        files,
+                    )
+                    - files_to_keep
+                )
+                truncated_result['message'] = (
+                    f"Found {files_to_keep} files (truncated: {len(files) - files_to_keep} more files not shown)"
+                )
 
                 test_json = json.dumps(
-                    truncated_result, indent=2, ensure_ascii=False,
+                    truncated_result,
+                    indent=2,
+                    ensure_ascii=False,
                 )
                 if len(test_json) <= 10000:
                     return test_json

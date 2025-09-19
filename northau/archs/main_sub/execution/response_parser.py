@@ -48,9 +48,13 @@ class ResponseParser:
                 batch_agent_calls.append(batch_call)
 
         # Check for parallel execution formats
-        parallel_tool_calls_pattern = r'<use_parallel_tool_calls>(.*?)</use_parallel_tool_calls>'
+        parallel_tool_calls_pattern = (
+            r'<use_parallel_tool_calls>(.*?)</use_parallel_tool_calls>'
+        )
         parallel_tool_calls_match = re.search(
-            parallel_tool_calls_pattern, response, re.DOTALL,
+            parallel_tool_calls_pattern,
+            response,
+            re.DOTALL,
         )
 
         if parallel_tool_calls_match:
@@ -59,7 +63,9 @@ class ResponseParser:
             parallel_content = parallel_tool_calls_match.group(1)
             tool_pattern = r'<parallel_tool>(.*?)</parallel_tool>'
             tool_matches = re.findall(
-                tool_pattern, parallel_content, re.DOTALL,
+                tool_pattern,
+                parallel_content,
+                re.DOTALL,
             )
             for tool_xml in tool_matches:
                 tool_call = self._parse_tool_call(tool_xml)
@@ -125,7 +131,6 @@ class ResponseParser:
                     param_value = param.text
                     parameters[param_name] = param_value
 
-
             return ToolCall(
                 tool_name=tool_name,
                 parameters=parameters,
@@ -144,6 +149,7 @@ class ResponseParser:
 
             # Try one final fallback: extract tool name and treat all content as raw
             from ..utils.xml_utils import XMLUtils
+
             tool_name = XMLUtils.extract_tool_name_from_xml(xml_content)
             if tool_name != 'unknown':
                 logger.info(
@@ -203,6 +209,7 @@ class ResponseParser:
 
             # Try one final fallback: extract agent name and treat message as raw
             from ..utils.xml_utils import XMLUtils
+
             agent_name = XMLUtils.extract_agent_name_from_xml(xml_content)
             if agent_name != 'unknown':
                 logger.info(
@@ -210,10 +217,15 @@ class ResponseParser:
                 )
                 # Try to extract some message content
                 message_match = re.search(
-                    r'<message[^>]*>(.*?)</message>', xml_content, re.DOTALL | re.IGNORECASE,
+                    r'<message[^>]*>(.*?)</message>',
+                    xml_content,
+                    re.DOTALL | re.IGNORECASE,
                 )
-                message = message_match.group(1).strip(
-                ) if message_match else 'Unable to parse message content'
+                message = (
+                    message_match.group(1).strip()
+                    if message_match
+                    else 'Unable to parse message content'
+                )
                 return SubAgentCall(
                     agent_name=agent_name,
                     message=message,
@@ -254,8 +266,11 @@ class ResponseParser:
             file_path = (file_name_elem.text or '').strip()
 
             format_elem = input_data_elem.find('format')
-            data_format = (format_elem.text or 'jsonl').strip(
-            ) if format_elem is not None else 'jsonl'
+            data_format = (
+                (format_elem.text or 'jsonl').strip()
+                if format_elem is not None
+                else 'jsonl'
+            )
 
             # Get message template
             message_elem = root.find('message')

@@ -12,6 +12,7 @@ from ..llm.llm_config import LLMConfig
 @dataclass
 class ExecutionConfig:
     """Configuration for agent execution environment and behavior."""
+
     max_iterations: int = 100
     max_context_tokens: int = 128000
     max_running_subagents: int = 5
@@ -22,6 +23,7 @@ class ExecutionConfig:
 @dataclass
 class AgentConfig:
     """Configuration for an Agent's definition and behavior."""
+
     name: Optional[str] = None
     agent_id: Optional[str] = None
     system_prompt: Optional[str] = None

@@ -20,6 +20,7 @@ class AfterModelHookInput:
     - parsed_response: The parsed structure containing tool/agent calls
     - messages: The current conversation history
     """
+
     agent_state: 'AgentState'
     max_iterations: int
     current_iteration: int
@@ -29,7 +30,7 @@ class AfterModelHookInput:
 
 
 @dataclass
-class HookResult:
+class AfterModelHookResult:
     """Result returned by after_model_hooks.
 
     This class encapsulates the modifications that a hook can make:
@@ -38,6 +39,7 @@ class HookResult:
 
     If both fields are None, it indicates the hook made no modifications.
     """
+
     parsed_response: ParsedResponse | None = None
     messages: list[dict[str, str]] | None = None
 
@@ -46,23 +48,24 @@ class HookResult:
         return self.parsed_response is not None or self.messages is not None
 
     @classmethod
-    def no_changes(cls) -> 'HookResult':
-        """Create a HookResult indicating no modifications."""
+    def no_changes(cls) -> 'AfterModelHookResult':
+        """Create a AfterModelHookResult indicating no modifications."""
         return cls(parsed_response=None, messages=None)
 
     @classmethod
     def with_modifications(
-        cls, parsed_response: ParsedResponse | None = None,
+        cls,
+        parsed_response: ParsedResponse | None = None,
         messages: list[dict[str, str]] | None = None,
-    ) -> 'HookResult':
-        """Create a HookResult with specified modifications.
+    ) -> 'AfterModelHookResult':
+        """Create a AfterModelHookResult with specified modifications.
 
         Args:
             parsed_response: Modified ParsedResponse, or None if no changes
             messages: Modified message history, or None if no changes
 
         Returns:
-            HookResult with the specified modifications
+            AfterModelHookResult with the specified modifications
         """
         return cls(parsed_response=parsed_response, messages=messages)
 
@@ -75,7 +78,7 @@ class AfterModelHook(Protocol):
     for inspection, modification, or additional processing.
     """
 
-    def __call__(self, hook_input: AfterModelHookInput) -> HookResult:
+    def __call__(self, hook_input: AfterModelHookInput) -> AfterModelHookResult:
         """Process the LLM response, parsed calls, and conversation history.
 
         Args:
@@ -86,13 +89,13 @@ class AfterModelHook(Protocol):
                 - messages: The current conversation history (list of message dicts)
 
         Returns:
-            HookResult containing any modifications:
-            - HookResult.parsed_response: Modified parsed response, or None to use original
-            - HookResult.messages: Modified message history, or None to use original
+            AfterModelHookResult containing any modifications:
+            - AfterModelHookResult.parsed_response: Modified parsed response, or None to use original
+            - AfterModelHookResult.messages: Modified message history, or None to use original
 
             Use the class methods for convenient creation:
-            - HookResult.no_changes(): No modifications
-            - HookResult.with_modifications(parsed_response=..., messages=...): Any combination of modifications
+            - AfterModelHookResult.no_changes(): No modifications
+            - AfterModelHookResult.with_modifications(parsed_response=..., messages=...): Any combination of modifications
         """
         ...
 
@@ -107,6 +110,7 @@ class AfterToolHookInput:
     - tool_input: The parameters passed to the tool
     - tool_output: The result returned by the tool
     """
+
     agent_state: 'AgentState'
     tool_name: str
     tool_input: dict[str, Any]
@@ -122,6 +126,7 @@ class AfterToolHookResult:
 
     If tool_output is None, it indicates the hook made no modifications.
     """
+
     tool_output: Any = None
 
     def has_modifications(self) -> bool:
@@ -185,9 +190,10 @@ def create_logging_hook(logger_name: str = 'after_model_hook') -> AfterModelHook
         A hook that logs the parsed response details and message history
     """
     import logging
+
     logger = logging.getLogger(logger_name)
 
-    def logging_hook(hook_input: AfterModelHookInput) -> HookResult:
+    def logging_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
         logger.info('🎣 ===== AFTER MODEL HOOK TRIGGERED =====')
         logger.info(f"🎣 Agent name: {hook_input.agent_state.agent_name}")
         logger.info(f"🎣 Agent id: {hook_input.agent_state.agent_id}")
@@ -221,12 +227,16 @@ def create_logging_hook(logger_name: str = 'after_model_hook') -> AfterModelHook
                     f"🎣 Tool call {i + 1}: {tool_call.tool_name} with {len(tool_call.parameters)} parameters",
                 )
 
-            for i, sub_agent_call in enumerate(hook_input.parsed_response.sub_agent_calls):
+            for i, sub_agent_call in enumerate(
+                hook_input.parsed_response.sub_agent_calls,
+            ):
                 logger.info(
                     f"🎣 Sub-agent call {i + 1}: {sub_agent_call.agent_name}",
                 )
 
-            for i, batch_call in enumerate(hook_input.parsed_response.batch_agent_calls):
+            for i, batch_call in enumerate(
+                hook_input.parsed_response.batch_agent_calls,
+            ):
                 logger.info(
                     f"🎣 Batch call {i + 1}: {batch_call.agent_name} on {batch_call.file_path}",
                 )
@@ -247,12 +257,14 @@ def create_logging_hook(logger_name: str = 'after_model_hook') -> AfterModelHook
         logger.info('🎣 ===== END AFTER MODEL HOOK =====')
 
         # Return no changes
-        return HookResult.no_changes()
+        return AfterModelHookResult.no_changes()
 
     return logging_hook
 
 
-def create_remaining_reminder_hook(logger_name: str = 'after_model_hook') -> AfterModelHook:
+def create_remaining_reminder_hook(
+    logger_name: str = 'after_model_hook',
+) -> AfterModelHook:
     """Create a simple logging hook for debugging purposes.
 
     Args:
@@ -262,19 +274,24 @@ def create_remaining_reminder_hook(logger_name: str = 'after_model_hook') -> Aft
         A hook that logs the parsed response details and message history
     """
     import logging
+
     logger = logging.getLogger(logger_name)
 
-    def remaining_reminder_hook(hook_input: AfterModelHookInput) -> HookResult:
+    def remaining_reminder_hook(
+        hook_input: AfterModelHookInput,
+    ) -> AfterModelHookResult:
         logger.info(
             f"🎣 Remaining iterations: {hook_input.max_iterations - hook_input.current_iteration}",
         )
-        hook_input.messages.append({
-            'role': 'user',
-            'content': f"Remaining iterations: {hook_input.max_iterations - hook_input.current_iteration}",
-        })
+        hook_input.messages.append(
+            {
+                'role': 'user',
+                'content': f"Remaining iterations: {hook_input.max_iterations - hook_input.current_iteration}",
+            },
+        )
 
         # Return no changes
-        return HookResult.with_modifications(messages=hook_input.messages)
+        return AfterModelHookResult.with_modifications(messages=hook_input.messages)
 
     return remaining_reminder_hook
 
@@ -285,7 +302,10 @@ def create_tool_after_approve_hook(tool_name: str) -> AfterModelHook:
     Args:
         tool_name: The name of the tool to run
     """
-    def tool_after_approve_hook(hook_input: AfterModelHookInput) -> HookResult:
+
+    def tool_after_approve_hook(
+        hook_input: AfterModelHookInput,
+    ) -> AfterModelHookResult:
         if hook_input.parsed_response and hook_input.parsed_response.tool_calls:
             tool_call_to_remove = []
             for tool_call in hook_input.parsed_response.tool_calls:
@@ -307,11 +327,14 @@ def create_tool_after_approve_hook(tool_name: str) -> AfterModelHook:
 
             if tool_call_to_remove:
                 hook_input.parsed_response.tool_calls = [
-                    call for call in hook_input.parsed_response.tool_calls
+                    call
+                    for call in hook_input.parsed_response.tool_calls
                     if call not in tool_call_to_remove
                 ]
-            return HookResult.with_modifications(parsed_response=hook_input.parsed_response)
-        return HookResult.no_changes()
+            return AfterModelHookResult.with_modifications(
+                parsed_response=hook_input.parsed_response,
+            )
+        return AfterModelHookResult.no_changes()
 
     return tool_after_approve_hook
 
@@ -330,11 +353,12 @@ def create_filter_hook(
         A hook that filters the parsed response
     """
     import logging
+
     logger = logging.getLogger('filter_hook')
 
-    def filter_hook(hook_input: AfterModelHookInput) -> HookResult:
+    def filter_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
         if hook_input.parsed_response is None:
-            return HookResult.no_changes()
+            return AfterModelHookResult.no_changes()
 
         parsed_response: ParsedResponse = hook_input.parsed_response
         modified = False
@@ -343,7 +367,8 @@ def create_filter_hook(
         if allowed_tools is not None:
             original_count = len(parsed_response.tool_calls)
             parsed_response.tool_calls = [
-                call for call in parsed_response.tool_calls
+                call
+                for call in parsed_response.tool_calls
                 if call.tool_name in allowed_tools
             ]
             if len(parsed_response.tool_calls) != original_count:
@@ -358,7 +383,8 @@ def create_filter_hook(
         if allowed_agents is not None:
             original_count = len(parsed_response.sub_agent_calls)
             parsed_response.sub_agent_calls = [
-                call for call in parsed_response.sub_agent_calls
+                call
+                for call in parsed_response.sub_agent_calls
                 if call.agent_name in allowed_agents
             ]
             if len(parsed_response.sub_agent_calls) != original_count:
@@ -373,7 +399,8 @@ def create_filter_hook(
         if allowed_agents is not None:
             original_count = len(parsed_response.batch_agent_calls)
             parsed_response.batch_agent_calls = [
-                call for call in parsed_response.batch_agent_calls
+                call
+                for call in parsed_response.batch_agent_calls
                 if call.agent_name in allowed_agents
             ]
             if len(parsed_response.batch_agent_calls) != original_count:
@@ -386,9 +413,11 @@ def create_filter_hook(
 
         # Return modified response if changes were made
         if modified:
-            return HookResult.with_modifications(parsed_response=parsed_response)
+            return AfterModelHookResult.with_modifications(
+                parsed_response=parsed_response,
+            )
         else:
-            return HookResult.no_changes()
+            return AfterModelHookResult.no_changes()
 
     return filter_hook
 
@@ -403,6 +432,7 @@ def create_tool_logging_hook(logger_name: str = 'after_tool_hook') -> AfterToolH
         A hook that logs tool execution details
     """
     import logging
+
     logger = logging.getLogger(logger_name)
 
     def tool_logging_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
@@ -438,13 +468,13 @@ def create_tool_output_filter_hook(filter_keys: set[str]) -> AfterToolHook:
         A hook that removes specified keys from tool outputs
     """
     import logging
+
     logger = logging.getLogger('tool_filter_hook')
 
     def tool_filter_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
         if isinstance(hook_input.tool_output, dict):
             filtered_output = {
-                k: v for k, v in hook_input.tool_output.items()
-                if k not in filter_keys
+                k: v for k, v in hook_input.tool_output.items() if k not in filter_keys
             }
 
             if len(filtered_output) != len(hook_input.tool_output):
@@ -454,7 +484,9 @@ def create_tool_output_filter_hook(filter_keys: set[str]) -> AfterToolHook:
                 logger.info(
                     f"🔧 Filtered {filtered_count} sensitive keys from {hook_input.tool_name} output",
                 )
-                return AfterToolHookResult.with_modifications(tool_output=filtered_output)
+                return AfterToolHookResult.with_modifications(
+                    tool_output=filtered_output,
+                )
 
         return AfterToolHookResult.no_changes()
 
@@ -470,6 +502,7 @@ def create_tool_result_transformer_hook(transform_func) -> AfterToolHook:
     Returns:
         A hook that applies the transformation function
     """
+
     def tool_transformer_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
         try:
             transformed_output = transform_func(
@@ -482,10 +515,13 @@ def create_tool_result_transformer_hook(transform_func) -> AfterToolHook:
 
             # Only return modifications if the output actually changed
             if transformed_output != hook_input.tool_output:
-                return AfterToolHookResult.with_modifications(tool_output=transformed_output)
+                return AfterToolHookResult.with_modifications(
+                    tool_output=transformed_output,
+                )
 
         except Exception as e:
             import logging
+
             logger = logging.getLogger('tool_transformer_hook')
             logger.warning(
                 f"⚠️ Tool transformation failed for {hook_input.tool_name}: {e}",
@@ -534,6 +570,7 @@ class ToolHookManager:
             Final tool output after all hooks have processed it
         """
         import logging
+
         logger = logging.getLogger(__name__)
 
         current_output = hook_input.tool_output
@@ -600,7 +637,9 @@ class HookManager:
         if hook in self.hooks:
             self.hooks.remove(hook)
 
-    def execute_hooks(self, hook_input: AfterModelHookInput) -> tuple[ParsedResponse | None, list[dict[str, str]]]:
+    def execute_hooks(
+        self, hook_input: AfterModelHookInput,
+    ) -> tuple[ParsedResponse | None, list[dict[str, str]]]:
         """Execute all hooks in sequence.
 
         Args:
@@ -610,6 +649,7 @@ class HookManager:
             Tuple of (final_parsed_response, final_messages) after all hooks have processed them
         """
         import logging
+
         logger = logging.getLogger(__name__)
 
         current_parsed = hook_input.parsed_response
@@ -625,7 +665,7 @@ class HookManager:
 
                 result = hook(hook_input)
 
-                # Handle HookResult
+                # Handle AfterModelHookResult
                 if result.has_modifications():
                     if result.parsed_response is not None:
                         current_parsed = result.parsed_response

@@ -7,6 +7,7 @@ from typing import Optional
 
 from .file_state import update_file_timestamp
 from .file_state import validate_file_read_state
+
 # Import file state management for read/write coordination
 
 logger = logging.getLogger(__name__)
@@ -89,7 +90,10 @@ def _generate_diff(old_content: str, new_content: str, file_path: str) -> str:
 
 
 def _write_file_content(
-    file_path: str, content: str, encoding: str = 'utf-8', line_ending: str = '\n',
+    file_path: str,
+    content: str,
+    encoding: str = 'utf-8',
+    line_ending: str = '\n',
 ) -> None:
     """写入文件内容"""
     # 标准化行结束符

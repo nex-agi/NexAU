@@ -102,7 +102,9 @@ def multiedit_tool(
 
         edit_operations.append(
             EditOperation(
-                old_string, new_string, replace_all,
+                old_string,
+                new_string,
+                replace_all,
             ),
         )
 
@@ -165,7 +167,11 @@ def multiedit_tool(
                     'error': f"Edit {i}: old_string not found in file content",
                     'file_path': file_path,
                     'edit_index': i,
-                    'old_string': edit_op.old_string[:100] + '...' if len(edit_op.old_string) > 100 else edit_op.old_string,
+                    'old_string': (
+                        edit_op.old_string[:100] + '...'
+                        if len(edit_op.old_string) > 100
+                        else edit_op.old_string
+                    ),
                     'applied_edits': len(applied_edits),
                     'duration_ms': int((time.time() - start_time) * 1000),
                 }
@@ -173,22 +179,27 @@ def multiedit_tool(
             # Perform the replacement
             if edit_op.replace_all:
                 new_content = current_content.replace(
-                    edit_op.old_string, edit_op.new_string,
+                    edit_op.old_string,
+                    edit_op.new_string,
                 )
                 replacements_made = current_content.count(edit_op.old_string)
             else:
                 new_content = current_content.replace(
-                    edit_op.old_string, edit_op.new_string, 1,
+                    edit_op.old_string,
+                    edit_op.new_string,
+                    1,
                 )
                 replacements_made = 1 if edit_op.old_string in current_content else 0
 
             current_content = new_content
-            applied_edits.append({
-                'edit_index': i,
-                'replacements_made': replacements_made,
-                'old_string_length': len(edit_op.old_string),
-                'new_string_length': len(edit_op.new_string),
-            })
+            applied_edits.append(
+                {
+                    'edit_index': i,
+                    'replacements_made': replacements_made,
+                    'old_string_length': len(edit_op.old_string),
+                    'new_string_length': len(edit_op.new_string),
+                },
+            )
 
         # Write the final content to file
         # Create directory if it doesn't exist for new files
@@ -322,6 +333,7 @@ class MultiEditTool:
     def _create_backup(self, file_path: str) -> str:
         """Create a backup of the file before editing."""
         import shutil
+
         timestamp = int(time.time())
         backup_path = f"{file_path}.backup.{timestamp}"
         shutil.copy2(file_path, backup_path)
@@ -489,6 +501,7 @@ Final line here."""
 
         # Also clean up backup files
         import glob
+
         backup_files = glob.glob(f"{test_file_path}.backup.*")
         for backup_file in backup_files:
             os.remove(backup_file)

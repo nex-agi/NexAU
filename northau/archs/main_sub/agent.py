@@ -8,6 +8,7 @@ from typing import Union
 
 try:
     from langfuse import Langfuse
+
     try:
         from langfuse import openai
     except ImportError:
@@ -21,14 +22,14 @@ except ImportError:
     except ImportError:
         openai = None
 
-from .config import AgentConfig, ExecutionConfig
-from .execution.executor import Executor
-from .agent_context import AgentContext, GlobalStorage
-from .agent_state import AgentState
-from .utils.cleanup_manager import cleanup_manager
-from .utils.token_counter import TokenCounter
-from .prompt_builder import PromptBuilder
-from ..llm.llm_config import LLMConfig
+from northau.archs.main_sub.config import AgentConfig, ExecutionConfig
+from northau.archs.main_sub.execution.executor import Executor
+from northau.archs.main_sub.agent_context import AgentContext, GlobalStorage
+from northau.archs.main_sub.agent_state import AgentState
+from northau.archs.main_sub.utils.cleanup_manager import cleanup_manager
+from northau.archs.main_sub.utils.token_counter import TokenCounter
+from northau.archs.main_sub.prompt_builder import PromptBuilder
+from northau.archs.llm.llm_config import LLMConfig
 
 # Setup logger for agent execution
 logger = logging.getLogger(__name__)
@@ -59,7 +60,9 @@ class Agent:
             exec_config: Optional execution configuration
         """
         self.config = config
-        self.global_storage = global_storage if global_storage is not None else GlobalStorage()
+        self.global_storage = (
+            global_storage if global_storage is not None else GlobalStorage()
+        )
         self.exec_config = exec_config if exec_config is not None else ExecutionConfig()
 
         # Initialize services
@@ -72,7 +75,9 @@ class Agent:
 
         # Build tool registry for quick lookup
         self.tool_registry = {tool.name: tool for tool in self.config.tools}
-        self.serial_tool_name = [tool.name for tool in self.config.tools if tool.disable_parallel]
+        self.serial_tool_name = [
+            tool.name for tool in self.config.tools if tool.disable_parallel
+        ]
 
         # Initialize prompt builder
         self.prompt_builder = PromptBuilder()
@@ -109,6 +114,7 @@ class Agent:
 
         try:
             import os
+
             public_key = os.getenv('LANGFUSE_PUBLIC_KEY')
             secret_key = os.getenv('LANGFUSE_SECRET_KEY')
             host = os.getenv('LANGFUSE_HOST')
@@ -136,6 +142,7 @@ class Agent:
         """Initialize tools from MCP servers."""
         try:
             from ..tool.builtin import sync_initialize_mcp_tools
+
             logger.info(
                 f"Initializing MCP tools from {len(self.config.mcp_servers)} servers",
             )
@@ -184,6 +191,7 @@ class Agent:
         state: Optional[dict[str, Any]] = None,
         config: Optional[dict[str, Any]] = None,
         dump_trace_path: Optional[str] = None,
+        parent_agent_state: Optional[AgentState] = None,
     ) -> Union[str, tuple[str, dict[str, Any]]]:
         """Run agent with a message and return response."""
         logger.info(f"🤖 Agent '{self.config.name}' starting execution")
@@ -225,6 +233,7 @@ class Agent:
                 agent_id=self.config.agent_id,
                 context=ctx,
                 global_storage=self.global_storage,
+                parent_agent_state=parent_agent_state,
             )
 
             try:
@@ -249,7 +258,9 @@ class Agent:
                             )
 
                             response, updated_messages = self.executor.execute(
-                                self.history, agent_state, dump_trace_path,
+                                self.history,
+                                agent_state,
+                                dump_trace_path,
                             )
                             self.history = updated_messages
 
@@ -273,17 +284,25 @@ class Agent:
                             f"⚠️ Langfuse tracing failed: {langfuse_error}",
                         )
                         response, updated_messages = self.executor.execute(
-                            self.history, agent_state, dump_trace_path,
+                            self.history,
+                            agent_state,
+                            dump_trace_path,
                         )
                         self.history = updated_messages
                 else:
                     response, updated_messages = self.executor.execute(
-                        self.history, agent_state, dump_trace_path,
+                        self.history,
+                        agent_state,
+                        dump_trace_path,
                     )
                     self.history = updated_messages
 
                 # Add final assistant response to history if not already included
-                if not self.history or self.history[-1]['role'] != 'assistant' or self.history[-1]['content'] != response:
+                if (
+                    not self.history
+                    or self.history[-1]['role'] != 'assistant'
+                    or self.history[-1]['content'] != response
+                ):
                     self.history.append(
                         {'role': 'assistant', 'content': response},
                     )
@@ -300,7 +319,9 @@ class Agent:
 
                 if self.config.error_handler:
                     error_response = self.config.error_handler(
-                        e, self, merged_context,
+                        e,
+                        self,
+                        merged_context,
                     )
                     self.history.append(
                         {'role': 'assistant', 'content': error_response},
@@ -323,10 +344,6 @@ class Agent:
         """Add a sub-agent factory for delegation."""
         self.config.sub_agent_factories[name] = agent_factory
         self.executor.add_sub_agent(name, agent_factory)
-
-    def call_sub_agent(self, sub_agent_name: str, message: str, context: Optional[dict] = None) -> str:
-        """Call a sub-agent like a tool call."""
-        return self.executor.subagent_manager.call_sub_agent(sub_agent_name, message, context)
 
     def enqueue_message(self, message: dict[str, str]) -> None:
         """Enqueue a message to be added to the history."""
@@ -382,8 +399,10 @@ def create_agent(
     custom_llm_generator: Optional[
         Callable[
             [
-                Any, dict[str, Any],
-            ], Any,
+                Any,
+                dict[str, Any],
+            ],
+            Any,
         ]
     ] = None,
     **llm_kwargs,

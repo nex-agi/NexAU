@@ -25,6 +25,7 @@ from .file_state import clear_file_timestamps
 from .file_state import get_file_timestamp
 from .file_state import has_file_timestamp
 from .file_state import update_file_timestamp
+
 # Import file state management for read/write coordination
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,10 @@ def find_similar_file(file_path: str) -> Optional[str]:
 
 
 def write_text_content(
-    file_path: str, content: str, encoding: str = 'utf-8', line_ending: str = 'LF',
+    file_path: str,
+    content: str,
+    encoding: str = 'utf-8',
+    line_ending: str = 'LF',
 ) -> None:
     """
     Write text content to file with specified encoding and line endings.
@@ -139,7 +143,9 @@ def write_text_content(
 
 
 def apply_edit(
-    file_path: str, old_string: str, new_string: str,
+    file_path: str,
+    old_string: str,
+    new_string: str,
 ) -> tuple[str, list[dict]]:
     """
     Apply edit operation and generate diff information.
@@ -195,7 +201,10 @@ def apply_edit(
 
 
 def get_snippet_with_context(
-    original_content: str, old_string: str, new_string: str, context_lines: int = 4,
+    original_content: str,
+    old_string: str,
+    new_string: str,
+    context_lines: int = 4,
 ) -> tuple[str, int]:
     """
     Get a snippet of the file showing the change with context.
@@ -216,9 +225,13 @@ def get_snippet_with_context(
         return '\n'.join(snippet_lines), 1
 
     # Find the replacement position
-    before_replacement = original_content.split(
-        old_string,
-    )[0] if old_string else ''
+    before_replacement = (
+        original_content.split(
+            old_string,
+        )[0]
+        if old_string
+        else ''
+    )
     replacement_line = before_replacement.count('\n')
 
     # Generate updated content
@@ -460,7 +473,9 @@ def file_edit_tool(
 
             # Apply the edit
             updated_content, diff_info = apply_edit(
-                abs_file_path, old_string, new_string,
+                abs_file_path,
+                old_string,
+                new_string,
             )
 
             # Detect or use default encoding and line endings
@@ -473,8 +488,10 @@ def file_edit_tool(
 
             # Write the updated content
             write_text_content(
-                abs_file_path, updated_content,
-                encoding, line_ending,
+                abs_file_path,
+                updated_content,
+                encoding,
+                line_ending,
             )
 
             # Update read timestamp
@@ -488,7 +505,9 @@ def file_edit_tool(
                         # Read the original content before our edit
                         if old_string:
                             original_content = updated_content.replace(
-                                new_string, old_string, 1,
+                                new_string,
+                                old_string,
+                                1,
                             )
                         else:
                             original_content = ''
@@ -496,7 +515,9 @@ def file_edit_tool(
                     original_content = ''
 
             snippet, start_line = get_snippet_with_context(
-                original_content, old_string, new_string,
+                original_content,
+                old_string,
+                new_string,
             )
             snippet_with_numbers = add_line_numbers(snippet, start_line)
 
@@ -647,7 +668,8 @@ if __name__ == '__main__':
     print('=== 创建新文件 ===')
     result = file_edit_tool.invoke(
         {
-            'file_path': 'test.py', 'old_string': '',
+            'file_path': 'test.py',
+            'old_string': '',
             'new_string': "print('Hello World')",
         },
     )

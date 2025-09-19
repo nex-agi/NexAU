@@ -37,37 +37,48 @@ def main():
 
         # Bind YAML configurations to existing tools
         grep_tool_configured = Tool.from_yaml(
-            str(script_dir / 'tools/Grep.tool.yaml'), binding=grep_tool,
+            str(script_dir / 'tools/Grep.tool.yaml'),
+            binding=grep_tool,
         )
         glob_tool_configured = Tool.from_yaml(
-            str(script_dir / 'tools/Glob.tool.yaml'), binding=glob_tool,
+            str(script_dir / 'tools/Glob.tool.yaml'),
+            binding=glob_tool,
         )
         todo_write_tool = Tool.from_yaml(
-            str(script_dir / 'tools/TodoWrite.tool.yaml'), binding=todo_write,
+            str(script_dir / 'tools/TodoWrite.tool.yaml'),
+            binding=todo_write,
         )
         web_search_tool = Tool.from_yaml(
-            str(script_dir / 'tools/WebSearch.tool.yaml'), binding=web_search,
+            str(script_dir / 'tools/WebSearch.tool.yaml'),
+            binding=web_search,
         )
         web_read_tool = Tool.from_yaml(
-            str(script_dir / 'tools/WebFetch.tool.yaml'), binding=web_read,
+            str(script_dir / 'tools/WebFetch.tool.yaml'),
+            binding=web_read,
         )
         file_read_tool_configured = Tool.from_yaml(
-            str(script_dir / 'tools/Read.tool.yaml'), binding=file_read_tool,
+            str(script_dir / 'tools/Read.tool.yaml'),
+            binding=file_read_tool,
         )
         file_write_tool_configured = Tool.from_yaml(
-            str(script_dir / 'tools/Write.tool.yaml'), binding=file_write_tool,
+            str(script_dir / 'tools/Write.tool.yaml'),
+            binding=file_write_tool,
         )
         file_edit_tool_configured = Tool.from_yaml(
-            str(script_dir / 'tools/Edit.tool.yaml'), binding=file_edit_tool,
+            str(script_dir / 'tools/Edit.tool.yaml'),
+            binding=file_edit_tool,
         )
         bash_tool_configured = Tool.from_yaml(
-            str(script_dir / 'tools/Bash.tool.yaml'), binding=bash_tool,
+            str(script_dir / 'tools/Bash.tool.yaml'),
+            binding=bash_tool,
         )
         ls_tool_configured = Tool.from_yaml(
-            str(script_dir / 'tools/Ls.tool.yaml'), binding=ls_tool,
+            str(script_dir / 'tools/Ls.tool.yaml'),
+            binding=ls_tool,
         )
         multiedit_tool_configured = Tool.from_yaml(
-            str(script_dir / 'tools/MultiEdit.tool.yaml'), binding=multiedit_tool,
+            str(script_dir / 'tools/MultiEdit.tool.yaml'),
+            binding=multiedit_tool,
         )
 
         print('✓ Tools created successfully')
@@ -110,7 +121,8 @@ def main():
         print('-' * 30)
 
         response = claude_code_agent.run(
-            user_message, context={
+            user_message,
+            context={
                 'env_content': {
                     'date': get_date(),
                     'username': os.getenv('USER'),
@@ -123,6 +135,7 @@ def main():
     except Exception as e:
         print(f"✗ Error: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 

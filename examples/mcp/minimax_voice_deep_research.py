@@ -51,37 +51,53 @@ def main():
 
     feishu_upload_file_tool = Tool.from_yaml(
         os.path.join(
-            src_dir, 'tools/feishu_upload_file.yaml',
-        ), binding=upload_feishu_file,
+            src_dir,
+            'tools/feishu_upload_file.yaml',
+        ),
+        binding=upload_feishu_file,
     )
     feishu_send_message_tool = Tool.from_yaml(
         os.path.join(
-            src_dir, 'tools/feishu_send_message.yaml',
-        ), binding=send_feishu_message,
+            src_dir,
+            'tools/feishu_send_message.yaml',
+        ),
+        binding=send_feishu_message,
     )
     get_feishu_chat_list_tool = Tool.from_yaml(
         os.path.join(
-            src_dir, 'tools/get_feishu_chat_list.yaml',
-        ), binding=get_feishu_chat_list,
+            src_dir,
+            'tools/get_feishu_chat_list.yaml',
+        ),
+        binding=get_feishu_chat_list,
     )
     configured_bash_tool = Tool.from_yaml(
         os.path.join(
-            src_dir, 'tools/Bash.tool.yaml',
-        ), binding=bash_tool,
+            src_dir,
+            'tools/Bash.tool.yaml',
+        ),
+        binding=bash_tool,
     )
     web_search_tool = Tool.from_yaml(
         os.path.join(
-            src_dir, 'tools/WebSearch.yaml',
-        ), binding=web_search,
+            src_dir,
+            'tools/WebSearch.yaml',
+        ),
+        binding=web_search,
     )
     web_read_tool = Tool.from_yaml(
         os.path.join(
-            src_dir, 'tools/WebRead.yaml',
-        ), binding=web_read,
+            src_dir,
+            'tools/WebRead.yaml',
+        ),
+        binding=web_read,
     )
     tools = [
-        feishu_upload_file_tool, feishu_send_message_tool,
-        get_feishu_chat_list_tool, configured_bash_tool, web_search_tool, web_read_tool,
+        feishu_upload_file_tool,
+        feishu_send_message_tool,
+        get_feishu_chat_list_tool,
+        configured_bash_tool,
+        web_search_tool,
+        web_read_tool,
     ]
 
     llm_config = LLMConfig(
@@ -157,36 +173,37 @@ Today is {{date}}.
         else:
             print('\n⚠️  No tools available')
 
-#         content = """
-#         早安呀，亲爱的小伙伴们！我是小北~
+        #         content = """
+        #         早安呀，亲爱的小伙伴们！我是小北~
 
-# 【今日上海天气小播报 - 8月8日】
+        # 【今日上海天气小播报 - 8月8日】
 
-# 今天上海的天空依旧是多云飘飘的呢~ 不过呢，小北要提醒大家，今天真的是热辣辣的一天哦！
+        # 今天上海的天空依旧是多云飘飘的呢~ 不过呢，小北要提醒大家，今天真的是热辣辣的一天哦！
 
-# 温度情况：最高温36℃，最低温30℃
-#       当前温度33℃，但体感温度高达39.9℃！（是不是感觉自己在桑拿房里呀~）
+        # 温度情况：最高温36℃，最低温30℃
+        #       当前温度33℃，但体感温度高达39.9℃！（是不是感觉自己在桑拿房里呀~）
 
-# 湿度风力：相对湿度61%，西南风小于3级（约2.9米/秒）
+        # 湿度风力：相对湿度61%，西南风小于3级（约2.9米/秒）
 
-# 空气质量：AQI 57，等级"良"，首要污染物PM2.5
+        # 空气质量：AQI 57，等级"良"，首要污染物PM2.5
 
-# 降水概率：0%（今天不用带伞啦~）
+        # 降水概率：0%（今天不用带伞啦~）
 
-# 特别注意：上海中心气象台已发布高温黄色预警！预计全市最高气温将超过35℃
+        # 特别注意：上海中心气象台已发布高温黄色预警！预计全市最高气温将超过35℃
 
-# 小北温馨提示：
-# 1. 今天外出记得防晒、补水、戴墨镜！
-# 2. 尽量避开中午高温时段户外活动
-# 3. 多喝水，少吃辛辣食物
-# 4. 办公室的小伙伴们别忘了适当起身活动，避免久坐哦~
+        # 小北温馨提示：
+        # 1. 今天外出记得防晒、补水、戴墨镜！
+        # 2. 尽量避开中午高温时段户外活动
+        # 3. 多喝水，少吃辛辣食物
+        # 4. 办公室的小伙伴们别忘了适当起身活动，避免久坐哦~
 
-# 祝大家今天工作顺利，保持清凉好心情！
-# —— 爱你们的小北
-#         """
-#         response = agent.run(f"帮我生成一段语音并发送到飞书群 bot测试群 里，内容是：{content}")
+        # 祝大家今天工作顺利，保持清凉好心情！
+        # —— 爱你们的小北
+        #         """
+        #         response = agent.run(f"帮我生成一段语音并发送到飞书群 bot测试群 里，内容是：{content}")
         response = agent.run(
-            'WebSearch 和 WebRead 工具，搜索并整理今天的最新的 LLM 相关的资讯，然后用MiniMax的生成语音功能制造一个语音，并发语音消息到飞书的 bot测试群 里', context={
+            'WebSearch 和 WebRead 工具，搜索并整理今天的最新的 LLM 相关的资讯，然后用MiniMax的生成语音功能制造一个语音，并发语音消息到飞书的 bot测试群 里',
+            context={
                 'date': '2025年 8 月 27 日',
             },
         )

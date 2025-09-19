@@ -21,6 +21,7 @@ from typing import Optional
 from typing import Union
 
 from .file_state import update_file_timestamp
+
 # Import file state management for read/write coordination
 
 logger = logging.getLogger(__name__)
@@ -33,8 +34,14 @@ MAX_IMAGE_SIZE = 3.75 * 1024 * 1024  # 3.75MB in bytes
 
 # Common image extensions
 IMAGE_EXTENSIONS = {
-    '.png', '.jpg', '.jpeg',
-    '.gif', '.bmp', '.webp', '.tiff', '.tif',
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.bmp',
+    '.webp',
+    '.tiff',
+    '.tif',
 }
 
 # Common text file extensions for syntax highlighting hints
@@ -245,7 +252,9 @@ def get_file_language(file_path: str) -> str:
 
 
 def read_text_content(
-    file_path: str, offset: int = 0, limit: Optional[int] = None,
+    file_path: str,
+    offset: int = 0,
+    limit: Optional[int] = None,
 ) -> tuple[str, int, int]:
     """
     Read text content from file with offset and limit support.
@@ -342,7 +351,8 @@ def read_image_file(file_path: str) -> dict:
                             new_width = int((width * max_dimension) / height)
 
                         img = img.resize(
-                            (new_width, new_height), Image.Resampling.LANCZOS,
+                            (new_width, new_height),
+                            Image.Resampling.LANCZOS,
                         )
 
                     # Convert to RGB if necessary and save as JPEG
@@ -353,10 +363,13 @@ def read_image_file(file_path: str) -> dict:
                         rgb_img.paste(
                             img,
                             mask=(
-                                img.split()[-1] if img.mode in (
+                                img.split()[-1]
+                                if img.mode
+                                in (
                                     'RGBA',
                                     'LA',
-                                ) else None
+                                )
+                                else None
                             ),
                         )
                         img = rgb_img
@@ -366,8 +379,10 @@ def read_image_file(file_path: str) -> dict:
 
                     img_bytes = io.BytesIO()
                     img.save(
-                        img_bytes, format='JPEG',
-                        quality=80, optimize=True,
+                        img_bytes,
+                        format='JPEG',
+                        quality=80,
+                        optimize=True,
                     )
                     img_data = img_bytes.getvalue()
 
@@ -599,7 +614,9 @@ def file_read_tool(
             int_limit = int(limit) if limit is not None else None
 
             content, lines_read, total_lines = read_text_content(
-                file_path, internal_offset, int_limit,
+                file_path,
+                internal_offset,
+                int_limit,
             )
 
             # Check content size after reading

@@ -12,7 +12,9 @@ class TraceDumper:
     """Handles dumping trace data to files."""
 
     @staticmethod
-    def dump_trace_to_file(trace_data: list[dict[str, Any]], dump_trace_path: str, agent_name: str) -> None:
+    def dump_trace_to_file(
+        trace_data: list[dict[str, Any]], dump_trace_path: str, agent_name: str,
+    ) -> None:
         """Dump trace data to a JSON file.
 
         Args:
@@ -31,7 +33,9 @@ class TraceDumper:
                 'agent_name': agent_name,
                 'dump_timestamp': datetime.now().isoformat(),
                 'total_entries': len(trace_data),
-                'entry_types': list({entry.get('type', 'unknown') for entry in trace_data}),
+                'entry_types': list(
+                    {entry.get('type', 'unknown') for entry in trace_data},
+                ),
             }
 
             # Complete trace structure
