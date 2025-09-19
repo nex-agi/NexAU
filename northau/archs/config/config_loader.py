@@ -106,6 +106,7 @@ class AgentBuilder:
         self.agent_params['initial_context'] = self.config.get('context', {})
 
         self.agent_params['stop_tools'] = self.config.get('stop_tools', [])
+        self.agent_params['max_iterations'] = self.config.get('max_iterations', 100)
 
         return self
 
@@ -201,6 +202,24 @@ class AgentBuilder:
                     raise ConfigError(f"Error loading tool hook {i}: {e}")
 
         self.agent_params['after_tool_hooks'] = after_tool_hooks
+        
+        # Handle before_model_hooks configuration
+        before_model_hooks = None
+        if 'before_model_hooks' in self.config:
+            hooks_config = self.config['before_model_hooks']
+            before_model_hooks = []
+            
+            if not isinstance(hooks_config, list):
+                raise ConfigError("'before_model_hooks' must be a list")
+            
+            for i, hook_config in enumerate(hooks_config):
+                try:
+                    hook_func = self._import_and_instantiate(hook_config)
+                    before_model_hooks.append(hook_func)
+                except Exception as e:
+                    raise ConfigError(f"Error loading before model hook {i}: {e}")
+                    
+        self.agent_params['before_model_hooks'] = before_model_hooks
 
         return self
 

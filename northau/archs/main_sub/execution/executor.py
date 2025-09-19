@@ -16,6 +16,8 @@ from northau.archs.main_sub.execution.batch_processor import BatchProcessor
 from northau.archs.main_sub.execution.hooks import AfterModelHook
 from northau.archs.main_sub.execution.hooks import AfterModelHookInput
 from northau.archs.main_sub.execution.hooks import AfterToolHook
+from northau.archs.main_sub.execution.hooks import BeforeModelHook
+from northau.archs.main_sub.execution.hooks import BeforeModelHookInput
 from northau.archs.main_sub.execution.hooks import HookManager
 from northau.archs.main_sub.execution.hooks import ToolHookManager
 from northau.archs.main_sub.execution.llm_caller import LLMCaller
@@ -38,29 +40,14 @@ class Executor:
     """Orchestrates execution of agent tasks with parallel processing support."""
 
     def __init__(
-        self,
-        agent_name: str,
-        agent_id: str,
-        tool_registry: dict[str, Any],
-        sub_agent_factories: dict[str, Callable[[], Any]],
-        stop_tools: set[str],
-        openai_client: Any,
-        llm_config: Any,
-        max_iterations: int = 100,
-        max_context_tokens: int = 128000,
-        max_running_subagents: int = 5,
-        retry_attempts: int = 5,
-        token_counter: TokenCounter | None = None,
-        langfuse_client: Any = None,
-        after_model_hooks: list[AfterModelHook] | None = None,
-        after_tool_hooks: list[AfterToolHook] | None = None,
-        serial_tool_name: list[str] | None = None,
-        global_storage: Any = None,
-        custom_llm_generator: Callable[
-            [
-            Any, dict[str, Any],
-            ], Any,
-        ] | None = None,
+        self, agent_name: str, agent_id: str, tool_registry: dict[str, Any], sub_agent_factories: dict[str, Callable[[], Any]],
+        stop_tools: set[str], openai_client: Any, llm_config: Any, max_iterations: int = 100,
+        max_context_tokens: int = 128000, max_running_subagents: int = 5,
+        retry_attempts: int = 5, token_counter: TokenCounter | None = None,
+        langfuse_client: Any = None, after_model_hooks: list[AfterModelHook] | None = None,
+        before_model_hooks: list[BeforeModelHook] | None = None,
+        after_tool_hooks: list[AfterToolHook] | None = None, serial_tool_name: list[str] | None = None,
+        global_storage: Any = None, custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None,
     ):
         """Initialize executor.
 
@@ -79,6 +66,7 @@ class Executor:
             retry_attempts: int of API retry attempts
             token_counter: Optional token counter instance
             langfuse_client: Optional Langfuse client for tracing
+            before_model_hooks: Optional list of hooks called before parsing LLM response
             after_model_hooks: Optional list of hooks called after parsing LLM response
             after_tool_hooks: Optional list of hooks called after tool execution
             custom_llm_generator: Optional custom LLM generator function
@@ -120,7 +108,8 @@ class Executor:
             retry_attempts,
             custom_llm_generator,
         )
-        self.hook_manager = HookManager(after_model_hooks)
+        self.after_model_hook_manager = HookManager(after_model_hooks)
+        self.before_model_hook_manager = HookManager(before_model_hooks)
 
         # Execution parameters
         self.max_iterations = max_iterations
@@ -262,6 +251,24 @@ class Executor:
                             'max_tokens': calculated_max_tokens,
                         },
                     )
+                    
+                before_model_hook_input = BeforeModelHookInput(
+                    agent_state=agent_state,
+                    max_iterations=self.max_iterations,
+                    current_iteration=iteration,
+                    messages=messages,
+                )
+                
+                if self.before_model_hook_manager:
+                    try:
+                        logger.info(
+                            f"🎣 Executing {len(self.before_model_hook_manager)} before model hooks",
+                        )
+                        messages = self.before_model_hook_manager.execute_hooks(
+                            before_model_hook_input,
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ Hook execution failed: {e}")
 
                 # Call LLM to get response
                 logger.info(
@@ -462,12 +469,12 @@ class Executor:
         current_messages = hook_input.messages.copy()
 
         # Execute hooks if any are configured (always run hooks, even if no calls)
-        if self.hook_manager:
+        if self.after_model_hook_manager:
             try:
                 logger.info(
-                    f"🎣 Executing {len(self.hook_manager)} after model hooks",
+                    f"🎣 Executing {len(self.after_model_hook_manager)} after model hooks",
                 )
-                parsed_response, current_messages = self.hook_manager.execute_hooks(
+                parsed_response, current_messages = self.after_model_hook_manager.execute_hooks(
                     hook_input,
                 )
             except Exception as e:

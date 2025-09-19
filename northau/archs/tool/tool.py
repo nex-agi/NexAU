@@ -3,6 +3,7 @@ import functools
 import inspect
 import json
 import traceback
+from typing import Callable, Optional
 from pathlib import Path
 from typing import Callable
 from typing import Optional
