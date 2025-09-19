@@ -103,6 +103,51 @@ class AgentBuilder:
 
         return self
 
+    def build_mcp_servers(self) -> 'AgentBuilder':
+        """Build MCP servers configuration from configuration.
+
+        Returns:
+            Self for method chaining
+        """
+        mcp_servers = self.config.get('mcp_servers', [])
+        
+        if not isinstance(mcp_servers, list):
+            raise ConfigError("'mcp_servers' must be a list")
+        
+        # Validate each MCP server configuration
+        for i, server_config in enumerate(mcp_servers):
+            if not isinstance(server_config, dict):
+                raise ConfigError(f"MCP server configuration {i} must be a dictionary")
+            
+            # Validate required fields
+            if 'name' not in server_config:
+                raise ConfigError(f"MCP server configuration {i} missing 'name' field")
+            
+            if 'type' not in server_config:
+                raise ConfigError(f"MCP server configuration {i} missing 'type' field")
+            
+            server_type = server_config['type']
+            if server_type not in ['stdio', 'http', 'sse']:
+                raise ConfigError(
+                    f"MCP server configuration {i} has invalid type '{server_type}'. "
+                    "Must be one of: stdio, http, sse"
+                )
+            
+            # Validate type-specific requirements
+            if server_type == 'stdio':
+                if 'command' not in server_config:
+                    raise ConfigError(
+                        f"MCP server configuration {i} of type 'stdio' missing 'command' field"
+                    )
+            elif server_type in ['http', 'sse']:
+                if 'url' not in server_config:
+                    raise ConfigError(
+                        f"MCP server configuration {i} of type '{server_type}' missing 'url' field"
+                    )
+
+        self.agent_params['mcp_servers'] = mcp_servers
+        return self
+
     def build_hooks(self) -> 'AgentBuilder':
         """Build hooks from configuration.
 
@@ -404,6 +449,7 @@ def load_agent_config(
             builder.set_overrides(overrides)
                    .build_core_properties()
                    .build_llm_config()
+                   .build_mcp_servers()
                    .build_hooks()
                    .build_tools()
                    .build_sub_agents()
@@ -585,5 +631,20 @@ def validate_config_schema(config: dict[str, Any]) -> bool:
             raise ConfigError(
                 f"Sub-agent configuration {i} missing 'name' field",
             )
+
+    # Validate MCP servers configurations
+    mcp_servers = config.get('mcp_servers', [])
+    if not isinstance(mcp_servers, list):
+        raise ConfigError("'mcp_servers' field must be a list")
+
+    for i, server_config in enumerate(mcp_servers):
+        if not isinstance(server_config, dict):
+            raise ConfigError(f"MCP server configuration {i} must be a dictionary")
+
+        if 'name' not in server_config:
+            raise ConfigError(f"MCP server configuration {i} missing 'name' field")
+
+        if 'type' not in server_config:
+            raise ConfigError(f"MCP server configuration {i} missing 'type' field")
 
     return True
