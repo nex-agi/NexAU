@@ -692,7 +692,7 @@ class Executor:
 
             # Append tool results to the original response
             if tool_results:
-                processed_response += '\\n\\n' + '\\n\\n'.join(tool_results)
+                processed_response += '\n\n' + '\n\n'.join(tool_results)
 
         finally:
             # Clean up executors
