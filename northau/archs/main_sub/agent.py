@@ -213,18 +213,18 @@ class Agent:
 
         # Create agent context
         with AgentContext(context=merged_context) as ctx:
-            if history:
-                self.history = history.copy()
-            else:
-                # Build and add system prompt to history
-                system_prompt = self.prompt_builder.build_system_prompt(
-                    agent_config=self.config,
-                    tools=self.config.tools,
-                    sub_agent_factories=self.config.sub_agent_factories,
-                    runtime_context=merged_context,
-                )
-                self.history = [{'role': 'system', 'content': system_prompt}]
+            # Build and add system prompt to history
+            system_prompt = self.prompt_builder.build_system_prompt(
+                agent_config=self.config,
+                tools=self.config.tools,
+                sub_agent_factories=self.config.sub_agent_factories,
+                runtime_context=merged_context,
+            )
+            self.history = [{'role': 'system', 'content': system_prompt}]
 
+            if history:
+                # history default don't have system prompt
+                self.history.extend(history)
             # Add user message to history
             self.history.append({'role': 'user', 'content': message})
 
