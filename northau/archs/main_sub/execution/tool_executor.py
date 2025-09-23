@@ -47,7 +47,7 @@ class ToolExecutor:
         self.tool_hook_manager = tool_hook_manager
 
     def execute_tool(
-        self, agent_state: 'AgentState', tool_name: str, parameters: dict[str, Any],
+        self, agent_state: 'AgentState', tool_name: str, parameters: dict[str, Any], tool_call_id: str
     ) -> dict[str, Any]:
         """Execute a tool with given parameters.
 
@@ -111,6 +111,7 @@ class ToolExecutor:
                     tool_name=tool_name,
                     tool_input=parameters,
                     tool_output=result,
+                    tool_call_id=tool_call_id,
                 )
                 result = self.tool_hook_manager.execute_hooks(hook_input)
 
