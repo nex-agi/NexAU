@@ -190,6 +190,7 @@ class AfterToolHookInput:
 
     agent_state: 'AgentState'
     tool_name: str
+    tool_call_id: str
     tool_input: dict[str, Any]
     tool_output: Any
 

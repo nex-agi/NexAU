@@ -741,6 +741,7 @@ class Executor:
                 agent_state,
                 tool_call.tool_name,
                 converted_params,
+                tool_call_id=tool_call.tool_call_id
             )
 
             # Log tool response to trace if enabled
