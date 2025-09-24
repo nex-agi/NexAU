@@ -76,7 +76,8 @@ def _get_or_create_kernel(
     """
     kernel_name = SUPPORTED_KERNELS[kernel_type]
     kernel_managers = _get_kernel_managers(agent_state)
-    kernel_id = f"{kernel_type}_{workspace or 'default'}"
+    request_id = agent_state.context.get_context_value('request_id', None)
+    kernel_id = f"{kernel_type}_{request_id or 'default'}"
     
     if kernel_id in kernel_managers:
         km = kernel_managers[kernel_id]
