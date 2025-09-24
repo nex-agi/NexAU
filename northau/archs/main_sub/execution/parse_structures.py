@@ -1,4 +1,5 @@
 """Data structures for parsed tool calls, sub-agent calls, and batch operations."""
+import uuid
 import hashlib
 from dataclasses import dataclass
 from enum import Enum
@@ -25,9 +26,7 @@ class ToolCall:
 
     def __post_init__(self):
         if self.tool_call_id is None:
-            self.tool_call_id = hashlib.md5(
-                (self.tool_name + self.xml_content).encode('utf-8'),
-            ).hexdigest()
+            self.tool_call_id = "tool_call_" + str(uuid.uuid4())
 
 
 @dataclass
@@ -41,9 +40,7 @@ class SubAgentCall:
 
     def __post_init__(self):
         if self.sub_agent_call_id is None:
-            self.sub_agent_call_id = hashlib.md5(
-                (self.agent_name + self.xml_content).encode('utf-8'),
-            ).hexdigest()
+            self.sub_agent_call_id = "sub_agent_call_" + str(uuid.uuid4())
 
 
 @dataclass
@@ -59,9 +56,7 @@ class BatchAgentCall:
 
     def __post_init__(self):
         if self.batch_agent_call_id is None:
-            self.batch_agent_call_id = hashlib.md5(
-                (self.agent_name + self.xml_content).encode('utf-8'),
-            ).hexdigest()
+            self.batch_agent_call_id = "batch_agent_call_" + str(uuid.uuid4())
 
 
 # Union type for all call types
