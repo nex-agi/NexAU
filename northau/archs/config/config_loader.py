@@ -1,5 +1,6 @@
 """Configuration loading system for agents and tools."""
 import importlib
+import os
 import logging
 from pathlib import Path
 from typing import Any
@@ -448,6 +449,18 @@ def apply_agent_name_overrides(
     return config
 
 
+def load_yaml_with_vars(path):
+    with open(path, encoding="utf-8") as f:
+        config_text = f.read()
+
+    # 替换变量
+    base_dir = os.path.dirname(os.path.abspath(path))
+    config_text = config_text.replace("${this_file_dir}", base_dir)
+
+    # 再 load
+    return yaml.safe_load(config_text)
+
+
 def load_agent_config(
     config_path: str,
     overrides: Optional[dict[str, Any]] = None,
@@ -472,8 +485,7 @@ def load_agent_config(
             raise ConfigError(f"Configuration file not found: {config_path}")
 
         # Load YAML configuration
-        with open(path, encoding='utf-8') as f:
-            config = yaml.safe_load(f)
+        config = load_yaml_with_vars(path)
 
         if not config:
             raise ConfigError(
