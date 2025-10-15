@@ -44,3 +44,23 @@ Explain what you're doing and provide context for the results.""",
 response = agent.run("现在从漕河泾现代服务园A6到上南路 4265弄要多久？")
 print(response)
 ```
+
+If you use YAML-based agent config, you can add:
+```yaml
+mcp_servers:
+  - name: github
+    type: stdio
+    command: npx
+    args: ['-y', '@modelcontextprotocol/server-github']
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "xxxx"
+    timeout: 30
+  
+  - name: amap-maps
+    type: http
+    url: "https://mcp.amap.com/mcp?key=your_amap_key_here"
+    headers:
+      Content-Type: "application/json"
+      Accept: "application/json, text/event-stream"
+    timeout: 30
+```
