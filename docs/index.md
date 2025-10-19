@@ -31,3 +31,5 @@ Northau is a general-purpose agent framework inspired by Claude Code's architect
 ## Todos
 - [ ] Currently, sub-agent context is destoryed after sub-agent finishes. Sometimes, deliverables may be done by sub-agents and users want to interact with these sub-agents. We need to support persistent sub-agents.
 - [ ] Currently, event streaming requires developers to use hooks to implement custom event streaming logics. A better design is a unified hook class with on_xxx events to provide a unified interface for event streaming.
+- [ ] Support GeneralAgent class instead of just ReAct-style agent, which supports mixture of workflow (pythonic defined) and NorthAU Agent.
+- [ ] Support both xml and tool_call format
