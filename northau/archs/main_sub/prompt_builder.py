@@ -116,6 +116,18 @@ class PromptBuilder:
             raise ValueError("Error processing system prompt") from e
 
 
+    def _get_default_system_prompt(self, agent_name: str) -> str:
+        """Get default system prompt for the agent."""
+        try:
+            template = self._load_prompt_template('default_system_prompt')
+            if template:
+                context = {'agent_name': agent_name}
+                jinja_template = self.jinja_env.from_string(template)
+                return jinja_template.render(**context)
+        except Exception as e:
+            logger.warning(f"⚠️ Error loading default system prompt: {e}")
+            raise ValueError("Error loading default system prompt") from e
+    
     def _build_capabilities_docs(
         self,
         tools: list,
