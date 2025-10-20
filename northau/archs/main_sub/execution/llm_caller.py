@@ -195,7 +195,7 @@ def bypass_llm_generator(
         # Call the original OpenAI API
         response = openai_client.chat.completions.create(**kwargs)
 
-        return response
+        return response.choices[0].message.content
 
     except Exception as e:
         print(f"❌ Bypass LLM generator error: {e}")

@@ -68,8 +68,7 @@ class LLMConfig:
             if model:
                 return model
 
-        # Default fallback
-        return 'gpt-4'
+        raise ValueError("Model not found in environment variables")
 
     def _get_base_url_from_env(self) -> Optional[str]:
         """Get base URL from environment variables."""
@@ -85,7 +84,7 @@ class LLMConfig:
             if url:
                 return url
 
-        return None
+        raise ValueError("Base URL not found in environment variables")
 
     def _get_api_key_from_env(self) -> Optional[str]:
         """Get API key from environment variables."""
@@ -102,7 +101,7 @@ class LLMConfig:
             if key:
                 return key
 
-        return None
+        raise ValueError("API key not found in environment variables")
 
     def to_openai_params(self) -> dict[str, Any]:
         """Convert to OpenAI client parameters."""
