@@ -1,17 +1,14 @@
 """MCP client implementation for Northau framework."""
+
 import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
-from typing import Optional
-from typing import Union
 
-from mcp import ClientSession
-from mcp import StdioServerParameters
+from mcp import ClientSession, StdioServerParameters
 from mcp.types import Tool as MCPToolType
 
-from ..tool import cache_result
-from ..tool import Tool
+from ..tool import Tool, cache_result
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +17,16 @@ class HTTPMCPSession:
     """HTTP MCP session that handles MCP streamable HTTP with session management."""
 
     def __init__(
-        self, config: 'MCPServerConfig', headers: dict[str, str], timeout: float,
+        self,
+        config: "MCPServerConfig",
+        headers: dict[str, str],
+        timeout: float,
     ):
         self.config = config
         self.headers = headers
         self.timeout = timeout
         self._request_id = 0
-        self._session_id: Optional[str] = None
+        self._session_id: str | None = None
         self._initialized = False
 
     def _get_next_id(self) -> int:
@@ -43,25 +43,25 @@ class HTTPMCPSession:
 
         # Send initialize request
         init_request = {
-            'jsonrpc': '2.0',
-            'method': 'initialize',
-            'params': {
-                'protocolVersion': '2024-11-05',
-                'capabilities': {
-                    'roots': {'listChanged': True},
-                    'sampling': {},
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "roots": {"listChanged": True},
+                    "sampling": {},
                 },
-                'clientInfo': {
-                    'name': 'northau-mcp-client',
-                    'version': '1.0.0',
+                "clientInfo": {
+                    "name": "northau-mcp-client",
+                    "version": "1.0.0",
                 },
             },
-            'id': self._get_next_id(),
+            "id": self._get_next_id(),
         }
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             if not self.config.url:
-                raise ValueError('Server URL is required')
+                raise ValueError("Server URL is required")
 
             response = await client.post(
                 self.config.url,
@@ -71,7 +71,7 @@ class HTTPMCPSession:
             response.raise_for_status()
 
             # Extract session ID from response headers
-            session_id = response.headers.get('mcp-session-id')
+            session_id = response.headers.get("mcp-session-id")
             if session_id:
                 self._session_id = session_id
                 logger.debug(f"Captured session ID: {session_id}")
@@ -82,12 +82,12 @@ class HTTPMCPSession:
 
             result = None
 
-            if 'event: message' in response_text and 'data: ' in response_text:
+            if "event: message" in response_text and "data: " in response_text:
                 # Handle SSE format (FastMCP style)
-                lines = response_text.strip().split('\n')
+                lines = response_text.strip().split("\n")
                 json_data = None
                 for line in lines:
-                    if line.startswith('data: '):
+                    if line.startswith("data: "):
                         json_data = line[6:]  # Remove "data: " prefix
                         break
 
@@ -111,11 +111,11 @@ class HTTPMCPSession:
                     f"No valid response data found in initialization response: {response_text}",
                 )
 
-            if 'error' in result:
+            if "error" in result:
                 raise Exception(f"MCP initialization error: {result['error']}")
 
             # Check if we got a proper initialization result
-            if 'result' in result:
+            if "result" in result:
                 logger.debug(
                     f"Initialization successful, server info: {result.get('result', {}).get('serverInfo', 'Unknown')}",
                 )
@@ -137,18 +137,18 @@ class HTTPMCPSession:
         import httpx
 
         notification_data = {
-            'jsonrpc': '2.0',
-            'method': 'notifications/initialized',
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
         }
 
         # Prepare headers with session ID
         request_headers = self.headers.copy()
         if self._session_id:
-            request_headers['mcp-session-id'] = self._session_id
+            request_headers["mcp-session-id"] = self._session_id
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             if not self.config.url:
-                raise ValueError('Server URL is required')
+                raise ValueError("Server URL is required")
             response = await client.post(
                 self.config.url,
                 json=notification_data,
@@ -160,40 +160,43 @@ class HTTPMCPSession:
                     f"Initialized notification returned status {response.status_code}",
                 )
             else:
-                logger.debug('Initialized notification sent successfully')
+                logger.debug("Initialized notification sent successfully")
 
     async def _make_request(
-        self, method: str, params: Optional[dict[str, Any]] = None,
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Make a direct HTTP request to the MCP server."""
-        import httpx
         import json
+
+        import httpx
 
         # Ensure session is initialized
         if not self._initialized:
             await self._initialize_session()
 
         request_data = {
-            'jsonrpc': '2.0',
-            'method': method,
-            'id': self._get_next_id(),
+            "jsonrpc": "2.0",
+            "method": method,
+            "id": self._get_next_id(),
         }
 
         # Only include params if they are provided and not empty
         if params:
-            request_data['params'] = params
+            request_data["params"] = params
 
         # Prepare headers with session ID if available
         request_headers = self.headers.copy()
         if self._session_id:
-            request_headers['mcp-session-id'] = self._session_id
+            request_headers["mcp-session-id"] = self._session_id
             logger.debug(
                 f"Including session ID in request: {self._session_id}",
             )
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             if not self.config.url:
-                raise ValueError('Server URL is required')
+                raise ValueError("Server URL is required")
             response = await client.post(
                 self.config.url,
                 json=request_data,
@@ -204,29 +207,26 @@ class HTTPMCPSession:
             # Handle SSE response format
             response_text = response.text
 
-            if 'event: message' in response_text and 'data: ' in response_text:
+            if "event: message" in response_text and "data: " in response_text:
                 # Extract JSON from SSE format - need to find the message with matching ID
-                lines = response_text.strip().split('\n')
-                request_id = request_data.get('id')
+                lines = response_text.strip().split("\n")
+                request_id = request_data.get("id")
 
                 # Parse all SSE messages and find the one with matching request ID
                 for line in lines:
-                    if line.startswith('data: '):
+                    if line.startswith("data: "):
                         try:
                             json_data = line[6:]  # Remove "data: " prefix
                             parsed_message = json.loads(json_data)
 
                             # Check if this message has the matching request ID (for responses)
                             # or if it's a notification (no ID required)
-                            if (
-                                'id' in parsed_message
-                                and parsed_message['id'] == request_id
-                            ):
+                            if "id" in parsed_message and parsed_message["id"] == request_id:
                                 logger.debug(
                                     f"Found matching response for request ID {request_id}",
                                 )
                                 return parsed_message
-                            elif request_id is None and 'method' not in parsed_message:
+                            elif request_id is None and "method" not in parsed_message:
                                 # For requests without ID (notifications), return first non-notification
                                 return parsed_message
                         except json.JSONDecodeError:
@@ -243,11 +243,11 @@ class HTTPMCPSession:
 
                 # As fallback, try to return the last message that looks like a response
                 for line in reversed(lines):
-                    if line.startswith('data: '):
+                    if line.startswith("data: "):
                         try:
                             json_data = line[6:]
                             parsed_message = json.loads(json_data)
-                            if 'result' in parsed_message or 'error' in parsed_message:
+                            if "result" in parsed_message or "error" in parsed_message:
                                 logger.debug(
                                     f"Using fallback response: {parsed_message}",
                                 )
@@ -268,29 +268,26 @@ class HTTPMCPSession:
         if not self._initialized:
             await self._initialize_session()
 
-        response = await self._make_request('tools/list')
+        response = await self._make_request("tools/list")
         logger.debug(f"Tools list response: {response}")
 
-        if 'error' in response:
+        if "error" in response:
             raise Exception(f"MCP error: {response['error']}")
 
         # Convert the response to match the expected format
-        tools_data = response.get('result', {}).get('tools', [])
+        tools_data = response.get("result", {}).get("tools", [])
         logger.debug(f"Extracted tools data: {tools_data}")
 
         # Create a simple object structure that matches what MCPTool expects
         class SimpleToolList:
             def __init__(self, tools_data):
-                self.tools = [
-                    SimpleTool(tool_data)
-                    for tool_data in tools_data
-                ]
+                self.tools = [SimpleTool(tool_data) for tool_data in tools_data]
 
         class SimpleTool:
             def __init__(self, tool_data):
-                self.name = tool_data['name']
-                self.description = tool_data.get('description', '')
-                self.inputSchema = tool_data.get('inputSchema', {})
+                self.name = tool_data["name"]
+                self.description = tool_data.get("description", "")
+                self.inputSchema = tool_data.get("inputSchema", {})
 
         result = SimpleToolList(tools_data)
         logger.debug(f"Created tool list with {len(result.tools)} tools")
@@ -303,21 +300,21 @@ class HTTPMCPSession:
             await self._initialize_session()
 
         params = {
-            'name': tool_name,
-            'arguments': arguments,
+            "name": tool_name,
+            "arguments": arguments,
         }
 
-        response = await self._make_request('tools/call', params)
+        response = await self._make_request("tools/call", params)
 
-        if 'error' in response:
+        if "error" in response:
             raise Exception(f"MCP error: {response['error']}")
 
         # Create a simple result object that matches what MCPTool expects
         class SimpleResult:
             def __init__(self, result_data):
-                self.content = result_data.get('content', [])
+                self.content = result_data.get("content", [])
 
-        return SimpleResult(response.get('result', {}))
+        return SimpleResult(response.get("result", {}))
 
 
 @dataclass
@@ -325,15 +322,15 @@ class MCPServerConfig:
     """Configuration for an MCP server."""
 
     name: str
-    type: str = 'stdio'  # "stdio" or "http"
+    type: str = "stdio"  # "stdio" or "http"
     # For stdio servers
-    command: Optional[str] = None
-    args: Optional[list[str]] = None
-    env: Optional[dict[str, str]] = None
+    command: str | None = None
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
     # For HTTP servers
-    url: Optional[str] = None
-    headers: Optional[dict[str, str]] = None
-    timeout: Optional[float] = 30
+    url: str | None = None
+    headers: dict[str, str] | None = None
+    timeout: float | None = 30
     # result cache
     use_cache: bool = False
     # disable parallel
@@ -346,8 +343,8 @@ class MCPTool(Tool):
     def __init__(
         self,
         mcp_tool: MCPToolType,
-        client_session: Union[ClientSession, HTTPMCPSession],
-        server_config: Optional[MCPServerConfig] = None,
+        client_session: ClientSession | HTTPMCPSession,
+        server_config: MCPServerConfig | None = None,
     ):
         self.mcp_tool = mcp_tool
         self.client_session = client_session
@@ -357,9 +354,9 @@ class MCPTool(Tool):
         # Store session parameters for thread-safe recreation
         if isinstance(client_session, HTTPMCPSession):
             self._session_params = {
-                'config': client_session.config,
-                'headers': client_session.headers,
-                'timeout': client_session.timeout,
+                "config": client_session.config,
+                "headers": client_session.headers,
+                "timeout": client_session.timeout,
             }
         else:
             # For stdio sessions, store the server config for recreation
@@ -371,34 +368,32 @@ class MCPTool(Tool):
         # Convert MCP tool to Northau tool format
         super().__init__(
             name=mcp_tool.name,
-            description=mcp_tool.description or '',
+            description=mcp_tool.description or "",
             input_schema=mcp_tool.inputSchema,
             implementation=self._execute_sync,
             disable_parallel=server_config.disable_parallel,
         )
 
-    async def _get_thread_local_session(self) -> Union[ClientSession, HTTPMCPSession]:
+    async def _get_thread_local_session(self) -> ClientSession | HTTPMCPSession:
         """Get or create a thread-local session to avoid event loop conflicts."""
         # For HTTPMCPSession, we can safely create a new instance in each thread
-        if self._session_type == 'HTTPMCPSession' and isinstance(
-            self._session_params, dict,
+        if self._session_type == "HTTPMCPSession" and isinstance(
+            self._session_params,
+            dict,
         ):
-            config = self._session_params['config']
-            headers = self._session_params['headers']
-            timeout = self._session_params['timeout']
-            if (
-                isinstance(config, MCPServerConfig)
-                and isinstance(headers, dict)
-                and isinstance(timeout, (int, float))
-            ):
+            config = self._session_params["config"]
+            headers = self._session_params["headers"]
+            timeout = self._session_params["timeout"]
+            if isinstance(config, MCPServerConfig) and isinstance(headers, dict) and isinstance(timeout, (int, float)):
                 return HTTPMCPSession(config, headers, timeout)
 
         # For stdio sessions, we need to create a new DirectMCPSession
-        elif self._session_type == 'DirectMCPSession' and isinstance(
-            self._session_params, MCPServerConfig,
+        elif self._session_type == "DirectMCPSession" and isinstance(
+            self._session_params,
+            MCPServerConfig,
         ):
             config = self._session_params
-            if config.type == 'stdio' and config.command:
+            if config.type == "stdio" and config.command:
                 # Create a new DirectMCPSession
                 import os
 
@@ -429,7 +424,7 @@ class MCPTool(Tool):
                         )
 
                         if not self.process.stdout or not self.process.stdin:
-                            raise RuntimeError('Failed to get process streams')
+                            raise RuntimeError("Failed to get process streams")
 
                         # Initialize the MCP connection properly
                         await self._initialize_connection()
@@ -445,26 +440,26 @@ class MCPTool(Tool):
 
                         # Send initialize request
                         init_request = {
-                            'jsonrpc': '2.0',
-                            'id': self._get_next_id(),
-                            'method': 'initialize',
-                            'params': {
-                                'protocolVersion': '2024-11-05',
-                                'capabilities': {
-                                    'roots': {
-                                        'listChanged': True,
+                            "jsonrpc": "2.0",
+                            "id": self._get_next_id(),
+                            "method": "initialize",
+                            "params": {
+                                "protocolVersion": "2024-11-05",
+                                "capabilities": {
+                                    "roots": {
+                                        "listChanged": True,
                                     },
-                                    'sampling': {},
+                                    "sampling": {},
                                 },
-                                'clientInfo': {
-                                    'name': 'northau-mcp-client',
-                                    'version': '1.0.0',
+                                "clientInfo": {
+                                    "name": "northau-mcp-client",
+                                    "version": "1.0.0",
                                 },
                             },
                         }
 
                         # Send the initialize request
-                        init_str = json.dumps(init_request) + '\n'
+                        init_str = json.dumps(init_request) + "\n"
                         self.process.stdin.write(init_str.encode())
                         await self.process.stdin.drain()
 
@@ -472,58 +467,55 @@ class MCPTool(Tool):
                         while True:
                             try:
                                 response_line = await asyncio.wait_for(
-                                    self.process.stdout.readline(), timeout=60,
+                                    self.process.stdout.readline(),
+                                    timeout=60,
                                 )
                                 response = json.loads(
                                     response_line.decode().strip(),
                                 )
                                 break
-                            except asyncio.TimeoutError:
+                            except TimeoutError:
                                 raise RuntimeError(
-                                    'MCP initialization timeout',
+                                    "MCP initialization timeout",
                                 )
                             except json.JSONDecodeError:
                                 continue
 
-                        if 'error' in response:
+                        if "error" in response:
                             raise Exception(
                                 f"MCP initialization error: {response['error']}",
                             )
 
                         # Send initialized notification
                         initialized_notification = {
-                            'jsonrpc': '2.0',
-                            'method': 'notifications/initialized',
-                            'params': {},
+                            "jsonrpc": "2.0",
+                            "method": "notifications/initialized",
+                            "params": {},
                         }
 
-                        notif_str = json.dumps(initialized_notification) + '\n'
+                        notif_str = json.dumps(initialized_notification) + "\n"
                         self.process.stdin.write(notif_str.encode())
                         await self.process.stdin.drain()
 
                         # Test with tools/list to verify connection
-                        await self._make_request('tools/list')
+                        await self._make_request("tools/list")
 
                     async def _make_request(self, method, params=None):
-                        if (
-                            not self.process
-                            or not self.process.stdin
-                            or not self.process.stdout
-                        ):
-                            raise RuntimeError('Process not initialized')
+                        if not self.process or not self.process.stdin or not self.process.stdout:
+                            raise RuntimeError("Process not initialized")
 
                         import json
 
                         request_id = self._get_next_id()
                         request = {
-                            'jsonrpc': '2.0',
-                            'id': request_id,
-                            'method': method,
-                            'params': params or {},
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "method": method,
+                            "params": params or {},
                         }
 
                         # Send request
-                        request_str = json.dumps(request) + '\n'
+                        request_str = json.dumps(request) + "\n"
                         self.process.stdin.write(request_str.encode())
                         await self.process.stdin.drain()
 
@@ -535,7 +527,7 @@ class MCPTool(Tool):
                             response_line = await self.process.stdout.readline()
 
                             if not response_line:
-                                raise Exception('MCP server closed connection')
+                                raise Exception("MCP server closed connection")
 
                             try:
                                 response = json.loads(
@@ -543,8 +535,8 @@ class MCPTool(Tool):
                                 )
 
                                 # Check if this is a response to our request
-                                if 'id' in response and response['id'] == request_id:
-                                    if 'error' in response:
+                                if "id" in response and response["id"] == request_id:
+                                    if "error" in response:
                                         raise Exception(
                                             f"MCP error: {response['error']}",
                                         )
@@ -564,16 +556,17 @@ class MCPTool(Tool):
                     async def call_tool(self, name, arguments):
                         try:
                             response = await self._make_request(
-                                'tools/call', {
-                                    'name': name,
-                                    'arguments': arguments,
+                                "tools/call",
+                                {
+                                    "name": name,
+                                    "arguments": arguments,
                                 },
                             )
-                            result_data = response.get('result', {})
+                            result_data = response.get("result", {})
 
                             class ToolCallResult:
                                 def __init__(self, data):
-                                    self.content = data.get('content', [])
+                                    self.content = data.get("content", [])
 
                             return ToolCallResult(result_data)
                         except Exception as e:
@@ -620,11 +613,7 @@ class MCPTool(Tool):
         """Execute the MCP tool synchronously (for backward compatibility)."""
         # Filter out agent_state and global_storage parameters as they're not needed for MCP tools
         # and cause JSON serialization errors
-        filtered_kwargs = {
-            k: v
-            for k, v in kwargs.items()
-            if k not in ('agent_state', 'global_storage')
-        }
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ("agent_state", "global_storage")}
         filtered_kwargs = dict(
             sorted(filtered_kwargs.items(), key=lambda x: x[0]),
         )
@@ -637,26 +626,26 @@ class MCPTool(Tool):
             session = await self._get_thread_local_session()
             result = await session.call_tool(self.name, kwargs)
 
-            if hasattr(result, 'content'):
+            if hasattr(result, "content"):
                 if isinstance(result.content, list):
                     # Handle list of content items
                     content_items = []
                     for item in result.content:
-                        if hasattr(item, 'text'):
+                        if hasattr(item, "text"):
                             content_items.append(item.text)
-                        elif isinstance(item, dict) and 'text' in item:
-                            content_items.append(item['text'])
+                        elif isinstance(item, dict) and "text" in item:
+                            content_items.append(item["text"])
                         else:
                             content_items.append(str(item))
-                    return {'result': '\n'.join(content_items)}
+                    return {"result": "\n".join(content_items)}
                 else:
-                    return {'result': str(result.content)}
+                    return {"result": str(result.content)}
             else:
-                return {'result': str(result)}
+                return {"result": str(result)}
 
         except Exception as e:
             logger.error(f"Error executing MCP tool '{self.name}': {e}")
-            return {'error': str(e)}
+            return {"error": str(e)}
 
 
 class MCPClient:
@@ -664,7 +653,7 @@ class MCPClient:
 
     def __init__(self):
         self.servers: dict[str, MCPServerConfig] = {}
-        self.sessions: dict[str, Union[ClientSession, HTTPMCPSession]] = {}
+        self.sessions: dict[str, ClientSession | HTTPMCPSession] = {}
         self.tools: dict[str, MCPTool] = {}
 
     def add_server(self, config: MCPServerConfig) -> None:
@@ -681,7 +670,7 @@ class MCPClient:
         config = self.servers[server_name]
 
         try:
-            if config.type == 'stdio':
+            if config.type == "stdio":
                 # Stdio server
                 if not config.command:
                     logger.error(
@@ -733,7 +722,7 @@ class MCPClient:
                         )
 
                         if not self.process.stdout or not self.process.stdin:
-                            raise RuntimeError('Failed to get process streams')
+                            raise RuntimeError("Failed to get process streams")
 
                         # Initialize the MCP connection properly
                         await self._initialize_connection()
@@ -749,26 +738,26 @@ class MCPClient:
 
                         # Send initialize request
                         init_request = {
-                            'jsonrpc': '2.0',
-                            'id': self._get_next_id(),
-                            'method': 'initialize',
-                            'params': {
-                                'protocolVersion': '2024-11-05',
-                                'capabilities': {
-                                    'roots': {
-                                        'listChanged': True,
+                            "jsonrpc": "2.0",
+                            "id": self._get_next_id(),
+                            "method": "initialize",
+                            "params": {
+                                "protocolVersion": "2024-11-05",
+                                "capabilities": {
+                                    "roots": {
+                                        "listChanged": True,
                                     },
-                                    'sampling': {},
+                                    "sampling": {},
                                 },
-                                'clientInfo': {
-                                    'name': 'northau-mcp-client',
-                                    'version': '1.0.0',
+                                "clientInfo": {
+                                    "name": "northau-mcp-client",
+                                    "version": "1.0.0",
                                 },
                             },
                         }
 
                         # Send the initialize request
-                        init_str = json.dumps(init_request) + '\n'
+                        init_str = json.dumps(init_request) + "\n"
                         self.process.stdin.write(init_str.encode())
                         await self.process.stdin.drain()
 
@@ -776,57 +765,54 @@ class MCPClient:
                         while True:
                             try:
                                 response_line = await asyncio.wait_for(
-                                    self.process.stdout.readline(), timeout=60,
+                                    self.process.stdout.readline(),
+                                    timeout=60,
                                 )
                                 response = json.loads(
                                     response_line.decode().strip(),
                                 )
                                 break
-                            except asyncio.TimeoutError:
+                            except TimeoutError:
                                 raise RuntimeError(
-                                    'MCP initialization timeout',
+                                    "MCP initialization timeout",
                                 )
                             except json.JSONDecodeError:
                                 continue
 
-                        if 'error' in response:
+                        if "error" in response:
                             raise Exception(
                                 f"MCP initialization error: {response['error']}",
                             )
 
                         # Send initialized notification
                         initialized_notification = {
-                            'jsonrpc': '2.0',
-                            'method': 'notifications/initialized',
-                            'params': {},
+                            "jsonrpc": "2.0",
+                            "method": "notifications/initialized",
+                            "params": {},
                         }
 
-                        notif_str = json.dumps(initialized_notification) + '\n'
+                        notif_str = json.dumps(initialized_notification) + "\n"
                         self.process.stdin.write(notif_str.encode())
                         await self.process.stdin.drain()
 
                         # Test with tools/list to verify connection
-                        await self._make_request('tools/list')
+                        await self._make_request("tools/list")
 
                     async def _make_request(self, method, params=None):
-                        if (
-                            not self.process
-                            or not self.process.stdin
-                            or not self.process.stdout
-                        ):
-                            raise RuntimeError('Process not initialized')
+                        if not self.process or not self.process.stdin or not self.process.stdout:
+                            raise RuntimeError("Process not initialized")
 
                         import json
 
                         request = {
-                            'jsonrpc': '2.0',
-                            'id': self._get_next_id(),
-                            'method': method,
-                            'params': params or {},
+                            "jsonrpc": "2.0",
+                            "id": self._get_next_id(),
+                            "method": method,
+                            "params": params or {},
                         }
 
                         # Send request
-                        request_str = json.dumps(request) + '\n'
+                        request_str = json.dumps(request) + "\n"
                         self.process.stdin.write(request_str.encode())
                         await self.process.stdin.drain()
 
@@ -834,46 +820,44 @@ class MCPClient:
                         response_line = await self.process.stdout.readline()
                         response = json.loads(response_line.decode().strip())
 
-                        if 'error' in response:
+                        if "error" in response:
                             raise Exception(f"MCP error: {response['error']}")
 
                         return response
 
                     async def list_tools(self):
-                        response = await self._make_request('tools/list')
+                        response = await self._make_request("tools/list")
                         tools_data = response.get(
-                            'result',
+                            "result",
                             {},
-                        ).get('tools', [])
+                        ).get("tools", [])
 
                         # Create tool objects
                         class SimpleTool:
                             def __init__(self, data):
-                                self.name = data['name']
-                                self.description = data.get('description', '')
-                                self.inputSchema = data.get('inputSchema', {})
+                                self.name = data["name"]
+                                self.description = data.get("description", "")
+                                self.inputSchema = data.get("inputSchema", {})
 
                         class ToolResult:
                             def __init__(self, tools):
-                                self.tools = [
-                                    SimpleTool(tool)
-                                    for tool in tools
-                                ]
+                                self.tools = [SimpleTool(tool) for tool in tools]
 
                         return ToolResult(tools_data)
 
                     async def call_tool(self, name, arguments):
                         response = await self._make_request(
-                            'tools/call', {
-                                'name': name,
-                                'arguments': arguments,
+                            "tools/call",
+                            {
+                                "name": name,
+                                "arguments": arguments,
                             },
                         )
-                        result_data = response.get('result', {})
+                        result_data = response.get("result", {})
 
                         class ToolCallResult:
                             def __init__(self, data):
-                                self.content = data.get('content', [])
+                                self.content = data.get("content", [])
 
                         return ToolCallResult(result_data)
 
@@ -890,7 +874,7 @@ class MCPClient:
                 )
                 return True
 
-            elif config.type == 'http':
+            elif config.type == "http":
                 # HTTP server with FastMCP protocol
                 if not config.url:
                     logger.error(
@@ -908,10 +892,10 @@ class MCPClient:
 
                     # Ensure proper headers for FastMCP streamable HTTP protocol
                     headers = config.headers or {}
-                    if 'Accept' not in headers:
-                        headers['Accept'] = 'application/json, text/event-stream'
-                    if 'Content-Type' not in headers:
-                        headers['Content-Type'] = 'application/json'
+                    if "Accept" not in headers:
+                        headers["Accept"] = "application/json, text/event-stream"
+                    if "Content-Type" not in headers:
+                        headers["Content-Type"] = "application/json"
 
                     # Test connection with a simple session
                     test_session = HTTPMCPSession(
@@ -937,7 +921,7 @@ class MCPClient:
                     )
                     return True
 
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning(
                         f"Connection to HTTP MCP server '{server_name}' timed out after {connection_timeout}s",
                     )
@@ -956,7 +940,7 @@ class MCPClient:
                 )
                 return False
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 f"Connection to MCP server '{server_name}' timed out",
             )
@@ -993,7 +977,7 @@ class MCPClient:
                 # For HTTPMCPSession, we need to pass the session directly
                 # For regular ClientSession, we also pass it directly
                 # Convert SimpleTool to MCPToolType-like object for compatibility
-                if hasattr(mcp_tool, 'inputSchema'):
+                if hasattr(mcp_tool, "inputSchema"):
                     tool = MCPTool(mcp_tool, session, server_config)
                 else:
                     # Handle SimpleTool case by converting to proper format
@@ -1019,7 +1003,7 @@ class MCPClient:
             logger.debug(f"Detailed error: {traceback.format_exc()}")
             return []
 
-    def get_tool(self, tool_name: str) -> Optional[MCPTool]:
+    def get_tool(self, tool_name: str) -> MCPTool | None:
         """Get a tool by name."""
         return self.tools.get(tool_name)
 
@@ -1037,9 +1021,7 @@ class MCPClient:
                 del self.sessions[server_name]
 
                 # Remove tools from this server
-                tools_to_remove = [
-                    k for k in self.tools.keys() if k.startswith(f"{server_name}.")
-                ]
+                tools_to_remove = [k for k in self.tools.keys() if k.startswith(f"{server_name}.")]
                 for tool_key in tools_to_remove:
                     del self.tools[tool_key]
 
@@ -1065,14 +1047,14 @@ class MCPManager:
     def add_server(
         self,
         name: str,
-        server_type: str = 'stdio',
+        server_type: str = "stdio",
         use_cache: bool = False,
-        command: Optional[str] = None,
-        args: Optional[list[str]] = None,
-        env: Optional[dict[str, str]] = None,
-        url: Optional[str] = None,
-        headers: Optional[dict[str, str]] = None,
-        timeout: Optional[float] = None,
+        command: str | None = None,
+        args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        url: str | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
         disable_parallel: bool = False,
     ) -> None:
         """Add an MCP server configuration."""
@@ -1113,7 +1095,7 @@ class MCPManager:
 
 
 # Global MCP manager instance
-_mcp_manager: Optional[MCPManager] = None
+_mcp_manager: MCPManager | None = None
 
 
 def get_mcp_manager() -> MCPManager:
@@ -1148,16 +1130,16 @@ async def initialize_mcp_tools(server_configs: list[dict[str, Any]]) -> list[Too
     # Add server configurations
     for config in server_configs:
         manager.add_server(
-            name=config['name'],
-            server_type=config.get('type', 'stdio'),
-            command=config.get('command'),
-            args=config.get('args'),
-            env=config.get('env'),
-            url=config.get('url'),
-            headers=config.get('headers'),
-            timeout=config.get('timeout'),
-            use_cache=config.get('use_cache', False),
-            disable_parallel=config.get('disable_parallel', False),
+            name=config["name"],
+            server_type=config.get("type", "stdio"),
+            command=config.get("command"),
+            args=config.get("args"),
+            env=config.get("env"),
+            url=config.get("url"),
+            headers=config.get("headers"),
+            timeout=config.get("timeout"),
+            use_cache=config.get("use_cache", False),
+            disable_parallel=config.get("disable_parallel", False),
         )
 
     # Initialize servers and discover tools

@@ -1,15 +1,15 @@
 """TodoWrite tool implementation for task management in agent context."""
+
 from datetime import datetime
-from typing import Any
-from typing import Optional
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from ...main_sub.agent_state import AgentState
 
 
 def todo_write(
-    todos: list[dict[str, str]], agent_state: Optional['AgentState'] = None,
+    todos: list[dict[str, str]],
+    agent_state: Optional["AgentState"] = None,
 ) -> dict[str, Any]:
     """
     Create and manage a structured task list for the current coding session.
@@ -31,8 +31,8 @@ def todo_write(
     try:
         if not agent_state:
             return {
-                'status': 'error',
-                'error': 'Agent state not available',
+                "status": "error",
+                "error": "Agent state not available",
             }
 
         # Validate todo items
@@ -41,60 +41,58 @@ def todo_write(
             # Validate required fields
             if not isinstance(todo, dict):
                 return {
-                    'status': 'error',
-                    'error': f"Todo item {i} must be a dictionary",
+                    "status": "error",
+                    "error": f"Todo item {i} must be a dictionary",
                 }
 
-            if 'content' not in todo or not todo['content']:
+            if "content" not in todo or not todo["content"]:
                 return {
-                    'status': 'error',
-                    'error': f"Todo item {i} missing required 'content' field",
+                    "status": "error",
+                    "error": f"Todo item {i} missing required 'content' field",
                 }
 
-            status = todo.get('status', 'pending')
+            status = todo.get("status", "pending")
 
-            if status not in ['pending', 'in_progress', 'completed']:
+            if status not in ["pending", "in_progress", "completed"]:
                 return {
-                    'status': 'error',
-                    'error': f"Todo item {i} has invalid status '{status}'. Must be 'pending', 'in_progress', or 'completed'",
+                    "status": "error",
+                    "error": f"Todo item {i} has invalid status '{status}'. Must be 'pending', 'in_progress', or 'completed'",
                 }
 
-            if 'id' not in todo or not todo['id']:
+            if "id" not in todo or not todo["id"]:
                 return {
-                    'status': 'error',
-                    'error': f"Todo item {i} missing required 'id' field",
+                    "status": "error",
+                    "error": f"Todo item {i} missing required 'id' field",
                 }
 
             # Set default priority if not provided
-            priority = todo.get('priority', 'medium')
-            if priority not in ['high', 'medium', 'low']:
+            priority = todo.get("priority", "medium")
+            if priority not in ["high", "medium", "low"]:
                 return {
-                    'status': 'error',
-                    'error': f"Todo item {i} has invalid priority '{priority}'. Must be 'high', 'medium', or 'low'",
+                    "status": "error",
+                    "error": f"Todo item {i} has invalid priority '{priority}'. Must be 'high', 'medium', or 'low'",
                 }
 
             validated_todo = {
-                'content': todo['content'],
-                'status': status,
-                'priority': priority,
-                'id': todo['id'],
-                'created_at': datetime.now().isoformat(),
-                'updated_at': datetime.now().isoformat(),
+                "content": todo["content"],
+                "status": status,
+                "priority": priority,
+                "id": todo["id"],
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),
             }
             validated_todos.append(validated_todo)
 
         # Check for duplicate IDs
-        todo_ids = [todo['id'] for todo in validated_todos]
+        todo_ids = [todo["id"] for todo in validated_todos]
         if len(todo_ids) != len(set(todo_ids)):
             return {
-                'status': 'error',
-                'error': 'Duplicate todo IDs found. Each todo must have a unique ID',
+                "status": "error",
+                "error": "Duplicate todo IDs found. Each todo must have a unique ID",
             }
 
         # Count status types for validation
-        in_progress_count = sum(
-            1 for todo in validated_todos if todo['status'] == 'in_progress'
-        )
+        in_progress_count = sum(1 for todo in validated_todos if todo["status"] == "in_progress")
         # if in_progress_count > 1:
         #     return {
         #         "status": "error",
@@ -102,35 +100,31 @@ def todo_write(
         #     }
 
         # Store the todo list in agent context
-        agent_state.set_global_value('current_todos', validated_todos)
+        agent_state.set_global_value("current_todos", validated_todos)
         agent_state.set_global_value(
-            'todos_last_updated',
+            "todos_last_updated",
             datetime.now().isoformat(),
         )
 
         # Generate summary for display
         total_todos = len(validated_todos)
-        pending_count = sum(
-            1 for todo in validated_todos if todo['status'] == 'pending'
-        )
-        completed_count = sum(
-            1 for todo in validated_todos if todo['status'] == 'completed'
-        )
+        pending_count = sum(1 for todo in validated_todos if todo["status"] == "pending")
+        completed_count = sum(1 for todo in validated_todos if todo["status"] == "completed")
 
         return {
-            'status': 'success',
-            'message': f"Todo list updated with {total_todos} items",
-            'summary': {
-                'total': total_todos,
-                'pending': pending_count,
-                'in_progress': in_progress_count,
-                'completed': completed_count,
+            "status": "success",
+            "message": f"Todo list updated with {total_todos} items",
+            "summary": {
+                "total": total_todos,
+                "pending": pending_count,
+                "in_progress": in_progress_count,
+                "completed": completed_count,
             },
         }
 
     except Exception as e:
         return {
-            'status': 'error',
-            'error': str(e),
-            'error_type': type(e).__name__,
+            "status": "error",
+            "error": str(e),
+            "error_type": type(e).__name__,
         }

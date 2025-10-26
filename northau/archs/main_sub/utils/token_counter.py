@@ -1,6 +1,7 @@
 """Token counting utilities for agents."""
+
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ except ImportError:
 class TokenCounter:
     """Handles token counting for LLM messages using various strategies."""
 
-    def __init__(self, strategy: str = 'tiktoken', model: str = 'gpt-4o'):
+    def __init__(self, strategy: str = "tiktoken", model: str = "gpt-4o"):
         """Initialize token counter with specified strategy.
 
         Args:
@@ -29,12 +30,12 @@ class TokenCounter:
 
     def _create_counter(self) -> Callable[[list[dict[str, str]]], int]:
         """Create the appropriate token counter based on strategy."""
-        if self.strategy == 'tiktoken' and TIKTOKEN_AVAILABLE:
+        if self.strategy == "tiktoken" and TIKTOKEN_AVAILABLE:
             return self._create_tiktoken_counter()
         else:
-            if self.strategy == 'tiktoken':
+            if self.strategy == "tiktoken":
                 logger.warning(
-                    'tiktoken not available, using fallback counter',
+                    "tiktoken not available, using fallback counter",
                 )
             return self._create_fallback_counter()
 
@@ -50,7 +51,7 @@ class TokenCounter:
                     # Add tokens for role and content
                     total_tokens += len(
                         encoding.encode(
-                            message.get('content', ''),
+                            message.get("content", ""),
                             disallowed_special=(),
                         ),
                     )
@@ -71,8 +72,8 @@ class TokenCounter:
             total_tokens = 0
             for message in messages:
                 # Add tokens for role and content using chars/4 approximation
-                total_tokens += len(message.get('role', '')) // 4
-                total_tokens += len(message.get('content', '')) // 4
+                total_tokens += len(message.get("role", "")) // 4
+                total_tokens += len(message.get("content", "")) // 4
                 # Add overhead tokens for message formatting
                 total_tokens += 4
             return max(total_tokens, 1)  # Ensure at least 1 token

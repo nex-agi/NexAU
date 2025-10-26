@@ -1,9 +1,9 @@
 """Sub-agent management and lifecycle control."""
+
 import logging
 import threading
+from collections.abc import Callable
 from typing import Any
-from typing import Callable
-from typing import Optional
 
 from northau.archs.main_sub.agent_state import AgentState
 from northau.archs.main_sub.utils.xml_utils import XMLParser
@@ -54,8 +54,8 @@ class SubAgentManager:
         self,
         sub_agent_name: str,
         message: str,
-        context: Optional[dict[str, Any]] = None,
-        parent_agent_state: Optional[AgentState] = None,
+        context: dict[str, Any] | None = None,
+        parent_agent_state: AgentState | None = None,
     ) -> str:
         """Call a sub-agent like a tool call.
 
@@ -104,14 +104,13 @@ class SubAgentManager:
                 sub_agent = sub_agent_factory()
                 sub_agent.global_storage = self.global_storage
                 # Also ensure the sub-agent's executor uses the same global storage
-                if hasattr(sub_agent, 'executor'):
+                if hasattr(sub_agent, "executor"):
                     sub_agent.executor.global_storage = self.global_storage
-                if hasattr(sub_agent, 'executor') and hasattr(
-                    sub_agent.executor, 'subagent_manager',
+                if hasattr(sub_agent, "executor") and hasattr(
+                    sub_agent.executor,
+                    "subagent_manager",
                 ):
-                    sub_agent.executor.subagent_manager.global_storage = (
-                        self.global_storage
-                    )
+                    sub_agent.executor.subagent_manager.global_storage = self.global_storage
         else:
             sub_agent = sub_agent_factory()
         self.running_sub_agents[sub_agent.config.agent_id] = sub_agent
@@ -124,12 +123,10 @@ class SubAgentManager:
                 main_trace_path = self.main_tracer.get_dump_path()
                 if main_trace_path:
                     # Use the tracer's method to generate sub-agent trace path
-                    if hasattr(self.main_tracer, 'generate_sub_agent_trace_path'):
-                        sub_agent_trace_path = (
-                            self.main_tracer.generate_sub_agent_trace_path(
-                                sub_agent_name,
-                                main_trace_path,
-                            )
+                    if hasattr(self.main_tracer, "generate_sub_agent_trace_path"):
+                        sub_agent_trace_path = self.main_tracer.generate_sub_agent_trace_path(
+                            sub_agent_name,
+                            main_trace_path,
                         )
                         if sub_agent_trace_path:
                             logger.info(
@@ -143,9 +140,7 @@ class SubAgentManager:
                 effective_context: dict[
                     str,
                     Any,
-                ] = (
-                    context or current_context.context.copy()
-                )
+                ] = context or current_context.context.copy()
 
                 if self.langfuse_client:
                     try:
@@ -153,8 +148,8 @@ class SubAgentManager:
                             name=f"subagent_{sub_agent_name}",
                             input=message,
                             metadata={
-                                'sub_agent_name': sub_agent_name,
-                                'type': 'sub_agent_execution',
+                                "sub_agent_name": sub_agent_name,
+                                "type": "sub_agent_execution",
                             },
                         ):
                             result = sub_agent.run(

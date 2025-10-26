@@ -1,30 +1,33 @@
 """Main execution orchestrator for agents."""
+
 import json
 import logging
 import threading
 import uuid
 from collections import defaultdict
-from concurrent.futures import as_completed
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
 from typing import Any
-from typing import Callable
-from typing import Optional
 
 from northau.archs.main_sub.agent_state import AgentState
 from northau.archs.main_sub.execution.batch_processor import BatchProcessor
-from northau.archs.main_sub.execution.hooks import AfterModelHook
-from northau.archs.main_sub.execution.hooks import AfterModelHookInput
-from northau.archs.main_sub.execution.hooks import AfterToolHook
-from northau.archs.main_sub.execution.hooks import BeforeModelHook
-from northau.archs.main_sub.execution.hooks import BeforeModelHookInput
-from northau.archs.main_sub.execution.hooks import HookManager
-from northau.archs.main_sub.execution.hooks import ToolHookManager
+from northau.archs.main_sub.execution.hooks import (
+    AfterModelHook,
+    AfterModelHookInput,
+    AfterToolHook,
+    BeforeModelHook,
+    BeforeModelHookInput,
+    HookManager,
+    ToolHookManager,
+)
 from northau.archs.main_sub.execution.llm_caller import LLMCaller
-from northau.archs.main_sub.execution.parse_structures import BatchAgentCall
-from northau.archs.main_sub.execution.parse_structures import ParsedResponse
-from northau.archs.main_sub.execution.parse_structures import SubAgentCall
-from northau.archs.main_sub.execution.parse_structures import ToolCall
+from northau.archs.main_sub.execution.parse_structures import (
+    BatchAgentCall,
+    ParsedResponse,
+    SubAgentCall,
+    ToolCall,
+)
 from northau.archs.main_sub.execution.response_parser import ResponseParser
 from northau.archs.main_sub.execution.stop_reason import AgentStopReason
 from northau.archs.main_sub.execution.subagent_manager import SubAgentManager
@@ -40,14 +43,26 @@ class Executor:
     """Orchestrates execution of agent tasks with parallel processing support."""
 
     def __init__(
-        self, agent_name: str, agent_id: str, tool_registry: dict[str, Any], sub_agent_factories: dict[str, Callable[[], Any]],
-        stop_tools: set[str], openai_client: Any, llm_config: Any, max_iterations: int = 100,
-        max_context_tokens: int = 128000, max_running_subagents: int = 5,
-        retry_attempts: int = 5, token_counter: TokenCounter | None = None,
-        langfuse_client: Any = None, after_model_hooks: list[AfterModelHook] | None = None,
+        self,
+        agent_name: str,
+        agent_id: str,
+        tool_registry: dict[str, Any],
+        sub_agent_factories: dict[str, Callable[[], Any]],
+        stop_tools: set[str],
+        openai_client: Any,
+        llm_config: Any,
+        max_iterations: int = 100,
+        max_context_tokens: int = 128000,
+        max_running_subagents: int = 5,
+        retry_attempts: int = 5,
+        token_counter: TokenCounter | None = None,
+        langfuse_client: Any = None,
+        after_model_hooks: list[AfterModelHook] | None = None,
         before_model_hooks: list[BeforeModelHook] | None = None,
-        after_tool_hooks: list[AfterToolHook] | None = None, serial_tool_name: list[str] | None = None,
-        global_storage: Any = None, custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None,
+        after_tool_hooks: list[AfterToolHook] | None = None,
+        serial_tool_name: list[str] | None = None,
+        global_storage: Any = None,
+        custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None,
     ):
         """Initialize executor.
 
@@ -145,7 +160,7 @@ class Executor:
     def execute(
         self,
         history: list[dict[str, str]],
-        agent_state: 'AgentState',
+        agent_state: "AgentState",
         dump_trace_path: str | None = None,
     ) -> tuple[str, list[dict[str, str]]]:
         """Execute agent task with full orchestration.
@@ -171,7 +186,7 @@ class Executor:
 
             # Loop until no more tool calls or sub-agent calls are made
             iteration = 0
-            final_response = ''
+            final_response = ""
 
             logger.info(
                 f"🔄 Starting iterative execution loop for agent '{self.agent_name}'",
@@ -187,9 +202,9 @@ class Executor:
                 )
                 if self.stop_signal:
                     logger.info(
-                        '❗️ Stop signal received, stopping execution',
+                        "❗️ Stop signal received, stopping execution",
                     )
-                    return 'Stop signal received.', messages
+                    return "Stop signal received.", messages
 
                 # Process any queued messages
                 if self.queued_messages:
@@ -208,9 +223,11 @@ class Executor:
                 # Check if prompt exceeds max context tokens - force stop if so
                 if current_prompt_tokens > self.max_context_tokens:
                     logger.error(
-                        f"❌ Prompt tokens ({current_prompt_tokens}) exceed max_context_tokens ({self.max_context_tokens}). Stopping execution.",
+                        f"❌ Prompt tokens ({current_prompt_tokens}) exceed max_context_tokens \
+                            ({self.max_context_tokens}). Stopping execution.",
                     )
-                    final_response += f"\\n\\n[Error: Prompt too long ({current_prompt_tokens} tokens) exceeds maximum context ({self.max_context_tokens} tokens). Execution stopped.]"
+                    final_response += f"\\n\\n[Error: Prompt too long ({current_prompt_tokens} tokens) exceeds maximum context \
+                        ({self.max_context_tokens} tokens). Execution stopped.]"
                     force_stop_reason = AgentStopReason.CONTEXT_TOKEN_LIMIT
 
                 # Calculate max_tokens dynamically based on available budget
@@ -233,9 +250,9 @@ class Executor:
 
                 if iteration == self.max_iterations - 1:
                     logger.error(
-                        '❌ Maximum iteration limit reached. Stopping execution.',
+                        "❌ Maximum iteration limit reached. Stopping execution.",
                     )
-                    final_response += '\\n\\n[Error: Maximum iteration limit reached.]'
+                    final_response += "\\n\\n[Error: Maximum iteration limit reached.]"
                     force_stop_reason = AgentStopReason.MAX_ITERATIONS_REACHED
 
                 logger.info(
@@ -247,18 +264,18 @@ class Executor:
                     self.tracer.add_llm_request(
                         iteration + 1,
                         {
-                            'messages': messages,
-                            'max_tokens': calculated_max_tokens,
+                            "messages": messages,
+                            "max_tokens": calculated_max_tokens,
                         },
                     )
-                    
+
                 before_model_hook_input = BeforeModelHookInput(
                     agent_state=agent_state,
                     max_iterations=self.max_iterations,
                     current_iteration=iteration,
                     messages=messages,
                 )
-                
+
                 if self.before_model_hook_manager:
                     try:
                         logger.info(
@@ -275,7 +292,10 @@ class Executor:
                     f"🧠 Calling LLM for agent '{self.agent_name}' with {calculated_max_tokens} max tokens...",
                 )
                 assistant_response = self.llm_caller.call_llm(
-                    messages, calculated_max_tokens, force_stop_reason, agent_state,
+                    messages,
+                    calculated_max_tokens,
+                    force_stop_reason,
+                    agent_state,
                 )
                 if assistant_response is None:
                     break
@@ -284,7 +304,8 @@ class Executor:
                 if dump_trace_path:
                     # Create a mock response object for tracing compatibility
                     self.tracer.add_llm_response(
-                        iteration + 1, assistant_response,
+                        iteration + 1,
+                        assistant_response,
                     )
 
                 logger.info(
@@ -301,7 +322,7 @@ class Executor:
 
                 # Add the assistant's original response to conversation
                 messages.append(
-                    {'role': 'assistant', 'content': assistant_response},
+                    {"role": "assistant", "content": assistant_response},
                 )
 
                 # Process tool calls and sub-agent calls
@@ -317,11 +338,9 @@ class Executor:
                     messages=messages,
                 )
 
-                processed_response, should_stop, stop_tool_result, updated_messages = (
-                    self._process_xml_calls(
-                        after_model_hook_input,
-                        tracer=self.tracer if dump_trace_path else None,
-                    )
+                processed_response, should_stop, stop_tool_result, updated_messages = self._process_xml_calls(
+                    after_model_hook_input,
+                    tracer=self.tracer if dump_trace_path else None,
                 )
 
                 # Update messages with any modifications from hooks
@@ -332,7 +351,7 @@ class Executor:
                     # Return the stop tool result directly, formatted as JSON if it's not a string
                     if stop_tool_result is not None:
                         logger.info(
-                            '🛑 Stop tool detected, returning stop tool result as final response',
+                            "🛑 Stop tool detected, returning stop tool result as final response",
                         )
                         force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
                         if isinstance(stop_tool_result, str):
@@ -342,11 +361,13 @@ class Executor:
                             import json
 
                             final_response = json.dumps(
-                                stop_tool_result, indent=4, ensure_ascii=False,
+                                stop_tool_result,
+                                indent=4,
+                                ensure_ascii=False,
                             )
                             break
                     else:
-                        logger.info('🛑 No more tool calls, stop.')
+                        logger.info("🛑 No more tool calls, stop.")
                         force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
                         # Fallback to the processed response if no specific result
                         final_response = processed_response
@@ -355,7 +376,7 @@ class Executor:
                 # Extract just the tool results from processed_response
                 tool_results = processed_response.replace(
                     assistant_response,
-                    '',
+                    "",
                 ).strip()
 
                 # Add tool results as user feedback with iteration context
@@ -369,15 +390,15 @@ class Executor:
                 if tool_results:
                     messages.append(
                         {
-                            'role': 'user',
-                            'content': f"Tool execution results:\n{tool_results}\n\n{iteration_hint}",
+                            "role": "user",
+                            "content": f"Tool execution results:\n{tool_results}\n\n{iteration_hint}",
                         },
                     )
                 else:
                     messages.append(
                         {
-                            'role': 'user',
-                            'content': f"{iteration_hint}",
+                            "role": "user",
+                            "content": f"{iteration_hint}",
                         },
                     )
                 current_prompt_tokens = self.token_counter.count_tokens(
@@ -390,14 +411,14 @@ class Executor:
                     available_tokens,
                     desired_max_tokens,
                 )
-                messages[-1]['content'] += f"\n\n{token_limit_hint}"
+                messages[-1]["content"] += f"\n\n{token_limit_hint}"
 
                 iteration += 1
 
             # Add note if max iterations reached
             if iteration >= self.max_iterations:
                 force_stop_reason = AgentStopReason.MAX_ITERATIONS_REACHED
-                final_response += '\\n\\n[Note: Maximum iteration limit reached]'
+                final_response += "\\n\\n[Note: Maximum iteration limit reached]"
 
             logger.info(
                 f"🔄 Force stop reason: {force_stop_reason.name}",
@@ -446,7 +467,9 @@ class Executor:
                 self.tracer.stop_tracing()
 
     def _process_xml_calls(
-        self, hook_input: AfterModelHookInput, tracer: Tracer | None = None,
+        self,
+        hook_input: AfterModelHookInput,
+        tracer: Tracer | None = None,
     ) -> tuple[str, bool, str | None, list[dict[str, str]]]:
         """Process XML tool calls and sub-agent calls using two-phase approach.
 
@@ -459,7 +482,7 @@ class Executor:
             Tuple of (processed_response, should_stop, stop_tool_result, updated_messages)
         """
         # Phase 1: Parse the response to extract all calls
-        logger.info('📋 Phase 1: Parsing LLM response for all executable calls')
+        logger.info("📋 Phase 1: Parsing LLM response for all executable calls")
         parsed_response = self.response_parser.parse_response(
             hook_input.original_response,
         )
@@ -499,8 +522,8 @@ class Executor:
     def _execute_parsed_calls(
         self,
         parsed_response: ParsedResponse,
-        agent_state: 'AgentState',
-        tracer: Optional[Tracer] = None,
+        agent_state: "AgentState",
+        tracer: Tracer | None = None,
     ) -> tuple[str, bool, str | None]:
         """Execute all parsed calls in parallel.
 
@@ -526,10 +549,20 @@ class Executor:
             for batch_call in parsed_response.batch_agent_calls:
                 try:
                     batch_result = self._execute_batch_call(batch_call)
-                    processed_response += f"\\n\\n<tool_result>\\n<tool_name>batch_agent</tool_name>\\n<result>{batch_result}</result>\\n</tool_result>"
+                    processed_response += f"""
+<tool_result>
+<tool_name>batch_agent</tool_name>
+<result>{batch_result}</result>
+</tool_result>
+"""
                 except Exception as e:
                     logger.error(f"❌ Batch agent call failed: {e}")
-                    processed_response += f"\\n\\n<tool_result>\\n<tool_name>batch_agent</tool_name>\\n<error>{str(e)}</error>\\n</tool_result>"
+                    processed_response += f"""
+<tool_result>
+<tool_name>batch_agent</tool_name>
+<error>{str(e)}</error>
+</tool_result>
+"""
             return processed_response, False, None
 
         # Execute tool calls and sub-agent calls in parallel
@@ -565,7 +598,9 @@ class Executor:
         for sub_agent_call in parsed_response.sub_agent_calls:
             if sub_agent_call.sub_agent_call_id in seen_sub_agent_call_ids:
                 seen_sub_agent_call_ids[sub_agent_call.sub_agent_call_id] += 1
-                sub_agent_call.sub_agent_call_id = f"{sub_agent_call.sub_agent_call_id}_{seen_sub_agent_call_ids[sub_agent_call.sub_agent_call_id]}"
+                sub_agent_call.sub_agent_call_id = (
+                    f"{sub_agent_call.sub_agent_call_id}_{seen_sub_agent_call_ids[sub_agent_call.sub_agent_call_id]}"
+                )
 
         try:
             # Submit tool execution tasks
@@ -579,7 +614,7 @@ class Executor:
                     agent_state,
                     tracer,
                 )
-                tool_futures[future] = ('tool', tool_call)
+                tool_futures[future] = ("tool", tool_call)
 
                 if tool_call.tool_name in self.serial_tool_name:
                     future.result()
@@ -596,7 +631,7 @@ class Executor:
                     tracer,
                     parent_agent_state=agent_state,
                 )
-                sub_agent_futures[future] = ('sub_agent', sub_agent_call)
+                sub_agent_futures[future] = ("sub_agent", sub_agent_call)
 
             # Combine all futures
             all_futures = {**tool_futures, **sub_agent_futures}
@@ -610,40 +645,44 @@ class Executor:
                 call_type, call_obj = all_futures[future]
                 try:
                     result_data = future.result()
-                    if call_type == 'tool':
+                    if call_type == "tool":
                         tool_name, result, is_error = result_data
                         if is_error:
                             logger.error(
                                 f"❌ Tool '{tool_name}' error: {result}",
                             )
                             tool_results.append(
-                                f"<tool_result>\\n<tool_name>{tool_name}</tool_name>\\n<error>{result}</error>\\n</tool_result>",
+                                f"""
+<tool_result>
+<tool_name>{tool_name}</tool_name>
+<error>{result}</error>
+</tool_result>
+""",
                             )
                         else:
                             logger.info(
                                 f"📤 Tool '{tool_name}' result: {result}",
                             )
-                            tool_result_xml = f"<tool_result>\\n<tool_name>{tool_name}</tool_name>\\n<result>{result}</result>\\n</tool_result>"
+                            tool_result_xml = f"""
+<tool_result>
+<tool_name>{tool_name}</tool_name>
+<result>{result}</result>
+</tool_result>
+"""
                             tool_results.append(tool_result_xml)
 
                             # Check if this tool result indicates a stop tool was executed
                             try:
                                 parsed_result = json.loads(result)
                                 if isinstance(
-                                    parsed_result, dict,
-                                ) and parsed_result.get('_is_stop_tool'):
+                                    parsed_result,
+                                    dict,
+                                ) and parsed_result.get("_is_stop_tool"):
                                     stop_tool_detected = True
-                                    actual_result = {
-                                        k: v
-                                        for k, v in parsed_result.items()
-                                        if k != '_is_stop_tool'
-                                    }
-                                    if (
-                                        'result' in actual_result
-                                        and len(actual_result) == 1
-                                    ):
+                                    actual_result = {k: v for k, v in parsed_result.items() if k != "_is_stop_tool"}
+                                    if "result" in actual_result and len(actual_result) == 1:
                                         stop_tool_result = json.dumps(
-                                            actual_result['result'],
+                                            actual_result["result"],
                                             ensure_ascii=False,
                                             indent=4,
                                         )
@@ -666,33 +705,48 @@ class Executor:
                                     )
                             except (json.JSONDecodeError, TypeError):
                                 pass
-                    elif call_type == 'sub_agent':
+                    elif call_type == "sub_agent":
                         agent_name, result, is_error = result_data
                         if is_error:
                             logger.error(
                                 f"❌ Sub-agent '{agent_name}' error: {result}",
                             )
                             tool_results.append(
-                                f"<tool_result>\\n<tool_name>{agent_name}_sub_agent</tool_name>\\n<error>{result}</error>\\n</tool_result>",
+                                f"""
+<tool_result>
+<tool_name>{agent_name}_sub_agent</tool_name>
+<error>{result}</error>
+</tool_result>
+""",
                             )
                         else:
                             logger.info(
                                 f"📤 Sub-agent '{agent_name}' result: {result}",
                             )
                             tool_results.append(
-                                f"<tool_result>\\n<tool_name>{agent_name}_sub_agent</tool_name>\\n<result>{result}</result>\\n</tool_result>",
+                                f"""
+<tool_result>
+<tool_name>{agent_name}_sub_agent</tool_name>
+<result>{result}</result>
+</tool_result>
+""",
                             )
                 except Exception as e:
                     logger.error(
                         f"❌ Unexpected error processing {call_type}: {e}",
                     )
                     tool_results.append(
-                        f"<tool_result>\\n<tool_name>unknown</tool_name>\\n<error>Unexpected error: {str(e)}</error>\\n</tool_result>",
+                        f"""
+<tool_result>
+<tool_name>unknown</tool_name>
+<error>Unexpected error: {str(e)}</error>
+</tool_result>
+""",
                     )
 
             # Append tool results to the original response
             if tool_results:
-                processed_response += '\n\n' + '\n\n'.join(tool_results)
+                processed_response += "\n\n" + "\n\n".join(tool_results)
 
         finally:
             # Clean up executors
@@ -714,8 +768,8 @@ class Executor:
     def _execute_tool_call_safe(
         self,
         tool_call: ToolCall,
-        agent_state: 'AgentState',
-        tracer: Optional[Tracer] = None,
+        agent_state: "AgentState",
+        tracer: Tracer | None = None,
     ) -> tuple[str, str, bool]:
         """Safely execute a tool call."""
         try:
@@ -729,19 +783,14 @@ class Executor:
             # Convert parameters to correct types and execute
             converted_params = {}
             for param_name, param_value in tool_call.parameters.items():
-                converted_params[param_name] = (
-                    self.tool_executor._convert_parameter_type(
-                        tool_call.tool_name,
-                        param_name,
-                        param_value,
-                    )
+                converted_params[param_name] = self.tool_executor._convert_parameter_type(
+                    tool_call.tool_name,
+                    param_name,
+                    param_value,
                 )
 
             result = self.tool_executor.execute_tool(
-                agent_state,
-                tool_call.tool_name,
-                converted_params,
-                tool_call_id=tool_call.tool_call_id
+                agent_state, tool_call.tool_name, converted_params, tool_call_id=tool_call.tool_call_id
             )
 
             # Log tool response to trace if enabled
@@ -760,9 +809,9 @@ class Executor:
     def _execute_sub_agent_call_safe(
         self,
         sub_agent_call: SubAgentCall,
-        context: Optional[dict[str, Any]] = None,
+        context: dict[str, Any] | None = None,
         tracer: Tracer | None = None,
-        parent_agent_state: Optional[AgentState] = None,
+        parent_agent_state: AgentState | None = None,
     ) -> tuple[str, str, bool]:
         """Safely execute a sub-agent call."""
         try:
@@ -805,7 +854,7 @@ class Executor:
 
         # Save trace data if available before cleanup
         if self.tracer.is_tracing():
-            self.tracer.add_shutdown('Executor cleanup')
+            self.tracer.add_shutdown("Executor cleanup")
             trace_data = self.tracer.get_trace_data()
             dump_path = self.tracer.get_dump_path()
             if trace_data and dump_path:
@@ -839,7 +888,10 @@ class Executor:
         )
 
     def _build_iteration_hint(
-        self, current_iteration: int, max_iterations: int, remaining_iterations: int,
+        self,
+        current_iteration: int,
+        max_iterations: int,
+        remaining_iterations: int,
     ) -> str:
         """Build a hint message for the LLM about iteration status."""
         if remaining_iterations <= 1:

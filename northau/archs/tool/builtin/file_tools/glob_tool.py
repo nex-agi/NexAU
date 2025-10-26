@@ -3,14 +3,13 @@ import json
 import logging
 import os
 import time
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
 def glob_tool(
     pattern: str,
-    path: Optional[str] = None,
+    path: str | None = None,
     limit: int = 100,
 ) -> str:
     """
@@ -37,11 +36,11 @@ def glob_tool(
         if not os.path.exists(search_dir):
             return json.dumps(
                 {
-                    'error': f"Directory does not exist: {search_dir}",
-                    'num_files': 0,
-                    'filenames': [],
-                    'duration_ms': int((time.time() - start_time) * 1000),
-                    'truncated': False,
+                    "error": f"Directory does not exist: {search_dir}",
+                    "num_files": 0,
+                    "filenames": [],
+                    "duration_ms": int((time.time() - start_time) * 1000),
+                    "truncated": False,
                 },
                 indent=2,
             )
@@ -49,11 +48,11 @@ def glob_tool(
         if not os.access(search_dir, os.R_OK):
             return json.dumps(
                 {
-                    'error': f"No read permission for directory: {search_dir}",
-                    'num_files': 0,
-                    'filenames': [],
-                    'duration_ms': int((time.time() - start_time) * 1000),
-                    'truncated': False,
+                    "error": f"No read permission for directory: {search_dir}",
+                    "num_files": 0,
+                    "filenames": [],
+                    "duration_ms": int((time.time() - start_time) * 1000),
+                    "truncated": False,
                 },
                 indent=2,
             )
@@ -61,11 +60,11 @@ def glob_tool(
         logger.error(f"Error checking directory permissions: {e}")
         return json.dumps(
             {
-                'error': f"Error accessing directory: {str(e)}",
-                'num_files': 0,
-                'filenames': [],
-                'duration_ms': int((time.time() - start_time) * 1000),
-                'truncated': False,
+                "error": f"Error accessing directory: {str(e)}",
+                "num_files": 0,
+                "filenames": [],
+                "duration_ms": int((time.time() - start_time) * 1000),
+                "truncated": False,
             },
             indent=2,
         )
@@ -98,25 +97,21 @@ def glob_tool(
 
         # Prepare result
         result = {
-            'num_files': len(files),
-            'filenames': files,
-            'duration_ms': duration_ms,
-            'truncated': truncated,
-            'search_directory': search_dir,
-            'pattern': pattern,
+            "num_files": len(files),
+            "filenames": files,
+            "duration_ms": duration_ms,
+            "truncated": truncated,
+            "search_directory": search_dir,
+            "pattern": pattern,
         }
 
         # Add truncation message if needed
         if truncated:
-            result['message'] = (
-                f"Results are truncated to {limit} files. Consider using a more specific pattern."
-            )
+            result["message"] = f"Results are truncated to {limit} files. Consider using a more specific pattern."
         elif len(files) == 0:
-            result['message'] = 'No files found matching the pattern.'
+            result["message"] = "No files found matching the pattern."
         else:
-            result['message'] = (
-                f"Found {len(files)} file{'s' if len(files) != 1 else ''} matching the pattern."
-            )
+            result["message"] = f"Found {len(files)} file{'s' if len(files) != 1 else ''} matching the pattern."
 
         logger.info(
             f"Glob search completed: found {len(files)} files in {duration_ms}ms",
@@ -129,18 +124,16 @@ def glob_tool(
             files_to_keep = len(files)
             while files_to_keep > 0:
                 truncated_result = result.copy()
-                truncated_result['filenames'] = files[:files_to_keep]
-                truncated_result['num_files'] = files_to_keep
-                truncated_result['truncated_output'] = True
-                truncated_result['remaining_files'] = (
+                truncated_result["filenames"] = files[:files_to_keep]
+                truncated_result["num_files"] = files_to_keep
+                truncated_result["truncated_output"] = True
+                truncated_result["remaining_files"] = (
                     len(
                         files,
                     )
                     - files_to_keep
                 )
-                truncated_result['message'] = (
-                    f"Found {files_to_keep} files (truncated: {len(files) - files_to_keep} more files not shown)"
-                )
+                truncated_result["message"] = f"Found {files_to_keep} files (truncated: {len(files) - files_to_keep} more files not shown)"
 
                 test_json = json.dumps(
                     truncated_result,
@@ -153,12 +146,12 @@ def glob_tool(
 
             # If even 0 files is too long, return minimal result
             minimal_result = {
-                'truncated_output': True,
-                'total_files': len(files),
-                'message': f"Output too long: found {len(files)} files (details truncated)",
-                'search_directory': search_dir,
-                'pattern': pattern,
-                'duration_ms': duration_ms,
+                "truncated_output": True,
+                "total_files": len(files),
+                "message": f"Output too long: found {len(files)} files (details truncated)",
+                "search_directory": search_dir,
+                "pattern": pattern,
+                "duration_ms": duration_ms,
             }
             return json.dumps(minimal_result, indent=2, ensure_ascii=False)
 
@@ -168,11 +161,11 @@ def glob_tool(
         logger.error(f"Error during glob search: {e}")
         return json.dumps(
             {
-                'error': f"Error during file search: {str(e)}",
-                'num_files': 0,
-                'filenames': [],
-                'duration_ms': int((time.time() - start_time) * 1000),
-                'truncated': False,
+                "error": f"Error during file search: {str(e)}",
+                "num_files": 0,
+                "filenames": [],
+                "duration_ms": int((time.time() - start_time) * 1000),
+                "truncated": False,
             },
             indent=2,
         )
@@ -263,27 +256,27 @@ def glob_tool(
 #                 self.logger.warning(f"Failed to restore working directory: {e}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Test the tool
-    print('Testing glob_tool...')
+    print("Testing glob_tool...")
 
     # Test with Python files
     result1 = glob_tool.invoke(
-        {'pattern': '*.py', 'path': '//users/chenlu/', 'limit': 5},
+        {"pattern": "*.py", "path": "//users/chenlu/", "limit": 5},
     )
-    print('Python files:')
+    print("Python files:")
     print(result1)
     print()
 
     # Test with recursive search
     result2 = glob_tool.invoke(
         {
-            'pattern': '**/*.py',
-            'path': '//users/chenlu/',
-            'limit': 10,
+            "pattern": "**/*.py",
+            "path": "//users/chenlu/",
+            "limit": 10,
         },
     )
-    print('Recursive Python files:')
+    print("Recursive Python files:")
     print(result2)
     print()
 

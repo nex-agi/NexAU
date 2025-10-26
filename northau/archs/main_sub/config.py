@@ -1,10 +1,8 @@
 """Configuration models for the Northau agent framework."""
-from dataclasses import dataclass
-from dataclasses import field
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
-from typing import Callable
-from typing import Optional
-from typing import Union
 
 from ..llm.llm_config import LLMConfig
 
@@ -24,32 +22,32 @@ class ExecutionConfig:
 class AgentConfig:
     """Configuration for an Agent's definition and behavior."""
 
-    name: Optional[str] = None
-    agent_id: Optional[str] = None
-    system_prompt: Optional[str] = None
-    system_prompt_type: str = 'string'
+    name: str | None = None
+    agent_id: str | None = None
+    system_prompt: str | None = None
+    system_prompt_type: str = "string"
     tools: list[Any] = field(default_factory=list)
-    sub_agents: Optional[list[tuple[str, Callable[[], Any]]]] = None
-    llm_config: Optional[Union[LLMConfig, dict[str, Any]]] = None
+    sub_agents: list[tuple[str, Callable[[], Any]]] | None = None
+    llm_config: LLMConfig | dict[str, Any] | None = None
     stop_tools: list[str] = field(default_factory=list)
 
     # Context parameters
-    initial_state: Optional[dict[str, Any]] = None
-    initial_config: Optional[dict[str, Any]] = None
-    initial_context: Optional[dict[str, Any]] = None
+    initial_state: dict[str, Any] | None = None
+    initial_config: dict[str, Any] | None = None
+    initial_context: dict[str, Any] | None = None
 
     # MCP parameters
-    mcp_servers: Optional[list[dict[str, Any]]] = None
+    mcp_servers: list[dict[str, Any]] | None = None
 
     # Hook parameters
-    after_model_hooks: Optional[list[Callable]] = None
-    after_tool_hooks: Optional[list[Callable]] = None
-    before_model_hooks: Optional[list[Callable]] = None
+    after_model_hooks: list[Callable] | None = None
+    after_tool_hooks: list[Callable] | None = None
+    before_model_hooks: list[Callable] | None = None
 
     # Advanced features
-    error_handler: Optional[Callable] = None
-    token_counter: Optional[Callable[[list[dict[str, str]]], int]] = None
-    custom_llm_generator: Optional[Callable[[Any, dict[str, Any]], Any]] = None
+    error_handler: Callable | None = None
+    token_counter: Callable[[list[dict[str, str]]], int] | None = None
+    custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None
 
     def __post_init__(self):
         """Post-initialization processing."""
@@ -67,7 +65,7 @@ class AgentConfig:
 
         # Handle LLM configuration
         if self.llm_config is None:
-            raise ValueError('llm_config is required')
+            raise ValueError("llm_config is required")
         elif isinstance(self.llm_config, dict):
             self.llm_config = LLMConfig(**self.llm_config)
         elif not isinstance(self.llm_config, LLMConfig):

@@ -34,3 +34,41 @@ uv sync
     # Ensure you have python-dotenv installed (`uv pip install python-dotenv`)
     dotenv run uv run examples/deep_research/quickstart.py
     ```
+
+## Development
+
+### Running Tests and Quality Checks
+
+Before submitting a pull request, you can run the same checks that will run in CI:
+
+```bash
+# Install dependencies (including dev dependencies)
+uv sync
+
+# Run linter
+uv run ruff check .
+
+# Run format check
+uv run ruff format --check .
+
+# Auto-fix linting issues (optional)
+uv run ruff check --fix .
+
+# Auto-format code (optional)
+uv run ruff format .
+
+# Run tests with coverage
+uv run pytest --cov=northau --cov-report=html --cov-report=term
+```
+
+The coverage report will be generated in the `htmlcov/` directory. Open `htmlcov/index.html` in your browser to view the detailed coverage report.
+
+### Continuous Integration
+
+All pull requests to the `main` branch will automatically run:
+- **Linting** - Code quality checks using ruff
+- **Format checking** - Code style verification using ruff
+- **Tests** - Full test suite with pytest
+- **Coverage reporting** - Test coverage analysis
+
+The workflow is defined in `.github/workflows/ci.yml`.

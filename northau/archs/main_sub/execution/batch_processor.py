@@ -1,11 +1,11 @@
 """Batch processing functionality for agents."""
+
 import json
 import logging
 import os
 import re
 import xml.etree.ElementTree as ET
-from concurrent.futures import as_completed
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
 from typing import Any
 
@@ -42,38 +42,34 @@ class BatchProcessor:
             root = self.xml_parser.parse_xml_content(xml_content)
 
             # Get agent name
-            agent_name_elem = root.find('agent_name')
+            agent_name_elem = root.find("agent_name")
             if agent_name_elem is None:
-                raise ValueError('Missing agent_name in batch agent XML')
+                raise ValueError("Missing agent_name in batch agent XML")
 
-            agent_name = (agent_name_elem.text or '').strip()
+            agent_name = (agent_name_elem.text or "").strip()
 
             # Get input data source
-            input_data_elem = root.find('input_data_source')
+            input_data_elem = root.find("input_data_source")
             if input_data_elem is None:
                 raise ValueError(
-                    'Missing input_data_source in batch agent XML',
+                    "Missing input_data_source in batch agent XML",
                 )
 
-            file_name_elem = input_data_elem.find('file_name')
+            file_name_elem = input_data_elem.find("file_name")
             if file_name_elem is None:
-                raise ValueError('Missing file_name in input_data_source')
+                raise ValueError("Missing file_name in input_data_source")
 
-            file_path = (file_name_elem.text or '').strip()
+            file_path = (file_name_elem.text or "").strip()
 
-            format_elem = input_data_elem.find('format')
-            data_format = (
-                (format_elem.text or 'jsonl').strip()
-                if format_elem is not None
-                else 'jsonl'
-            )
+            format_elem = input_data_elem.find("format")
+            data_format = (format_elem.text or "jsonl").strip() if format_elem is not None else "jsonl"
 
             # Get message template
-            message_elem = root.find('message')
+            message_elem = root.find("message")
             if message_elem is None:
-                raise ValueError('Missing message in batch agent XML')
+                raise ValueError("Missing message in batch agent XML")
 
-            message_template = (message_elem.text or '').strip()
+            message_template = (message_elem.text or "").strip()
 
             # Validate file exists or create if not exist
             if not os.path.exists(file_path):
@@ -81,13 +77,16 @@ class BatchProcessor:
                     f"File {file_path} does not exist. Creating empty JSONL file.",
                 )
                 os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                with open(file_path, 'w'):
+                with open(file_path, "w"):
                     pass  # Create empty file
-                return 'Batch processing completed: 0 items processed (file was created but empty)'
+                return "Batch processing completed: 0 items processed (file was created but empty)"
 
             # Execute batch processing
             return self._process_batch_data(
-                agent_name, file_path, data_format, message_template,
+                agent_name,
+                file_path,
+                data_format,
+                message_template,
             )
 
         except ET.ParseError as e:
@@ -96,7 +95,11 @@ class BatchProcessor:
             raise ValueError(f"Batch processing error: {e}")
 
     def _process_batch_data(
-        self, agent_name: str, file_path: str, data_format: str, message_template: str,
+        self,
+        agent_name: str,
+        file_path: str,
+        data_format: str,
+        message_template: str,
     ) -> str:
         """Process batch data from file and execute agent calls in parallel.
 
@@ -109,7 +112,7 @@ class BatchProcessor:
         Returns:
             JSON string with processing results
         """
-        if data_format.lower() != 'jsonl':
+        if data_format.lower() != "jsonl":
             raise ValueError(
                 f"Unsupported data format: {data_format}. Only 'jsonl' is supported.",
             )
@@ -117,7 +120,7 @@ class BatchProcessor:
         # Read and validate JSONL file
         batch_data = []
         try:
-            with open(file_path, encoding='utf-8') as f:
+            with open(file_path, encoding="utf-8") as f:
                 for line_num, line in enumerate(f, 1):
                     line = line.strip()
                     if not line:
@@ -137,7 +140,7 @@ class BatchProcessor:
             raise ValueError(f"Error reading file {file_path}: {e}")
 
         if not batch_data:
-            return 'Batch processing completed: 0 items processed (no valid JSON objects found)'
+            return "Batch processing completed: 0 items processed (no valid JSON objects found)"
 
         # Validate message template uses valid keys
         template_keys = self._extract_template_keys(message_template)
@@ -173,10 +176,10 @@ class BatchProcessor:
                 except Exception as e:
                     results.append(
                         {
-                            'line': line_num,
-                            'status': 'error',
-                            'error': f"Template rendering failed: {e}",
-                            'data': data,
+                            "line": line_num,
+                            "status": "error",
+                            "error": f"Template rendering failed: {e}",
+                            "data": data,
                         },
                     )
 
@@ -187,29 +190,29 @@ class BatchProcessor:
                     result = future.result()
                     results.append(
                         {
-                            'line': line_num,
-                            'status': 'success',
-                            'result': result,
-                            'data': data,
+                            "line": line_num,
+                            "status": "success",
+                            "result": result,
+                            "data": data,
                         },
                     )
                 except Exception as e:
                     results.append(
                         {
-                            'line': line_num,
-                            'status': 'error',
-                            'error': str(e),
-                            'data': data,
+                            "line": line_num,
+                            "status": "error",
+                            "error": str(e),
+                            "data": data,
                         },
                     )
 
         # Sort results by line number
-        results.sort(key=lambda x: x['line'])
+        results.sort(key=lambda x: x["line"])
 
         # Generate summary
         total_items = len(results)
         successful_items = len(
-            [r for r in results if r['status'] == 'success'],
+            [r for r in results if r["status"] == "success"],
         )
         failed_items = total_items - successful_items
 
@@ -221,16 +224,16 @@ class BatchProcessor:
 
         # Include limited detailed results
         detailed_results = {
-            'summary': summary,
-            'total_items': total_items,
-            'successful_items': successful_items,
-            'failed_items': failed_items,
-            'displayed_results': displayed_results,
-            'remaining_items': remaining_count,
+            "summary": summary,
+            "total_items": total_items,
+            "successful_items": successful_items,
+            "failed_items": failed_items,
+            "displayed_results": displayed_results,
+            "remaining_items": remaining_count,
         }
 
         if remaining_count > 0:
-            detailed_results['note'] = (
+            detailed_results["note"] = (
                 f"Showing first 3 results. {remaining_count} additional results not displayed to keep response concise."
             )
 
@@ -246,7 +249,7 @@ class BatchProcessor:
             List of variable keys found in template
         """
         # Find all {variable_name} patterns
-        keys = re.findall(r'\{([^}]+)\}', template)
+        keys = re.findall(r"\{([^}]+)\}", template)
         return keys
 
     def _render_message_template(self, template: str, data: dict[str, Any]) -> str:
@@ -269,7 +272,10 @@ class BatchProcessor:
             )
 
     def _execute_batch_item_safe(
-        self, agent_name: str, message: str, line_num: int,
+        self,
+        agent_name: str,
+        message: str,
+        line_num: int,
     ) -> str:
         """Safely execute a single batch item.
 
