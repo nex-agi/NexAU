@@ -10,6 +10,14 @@ This framework provides a modular tool system, a flexible agent architecture, an
 
 ## Installation
 
+### From PyPI (Recommended)
+
+```bash
+pip install northau
+```
+
+### From Source
+
 ```bash
 # Clone the repository
 git clone git@github.com:/northau.git
@@ -72,3 +80,23 @@ All pull requests to the `main` branch will automatically run:
 - **Coverage reporting** - Test coverage analysis
 
 The workflow is defined in `.github/workflows/ci.yml`.
+
+### Continuous Deployment
+
+When a version tag (e.g., `v0.2.0`) is pushed to the repository, the CD workflow automatically:
+- Runs the full test suite
+- Builds the package
+- Creates a GitHub release with changelog
+
+See [RELEASING.md](./RELEASING.md) for detailed release instructions.
+
+#### Quick Release
+
+```bash
+# Using the helper script
+./scripts/release.sh 0.2.0
+
+# Or manually
+git tag -a v0.2.0 -m "Release version 0.2.0"
+git push origin v0.2.0
+```
