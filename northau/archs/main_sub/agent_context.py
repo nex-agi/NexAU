@@ -1,14 +1,14 @@
 """Agent context manager for context management."""
+
 import threading
 from contextlib import contextmanager
 from typing import Any
-from typing import Optional
 
 
 class AgentContext:
     """Context manager for agent context."""
 
-    def __init__(self, context: Optional[dict[str, Any]] = None):
+    def __init__(self, context: dict[str, Any] | None = None):
         """Initialize agent context with context."""
         self.context = context or {}
         self._original_context = None
@@ -20,9 +20,7 @@ class AgentContext:
     def __enter__(self):
         """Enter the context and set the thread-local context."""
         global _current_context
-        self._original_context = (
-            _current_context.context.copy() if _current_context else {}
-        )
+        self._original_context = _current_context.context.copy() if _current_context else {}
 
         # Set current context
         _current_context = self
@@ -85,7 +83,8 @@ class AgentContext:
         return self.context.copy()
 
     def merge_context_variables(
-        self, existing_context: dict[str, Any],
+        self,
+        existing_context: dict[str, Any],
     ) -> dict[str, Any]:
         """Merge context variables with existing context, giving priority to context vars."""
         merged = existing_context.copy()
@@ -94,10 +93,10 @@ class AgentContext:
 
 
 # Thread-local storage for the current context
-_current_context: Optional[AgentContext] = None
+_current_context: AgentContext | None = None
 
 
-def get_context() -> Optional[AgentContext]:
+def get_context() -> AgentContext | None:
     """Get the current agent context."""
     return _current_context
 

@@ -3,7 +3,6 @@ import logging
 import os
 import subprocess
 import time
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +13,7 @@ MAX_RESULTS = 100
 def _check_ripgrep_available() -> bool:
     """Check if ripgrep (rg) is available in the system."""
     try:
-        subprocess.run(['rg', '--version'], capture_output=True, check=True)
+        subprocess.run(["rg", "--version"], capture_output=True, check=True)
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
@@ -23,15 +22,15 @@ def _check_ripgrep_available() -> bool:
 def _run_ripgrep(
     pattern: str,
     search_path: str,
-    glob_pattern: Optional[str] = None,
-    output_mode: str = 'files_with_matches',
-    context_before: Optional[int] = None,
-    context_after: Optional[int] = None,
-    context_around: Optional[int] = None,
+    glob_pattern: str | None = None,
+    output_mode: str = "files_with_matches",
+    context_before: int | None = None,
+    context_after: int | None = None,
+    context_around: int | None = None,
     show_line_numbers: bool = False,
     case_insensitive: bool = True,
-    file_type: Optional[str] = None,
-    head_limit: Optional[int] = None,
+    file_type: str | None = None,
+    head_limit: int | None = None,
     multiline: bool = False,
 ) -> tuple[list[str], int]:
     """
@@ -57,44 +56,44 @@ def _run_ripgrep(
     start_time = time.time()
 
     # Build ripgrep command
-    cmd = ['rg']
+    cmd = ["rg"]
 
     # Set output mode
-    if output_mode == 'files_with_matches':
-        cmd.append('-l')  # list files only
-    elif output_mode == 'count':
-        cmd.append('-c')  # count matches
+    if output_mode == "files_with_matches":
+        cmd.append("-l")  # list files only
+    elif output_mode == "count":
+        cmd.append("-c")  # count matches
     # For "content" mode, no special flag needed
 
     # Case sensitivity
     if case_insensitive:
-        cmd.append('-i')
+        cmd.append("-i")
 
     # Context options (only for content mode)
-    if output_mode == 'content':
+    if output_mode == "content":
         if context_around is not None:
-            cmd.extend(['-C', str(context_around)])
+            cmd.extend(["-C", str(context_around)])
         else:
             if context_before is not None:
-                cmd.extend(['-B', str(context_before)])
+                cmd.extend(["-B", str(context_before)])
             if context_after is not None:
-                cmd.extend(['-A', str(context_after)])
+                cmd.extend(["-A", str(context_after)])
 
         # Line numbers
         if show_line_numbers:
-            cmd.append('-n')
+            cmd.append("-n")
 
     # Multiline mode
     if multiline:
-        cmd.extend(['-U', '--multiline-dotall'])
+        cmd.extend(["-U", "--multiline-dotall"])
 
     # File type filter
     if file_type:
-        cmd.extend(['--type', file_type])
+        cmd.extend(["--type", file_type])
 
     # Glob pattern filter
     if glob_pattern:
-        cmd.extend(['--glob', glob_pattern])
+        cmd.extend(["--glob", glob_pattern])
 
     cmd.append(pattern)
     cmd.append(search_path)
@@ -112,11 +111,7 @@ def _run_ripgrep(
         # Parse output
         if result.returncode == 0:
             # Found matches
-            output_lines = [
-                line.strip()
-                for line in result.stdout.strip().split('\n')
-                if line.strip()
-            ]
+            output_lines = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
 
             # Apply head_limit if specified
             if head_limit and len(output_lines) > head_limit:
@@ -181,9 +176,9 @@ def _sort_files_by_modification_time(
 
 def grep_tool(
     pattern: str,
-    path: Optional[str] = None,
-    glob: Optional[str] = None,
-    output_mode: str = 'files_with_matches',
+    path: str | None = None,
+    glob: str | None = None,
+    output_mode: str = "files_with_matches",
     **kwargs,
 ) -> str:
     """
@@ -214,13 +209,11 @@ def grep_tool(
         if not _check_ripgrep_available():
             return json.dumps(
                 {
-                    'error': (
-                        'ripgrep (rg) is not installed or not available in PATH. Please install ripgrep to use this tool.'
-                    ),
-                    'num_files': 0,
-                    'filenames': [],
-                    'duration_ms': int((time.time() - start_time) * 1000),
-                    'truncated': False,
+                    "error": ("ripgrep (rg) is not installed or not available in PATH. Please install ripgrep to use this tool."),
+                    "num_files": 0,
+                    "filenames": [],
+                    "duration_ms": int((time.time() - start_time) * 1000),
+                    "truncated": False,
                 },
                 indent=2,
             )
@@ -229,11 +222,11 @@ def grep_tool(
         if not os.path.exists(search_dir):
             return json.dumps(
                 {
-                    'error': f"Path does not exist: {search_dir}",
-                    'num_files': 0,
-                    'filenames': [],
-                    'duration_ms': int((time.time() - start_time) * 1000),
-                    'truncated': False,
+                    "error": f"Path does not exist: {search_dir}",
+                    "num_files": 0,
+                    "filenames": [],
+                    "duration_ms": int((time.time() - start_time) * 1000),
+                    "truncated": False,
                 },
                 indent=2,
             )
@@ -241,11 +234,11 @@ def grep_tool(
         if not os.access(search_dir, os.R_OK):
             return json.dumps(
                 {
-                    'error': f"No read permission for path: {search_dir}",
-                    'num_files': 0,
-                    'filenames': [],
-                    'duration_ms': int((time.time() - start_time) * 1000),
-                    'truncated': False,
+                    "error": f"No read permission for path: {search_dir}",
+                    "num_files": 0,
+                    "filenames": [],
+                    "duration_ms": int((time.time() - start_time) * 1000),
+                    "truncated": False,
                 },
                 indent=2,
             )
@@ -260,11 +253,11 @@ def grep_tool(
                 # If glob is already specified, we can't search a single file
                 return json.dumps(
                     {
-                        'error': f"Cannot use glob pattern when searching a specific file: {search_dir}",
-                        'num_files': 0,
-                        'filenames': [],
-                        'duration_ms': int((time.time() - start_time) * 1000),
-                        'truncated': False,
+                        "error": f"Cannot use glob pattern when searching a specific file: {search_dir}",
+                        "num_files": 0,
+                        "filenames": [],
+                        "duration_ms": int((time.time() - start_time) * 1000),
+                        "truncated": False,
                     },
                     indent=2,
                 )
@@ -272,17 +265,17 @@ def grep_tool(
             search_dir = file_dir
 
         # Extract additional parameters (support both old and new parameter names)
-        context_before = kwargs.get('context_before') or kwargs.get('-B')
-        context_after = kwargs.get('context_after') or kwargs.get('-A')
-        context_around = kwargs.get('context_around') or kwargs.get('-C')
+        context_before = kwargs.get("context_before") or kwargs.get("-B")
+        context_after = kwargs.get("context_after") or kwargs.get("-A")
+        context_around = kwargs.get("context_around") or kwargs.get("-C")
         show_line_numbers = kwargs.get(
-            'show_line_numbers',
-            kwargs.get('-n', False),
+            "show_line_numbers",
+            kwargs.get("-n", False),
         )
         case_insensitive = kwargs.get(
-            'case_insensitive',
+            "case_insensitive",
             kwargs.get(
-                '-i',
+                "-i",
                 True,
             ),
         )  # Default to case insensitive
@@ -294,11 +287,11 @@ def grep_tool(
             context_after = int(context_after)
         if context_around is not None:
             context_around = int(context_around)
-        file_type = kwargs.get('type')
-        head_limit = kwargs.get('head_limit')
+        file_type = kwargs.get("type")
+        head_limit = kwargs.get("head_limit")
         if head_limit is not None:
             head_limit = int(head_limit)
-        multiline = kwargs.get('multiline', False)
+        multiline = kwargs.get("multiline", False)
 
         # Run ripgrep search
         try:
@@ -319,20 +312,20 @@ def grep_tool(
         except subprocess.CalledProcessError as e:
             return json.dumps(
                 {
-                    'error': f"Ripgrep search failed: {str(e)}",
-                    'num_files': 0,
-                    'filenames': [],
-                    'duration_ms': int((time.time() - start_time) * 1000),
-                    'truncated': False,
+                    "error": f"Ripgrep search failed: {str(e)}",
+                    "num_files": 0,
+                    "filenames": [],
+                    "duration_ms": int((time.time() - start_time) * 1000),
+                    "truncated": False,
                 },
                 indent=2,
             )
 
         # Handle different output modes
-        if output_mode == 'content':
+        if output_mode == "content":
             # For content mode, return the matching lines directly
             final_results = results
-        elif output_mode == 'count':
+        elif output_mode == "count":
             # For count mode, return count results
             final_results = results
         else:  # files_with_matches
@@ -346,15 +339,12 @@ def grep_tool(
                 except Exception as e:
                     logger.warning(f"Failed to sort by modification time: {e}")
                     # Fallback to alphabetical sort with absolute paths
-                    final_results = [
-                        os.path.abspath(os.path.join(search_dir, f))
-                        for f in sorted(results)
-                    ]
+                    final_results = [os.path.abspath(os.path.join(search_dir, f)) for f in sorted(results)]
             else:
                 final_results = []
 
         # Apply result limit and check for truncation (only for files_with_matches mode)
-        if output_mode == 'files_with_matches' and not head_limit:
+        if output_mode == "files_with_matches" and not head_limit:
             truncated = len(final_results) > MAX_RESULTS
             if truncated:
                 final_results = final_results[:MAX_RESULTS]
@@ -365,66 +355,58 @@ def grep_tool(
         total_duration_ms = int((time.time() - start_time) * 1000)
 
         # Prepare result based on output mode
-        if output_mode == 'content':
+        if output_mode == "content":
             result = {
-                'content': final_results,
-                'num_lines': len(final_results),
-                'duration_ms': total_duration_ms,
-                'truncated': truncated,
-                'search_directory': search_dir,
-                'pattern': pattern,
-                'output_mode': output_mode,
+                "content": final_results,
+                "num_lines": len(final_results),
+                "duration_ms": total_duration_ms,
+                "truncated": truncated,
+                "search_directory": search_dir,
+                "pattern": pattern,
+                "output_mode": output_mode,
             }
-        elif output_mode == 'count':
+        elif output_mode == "count":
             result = {
-                'counts': final_results,
-                'num_files': len(final_results),
-                'duration_ms': total_duration_ms,
-                'truncated': truncated,
-                'search_directory': search_dir,
-                'pattern': pattern,
-                'output_mode': output_mode,
+                "counts": final_results,
+                "num_files": len(final_results),
+                "duration_ms": total_duration_ms,
+                "truncated": truncated,
+                "search_directory": search_dir,
+                "pattern": pattern,
+                "output_mode": output_mode,
             }
         else:  # files_with_matches
             result = {
-                'num_files': len(final_results),
-                'filenames': final_results,
-                'duration_ms': total_duration_ms,
-                'truncated': truncated,
-                'search_directory': search_dir,
-                'pattern': pattern,
-                'output_mode': output_mode,
+                "num_files": len(final_results),
+                "filenames": final_results,
+                "duration_ms": total_duration_ms,
+                "truncated": truncated,
+                "search_directory": search_dir,
+                "pattern": pattern,
+                "output_mode": output_mode,
             }
 
         if glob:
-            result['glob_pattern'] = glob
+            result["glob_pattern"] = glob
 
         # Add descriptive message
         result_count = len(final_results)
         if result_count == 0:
-            if output_mode == 'content':
-                result['message'] = 'No matching content found.'
-            elif output_mode == 'count':
-                result['message'] = 'No matches found to count.'
+            if output_mode == "content":
+                result["message"] = "No matching content found."
+            elif output_mode == "count":
+                result["message"] = "No matches found to count."
             else:
-                result['message'] = 'No files found matching the pattern.'
+                result["message"] = "No files found matching the pattern."
         elif truncated:
-            result['message'] = (
-                f"Found {result_count} results (truncated from more). Consider using a more specific pattern or filter."
-            )
+            result["message"] = f"Found {result_count} results (truncated from more). Consider using a more specific pattern or filter."
         else:
-            if output_mode == 'content':
-                result['message'] = (
-                    f"Found {result_count} matching line{'s' if result_count != 1 else ''}."
-                )
-            elif output_mode == 'count':
-                result['message'] = (
-                    f"Found match counts for {result_count} file{'s' if result_count != 1 else ''}."
-                )
+            if output_mode == "content":
+                result["message"] = f"Found {result_count} matching line{'s' if result_count != 1 else ''}."
+            elif output_mode == "count":
+                result["message"] = f"Found match counts for {result_count} file{'s' if result_count != 1 else ''}."
             else:
-                result['message'] = (
-                    f"Found {result_count} file{'s' if result_count != 1 else ''} matching the pattern."
-                )
+                result["message"] = f"Found {result_count} file{'s' if result_count != 1 else ''} matching the pattern."
 
         logger.info(
             f"Grep search completed: found {result_count} results in {total_duration_ms}ms (mode: {output_mode})",
@@ -434,21 +416,21 @@ def grep_tool(
         result_json = json.dumps(result, indent=2, ensure_ascii=False)
         if len(result_json) > 10000:
             # For different output modes, truncate appropriately
-            if output_mode == 'files_with_matches':
+            if output_mode == "files_with_matches":
                 # Truncate filenames list
                 items_to_keep = len(final_results)
                 while items_to_keep > 0:
                     truncated_result = result.copy()
-                    truncated_result['filenames'] = final_results[:items_to_keep]
-                    truncated_result['num_files'] = items_to_keep
-                    truncated_result['truncated_output'] = True
-                    truncated_result['remaining_files'] = (
+                    truncated_result["filenames"] = final_results[:items_to_keep]
+                    truncated_result["num_files"] = items_to_keep
+                    truncated_result["truncated_output"] = True
+                    truncated_result["remaining_files"] = (
                         len(
                             final_results,
                         )
                         - items_to_keep
                     )
-                    truncated_result['message'] = (
+                    truncated_result["message"] = (
                         f"Found {items_to_keep} files (truncated: {len(final_results) - items_to_keep} more files not shown)"
                     )
 
@@ -460,21 +442,21 @@ def grep_tool(
                     if len(test_json) <= 10000:
                         return test_json
                     items_to_keep -= 1
-            elif output_mode == 'content':
+            elif output_mode == "content":
                 # Truncate content lines
                 items_to_keep = len(final_results)
                 while items_to_keep > 0:
                     truncated_result = result.copy()
-                    truncated_result['content'] = final_results[:items_to_keep]
-                    truncated_result['num_lines'] = items_to_keep
-                    truncated_result['truncated_output'] = True
-                    truncated_result['remaining_lines'] = (
+                    truncated_result["content"] = final_results[:items_to_keep]
+                    truncated_result["num_lines"] = items_to_keep
+                    truncated_result["truncated_output"] = True
+                    truncated_result["remaining_lines"] = (
                         len(
                             final_results,
                         )
                         - items_to_keep
                     )
-                    truncated_result['message'] = (
+                    truncated_result["message"] = (
                         f"Found {items_to_keep} lines (truncated: {len(final_results) - items_to_keep} more lines not shown)"
                     )
 
@@ -486,21 +468,21 @@ def grep_tool(
                     if len(test_json) <= 1000:
                         return test_json
                     items_to_keep -= 1
-            elif output_mode == 'count':
+            elif output_mode == "count":
                 # Truncate count results
                 items_to_keep = len(final_results)
                 while items_to_keep > 0:
                     truncated_result = result.copy()
-                    truncated_result['counts'] = final_results[:items_to_keep]
-                    truncated_result['num_files'] = items_to_keep
-                    truncated_result['truncated_output'] = True
-                    truncated_result['remaining_files'] = (
+                    truncated_result["counts"] = final_results[:items_to_keep]
+                    truncated_result["num_files"] = items_to_keep
+                    truncated_result["truncated_output"] = True
+                    truncated_result["remaining_files"] = (
                         len(
                             final_results,
                         )
                         - items_to_keep
                     )
-                    truncated_result['message'] = (
+                    truncated_result["message"] = (
                         f"Found counts for {items_to_keep} files (truncated: {len(final_results) - items_to_keep} more files not shown)"
                     )
 
@@ -515,13 +497,13 @@ def grep_tool(
 
             # If even minimal result is too long, return basic summary
             minimal_result = {
-                'truncated_output': True,
-                'total_matches': len(final_results),
-                'message': f"Output too long: found {len(final_results)} matches (details truncated)",
-                'search_directory': search_dir,
-                'pattern': pattern,
-                'output_mode': output_mode,
-                'duration_ms': total_duration_ms,
+                "truncated_output": True,
+                "total_matches": len(final_results),
+                "message": f"Output too long: found {len(final_results)} matches (details truncated)",
+                "search_directory": search_dir,
+                "pattern": pattern,
+                "output_mode": output_mode,
+                "duration_ms": total_duration_ms,
             }
             return json.dumps(minimal_result, indent=2, ensure_ascii=False)
 
@@ -531,11 +513,11 @@ def grep_tool(
         logger.error(f"Unexpected error during grep search: {e}")
         return json.dumps(
             {
-                'error': f"Unexpected error during search: {str(e)}",
-                'num_files': 0,
-                'filenames': [],
-                'duration_ms': int((time.time() - start_time) * 1000),
-                'truncated': False,
+                "error": f"Unexpected error during search: {str(e)}",
+                "num_files": 0,
+                "filenames": [],
+                "duration_ms": int((time.time() - start_time) * 1000),
+                "truncated": False,
             },
             indent=2,
         )
@@ -556,9 +538,9 @@ class GrepSearchTool:
     def search(
         self,
         pattern: str,
-        path: Optional[str] = None,
-        include_pattern: Optional[str] = None,
-        max_results: Optional[int] = None,
+        path: str | None = None,
+        include_pattern: str | None = None,
+        max_results: int | None = None,
     ) -> dict:
         """
         Perform a grep search and return structured results.
@@ -580,7 +562,7 @@ class GrepSearchTool:
             # Check ripgrep availability
             if not _check_ripgrep_available():
                 raise RuntimeError(
-                    'ripgrep (rg) is not installed or not available in PATH',
+                    "ripgrep (rg) is not installed or not available in PATH",
                 )
 
             # Validate directory
@@ -599,7 +581,7 @@ class GrepSearchTool:
                 pattern=pattern,
                 search_path=search_dir,
                 glob_pattern=include_pattern,
-                output_mode='files_with_matches',
+                output_mode="files_with_matches",
                 case_insensitive=not self.case_sensitive,
             )
 
@@ -620,27 +602,27 @@ class GrepSearchTool:
             duration_ms = int((time.time() - start_time) * 1000)
 
             return {
-                'success': True,
-                'num_files': len(sorted_filenames),
-                'filenames': sorted_filenames,
-                'duration_ms': duration_ms,
-                'search_duration_ms': search_duration,
-                'truncated': truncated,
-                'search_directory': search_dir,
-                'pattern': pattern,
-                'include_pattern': include_pattern,
-                'case_sensitive': self.case_sensitive,
+                "success": True,
+                "num_files": len(sorted_filenames),
+                "filenames": sorted_filenames,
+                "duration_ms": duration_ms,
+                "search_duration_ms": search_duration,
+                "truncated": truncated,
+                "search_directory": search_dir,
+                "pattern": pattern,
+                "include_pattern": include_pattern,
+                "case_sensitive": self.case_sensitive,
             }
 
         except Exception as e:
             self.logger.error(f"Grep search failed: {e}")
             return {
-                'success': False,
-                'error': str(e),
-                'num_files': 0,
-                'filenames': [],
-                'duration_ms': int((time.time() - start_time) * 1000),
-                'truncated': False,
+                "success": False,
+                "error": str(e),
+                "num_files": 0,
+                "filenames": [],
+                "duration_ms": int((time.time() - start_time) * 1000),
+                "truncated": False,
             }
 
 
@@ -650,73 +632,73 @@ def main():
     """
     import json
 
-    print('🔍 GrepTool 测试开始...')
-    print('=' * 50)
+    print("🔍 GrepTool 测试开始...")
+    print("=" * 50)
 
     # Test 1: Check ripgrep availability
-    print('\n📋 测试 1: 检查 ripgrep 可用性')
+    print("\n📋 测试 1: 检查 ripgrep 可用性")
     if _check_ripgrep_available():
-        print('✅ ripgrep (rg) 已安装并可用')
+        print("✅ ripgrep (rg) 已安装并可用")
     else:
-        print('❌ ripgrep (rg) 未安装或不可用')
-        print('请先安装 ripgrep:')
-        print('  conda install -c conda-forge ripgrep')
-        print('  或者 sudo apt install ripgrep')
+        print("❌ ripgrep (rg) 未安装或不可用")
+        print("请先安装 ripgrep:")
+        print("  conda install -c conda-forge ripgrep")
+        print("  或者 sudo apt install ripgrep")
         return
 
     # Test 2: Basic search test
-    print('\n📋 测试 2: 基本搜索测试')
+    print("\n📋 测试 2: 基本搜索测试")
     try:
-        result = grep_tool(pattern='import', path='.')
+        result = grep_tool(pattern="import", path=".")
         result_dict = json.loads(result)
 
-        if 'error' in result_dict:
+        if "error" in result_dict:
             print(f"❌ 搜索失败: {result_dict['error']}")
         else:
             print(f"✅ 找到 {result_dict['num_files']} 个包含 'import' 的文件")
             print(f"⏱️  搜索耗时: {result_dict['duration_ms']}ms")
-            if result_dict['num_files'] > 0:
-                print('📁 前5个匹配文件:')
-                for i, filename in enumerate(result_dict['filenames'][:5]):
+            if result_dict["num_files"] > 0:
+                print("📁 前5个匹配文件:")
+                for i, filename in enumerate(result_dict["filenames"][:5]):
                     print(f"   {i + 1}. {filename}")
-                if len(result_dict['filenames']) > 5:
+                if len(result_dict["filenames"]) > 5:
                     print(f"   ... 还有 {len(result_dict['filenames']) - 5} 个文件")
 
     except Exception as e:
         print(f"❌ 测试失败: {e}")
 
     # Test 3: Search with file type filter
-    print('\n📋 测试 3: 带文件类型过滤的搜索')
+    print("\n📋 测试 3: 带文件类型过滤的搜索")
     try:
-        result = grep_tool(pattern='def ', path='.', glob='*.py')
+        result = grep_tool(pattern="def ", path=".", glob="*.py")
         result_dict = json.loads(result)
 
-        if 'error' in result_dict:
+        if "error" in result_dict:
             print(f"❌ 搜索失败: {result_dict['error']}")
         else:
             print(
                 f"✅ 在 Python 文件中找到 {result_dict['num_files']} 个包含函数定义的文件",
             )
             print(f"⏱️  搜索耗时: {result_dict['duration_ms']}ms")
-            if result_dict['num_files'] > 0:
-                print('📁 匹配的 Python 文件:')
-                for i, filename in enumerate(result_dict['filenames'][:3]):
+            if result_dict["num_files"] > 0:
+                print("📁 匹配的 Python 文件:")
+                for i, filename in enumerate(result_dict["filenames"][:3]):
                     print(f"   {i + 1}. {filename}")
 
     except Exception as e:
         print(f"❌ 测试失败: {e}")
 
     # Test 4: Search for non-existent pattern
-    print('\n📋 测试 4: 搜索不存在的模式')
+    print("\n📋 测试 4: 搜索不存在的模式")
     try:
         result = grep_tool(
-            pattern='this_pattern_should_never_exist_12345_xyz',
-            path='.',
+            pattern="this_pattern_should_never_exist_12345_xyz",
+            path=".",
         )
         result_dict = json.loads(result)
 
-        if result_dict['num_files'] == 0:
-            print('✅ 正确处理了空搜索结果')
+        if result_dict["num_files"] == 0:
+            print("✅ 正确处理了空搜索结果")
             print(f"💬 消息: {result_dict['message']}")
         else:
             print(f"⚠️  意外找到了 {result_dict['num_files']} 个文件")
@@ -725,16 +707,16 @@ def main():
         print(f"❌ 测试失败: {e}")
 
     # Test 5: Test class-based implementation
-    print('\n📋 测试 5: 类基础实现测试')
+    print("\n📋 测试 5: 类基础实现测试")
     try:
         grep_search = GrepSearchTool(max_results=5)
         result = grep_search.search(
-            pattern='class',
-            path='.',
-            include_pattern='*.py',
+            pattern="class",
+            path=".",
+            include_pattern="*.py",
         )
 
-        if result['success']:
+        if result["success"]:
             print(f"✅ 类实现工作正常，找到 {result['num_files']} 个文件")
             print(f"⏱️  搜索耗时: {result['duration_ms']}ms")
         else:
@@ -744,32 +726,32 @@ def main():
         print(f"❌ 类实现测试失败: {e}")
 
     # Test 6: Test invalid directory
-    print('\n📋 测试 6: 无效目录测试')
+    print("\n📋 测试 6: 无效目录测试")
     try:
         result = grep_tool(
-            pattern='test',
-            path='/this/directory/does/not/exist',
+            pattern="test",
+            path="/this/directory/does/not/exist",
         )
         result_dict = json.loads(result)
 
-        if 'error' in result_dict and 'does not exist' in result_dict['error']:
-            print('✅ 正确处理了无效目录')
+        if "error" in result_dict and "does not exist" in result_dict["error"]:
+            print("✅ 正确处理了无效目录")
         else:
-            print('⚠️  无效目录处理可能有问题')
+            print("⚠️  无效目录处理可能有问题")
 
     except Exception as e:
         print(f"❌ 测试失败: {e}")
 
-    print('\n' + '=' * 50)
-    print('🎉 GrepTool 测试完成!')
+    print("\n" + "=" * 50)
+    print("🎉 GrepTool 测试完成!")
 
     # Performance tip
-    print('\n💡 使用提示:')
+    print("\n💡 使用提示:")
     print("  • 使用正则表达式进行精确搜索: 'function\\s+\\w+'")
     print("  • 使用文件过滤器提高效率: include='*.{js,ts,tsx}'")
     print("  • 搜索错误模式: 'error|Error|ERROR'")
     print("  • 搜索 TODO 注释: 'TODO|FIXME|XXX'")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

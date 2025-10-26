@@ -1,4 +1,5 @@
 """Global cleanup management for agents."""
+
 import atexit
 import logging
 import os
@@ -24,7 +25,7 @@ class CleanupManager:
         return cls._instance
 
     def __init__(self):
-        if hasattr(self, '_initialized') and self._initialized:
+        if hasattr(self, "_initialized") and self._initialized:
             return
 
         # Global registry to track all active agents for cleanup
@@ -49,7 +50,7 @@ class CleanupManager:
             # Signal handlers can only be registered in the main thread
             signal.signal(signal.SIGTERM, self._signal_handler)
             signal.signal(signal.SIGINT, self._signal_handler)
-            logger.debug('🔧 Signal handlers registered')
+            logger.debug("🔧 Signal handlers registered")
         except ValueError as e:
             # This happens when not in main thread - signal handlers can't be registered
             logger.debug(
@@ -60,11 +61,11 @@ class CleanupManager:
             atexit.register(self._cleanup_all_agents)
 
             self._cleanup_registered = True
-            logger.debug('🔧 Cleanup handlers registered')
+            logger.debug("🔧 Cleanup handlers registered")
 
     def _cleanup_all_agents(self) -> None:
         """Clean up all active agents and their running sub-agents."""
-        logger.info('🧹 Cleaning up all active agents and sub-agents...')
+        logger.info("🧹 Cleaning up all active agents and sub-agents...")
         agents_to_cleanup = list(self._active_agents)
 
         for agent in agents_to_cleanup:
@@ -75,7 +76,7 @@ class CleanupManager:
                     f"❌ Error cleaning up agent {getattr(agent, 'name', 'unknown')}: {e}",
                 )
 
-        logger.info('✅ Agent cleanup completed')
+        logger.info("✅ Agent cleanup completed")
 
     def _signal_handler(self, signum, frame):
         """Handle termination signals by cleaning up agents."""

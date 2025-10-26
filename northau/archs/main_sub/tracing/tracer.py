@@ -1,10 +1,10 @@
 """Trace collection and management for agent execution."""
+
 import logging
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +19,8 @@ class Tracer:
             agent_name: Name of the agent being traced
         """
         self.agent_name = agent_name
-        self._trace_data: Optional[list[dict[str, Any]]] = None
-        self._dump_trace_path: Optional[str] = None
+        self._trace_data: list[dict[str, Any]] | None = None
+        self._dump_trace_path: str | None = None
         self._trace_lock = threading.Lock()
         self._sub_agent_counter = 0
         self._sub_agent_counter_lock = threading.Lock()
@@ -59,12 +59,12 @@ class Tracer:
             return
 
         # Ensure timestamp is present
-        if 'timestamp' not in entry:
-            entry['timestamp'] = datetime.now().isoformat()
+        if "timestamp" not in entry:
+            entry["timestamp"] = datetime.now().isoformat()
 
         # Ensure agent_name is present
-        if 'agent_name' not in entry:
-            entry['agent_name'] = self.agent_name
+        if "agent_name" not in entry:
+            entry["agent_name"] = self.agent_name
 
         with self._trace_lock:
             if self._trace_data is not None:
@@ -73,21 +73,17 @@ class Tracer:
     def add_llm_request(self, iteration: int, api_params: dict[str, Any]) -> None:
         """Add LLM request trace entry."""
         entry = {
-            'type': 'llm_request',
-            'iteration': iteration,
-            'api_params': {
+            "type": "llm_request",
+            "iteration": iteration,
+            "api_params": {
                 # Copy api_params but truncate messages for readability if too long
-                **{k: v for k, v in api_params.items() if k != 'messages'},
-                'messages': [
+                **{k: v for k, v in api_params.items() if k != "messages"},
+                "messages": [
                     {
-                        'role': msg['role'],
-                        'content': (
-                            msg['content'][:1000] + '...'
-                            if len(msg['content']) > 1000
-                            else msg['content']
-                        ),
+                        "role": msg["role"],
+                        "content": (msg["content"][:1000] + "..." if len(msg["content"]) > 1000 else msg["content"]),
                     }
-                    for msg in api_params.get('messages', [])
+                    for msg in api_params.get("messages", [])
                 ],
             },
         }
@@ -96,10 +92,10 @@ class Tracer:
     def add_llm_response(self, iteration: int, response_content: str) -> None:
         """Add LLM response trace entry."""
         entry = {
-            'type': 'llm_response',
-            'iteration': iteration,
-            'response': {
-                'content': response_content,
+            "type": "llm_response",
+            "iteration": iteration,
+            "response": {
+                "content": response_content,
             },
         }
         self.add_entry(entry)
@@ -107,69 +103,71 @@ class Tracer:
     def add_tool_request(self, tool_name: str, parameters: dict[str, Any]) -> None:
         """Add tool request trace entry."""
         entry = {
-            'type': 'tool_request',
-            'tool_name': tool_name,
-            'parameters': parameters,
+            "type": "tool_request",
+            "tool_name": tool_name,
+            "parameters": parameters,
         }
         self.add_entry(entry)
 
     def add_tool_response(self, tool_name: str, result: Any) -> None:
         """Add tool response trace entry."""
         entry = {
-            'type': 'tool_response',
-            'tool_name': tool_name,
-            'result': result,
+            "type": "tool_response",
+            "tool_name": tool_name,
+            "result": result,
         }
         self.add_entry(entry)
 
     def add_subagent_request(self, subagent_name: str, message: str) -> None:
         """Add sub-agent request trace entry."""
         entry = {
-            'type': 'subagent_request',
-            'subagent_name': subagent_name,
-            'message': message,
+            "type": "subagent_request",
+            "subagent_name": subagent_name,
+            "message": message,
         }
         self.add_entry(entry)
 
     def add_subagent_response(self, subagent_name: str, result: str) -> None:
         """Add sub-agent response trace entry."""
         entry = {
-            'type': 'subagent_response',
-            'subagent_name': subagent_name,
-            'result': result,
+            "type": "subagent_response",
+            "subagent_name": subagent_name,
+            "result": result,
         }
         self.add_entry(entry)
 
     def add_error(self, error: Exception) -> None:
         """Add error trace entry."""
         entry = {
-            'type': 'error',
-            'error': str(error),
-            'error_type': type(error).__name__,
+            "type": "error",
+            "error": str(error),
+            "error_type": type(error).__name__,
         }
         self.add_entry(entry)
 
-    def add_shutdown(self, reason: str = 'Signal interrupt (Ctrl+C)') -> None:
+    def add_shutdown(self, reason: str = "Signal interrupt (Ctrl+C)") -> None:
         """Add shutdown trace entry."""
         entry = {
-            'type': 'shutdown',
-            'reason': reason,
+            "type": "shutdown",
+            "reason": reason,
         }
         self.add_entry(entry)
 
-    def get_trace_data(self) -> Optional[list[dict[str, Any]]]:
+    def get_trace_data(self) -> list[dict[str, Any]] | None:
         """Get current trace data."""
         with self._trace_lock:
             return self._trace_data.copy() if self._trace_data else None
 
-    def get_dump_path(self) -> Optional[str]:
+    def get_dump_path(self) -> str | None:
         """Get current dump path."""
         with self._trace_lock:
             return self._dump_trace_path
 
     def generate_sub_agent_trace_path(
-        self, sub_agent_name: str, main_trace_path: str,
-    ) -> Optional[str]:
+        self,
+        sub_agent_name: str,
+        main_trace_path: str,
+    ) -> str | None:
         """Generate trace path for sub-agent based on main agent's trace path."""
         try:
             # Get unique sub-agent ID

@@ -1,9 +1,8 @@
 """Agent state management for unified state container."""
-from typing import Any
-from typing import Optional
 
-from .agent_context import AgentContext
-from .agent_context import GlobalStorage
+from typing import Any, Optional
+
+from .agent_context import AgentContext, GlobalStorage
 
 
 class AgentState:
@@ -22,7 +21,7 @@ class AgentState:
         agent_id: str,
         context: AgentContext,
         global_storage: GlobalStorage,
-        parent_agent_state: Optional['AgentState'] = None,
+        parent_agent_state: Optional["AgentState"] = None,
     ):
         """Initialize agent state.
 

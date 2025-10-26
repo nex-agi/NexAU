@@ -1,8 +1,7 @@
 """Hook interfaces and utilities for agent execution."""
+
 from dataclasses import dataclass
-from typing import Any
-from typing import Protocol
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Protocol
 
 from .parse_structures import ParsedResponse
 
@@ -21,7 +20,7 @@ class BeforeModelHookInput:
     - current_iteration: The current iteration
     """
 
-    agent_state: 'AgentState'
+    agent_state: "AgentState"
     max_iterations: int
     current_iteration: int
     messages: list[dict[str, str]]
@@ -35,6 +34,7 @@ class AfterModelHookInput(BeforeModelHookInput):
     - original_response: The raw response from the LLM
     - parsed_response: The parsed structure containing tool/agent calls
     """
+
     original_response: str
     parsed_response: ParsedResponse | None
 
@@ -48,6 +48,7 @@ class BeforeModelHookResult:
 
     If both fields are None, it indicates the hook made no modifications.
     """
+
     messages: list[dict[str, str]] | None = None
 
     def has_modifications(self) -> bool:
@@ -55,7 +56,7 @@ class BeforeModelHookResult:
         return self.messages is not None
 
     @classmethod
-    def no_changes(cls) -> 'BeforeModelHookResult':
+    def no_changes(cls) -> "BeforeModelHookResult":
         """Create a BeforeModelHookResult indicating no modifications."""
         return cls(messages=None)
 
@@ -63,7 +64,7 @@ class BeforeModelHookResult:
     def with_modifications(
         cls,
         messages: list[dict[str, str]] | None = None,
-    ) -> 'BeforeModelHookResult':
+    ) -> "BeforeModelHookResult":
         """Create a BeforeModelHookResult with specified modifications.
 
         Args:
@@ -94,7 +95,7 @@ class AfterModelHookResult:
         return self.parsed_response is not None or self.messages is not None
 
     @classmethod
-    def no_changes(cls) -> 'AfterModelHookResult':
+    def no_changes(cls) -> "AfterModelHookResult":
         """Create a AfterModelHookResult indicating no modifications."""
         return cls(parsed_response=None, messages=None)
 
@@ -103,7 +104,7 @@ class AfterModelHookResult:
         cls,
         parsed_response: ParsedResponse | None = None,
         messages: list[dict[str, str]] | None = None,
-    ) -> 'AfterModelHookResult':
+    ) -> "AfterModelHookResult":
         """Create a AfterModelHookResult with specified modifications.
 
         Args:
@@ -188,7 +189,7 @@ class AfterToolHookInput:
     - tool_output: The result returned by the tool
     """
 
-    agent_state: 'AgentState'
+    agent_state: "AgentState"
     tool_name: str
     tool_call_id: str
     tool_input: dict[str, Any]
@@ -212,12 +213,12 @@ class AfterToolHookResult:
         return self.tool_output is not None
 
     @classmethod
-    def no_changes(cls) -> 'AfterToolHookResult':
+    def no_changes(cls) -> "AfterToolHookResult":
         """Create an AfterToolHookResult indicating no modifications."""
         return cls(tool_output=None)
 
     @classmethod
-    def with_modifications(cls, tool_output: Any) -> 'AfterToolHookResult':
+    def with_modifications(cls, tool_output: Any) -> "AfterToolHookResult":
         """Create an AfterToolHookResult with modified tool output.
 
         Args:
@@ -258,7 +259,7 @@ class AfterToolHook(Protocol):
         ...
 
 
-def create_logging_hook(logger_name: str = 'after_model_hook') -> AfterModelHook:
+def create_logging_hook(logger_name: str = "after_model_hook") -> AfterModelHook:
     """Create a simple logging hook for debugging purposes.
 
     Args:
@@ -272,7 +273,7 @@ def create_logging_hook(logger_name: str = 'after_model_hook') -> AfterModelHook
     logger = logging.getLogger(logger_name)
 
     def logging_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
-        logger.info('🎣 ===== AFTER MODEL HOOK TRIGGERED =====')
+        logger.info("🎣 ===== AFTER MODEL HOOK TRIGGERED =====")
         logger.info(f"🎣 Agent name: {hook_input.agent_state.agent_name}")
         logger.info(f"🎣 Agent id: {hook_input.agent_state.agent_id}")
         logger.info(
@@ -319,7 +320,7 @@ def create_logging_hook(logger_name: str = 'after_model_hook') -> AfterModelHook
                     f"🎣 Batch call {i + 1}: {batch_call.agent_name} on {batch_call.file_path}",
                 )
         else:
-            logger.info('🎣 No parsed response available')
+            logger.info("🎣 No parsed response available")
 
         logger.info(
             f"🎣 Message history length: {len(hook_input.messages)} messages",
@@ -332,7 +333,7 @@ def create_logging_hook(logger_name: str = 'after_model_hook') -> AfterModelHook
                 f"🎣 Recent message {i + 1}: {msg['role']} -> {msg['content'][:100]}...",
             )
 
-        logger.info('🎣 ===== END AFTER MODEL HOOK =====')
+        logger.info("🎣 ===== END AFTER MODEL HOOK =====")
 
         # Return no changes
         return AfterModelHookResult.no_changes()
@@ -341,7 +342,7 @@ def create_logging_hook(logger_name: str = 'after_model_hook') -> AfterModelHook
 
 
 def create_remaining_reminder_hook(
-    logger_name: str = 'after_model_hook',
+    logger_name: str = "after_model_hook",
 ) -> AfterModelHook:
     """Create a simple logging hook for debugging purposes.
 
@@ -361,8 +362,8 @@ def create_remaining_reminder_hook(
         )
         hook_input.messages.append(
             {
-                'role': 'user',
-                'content': f"Remaining iterations: {hook_input.max_iterations - hook_input.current_iteration}",
+                "role": "user",
+                "content": f"Remaining iterations: {hook_input.max_iterations - hook_input.current_iteration}",
             },
         )
 
@@ -378,6 +379,7 @@ def create_tool_after_approve_hook(tool_name: str) -> AfterModelHook:
     Args:
         tool_name: The name of the tool to run
     """
+
     def tool_after_approve_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
         if hook_input.parsed_response and hook_input.parsed_response.tool_calls:
             tool_call_to_remove = []
@@ -390,19 +392,17 @@ def create_tool_after_approve_hook(tool_name: str) -> AfterModelHook:
                         approve = input(
                             f"Approve running {tool_name}? (y/n): ",
                         )
-                        if approve not in ['y', 'n']:
+                        if approve not in ["y", "n"]:
                             print("🎣 Invalid input. Please enter 'y' or 'n'.")
                             continue
                         else:
-                            if approve == 'n':
+                            if approve == "n":
                                 tool_call_to_remove.append(tool_call)
                             break
 
             if tool_call_to_remove:
                 hook_input.parsed_response.tool_calls = [
-                    call
-                    for call in hook_input.parsed_response.tool_calls
-                    if call not in tool_call_to_remove
+                    call for call in hook_input.parsed_response.tool_calls if call not in tool_call_to_remove
                 ]
             return AfterModelHookResult.with_modifications(parsed_response=hook_input.parsed_response)
         return AfterModelHookResult.no_changes()
@@ -425,7 +425,7 @@ def create_filter_hook(
     """
     import logging
 
-    logger = logging.getLogger('filter_hook')
+    logger = logging.getLogger("filter_hook")
 
     def filter_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
         if hook_input.parsed_response is None:
@@ -437,14 +437,9 @@ def create_filter_hook(
         # Filter tool calls
         if allowed_tools is not None:
             original_count = len(parsed_response.tool_calls)
-            parsed_response.tool_calls = [
-                call
-                for call in parsed_response.tool_calls
-                if call.tool_name in allowed_tools
-            ]
+            parsed_response.tool_calls = [call for call in parsed_response.tool_calls if call.tool_name in allowed_tools]
             if len(parsed_response.tool_calls) != original_count:
-                filtered_count = original_count - \
-                    len(parsed_response.tool_calls)
+                filtered_count = original_count - len(parsed_response.tool_calls)
                 logger.warning(
                     f"🎣 Filtered out {filtered_count} disallowed tool calls",
                 )
@@ -453,14 +448,9 @@ def create_filter_hook(
         # Filter sub-agent calls
         if allowed_agents is not None:
             original_count = len(parsed_response.sub_agent_calls)
-            parsed_response.sub_agent_calls = [
-                call
-                for call in parsed_response.sub_agent_calls
-                if call.agent_name in allowed_agents
-            ]
+            parsed_response.sub_agent_calls = [call for call in parsed_response.sub_agent_calls if call.agent_name in allowed_agents]
             if len(parsed_response.sub_agent_calls) != original_count:
-                filtered_count = original_count - \
-                    len(parsed_response.sub_agent_calls)
+                filtered_count = original_count - len(parsed_response.sub_agent_calls)
                 logger.warning(
                     f"🎣 Filtered out {filtered_count} disallowed sub-agent calls",
                 )
@@ -469,14 +459,9 @@ def create_filter_hook(
         # Filter batch agent calls
         if allowed_agents is not None:
             original_count = len(parsed_response.batch_agent_calls)
-            parsed_response.batch_agent_calls = [
-                call
-                for call in parsed_response.batch_agent_calls
-                if call.agent_name in allowed_agents
-            ]
+            parsed_response.batch_agent_calls = [call for call in parsed_response.batch_agent_calls if call.agent_name in allowed_agents]
             if len(parsed_response.batch_agent_calls) != original_count:
-                filtered_count = original_count - \
-                    len(parsed_response.batch_agent_calls)
+                filtered_count = original_count - len(parsed_response.batch_agent_calls)
                 logger.warning(
                     f"🎣 Filtered out {filtered_count} disallowed batch agent calls",
                 )
@@ -491,7 +476,7 @@ def create_filter_hook(
     return filter_hook
 
 
-def create_tool_logging_hook(logger_name: str = 'after_tool_hook') -> AfterToolHook:
+def create_tool_logging_hook(logger_name: str = "after_tool_hook") -> AfterToolHook:
     """Create a simple logging hook for tool execution debugging.
 
     Args:
@@ -505,7 +490,7 @@ def create_tool_logging_hook(logger_name: str = 'after_tool_hook') -> AfterToolH
     logger = logging.getLogger(logger_name)
 
     def tool_logging_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
-        logger.info('🔧 ===== AFTER TOOL HOOK TRIGGERED =====')
+        logger.info("🔧 ===== AFTER TOOL HOOK TRIGGERED =====")
         logger.info(f"🔧 Agent name: {hook_input.agent_state.agent_name}")
         logger.info(f"🔧 Agent id: {hook_input.agent_state.agent_id}")
         logger.info(f"🔧 Tool name: {hook_input.tool_name}")
@@ -519,7 +504,7 @@ def create_tool_logging_hook(logger_name: str = 'after_tool_hook') -> AfterToolH
         else:
             logger.info(f"🔧 Tool output: {output_str}")
 
-        logger.info('🔧 ===== END AFTER TOOL HOOK =====')
+        logger.info("🔧 ===== END AFTER TOOL HOOK =====")
 
         # Return no changes
         return AfterToolHookResult.no_changes()
@@ -538,13 +523,11 @@ def create_tool_output_filter_hook(filter_keys: set[str]) -> AfterToolHook:
     """
     import logging
 
-    logger = logging.getLogger('tool_filter_hook')
+    logger = logging.getLogger("tool_filter_hook")
 
     def tool_filter_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
         if isinstance(hook_input.tool_output, dict):
-            filtered_output = {
-                k: v for k, v in hook_input.tool_output.items() if k not in filter_keys
-            }
+            filtered_output = {k: v for k, v in hook_input.tool_output.items() if k not in filter_keys}
 
             if len(filtered_output) != len(hook_input.tool_output):
                 filtered_count = len(
@@ -591,7 +574,7 @@ def create_tool_result_transformer_hook(transform_func) -> AfterToolHook:
         except Exception as e:
             import logging
 
-            logger = logging.getLogger('tool_transformer_hook')
+            logger = logging.getLogger("tool_transformer_hook")
             logger.warning(
                 f"⚠️ Tool transformation failed for {hook_input.tool_name}: {e}",
             )
@@ -715,7 +698,7 @@ class HookManager:
         import logging
 
         logger = logging.getLogger(__name__)
-        
+
         if isinstance(hook_input, AfterModelHookInput):
             hook_type = "after"
         else:

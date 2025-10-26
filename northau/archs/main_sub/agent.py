@@ -1,10 +1,9 @@
 """Refactored Agent implementation for the Northau framework."""
+
 import logging
 import uuid
+from collections.abc import Callable
 from typing import Any
-from typing import Callable
-from typing import Optional
-from typing import Union
 
 try:
     from langfuse import Langfuse
@@ -22,21 +21,21 @@ except ImportError:
     except ImportError:
         openai = None
 
-from northau.archs.main_sub.config import AgentConfig, ExecutionConfig
-from northau.archs.main_sub.execution.executor import Executor
+from northau.archs.llm.llm_config import LLMConfig
 from northau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from northau.archs.main_sub.agent_state import AgentState
+from northau.archs.main_sub.config import AgentConfig, ExecutionConfig
+from northau.archs.main_sub.execution.executor import Executor
+from northau.archs.main_sub.prompt_builder import PromptBuilder
 from northau.archs.main_sub.utils.cleanup_manager import cleanup_manager
 from northau.archs.main_sub.utils.token_counter import TokenCounter
-from northau.archs.main_sub.prompt_builder import PromptBuilder
-from northau.archs.llm.llm_config import LLMConfig
 
 # Setup logger for agent execution
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     handler = logging.StreamHandler()
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
@@ -49,8 +48,8 @@ class Agent:
     def __init__(
         self,
         config: AgentConfig,
-        global_storage: Optional[GlobalStorage] = None,
-        exec_config: Optional[ExecutionConfig] = None,
+        global_storage: GlobalStorage | None = None,
+        exec_config: ExecutionConfig | None = None,
     ):
         """Initialize agent with configuration.
 
@@ -60,9 +59,7 @@ class Agent:
             exec_config: Optional execution configuration
         """
         self.config = config
-        self.global_storage = (
-            global_storage if global_storage is not None else GlobalStorage()
-        )
+        self.global_storage = global_storage if global_storage is not None else GlobalStorage()
         self.exec_config = exec_config if exec_config is not None else ExecutionConfig()
 
         # Initialize services
@@ -75,9 +72,7 @@ class Agent:
 
         # Build tool registry for quick lookup
         self.tool_registry = {tool.name: tool for tool in self.config.tools}
-        self.serial_tool_name = [
-            tool.name for tool in self.config.tools if tool.disable_parallel
-        ]
+        self.serial_tool_name = [tool.name for tool in self.config.tools if tool.disable_parallel]
 
         # Initialize prompt builder
         self.prompt_builder = PromptBuilder()
@@ -97,7 +92,7 @@ class Agent:
     def _initialize_openai_client(self) -> Any:
         """Initialize OpenAI client from LLM config."""
         if openai is None:
-            logger.warning('⚠️ OpenAI package not available')
+            logger.warning("⚠️ OpenAI package not available")
             return None
 
         try:
@@ -115,9 +110,9 @@ class Agent:
         try:
             import os
 
-            public_key = os.getenv('LANGFUSE_PUBLIC_KEY')
-            secret_key = os.getenv('LANGFUSE_SECRET_KEY')
-            host = os.getenv('LANGFUSE_HOST')
+            public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+            secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+            host = os.getenv("LANGFUSE_HOST")
 
             if public_key and secret_key:
                 client = Langfuse(
@@ -131,7 +126,7 @@ class Agent:
                 return client
             else:
                 logger.warning(
-                    '⚠️ Langfuse environment variables not found, tracing disabled',
+                    "⚠️ Langfuse environment variables not found, tracing disabled",
                 )
                 return None
         except Exception as e:
@@ -154,7 +149,7 @@ class Agent:
 
         except ImportError:
             logger.error(
-                'MCP client not available. Please install the mcp package.',
+                "MCP client not available. Please install the mcp package.",
             )
         except Exception as e:
             logger.error(f"Failed to initialize MCP tools: {e}")
@@ -187,13 +182,13 @@ class Agent:
     def run(
         self,
         message: str,
-        history: Optional[list[dict]] = None,
-        context: Optional[dict] = None,
-        state: Optional[dict[str, Any]] = None,
-        config: Optional[dict[str, Any]] = None,
-        dump_trace_path: Optional[str] = None,
-        parent_agent_state: Optional[AgentState] = None,
-    ) -> Union[str, tuple[str, dict[str, Any]]]:
+        history: list[dict] | None = None,
+        context: dict | None = None,
+        state: dict[str, Any] | None = None,
+        config: dict[str, Any] | None = None,
+        dump_trace_path: str | None = None,
+        parent_agent_state: AgentState | None = None,
+    ) -> str | tuple[str, dict[str, Any]]:
         """Run agent with a message and return response."""
         logger.info(f"🤖 Agent '{self.config.name}' starting execution")
         logger.info(f"📝 User message: {message}")
@@ -220,13 +215,13 @@ class Agent:
                 sub_agent_factories=self.config.sub_agent_factories,
                 runtime_context=merged_context,
             )
-            self.history = [{'role': 'system', 'content': system_prompt}]
+            self.history = [{"role": "system", "content": system_prompt}]
 
             if history:
                 # history default don't have system prompt
                 self.history.extend(history)
             # Add user message to history
-            self.history.append({'role': 'user', 'content': message})
+            self.history.append({"role": "user", "content": message})
 
             # Create the AgentState instance
             agent_state = AgentState(
@@ -247,11 +242,11 @@ class Agent:
                             name=f"agent_{self.config.name}",
                             input=message,
                             metadata={
-                                'agent_name': self.config.name,
-                                'max_iterations': self.exec_config.max_iterations,
-                                'model': self.config.llm_config.model,
-                                'system_prompt_type': self.config.system_prompt_type,
-                                'timestamp': datetime.now().isoformat(),
+                                "agent_name": self.config.name,
+                                "max_iterations": self.exec_config.max_iterations,
+                                "model": self.config.llm_config.model,
+                                "system_prompt_type": self.config.system_prompt_type,
+                                "timestamp": datetime.now().isoformat(),
                             },
                         ):
                             logger.info(
@@ -268,9 +263,9 @@ class Agent:
                             self.langfuse_client.update_current_span(
                                 output=response,
                                 metadata={
-                                    'response_length': len(response),
-                                    'history_length': len(self.history),
-                                    'execution_completed': True,
+                                    "response_length": len(response),
+                                    "history_length": len(self.history),
+                                    "execution_completed": True,
                                 },
                             )
 
@@ -299,13 +294,9 @@ class Agent:
                     self.history = updated_messages
 
                 # Add final assistant response to history if not already included
-                if (
-                    not self.history
-                    or self.history[-1]['role'] != 'assistant'
-                    or self.history[-1]['content'] != response
-                ):
+                if not self.history or self.history[-1]["role"] != "assistant" or self.history[-1]["content"] != response:
                     self.history.append(
-                        {'role': 'assistant', 'content': response},
+                        {"role": "assistant", "content": response},
                     )
 
                 logger.info(
@@ -325,13 +316,13 @@ class Agent:
                         merged_context,
                     )
                     self.history.append(
-                        {'role': 'assistant', 'content': error_response},
+                        {"role": "assistant", "content": error_response},
                     )
                     return error_response
                 else:
                     error_message = f"Error: {str(e)}"
                     self.history.append(
-                        {'role': 'assistant', 'content': error_message},
+                        {"role": "assistant", "content": error_message},
                     )
                     raise
 
@@ -341,7 +332,7 @@ class Agent:
         self.tool_registry[tool.name] = tool
         self.executor.add_tool(tool)
 
-    def add_sub_agent(self, name: str, agent_factory: Callable[[], 'Agent']) -> None:
+    def add_sub_agent(self, name: str, agent_factory: Callable[[], "Agent"]) -> None:
         """Add a sub-agent factory for delegation."""
         self.config.sub_agent_factories[name] = agent_factory
         self.executor.add_sub_agent(name, agent_factory)
@@ -368,45 +359,37 @@ class Agent:
 
 # Factory function for agent creation
 def create_agent(
-    name: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    tools: Optional[list] = None,
-    sub_agents: Optional[list[tuple[str, Callable[[], 'Agent']]]] = None,
-    system_prompt: Optional[str] = None,
-    system_prompt_type: str = 'string',
-    llm_config: Optional[Union[LLMConfig, dict[str, Any]]] = None,
+    name: str | None = None,
+    agent_id: str | None = None,
+    tools: list | None = None,
+    sub_agents: list[tuple[str, Callable[[], "Agent"]]] | None = None,
+    system_prompt: str | None = None,
+    system_prompt_type: str = "string",
+    llm_config: LLMConfig | dict[str, Any] | None = None,
     max_iterations: int = 100,
     max_context_tokens: int = 128000,
     max_running_subagents: int = 5,
-    error_handler: Optional[Callable] = None,
+    error_handler: Callable | None = None,
     retry_attempts: int = 5,
     timeout: int = 300,
     # Token counting parameters
-    token_counter: Optional[Callable[[list[dict[str, str]]], int]] = None,
+    token_counter: Callable[[list[dict[str, str]]], int] | None = None,
     # Context parameters
-    initial_state: Optional[dict[str, Any]] = None,
-    initial_config: Optional[dict[str, Any]] = None,
-    initial_context: Optional[dict[str, Any]] = None,
+    initial_state: dict[str, Any] | None = None,
+    initial_config: dict[str, Any] | None = None,
+    initial_context: dict[str, Any] | None = None,
     # MCP parameters
-    mcp_servers: Optional[list[dict[str, Any]]] = None,
+    mcp_servers: list[dict[str, Any]] | None = None,
     # Stop tools parameters
-    stop_tools: Optional[list[str]] = None,
+    stop_tools: list[str] | None = None,
     # Hook parameters
-    after_model_hooks: Optional[list[Callable]] = None,
-    after_tool_hooks: Optional[list[Callable]] = None,
-    before_model_hooks: Optional[list[Callable]] = None,
+    after_model_hooks: list[Callable] | None = None,
+    after_tool_hooks: list[Callable] | None = None,
+    before_model_hooks: list[Callable] | None = None,
     # Global storage parameter
-    global_storage: Optional[GlobalStorage] = None,
+    global_storage: GlobalStorage | None = None,
     # Custom LLM generator parameter
-    custom_llm_generator: Optional[
-        Callable[
-            [
-                Any,
-                dict[str, Any],
-            ],
-            Any,
-        ]
-    ] = None,
+    custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None,
     **llm_kwargs,
 ) -> Agent:
     """Create a new agent with specified configuration."""
@@ -414,7 +397,7 @@ def create_agent(
     if llm_config is None and llm_kwargs:
         llm_config = LLMConfig(**llm_kwargs)
     elif llm_config is None:
-        raise ValueError('llm_config is required')
+        raise ValueError("llm_config is required")
 
     # Create agent configuration
     agent_config = AgentConfig(

@@ -1,19 +1,17 @@
 """Configuration loading system for agents and tools."""
+
 import importlib
-import os
 import logging
+import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from typing import Callable
-from typing import Optional
-from typing import Union
 
 import dotenv
 import yaml
 
 from ..llm import LLMConfig
-from ..main_sub import Agent
-from ..main_sub import create_agent
+from ..main_sub import Agent, create_agent
 from ..main_sub.agent_context import GlobalStorage
 from ..tool import Tool
 
@@ -41,10 +39,11 @@ class AgentBuilder:
         self.config: dict[str, Any] = config
         self.base_path: Path = base_path
         self.agent_params: dict[str, Any] = {}
-        self.overrides: Optional[dict[str, Any]] = None
+        self.overrides: dict[str, Any] | None = None
 
     def _import_and_instantiate(
-        self, hook_config: Union[str, dict[str, Any]],
+        self,
+        hook_config: str | dict[str, Any],
     ) -> Callable:
         """Import and instantiate a hook from configuration.
 
@@ -59,14 +58,14 @@ class AgentBuilder:
             return import_from_string(hook_config)
         elif isinstance(hook_config, dict):
             # Dictionary format with import and optional parameters
-            import_string = hook_config.get('import')
+            import_string = hook_config.get("import")
             if not import_string:
                 raise ConfigError("Hook configuration missing 'import' field")
 
             hook_func = import_from_string(import_string)
 
             # Check if there are parameters to pass
-            params = hook_config.get('params', {})
+            params = hook_config.get("params", {})
             if params:
                 # For hooks that are factories (like create_* functions), call them with params
                 if callable(hook_func):
@@ -74,7 +73,7 @@ class AgentBuilder:
                     return hook_instance
                 else:
                     raise ConfigError(
-                        'Hook is not callable and cannot accept parameters',
+                        "Hook is not callable and cannot accept parameters",
                     )
             else:
                 return hook_func
@@ -82,42 +81,42 @@ class AgentBuilder:
             # Direct callable function (e.g., from overrides)
             return hook_config
         else:
-            raise ConfigError('Hook must be a string, dictionary, or callable')
+            raise ConfigError("Hook must be a string, dictionary, or callable")
 
-    def build_core_properties(self) -> 'AgentBuilder':
+    def build_core_properties(self) -> "AgentBuilder":
         """Build core agent properties from configuration.
 
         Returns:
             Self for method chaining
         """
-        self.agent_params['name'] = self.config.get('name', 'configured_agent')
-        self.agent_params['max_context_tokens'] = self.config.get(
-            'max_context_tokens',
+        self.agent_params["name"] = self.config.get("name", "configured_agent")
+        self.agent_params["max_context_tokens"] = self.config.get(
+            "max_context_tokens",
             128000,
         )
-        self.agent_params['max_running_subagents'] = self.config.get(
-            'max_running_subagents',
+        self.agent_params["max_running_subagents"] = self.config.get(
+            "max_running_subagents",
             5,
         )
-        self.agent_params['system_prompt'] = self.config.get('system_prompt')
-        self.agent_params['system_prompt_type'] = self.config.get(
-            'system_prompt_type',
-            'string',
+        self.agent_params["system_prompt"] = self.config.get("system_prompt")
+        self.agent_params["system_prompt_type"] = self.config.get(
+            "system_prompt_type",
+            "string",
         )
-        self.agent_params['initial_context'] = self.config.get('context', {})
+        self.agent_params["initial_context"] = self.config.get("context", {})
 
-        self.agent_params['stop_tools'] = self.config.get('stop_tools', [])
-        self.agent_params['max_iterations'] = self.config.get('max_iterations', 100)
+        self.agent_params["stop_tools"] = self.config.get("stop_tools", [])
+        self.agent_params["max_iterations"] = self.config.get("max_iterations", 100)
 
         return self
 
-    def build_mcp_servers(self) -> 'AgentBuilder':
+    def build_mcp_servers(self) -> "AgentBuilder":
         """Build MCP servers configuration from configuration.
 
         Returns:
             Self for method chaining
         """
-        mcp_servers = self.config.get('mcp_servers', [])
+        mcp_servers = self.config.get("mcp_servers", [])
 
         if not isinstance(mcp_servers, list):
             raise ConfigError("'mcp_servers' must be a list")
@@ -130,39 +129,38 @@ class AgentBuilder:
                 )
 
             # Validate required fields
-            if 'name' not in server_config:
+            if "name" not in server_config:
                 raise ConfigError(
                     f"MCP server configuration {i} missing 'name' field",
                 )
 
-            if 'type' not in server_config:
+            if "type" not in server_config:
                 raise ConfigError(
                     f"MCP server configuration {i} missing 'type' field",
                 )
 
-            server_type = server_config['type']
-            if server_type not in ['stdio', 'http', 'sse']:
+            server_type = server_config["type"]
+            if server_type not in ["stdio", "http", "sse"]:
                 raise ConfigError(
-                    f"MCP server configuration {i} has invalid type '{server_type}'. "
-                    'Must be one of: stdio, http, sse',
+                    f"MCP server configuration {i} has invalid type '{server_type}'. Must be one of: stdio, http, sse",
                 )
 
             # Validate type-specific requirements
-            if server_type == 'stdio':
-                if 'command' not in server_config:
+            if server_type == "stdio":
+                if "command" not in server_config:
                     raise ConfigError(
                         f"MCP server configuration {i} of type 'stdio' missing 'command' field",
                     )
-            elif server_type in ['http', 'sse']:
-                if 'url' not in server_config:
+            elif server_type in ["http", "sse"]:
+                if "url" not in server_config:
                     raise ConfigError(
                         f"MCP server configuration {i} of type '{server_type}' missing 'url' field",
                     )
 
-        self.agent_params['mcp_servers'] = mcp_servers
+        self.agent_params["mcp_servers"] = mcp_servers
         return self
 
-    def build_hooks(self) -> 'AgentBuilder':
+    def build_hooks(self) -> "AgentBuilder":
         """Build hooks from configuration.
 
         Returns:
@@ -170,8 +168,8 @@ class AgentBuilder:
         """
         # Handle after_model_hooks configuration
         after_model_hooks = None
-        if 'after_model_hooks' in self.config:
-            hooks_config = self.config['after_model_hooks']
+        if "after_model_hooks" in self.config:
+            hooks_config = self.config["after_model_hooks"]
             after_model_hooks = []
 
             if not isinstance(hooks_config, list):
@@ -184,12 +182,12 @@ class AgentBuilder:
                 except Exception as e:
                     raise ConfigError(f"Error loading hook {i}: {e}")
 
-        self.agent_params['after_model_hooks'] = after_model_hooks
+        self.agent_params["after_model_hooks"] = after_model_hooks
 
         # Handle after_tool_hooks configuration
         after_tool_hooks = None
-        if 'after_tool_hooks' in self.config:
-            hooks_config = self.config['after_tool_hooks']
+        if "after_tool_hooks" in self.config:
+            hooks_config = self.config["after_tool_hooks"]
             after_tool_hooks = []
 
             if not isinstance(hooks_config, list):
@@ -202,36 +200,36 @@ class AgentBuilder:
                 except Exception as e:
                     raise ConfigError(f"Error loading tool hook {i}: {e}")
 
-        self.agent_params['after_tool_hooks'] = after_tool_hooks
-        
+        self.agent_params["after_tool_hooks"] = after_tool_hooks
+
         # Handle before_model_hooks configuration
         before_model_hooks = None
-        if 'before_model_hooks' in self.config:
-            hooks_config = self.config['before_model_hooks']
+        if "before_model_hooks" in self.config:
+            hooks_config = self.config["before_model_hooks"]
             before_model_hooks = []
-            
+
             if not isinstance(hooks_config, list):
                 raise ConfigError("'before_model_hooks' must be a list")
-            
+
             for i, hook_config in enumerate(hooks_config):
                 try:
                     hook_func = self._import_and_instantiate(hook_config)
                     before_model_hooks.append(hook_func)
                 except Exception as e:
                     raise ConfigError(f"Error loading before model hook {i}: {e}")
-                    
-        self.agent_params['before_model_hooks'] = before_model_hooks
+
+        self.agent_params["before_model_hooks"] = before_model_hooks
 
         return self
 
-    def build_tools(self) -> 'AgentBuilder':
+    def build_tools(self) -> "AgentBuilder":
         """Build tools from configuration.
 
         Returns:
             Self for method chaining
         """
         tools = []
-        tool_configs = self.config.get('tools', [])
+        tool_configs = self.config.get("tools", [])
         for tool_config in tool_configs:
             try:
                 tool = load_tool_from_config(tool_config, self.base_path)
@@ -241,17 +239,17 @@ class AgentBuilder:
                     f"Error loading tool '{tool_config.get('name', 'unknown')}': {e}",
                 )
 
-        self.agent_params['tools'] = tools
+        self.agent_params["tools"] = tools
         return self
 
-    def build_sub_agents(self) -> 'AgentBuilder':
+    def build_sub_agents(self) -> "AgentBuilder":
         """Build sub-agents from configuration.
 
         Returns:
             Self for method chaining
         """
         sub_agents = []
-        sub_agent_configs = self.config.get('sub_agents', [])
+        sub_agent_configs = self.config.get("sub_agents", [])
         for sub_config in sub_agent_configs:
             try:
                 sub_agent = load_sub_agent_from_config(
@@ -265,35 +263,35 @@ class AgentBuilder:
                     f"Error loading sub-agent '{sub_config.get('name', 'unknown')}': {e}",
                 )
 
-        self.agent_params['sub_agents'] = sub_agents
+        self.agent_params["sub_agents"] = sub_agents
         return self
 
-    def build_llm_config(self) -> 'AgentBuilder':
+    def build_llm_config(self) -> "AgentBuilder":
         """Build LLM configuration and related components.
 
         Returns:
             Self for method chaining
         """
         # Handle LLM configuration
-        if 'llm_config' not in self.config:
+        if "llm_config" not in self.config:
             raise ConfigError(
                 "'llm_config' is required in agent configuration",
             )
 
-        self.agent_params['llm_config'] = LLMConfig(
-            **self.config['llm_config'],
+        self.agent_params["llm_config"] = LLMConfig(
+            **self.config["llm_config"],
         )
 
         # Handle custom_llm_generator configuration
         custom_llm_generator = None
-        if 'custom_llm_generator' in self.config:
-            llm_generator_config = self.config['custom_llm_generator']
+        if "custom_llm_generator" in self.config:
+            llm_generator_config = self.config["custom_llm_generator"]
             if isinstance(llm_generator_config, str):
                 # Simple import string format
                 custom_llm_generator = import_from_string(llm_generator_config)
             elif isinstance(llm_generator_config, dict):
                 # Dictionary format with import and optional parameters
-                import_string = llm_generator_config.get('import')
+                import_string = llm_generator_config.get("import")
                 if not import_string:
                     raise ConfigError(
                         "custom_llm_generator missing 'import' field",
@@ -302,7 +300,7 @@ class AgentBuilder:
                 llm_generator_func = import_from_string(import_string)
 
                 # Check if there are parameters to pass
-                params = llm_generator_config.get('params', {})
+                params = llm_generator_config.get("params", {})
                 if params:
                     # Create a wrapper function with the parameters
                     def configured_llm_generator(openai_client, kwargs):
@@ -313,21 +311,21 @@ class AgentBuilder:
                     custom_llm_generator = llm_generator_func
             else:
                 raise ConfigError(
-                    'custom_llm_generator configuration must be a string or dictionary',
+                    "custom_llm_generator configuration must be a string or dictionary",
                 )
 
-        self.agent_params['custom_llm_generator'] = custom_llm_generator
+        self.agent_params["custom_llm_generator"] = custom_llm_generator
 
         # Handle token counter configuration
         token_counter = None
-        if 'token_counter' in self.config:
-            token_counter_config = self.config['token_counter']
+        if "token_counter" in self.config:
+            token_counter_config = self.config["token_counter"]
             if isinstance(token_counter_config, str):
                 # Import string format: "module.path:function_name"
                 token_counter = import_from_string(token_counter_config)
             elif isinstance(token_counter_config, dict):
                 # Dictionary format with import and optional parameters
-                import_string = token_counter_config.get('import')
+                import_string = token_counter_config.get("import")
                 if not import_string:
                     raise ConfigError(
                         "Token counter configuration missing 'import' field",
@@ -337,7 +335,7 @@ class AgentBuilder:
                 token_counter_func = import_from_string(import_string)
 
                 # Check if there are parameters to pass
-                params = token_counter_config.get('params', {})
+                params = token_counter_config.get("params", {})
                 if params:
                     # Create a wrapper function with the parameters
                     def configured_token_counter(messages):
@@ -348,41 +346,37 @@ class AgentBuilder:
                     token_counter = token_counter_func
             else:
                 raise ConfigError(
-                    'Token counter configuration must be a string or dictionary',
+                    "Token counter configuration must be a string or dictionary",
                 )
 
-        self.agent_params['token_counter'] = token_counter
+        self.agent_params["token_counter"] = token_counter
 
         return self
 
-    def build_system_prompt_path(self) -> 'AgentBuilder':
+    def build_system_prompt_path(self) -> "AgentBuilder":
         """Build system prompt path resolution.
 
         Returns:
             Self for method chaining
         """
-        system_prompt = self.agent_params.get('system_prompt')
+        system_prompt = self.agent_params.get("system_prompt")
         system_prompt_type = self.agent_params.get(
-            'system_prompt_type',
-            'string',
+            "system_prompt_type",
+            "string",
         )
 
         # Convert system_prompt from relative path to absolute path
-        if (
-            system_prompt
-            and system_prompt_type in ['file', 'jinja']
-            and not Path(system_prompt).is_absolute()
-        ):
+        if system_prompt and system_prompt_type in ["file", "jinja"] and not Path(system_prompt).is_absolute():
             system_prompt = self.base_path / system_prompt
             if not Path(system_prompt).exists():
                 raise ConfigError(
                     f"System prompt file not found: {system_prompt}",
                 )
-            self.agent_params['system_prompt'] = str(system_prompt)
+            self.agent_params["system_prompt"] = str(system_prompt)
 
         return self
 
-    def set_overrides(self, overrides: Optional[dict[str, Any]]) -> 'AgentBuilder':
+    def set_overrides(self, overrides: dict[str, Any] | None) -> "AgentBuilder":
         """Set overrides for sub-agent loading.
 
         Args:
@@ -394,7 +388,7 @@ class AgentBuilder:
         self.overrides = overrides
         return self
 
-    def get_agent(self, global_storage: Optional[GlobalStorage] = None) -> Agent:
+    def get_agent(self, global_storage: GlobalStorage | None = None) -> Agent:
         """Create the final agent instance.
 
         Args:
@@ -408,7 +402,7 @@ class AgentBuilder:
         logger.info(
             f"updating global_storage from config: {self.config.get('global_storage', {})}",
         )
-        global_storage.update(self.config.get('global_storage', {}))
+        global_storage.update(self.config.get("global_storage", {}))
         return create_agent(
             global_storage=global_storage,
             **self.agent_params,
@@ -416,7 +410,8 @@ class AgentBuilder:
 
 
 def apply_agent_name_overrides(
-    config: dict[str, Any], overrides: dict[str, Any],
+    config: dict[str, Any],
+    overrides: dict[str, Any],
 ) -> dict[str, Any]:
     """
     Apply overrides based on agent names.
@@ -432,7 +427,7 @@ def apply_agent_name_overrides(
     config = config.copy()
 
     # Get the main agent name
-    main_agent_name = config.get('name')
+    main_agent_name = config.get("name")
 
     # Apply overrides to main agent if name matches
     if main_agent_name and main_agent_name in overrides:
@@ -463,9 +458,9 @@ def load_yaml_with_vars(path):
 
 def load_agent_config(
     config_path: str,
-    overrides: Optional[dict[str, Any]] = None,
-    template_context: Optional[dict[str, Any]] = None,
-    global_storage: Optional[GlobalStorage] = None,
+    overrides: dict[str, Any] | None = None,
+    template_context: dict[str, Any] | None = None,
+    global_storage: GlobalStorage | None = None,
 ) -> Agent:
     """
     Load agent configuration from YAML file.
@@ -512,7 +507,7 @@ def load_agent_config(
         )
 
         # Apply template context if provided and using Jinja templates
-        if config.get('system_prompt_type') == 'jinja' and template_context:
+        if config.get("system_prompt_type") == "jinja" and template_context:
             # Template context processing would be handled by the prompt builder
             # during agent execution, so we just pass it through
             pass
@@ -538,12 +533,12 @@ def load_tool_from_config(tool_config: dict[str, Any], base_path: Path) -> Tool:
     Returns:
         Configured Tool instance
     """
-    name = tool_config.get('name')
+    name = tool_config.get("name")
     if not name:
         raise ConfigError("Tool configuration missing 'name' field")
 
-    yaml_path = tool_config.get('yaml_path')
-    binding = tool_config.get('binding', None)
+    yaml_path = tool_config.get("yaml_path")
+    binding = tool_config.get("binding", None)
 
     if not yaml_path:
         raise ConfigError(f"Tool '{name}' missing 'yaml_path' field")
@@ -569,7 +564,7 @@ def load_tool_from_config(tool_config: dict[str, Any], base_path: Path) -> Tool:
 def load_sub_agent_from_config(
     sub_config: dict[str, Any],
     base_path: Path,
-    overrides: Optional[dict[str, Any]] = None,
+    overrides: dict[str, Any] | None = None,
 ) -> tuple[str, Callable[[], Agent]]:
     """
     Load a sub-agent factory from configuration.
@@ -582,11 +577,11 @@ def load_sub_agent_from_config(
     Returns:
         Tuple of (agent_name, agent_factory)
     """
-    name = sub_config.get('name')
+    name = sub_config.get("name")
     if not name:
         raise ConfigError("Sub-agent configuration missing 'name' field")
 
-    config_path = sub_config.get('config_path')
+    config_path = sub_config.get("config_path")
     if not config_path:
         raise ConfigError(f"Sub-agent '{name}' missing 'config_path' field")
 
@@ -595,9 +590,11 @@ def load_sub_agent_from_config(
         config_path = base_path / config_path
 
     # Create factory function that loads agent when called
-    def agent_factory(global_storage: Optional[GlobalStorage] = None):
+    def agent_factory(global_storage: GlobalStorage | None = None):
         return load_agent_config(
-            str(config_path), overrides=overrides, global_storage=global_storage,
+            str(config_path),
+            overrides=overrides,
+            global_storage=global_storage,
         )
 
     return (name, agent_factory)
@@ -614,10 +611,10 @@ def import_from_string(import_string: str) -> Any:
         Imported function or class
     """
     try:
-        if ':' not in import_string:
+        if ":" not in import_string:
             raise ValueError("Import string must contain ':' separator")
 
-        module_path, attr_name = import_string.rsplit(':', 1)
+        module_path, attr_name = import_string.rsplit(":", 1)
 
         # Import the module
         module = importlib.import_module(module_path)
@@ -662,7 +659,7 @@ def validate_config_schema(config: dict[str, Any]) -> bool:
             )
 
     # Validate tool configurations
-    tools = config.get('tools', [])
+    tools = config.get("tools", [])
     if not isinstance(tools, list):
         raise ConfigError("'tools' field must be a list")
 
@@ -670,11 +667,11 @@ def validate_config_schema(config: dict[str, Any]) -> bool:
         if not isinstance(tool_config, dict):
             raise ConfigError(f"Tool configuration {i} must be a dictionary")
 
-        if 'name' not in tool_config:
+        if "name" not in tool_config:
             raise ConfigError(f"Tool configuration {i} missing 'name' field")
 
     # Validate sub-agent configurations
-    sub_agents = config.get('sub_agents', [])
+    sub_agents = config.get("sub_agents", [])
     if not isinstance(sub_agents, list):
         raise ConfigError("'sub_agents' field must be a list")
 
@@ -684,13 +681,13 @@ def validate_config_schema(config: dict[str, Any]) -> bool:
                 f"Sub-agent configuration {i} must be a dictionary",
             )
 
-        if 'name' not in sub_config:
+        if "name" not in sub_config:
             raise ConfigError(
                 f"Sub-agent configuration {i} missing 'name' field",
             )
 
     # Validate MCP servers configurations
-    mcp_servers = config.get('mcp_servers', [])
+    mcp_servers = config.get("mcp_servers", [])
     if not isinstance(mcp_servers, list):
         raise ConfigError("'mcp_servers' field must be a list")
 
@@ -700,12 +697,12 @@ def validate_config_schema(config: dict[str, Any]) -> bool:
                 f"MCP server configuration {i} must be a dictionary",
             )
 
-        if 'name' not in server_config:
+        if "name" not in server_config:
             raise ConfigError(
                 f"MCP server configuration {i} missing 'name' field",
             )
 
-        if 'type' not in server_config:
+        if "type" not in server_config:
             raise ConfigError(
                 f"MCP server configuration {i} missing 'type' field",
             )

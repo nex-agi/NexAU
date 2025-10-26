@@ -1,9 +1,9 @@
 """Simple LLM API caller component."""
+
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
-from typing import Callable
-from typing import Optional
 
 from ..agent_state import AgentState
 from .stop_reason import AgentStopReason
@@ -47,8 +47,8 @@ class LLMCaller:
         self,
         messages: list[dict[str, str]],
         max_tokens: int,
-        force_stop_reason: Optional[AgentStopReason] = None,
-        agent_state: Optional[AgentState] = None,
+        force_stop_reason: AgentStopReason | None = None,
+        agent_state: AgentState | None = None,
     ) -> str:
         """Call LLM with the given messages and return response content.
 
@@ -64,33 +64,33 @@ class LLMCaller:
         """
         if not self.openai_client:
             raise RuntimeError(
-                'OpenAI client is not available. Please check your API configuration.',
+                "OpenAI client is not available. Please check your API configuration.",
             )
 
         # Prepare API parameters
         api_params = self.llm_config.to_openai_params()
-        api_params['messages'] = messages
-        api_params['max_tokens'] = max_tokens
+        api_params["messages"] = messages
+        api_params["max_tokens"] = max_tokens
 
         # Add XML stop sequences to prevent malformed XML
         xml_stop_sequences = [
-            '</tool_use>',
-            '</use_parallel_tool_calls>',
-            '</use_batch_agent>',
+            "</tool_use>",
+            "</use_parallel_tool_calls>",
+            "</use_batch_agent>",
         ]
 
         # Merge with existing stop sequences if any
-        existing_stop = api_params.get('stop', [])
+        existing_stop = api_params.get("stop", [])
         if isinstance(existing_stop, str):
             existing_stop = [existing_stop]
         elif existing_stop is None:
             existing_stop = []
 
-        api_params['stop'] = existing_stop + xml_stop_sequences
+        api_params["stop"] = existing_stop + xml_stop_sequences
 
         # Debug logging for LLM messages
         if self.llm_config.debug:
-            logger.info('🐛 [DEBUG] LLM Request Messages:')
+            logger.info("🐛 [DEBUG] LLM Request Messages:")
             for i, msg in enumerate(messages):
                 logger.info(
                     f"🐛 [DEBUG] Message {i}: {msg['role']} -> {msg['content']}",
@@ -123,8 +123,8 @@ class LLMCaller:
 
     def _call_with_retry(
         self,
-        force_stop_reason: Optional[AgentStopReason] = None,
-        agent_state: Optional[AgentState] = None,
+        force_stop_reason: AgentStopReason | None = None,
+        agent_state: AgentState | None = None,
         **kwargs: Any,
     ) -> Any:
         """Call OpenAI client or custom LLM generator with exponential backoff retry."""
@@ -141,7 +141,10 @@ class LLMCaller:
                 # Use custom LLM generator if provided, otherwise use OpenAI client
                 if self.custom_llm_generator:
                     response_content = self.custom_llm_generator(
-                        self.openai_client, kwargs, force_stop_reason, agent_state,
+                        self.openai_client,
+                        kwargs,
+                        force_stop_reason,
+                        agent_state,
                     )
                 else:
                     if force_stop_reason != AgentStopReason.SUCCESS:
@@ -150,7 +153,7 @@ class LLMCaller:
                         **kwargs,
                     )
                     response_content = response.choices[0].message.content
-                stop = kwargs.get('stop', [])
+                stop = kwargs.get("stop", [])
                 if stop:
                     for s in stop:
                         response_content = response_content.split(s)[0]
@@ -158,7 +161,7 @@ class LLMCaller:
                 if response_content:
                     return response_content
                 else:
-                    raise Exception('No response content')
+                    raise Exception("No response content")
 
             except Exception as e:
                 logger.error(

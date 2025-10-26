@@ -1,18 +1,17 @@
 """Data structures for parsed tool calls, sub-agent calls, and batch operations."""
+
 import uuid
-import hashlib
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
-from typing import Union
 
 
 class CallType(Enum):
     """Types of executable calls."""
 
-    TOOL = 'tool'
-    SUB_AGENT = 'sub_agent'
-    BATCH_AGENT = 'batch_agent'
+    TOOL = "tool"
+    SUB_AGENT = "sub_agent"
+    BATCH_AGENT = "batch_agent"
 
 
 @dataclass
@@ -60,7 +59,7 @@ class BatchAgentCall:
 
 
 # Union type for all call types
-ExecutableCall = Union[ToolCall, SubAgentCall, BatchAgentCall]
+ExecutableCall = ToolCall | SubAgentCall | BatchAgentCall
 
 
 @dataclass
@@ -101,5 +100,5 @@ class ParsedResponse:
             )
 
         if summary_parts:
-            return ', '.join(summary_parts)
-        return 'no calls'
+            return ", ".join(summary_parts)
+        return "no calls"

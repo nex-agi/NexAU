@@ -1,15 +1,14 @@
 """Tool execution management with XML parsing and parallel execution."""
+
 import json
 import logging
-from typing import Any
-from typing import Optional
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..agent_state import AgentState
 
 from ..utils.xml_utils import XMLParser
-from .hooks import ToolHookManager, AfterToolHookInput
+from .hooks import AfterToolHookInput, ToolHookManager
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +29,7 @@ class ToolExecutor:
         tool_registry: dict[str, Any],
         stop_tools: set[str],
         langfuse_client=None,
-        tool_hook_manager: Optional[ToolHookManager] = None,
+        tool_hook_manager: ToolHookManager | None = None,
     ):
         """Initialize tool executor.
 
@@ -46,9 +45,7 @@ class ToolExecutor:
         self.xml_parser = XMLParser()
         self.tool_hook_manager = tool_hook_manager
 
-    def execute_tool(
-        self, agent_state: 'AgentState', tool_name: str, parameters: dict[str, Any], tool_call_id: str
-    ) -> dict[str, Any]:
+    def execute_tool(self, agent_state: "AgentState", tool_name: str, parameters: dict[str, Any], tool_call_id: str) -> dict[str, Any]:
         """Execute a tool with given parameters.
 
         Args:
@@ -67,9 +64,7 @@ class ToolExecutor:
         )
 
         if tool_name not in self.tool_registry:
-            error_msg = (
-                f"Tool '{tool_name}' for agent '{agent_state.agent_id}' not found"
-            )
+            error_msg = f"Tool '{tool_name}' for agent '{agent_state.agent_id}' not found"
             logger.error(f"❌ {error_msg}")
             raise ValueError(error_msg)
 
@@ -77,7 +72,7 @@ class ToolExecutor:
         try:
             # Add agent_state to parameters
             execution_params = parameters.copy()
-            execution_params['agent_state'] = agent_state
+            execution_params["agent_state"] = agent_state
 
             if self.langfuse_client:
                 try:
@@ -85,8 +80,8 @@ class ToolExecutor:
                         name=f"tool_{tool_name}",
                         input=parameters,
                         metadata={
-                            'tool_name': tool_name,
-                            'type': 'tool_execution',
+                            "tool_name": tool_name,
+                            "type": "tool_execution",
                         },
                     ):
                         result = tool.execute(**execution_params)
@@ -122,16 +117,16 @@ class ToolExecutor:
                 )
                 # Add special marker to indicate this is a stop tool result
                 if isinstance(result, dict):
-                    result['_is_stop_tool'] = True
+                    result["_is_stop_tool"] = True
                 else:
                     # Wrap non-dict results to include the marker
-                    result = {'result': result, '_is_stop_tool': True}
+                    result = {"result": result, "_is_stop_tool": True}
 
-            if result.get('status') == 'error' and result.get('_is_stop_tool', False):
+            if result.get("status") == "error" and result.get("_is_stop_tool", False):
                 logger.error(
                     f"❌ Finish Tool '{tool_name}' execution failed, will continue.",
                 )
-                result['_is_stop_tool'] = False
+                result["_is_stop_tool"] = False
 
             return result
 
@@ -166,25 +161,25 @@ class ToolExecutor:
             return param_value  # Return as string if tool not found
 
         tool = self.tool_registry[tool_name]
-        schema = getattr(tool, 'input_schema', {})
-        properties = schema.get('properties', {})
+        schema = getattr(tool, "input_schema", {})
+        properties = schema.get("properties", {})
 
         if param_name not in properties:
             return param_value  # Return as string if parameter not in schema
 
         param_info = properties[param_name]
-        param_type = param_info.get('type', 'string')
+        param_type = param_info.get("type", "string")
 
         try:
-            if param_type == 'boolean':
+            if param_type == "boolean":
                 if isinstance(param_value, bool):
                     return param_value
-                return param_value.lower() in ('true', '1', 'yes', 'on')
-            elif param_type == 'integer':
+                return param_value.lower() in ("true", "1", "yes", "on")
+            elif param_type == "integer":
                 return int(param_value)
-            elif param_type == 'number':
+            elif param_type == "number":
                 return float(param_value)
-            elif param_type == 'array':
+            elif param_type == "array":
                 # Try to parse as JSON array, fallback to comma-separated
                 try:
                     return json.loads(param_value)
@@ -192,8 +187,8 @@ class ToolExecutor:
                     logger.debug(
                         f"JSON parsing failed for array parameter '{param_name}': {json_err}. Trying comma-separated fallback.",
                     )
-                    return [item.strip() for item in param_value.split(',')]
-            elif param_type == 'object':
+                    return [item.strip() for item in param_value.split(",")]
+            elif param_type == "object":
                 try:
                     return json.loads(param_value)
                 except json.JSONDecodeError as json_err:

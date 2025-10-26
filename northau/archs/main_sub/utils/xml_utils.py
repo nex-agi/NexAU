@@ -1,4 +1,5 @@
 """XML parsing utilities for agent tool and sub-agent calls."""
+
 import html
 import logging
 import re
@@ -17,17 +18,14 @@ class XMLUtils:
 
         # List of tag pairs to check (opening_tag, closing_tag)
         tag_pairs = [
-            ('<tool_use>', '</tool_use>'),
-            ('<parallel_tool>', '</parallel_tool>'),
-            ('<use_parallel_tool_calls>', '</use_parallel_tool_calls>'),
-            ('<use_batch_agent>', '</use_batch_agent>'),
+            ("<tool_use>", "</tool_use>"),
+            ("<parallel_tool>", "</parallel_tool>"),
+            ("<use_parallel_tool_calls>", "</use_parallel_tool_calls>"),
+            ("<use_batch_agent>", "</use_batch_agent>"),
         ]
 
         for open_tag, close_tag in tag_pairs:
-            if (
-                open_tag in restored_response
-                and not restored_response.rstrip().endswith(close_tag)
-            ):
+            if open_tag in restored_response and not restored_response.rstrip().endswith(close_tag):
                 # Count open and close tags
                 open_count = restored_response.count(open_tag)
                 close_count = restored_response.count(close_tag)
@@ -41,7 +39,7 @@ class XMLUtils:
         """Extract tool name from potentially malformed XML using multiple strategies."""
         # Strategy 1: Try simple regex extraction
         tool_name_match = re.search(
-            r'<tool_name>\s*([^<]+)\s*</tool_name>',
+            r"<tool_name>\s*([^<]+)\s*</tool_name>",
             xml_content,
             re.IGNORECASE | re.DOTALL,
         )
@@ -51,7 +49,7 @@ class XMLUtils:
         # Strategy 2: Try parsing as valid XML
         try:
             root = ET.fromstring(f"<root>{xml_content}</root>")
-            tool_name_elem = root.find('tool_name')
+            tool_name_elem = root.find("tool_name")
             if tool_name_elem is not None and tool_name_elem.text:
                 return tool_name_elem.text.strip()
         except ET.ParseError:
@@ -63,30 +61,30 @@ class XMLUtils:
             cleaned_xml = xml_content.strip()
 
             # Try to fix unclosed tags by finding the pattern and closing them
-            lines = cleaned_xml.split('\n')
+            lines = cleaned_xml.split("\n")
             for i, line in enumerate(lines):
                 # Check if this line has an opening tag but no closing tag
-                tag_match = re.search(r'<(\w+)>[^<]*$', line.strip())
+                tag_match = re.search(r"<(\w+)>[^<]*$", line.strip())
                 if tag_match:
                     tag_name = tag_match.group(1)
                     lines[i] = line.rstrip() + f"</{tag_name}>"
 
-            cleaned_xml = '\n'.join(lines)
+            cleaned_xml = "\n".join(lines)
             root = ET.fromstring(f"<root>{cleaned_xml}</root>")
-            tool_name_elem = root.find('tool_name')
+            tool_name_elem = root.find("tool_name")
             if tool_name_elem is not None and tool_name_elem.text:
                 return tool_name_elem.text.strip()
         except (ET.ParseError, AttributeError):
             pass
 
-        return 'unknown'
+        return "unknown"
 
     @staticmethod
     def extract_agent_name_from_xml(xml_content: str) -> str:
         """Extract agent name from potentially malformed XML using multiple strategies."""
         # Strategy 1: Try simple regex extraction
         agent_name_match = re.search(
-            r'<agent_name>\s*([^<]+)\s*</agent_name>',
+            r"<agent_name>\s*([^<]+)\s*</agent_name>",
             xml_content,
             re.IGNORECASE | re.DOTALL,
         )
@@ -96,7 +94,7 @@ class XMLUtils:
         # Strategy 2: Try parsing as valid XML
         try:
             root = ET.fromstring(f"<root>{xml_content}</root>")
-            agent_name_elem = root.find('agent_name')
+            agent_name_elem = root.find("agent_name")
             if agent_name_elem is not None and agent_name_elem.text:
                 return agent_name_elem.text.strip()
         except ET.ParseError:
@@ -108,23 +106,23 @@ class XMLUtils:
             cleaned_xml = xml_content.strip()
 
             # Try to fix unclosed tags by finding the pattern and closing them
-            lines = cleaned_xml.split('\n')
+            lines = cleaned_xml.split("\n")
             for i, line in enumerate(lines):
                 # Check if this line has an opening tag but no closing tag
-                tag_match = re.search(r'<(\w+)>[^<]*$', line.strip())
+                tag_match = re.search(r"<(\w+)>[^<]*$", line.strip())
                 if tag_match:
                     tag_name = tag_match.group(1)
                     lines[i] = line.rstrip() + f"</{tag_name}>"
 
-            cleaned_xml = '\n'.join(lines)
+            cleaned_xml = "\n".join(lines)
             root = ET.fromstring(f"<root>{cleaned_xml}</root>")
-            agent_name_elem = root.find('agent_name')
+            agent_name_elem = root.find("agent_name")
             if agent_name_elem is not None and agent_name_elem.text:
                 return agent_name_elem.text.strip()
         except (ET.ParseError, AttributeError):
             pass
 
-        return 'unknown'
+        return "unknown"
 
 
 class XMLParser:
@@ -160,21 +158,21 @@ class XMLParser:
                 param_content = match.group(2).strip()
 
                 # Check if content looks like JSON
-                if param_content.startswith(('{', '[')):
+                if param_content.startswith(("{", "[")):
                     # Wrap JSON content in CDATA to preserve it
                     return f"<{param_name}><![CDATA[{param_content}]]></{param_name}>"
                 # Check if content looks like a URL or contains characters that need escaping
                 elif (
-                    'http' in param_content
-                    or 'www.' in param_content
-                    or '%' in param_content
-                    or '&' in param_content
-                    or '<' in param_content
-                    or '>' in param_content
+                    "http" in param_content
+                    or "www." in param_content
+                    or "%" in param_content
+                    or "&" in param_content
+                    or "<" in param_content
+                    or ">" in param_content
                 ):
                     # Wrap URL or complex content in CDATA to preserve it
                     return f"<{param_name}><![CDATA[{param_content}]]></{param_name}>"
-                elif '<' in param_content and '>' in param_content:
+                elif "<" in param_content and ">" in param_content:
                     # Escape HTML/XML content if it contains < >
                     escaped_content = html.escape(param_content)
                     return f"<{param_name}>{escaped_content}</{param_name}>"
@@ -183,14 +181,14 @@ class XMLParser:
             # Find and handle parameter content within parameters block
             escaped_xml = xml_content
             params_match = re.search(
-                r'<parameter>(.*?)</parameter>',
+                r"<parameter>(.*?)</parameter>",
                 xml_content,
                 re.DOTALL,
             )
             if params_match:
                 params_content = params_match.group(1)
                 # Pattern to match individual parameter tags with their content
-                param_pattern = r'<(\w+)>(.*?)</\1>'
+                param_pattern = r"<(\w+)>(.*?)</\1>"
                 escaped_params = re.sub(
                     param_pattern,
                     handle_json_param_content,
@@ -225,7 +223,7 @@ class XMLParser:
                 param_content = param_match.group(2)
 
                 # Skip if already wrapped in CDATA
-                if '[CDATA[' in param_content:
+                if "[CDATA[" in param_content:
                     return param_match.group(0)
 
                 # Wrap the content in CDATA
@@ -233,7 +231,7 @@ class XMLParser:
 
             # Apply CDATA wrapping to all individual parameters
             wrapped_content = re.sub(
-                r'<(\w+)>(.*?)</\1>',
+                r"<(\w+)>(.*?)</\1>",
                 wrap_individual_param,
                 parameter_content,
                 flags=re.DOTALL,
@@ -243,7 +241,7 @@ class XMLParser:
 
         # Apply to all parameter blocks
         result = re.sub(
-            r'<parameter>(.*?)</parameter>',
+            r"<parameter>(.*?)</parameter>",
             wrap_parameter_block,
             xml_content,
             flags=re.DOTALL,

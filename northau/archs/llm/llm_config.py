@@ -1,7 +1,7 @@
 """LLM configuration class for handling model-related arguments."""
+
 import os
 from typing import Any
-from typing import Optional
 
 
 class LLMConfig:
@@ -9,15 +9,15 @@ class LLMConfig:
 
     def __init__(
         self,
-        model: Optional[str] = None,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        model: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        top_p: Optional[float] = None,
-        frequency_penalty: Optional[float] = None,
-        presence_penalty: Optional[float] = None,
-        timeout: Optional[float] = None,
+        max_tokens: int | None = None,
+        top_p: float | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        timeout: float | None = None,
         max_retries: int = 3,
         debug: bool = False,
         **kwargs,
@@ -56,11 +56,11 @@ class LLMConfig:
 
     def _get_model_from_env(self) -> str:
         """Get model from environment variables."""
-        # Try common environment variable names for model
+        # Try common environment variable names for model (highest priority first)
         env_vars = [
-            'LLM_MODEL',
-            'OPENAI_MODEL',
-            'MODEL',
+            "MODEL",
+            "OPENAI_MODEL",
+            "LLM_MODEL",
         ]
 
         for var in env_vars:
@@ -70,13 +70,13 @@ class LLMConfig:
 
         raise ValueError("Model not found in environment variables")
 
-    def _get_base_url_from_env(self) -> Optional[str]:
+    def _get_base_url_from_env(self) -> str | None:
         """Get base URL from environment variables."""
-        # Try common environment variable names for base URL
+        # Try common environment variable names for base URL (highest priority first)
         env_vars = [
-            'LLM_BASE_URL',
-            'OPENAI_BASE_URL',
-            'BASE_URL',
+            "OPENAI_BASE_URL",
+            "BASE_URL",
+            "LLM_BASE_URL",
         ]
 
         for var in env_vars:
@@ -86,14 +86,14 @@ class LLMConfig:
 
         raise ValueError("Base URL not found in environment variables")
 
-    def _get_api_key_from_env(self) -> Optional[str]:
+    def _get_api_key_from_env(self) -> str | None:
         """Get API key from environment variables."""
         # Try common environment variable names
         env_vars = [
-            'LLM_API_KEY',
-            'OPENAI_API_KEY',
-            'API_KEY',
-            'ANTHROPIC_API_KEY',
+            "LLM_API_KEY",
+            "OPENAI_API_KEY",
+            "API_KEY",
+            "ANTHROPIC_API_KEY",
         ]
 
         for var in env_vars:
@@ -109,17 +109,17 @@ class LLMConfig:
 
         # Model parameters
         if self.model:
-            params['model'] = self.model
+            params["model"] = self.model
         if self.temperature is not None:
-            params['temperature'] = self.temperature
+            params["temperature"] = self.temperature
         if self.max_tokens is not None:
-            params['max_tokens'] = self.max_tokens
+            params["max_tokens"] = self.max_tokens
         if self.top_p is not None:
-            params['top_p'] = self.top_p
+            params["top_p"] = self.top_p
         if self.frequency_penalty is not None:
-            params['frequency_penalty'] = self.frequency_penalty
+            params["frequency_penalty"] = self.frequency_penalty
         if self.presence_penalty is not None:
-            params['presence_penalty'] = self.presence_penalty
+            params["presence_penalty"] = self.presence_penalty
 
         # Add extra parameters
         params.update(self.extra_params)
@@ -131,13 +131,13 @@ class LLMConfig:
         kwargs = {}
 
         if self.api_key:
-            kwargs['api_key'] = self.api_key
+            kwargs["api_key"] = self.api_key
         if self.base_url:
-            kwargs['base_url'] = self.base_url
+            kwargs["base_url"] = self.base_url
         if self.timeout:
-            kwargs['timeout'] = self.timeout
+            kwargs["timeout"] = self.timeout
         if self.max_retries:
-            kwargs['max_retries'] = self.max_retries
+            kwargs["max_retries"] = self.max_retries
 
         return kwargs
 
@@ -159,7 +159,7 @@ class LLMConfig:
         for key, value in kwargs.items():
             self.set_param(key, value)
 
-    def copy(self) -> 'LLMConfig':
+    def copy(self) -> "LLMConfig":
         """Create a copy of this configuration."""
         return LLMConfig(
             model=self.model,

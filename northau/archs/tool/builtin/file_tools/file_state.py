@@ -6,6 +6,7 @@ File State Management Module
 This module provides centralized file state management for file tools,
 including timestamp tracking for read/write coordination.
 """
+
 import logging
 import os
 
@@ -88,7 +89,7 @@ def validate_file_read_state(file_path: str) -> tuple[bool, str | None]:
     # Check if file has been read
     cached_timestamp = get_file_timestamp(file_path)
     if cached_timestamp == 0.0:
-        return False, '文件尚未被读取。请先读取文件再进行写入操作。'
+        return False, "文件尚未被读取。请先读取文件再进行写入操作。"
 
     # Check if file was modified after last read
     try:
@@ -96,7 +97,7 @@ def validate_file_read_state(file_path: str) -> tuple[bool, str | None]:
         if current_mtime > cached_timestamp:
             return (
                 False,
-                '文件在读取后已被修改（可能是用户手动修改或被其他工具修改）。请重新读取文件后再进行写入。',
+                "文件在读取后已被修改（可能是用户手动修改或被其他工具修改）。请重新读取文件后再进行写入。",
             )
     except Exception as e:
         logger.warning(

@@ -1,11 +1,10 @@
 """System prompt builder for agents."""
+
 import logging
 from pathlib import Path
 from typing import Any
-from typing import Optional
 
-from jinja2 import Environment
-from jinja2 import FileSystemLoader
+from jinja2 import Environment, FileSystemLoader
 
 from .config import AgentConfig
 from .prompt_handler import PromptHandler
@@ -23,14 +22,14 @@ def _get_python_type_from_json_schema(json_type: str) -> str:
         Python type string (str, int, float, bool, list, dict)
     """
     type_mapping = {
-        'string': 'str',
-        'integer': 'int',
-        'number': 'float',
-        'boolean': 'bool',
-        'array': 'list',
-        'object': 'dict',
+        "string": "str",
+        "integer": "int",
+        "number": "float",
+        "boolean": "bool",
+        "array": "list",
+        "object": "dict",
     }
-    return type_mapping.get(json_type, 'str')
+    return type_mapping.get(json_type, "str")
 
 
 class PromptBuilder:
@@ -39,7 +38,7 @@ class PromptBuilder:
     def __init__(self):
         """Initialize the prompt builder."""
         current_dir = Path(__file__).parent
-        self.prompts_dir = current_dir / 'prompts'
+        self.prompts_dir = current_dir / "prompts"
         self.jinja_env = Environment(
             loader=FileSystemLoader(self.prompts_dir),
             trim_blocks=True,
@@ -52,7 +51,7 @@ class PromptBuilder:
         agent_config: AgentConfig,
         tools: list = None,
         sub_agent_factories: dict[str, Any] = None,
-        runtime_context: Optional[dict] = None,
+        runtime_context: dict | None = None,
     ) -> str:
         """Build the complete system prompt including tool and sub-agent docs.
 
@@ -91,7 +90,7 @@ class PromptBuilder:
     def _get_base_system_prompt(
         self,
         agent_config: AgentConfig,
-        runtime_context: Optional[dict] = None,
+        runtime_context: dict | None = None,
     ) -> str:
         """Get the base system prompt from configuration."""
         if not agent_config.system_prompt:
@@ -115,24 +114,23 @@ class PromptBuilder:
             logger.error(f"❌ Error processing system prompt: {e}")
             raise ValueError("Error processing system prompt") from e
 
-
     def _get_default_system_prompt(self, agent_name: str) -> str:
         """Get default system prompt for the agent."""
         try:
-            template = self._load_prompt_template('default_system_prompt')
+            template = self._load_prompt_template("default_system_prompt")
             if template:
-                context = {'agent_name': agent_name}
+                context = {"agent_name": agent_name}
                 jinja_template = self.jinja_env.from_string(template)
                 return jinja_template.render(**context)
         except Exception as e:
             logger.warning(f"⚠️ Error loading default system prompt: {e}")
             raise ValueError("Error loading default system prompt") from e
-    
+
     def _build_capabilities_docs(
         self,
         tools: list,
         sub_agent_factories: dict[str, Any],
-        runtime_context: Optional[dict] = None,
+        runtime_context: dict | None = None,
     ) -> str:
         """Build documentation for tools and sub-agents."""
         docs = []
@@ -149,16 +147,16 @@ class PromptBuilder:
             )
             docs.append(subagent_docs)
 
-        return '\n'.join(docs)
+        return "\n".join(docs)
 
     def _build_tools_documentation(
         self,
         tools: list,
-        runtime_context: Optional[dict] = None,
+        runtime_context: dict | None = None,
     ) -> str:
         """Build tools documentation section."""
         try:
-            template = self._load_prompt_template('tools_template')
+            template = self._load_prompt_template("tools_template")
             if not template:
                 raise ValueError("Tools template not found")
 
@@ -166,17 +164,19 @@ class PromptBuilder:
             tools_context = []
             for tool in tools:
                 tool_info = {
-                    'name': tool.name,
-                    'description': getattr(
-                        tool, 'description', 'No description available',
+                    "name": tool.name,
+                    "description": getattr(
+                        tool,
+                        "description",
+                        "No description available",
                     ),
-                    'template_override': getattr(tool, 'template_override', None),
-                    'parameters': self._extract_tool_parameters(tool),
+                    "template_override": getattr(tool, "template_override", None),
+                    "parameters": self._extract_tool_parameters(tool),
                 }
                 tools_context.append(tool_info)
 
             context = {
-                'tools': tools_context,
+                "tools": tools_context,
                 **(runtime_context or {}),
             }
 
@@ -193,20 +193,20 @@ class PromptBuilder:
     ) -> str:
         """Build sub-agents documentation section."""
         try:
-            template = self._load_prompt_template('sub_agents_template')
+            template = self._load_prompt_template("sub_agents_template")
             if not template:
                 raise ValueError("Sub-agents template not found")
 
             # Prepare sub-agents context
             sub_agents_context = [
                 {
-                    'name': name,
-                    'description': f"Specialized agent for {name}-related tasks",
+                    "name": name,
+                    "description": f"Specialized agent for {name}-related tasks",
                 }
                 for name in sub_agent_factories.keys()
             ]
 
-            context = {'sub_agents': sub_agents_context}
+            context = {"sub_agents": sub_agents_context}
             jinja_template = self.jinja_env.from_string(template)
             return jinja_template.render(**context)
 
@@ -216,29 +216,29 @@ class PromptBuilder:
 
     def _extract_tool_parameters(self, tool) -> list:
         """Extract parameter information from tool schema."""
-        if not hasattr(tool, 'input_schema'):
+        if not hasattr(tool, "input_schema"):
             return []
 
         schema = tool.input_schema
-        properties = schema.get('properties', {})
-        required_params = schema.get('required', [])
+        properties = schema.get("properties", {})
+        required_params = schema.get("required", [])
 
         parameters = []
         for param_name, param_info in properties.items():
-            param_type = param_info.get('type', 'string')
-            param_desc = param_info.get('description', '')
-            default_value = param_info.get('default')
+            param_type = param_info.get("type", "string")
+            param_desc = param_info.get("description", "")
+            default_value = param_info.get("default")
             is_required = param_name in required_params
 
             python_type = _get_python_type_from_json_schema(param_type)
 
             parameters.append(
                 {
-                    'name': param_name,
-                    'description': param_desc,
-                    'type': python_type,
-                    'required': is_required,
-                    'default': default_value,
+                    "name": param_name,
+                    "description": param_desc,
+                    "type": python_type,
+                    "required": is_required,
+                    "default": default_value,
                 },
             )
 
@@ -248,7 +248,7 @@ class PromptBuilder:
         """Get tool execution instructions."""
         try:
             template = self._load_prompt_template(
-                'tool_execution_instructions',
+                "tool_execution_instructions",
             )
             if template:
                 return template
@@ -258,7 +258,7 @@ class PromptBuilder:
     def _build_template_context(
         self,
         agent_config: AgentConfig,
-        runtime_context: Optional[dict] = None,
+        runtime_context: dict | None = None,
     ) -> dict[str, Any]:
         """Build template context for prompt rendering."""
         context = {}
@@ -273,11 +273,11 @@ class PromptBuilder:
         try:
             template_file = self.prompts_dir / f"{prompt_name}.j2"
             if template_file.exists():
-                with open(template_file, encoding='utf-8') as f:
+                with open(template_file, encoding="utf-8") as f:
                     return f.read()
         except Exception as e:
             logger.warning(
                 f"⚠️ Error loading prompt template {prompt_name}: {e}",
             )
 
-        return ''
+        return ""

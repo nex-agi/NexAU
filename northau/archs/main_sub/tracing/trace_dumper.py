@@ -1,4 +1,5 @@
 """Trace file output utilities."""
+
 import json
 import logging
 import os
@@ -13,7 +14,9 @@ class TraceDumper:
 
     @staticmethod
     def dump_trace_to_file(
-        trace_data: list[dict[str, Any]], dump_trace_path: str, agent_name: str,
+        trace_data: list[dict[str, Any]],
+        dump_trace_path: str,
+        agent_name: str,
     ) -> None:
         """Dump trace data to a JSON file.
 
@@ -30,22 +33,22 @@ class TraceDumper:
 
             # Prepare trace metadata
             trace_metadata = {
-                'agent_name': agent_name,
-                'dump_timestamp': datetime.now().isoformat(),
-                'total_entries': len(trace_data),
-                'entry_types': list(
-                    {entry.get('type', 'unknown') for entry in trace_data},
+                "agent_name": agent_name,
+                "dump_timestamp": datetime.now().isoformat(),
+                "total_entries": len(trace_data),
+                "entry_types": list(
+                    {entry.get("type", "unknown") for entry in trace_data},
                 ),
             }
 
             # Complete trace structure
             complete_trace = {
-                'metadata': trace_metadata,
-                'trace': trace_data,
+                "metadata": trace_metadata,
+                "trace": trace_data,
             }
 
             # Write to file
-            with open(dump_trace_path, 'w', encoding='utf-8') as f:
+            with open(dump_trace_path, "w", encoding="utf-8") as f:
                 json.dump(complete_trace, f, indent=2, ensure_ascii=False)
 
             logger.info(

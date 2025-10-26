@@ -4,3 +4,4 @@
 data/
 .tool_cache/
 .DS_Store
+htmlcov/

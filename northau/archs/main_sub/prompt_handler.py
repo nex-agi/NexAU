@@ -1,7 +1,7 @@
 """System prompt handling for different prompt types."""
+
 from pathlib import Path
 from typing import Any
-from typing import Optional
 
 
 class PromptHandler:
@@ -14,7 +14,7 @@ class PromptHandler:
 
     def _setup_jinja(self):
         """Setup Jinja2 environment."""
-        from jinja2 import Environment, BaseLoader
+        from jinja2 import BaseLoader, Environment
 
         # Create a basic environment
         self._jinja_env = Environment(
@@ -26,8 +26,8 @@ class PromptHandler:
     def process_prompt(
         self,
         prompt: str,
-        prompt_type: str = 'string',
-        context: Optional[dict[str, Any]] = None,
+        prompt_type: str = "string",
+        context: dict[str, Any] | None = None,
     ) -> str:
         """
         Process a system prompt based on its type.
@@ -40,11 +40,11 @@ class PromptHandler:
         Returns:
             Processed prompt string
         """
-        if prompt_type == 'string':
+        if prompt_type == "string":
             return self._process_string_prompt(prompt, context)
-        elif prompt_type == 'file':
+        elif prompt_type == "file":
             return self._process_file_prompt(prompt, context)
-        elif prompt_type == 'jinja':
+        elif prompt_type == "jinja":
             return self._process_jinja_prompt(prompt, context)
         else:
             raise ValueError(f"Unknown prompt type: {prompt_type}")
@@ -52,11 +52,11 @@ class PromptHandler:
     def _process_string_prompt(
         self,
         prompt: str,
-        context: Optional[dict[str, Any]] = None,
+        context: dict[str, Any] | None = None,
     ) -> str:
         """Process a string prompt (may contain simple variable substitution)."""
         if not prompt:
-            return ''
+            return ""
 
         # Simple variable substitution using {variable} syntax
         if context:
@@ -71,7 +71,7 @@ class PromptHandler:
     def _process_file_prompt(
         self,
         file_path: str,
-        context: Optional[dict[str, Any]] = None,
+        context: dict[str, Any] | None = None,
     ) -> str:
         """Process a file-based prompt."""
         path = Path(file_path)
@@ -85,7 +85,7 @@ class PromptHandler:
                 raise FileNotFoundError(f"Prompt file not found: {file_path}")
 
         try:
-            with open(path, encoding='utf-8') as f:
+            with open(path, encoding="utf-8") as f:
                 content = f.read()
 
             # Apply simple variable substitution if context provided
@@ -104,7 +104,7 @@ class PromptHandler:
     def _process_jinja_prompt(
         self,
         template_path: str,
-        context: Optional[dict[str, Any]] = None,
+        context: dict[str, Any] | None = None,
     ) -> str:
         """Process a Jinja template prompt."""
         path = Path(template_path)
@@ -120,7 +120,7 @@ class PromptHandler:
                 )
 
         try:
-            with open(path, encoding='utf-8') as f:
+            with open(path, encoding="utf-8") as f:
                 template_content = f.read()
 
             # Create template
@@ -138,7 +138,7 @@ class PromptHandler:
 
     def validate_prompt_type(self, prompt_type: str) -> bool:
         """Validate if a prompt type is supported."""
-        return prompt_type in ['string', 'file', 'jinja']
+        return prompt_type in ["string", "file", "jinja"]
 
     def _get_timestamp(self) -> str:
         """Get current timestamp."""
@@ -149,17 +149,19 @@ class PromptHandler:
     def get_default_context(self, agent) -> dict[str, Any]:
         """Get default context for template rendering."""
         context = {
-            'agent_name': getattr(agent, 'name', 'Unknown Agent'),
-            'timestamp': self._get_timestamp(),
+            "agent_name": getattr(agent, "name", "Unknown Agent"),
+            "timestamp": self._get_timestamp(),
         }
 
         # Add agent-specific context if available
-        if hasattr(agent, 'config'):
+        if hasattr(agent, "config"):
             context.update(
                 {
-                    'agent_id': getattr(agent.config, 'agent_id', None),
-                    'system_prompt_type': getattr(
-                        agent.config, 'system_prompt_type', 'string',
+                    "agent_id": getattr(agent.config, "agent_id", None),
+                    "system_prompt_type": getattr(
+                        agent.config,
+                        "system_prompt_type",
+                        "string",
                     ),
                 },
             )
@@ -170,8 +172,8 @@ class PromptHandler:
         self,
         base_template: str,
         agent,
-        additional_context: Optional[dict[str, Any]] = None,
-        template_type: str = 'string',
+        additional_context: dict[str, Any] | None = None,
+        template_type: str = "string",
     ) -> str:
         """Create a dynamic prompt by combining base template with agent context."""
         context = self.get_default_context(agent)
@@ -180,7 +182,7 @@ class PromptHandler:
             context.update(additional_context)
 
         try:
-            if template_type == 'jinja':
+            if template_type == "jinja":
                 # base_template is a path to a jinja template file
                 return self._process_jinja_prompt(base_template, context)
             else:
