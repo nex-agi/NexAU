@@ -1,56 +1,43 @@
 name: CI
 
 on:
+  push:
+    branches: [ main, develop ]
   pull_request:
-    branches:
-      - main
+    branches: [ main, develop ]
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    
+    strategy:
+      matrix:
+        python-version: ['3.12']
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Set up Python
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
-        python-version: '3.12'
-        
+        python-version: ${{ matrix.python-version }}
+
     - name: Install uv
-      uses: astral-sh/setup-uv@v5
-      
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
     - name: Install dependencies
       run: |
         uv sync
-        
-    - name: Run linter (ruff)
+
+    - name: Run linter
       run: |
         uv run ruff check .
-      continue-on-error: false
-      
-    - name: Run format check (ruff)
+
+    - name: Run format check
       run: |
         uv run ruff format --check .
-      continue-on-error: false
-      
+
     - name: Run tests with coverage
       run: |
-        uv run pytest --cov=northau --cov-report=html --cov-report=term
-        
-    - name: Upload coverage report
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: coverage-report
-        path: htmlcov/
-        retention-days: 30
-        
-    - name: Display coverage summary
-      if: always()
-      run: |
-        if [ -f .coverage ]; then
-          uv run coverage report
-        fi
-
+        uv run pytest --cov=northau --cov-report=xml --cov-report=term
