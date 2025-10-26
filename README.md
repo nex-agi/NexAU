@@ -10,10 +10,23 @@ This framework provides a modular tool system, a flexible agent architecture, an
 
 ## Installation
 
-### From PyPI (Recommended)
+### From GitHub Release (Recommended)
 
 ```bash
-pip install northau
+# Install from the latest release tag using SSH (you need to use ssh because northau is a private repo)
+pip install git+ssh://git@github.com/china-qijizhifeng/northau.git@v0.1.0
+
+# or visit https://github.com/china-qijizhifeng/northau/releases/ and download whl, then
+
+pip install northau-0.1.0-py3-none-any.whl
+```
+
+
+### Install Latest from Main Branch
+
+```bash
+# Using SSH
+pip install git+ssh://git@github.com/china-qijizhifeng/northau.git
 ```
 
 ### From Source
