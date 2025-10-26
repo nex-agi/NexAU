@@ -115,14 +115,3 @@ When a version tag (e.g., `v0.2.0`) is pushed to the repository, the CD workflow
 - Creates a GitHub release with changelog
 
 See [RELEASING.md](./RELEASING.md) for detailed release instructions.
-
-#### Quick Release
-
-```bash
-# Using the helper script
-./scripts/release.sh 0.2.0
-
-# Or manually
-git tag -a v0.2.0 -m "Release version 0.2.0"
-git push origin v0.2.0
-```
