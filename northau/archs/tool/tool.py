@@ -57,6 +57,8 @@ class Tool:
         description: str,
         input_schema: dict,
         implementation: Callable,
+        skill_description: str | None = None,
+        as_skill: bool = False,
         use_cache: bool = False,
         disable_parallel: bool = False,
         template_override: str | None = None,
@@ -65,6 +67,8 @@ class Tool:
         """Initialize a tool with schema and implementation."""
         self.name = name
         self.description = description
+        self.skill_description = skill_description
+        self.as_skill = as_skill
         self.input_schema = input_schema
         self.implementation = implementation
         self.template_override = template_override
@@ -82,6 +86,7 @@ class Tool:
         cls,
         yaml_path: str,
         binding: Callable,
+        as_skill: bool = False,
         **kwargs,
     ) -> "Tool":
         """Load tool definition from YAML file and bind to implementation."""
@@ -95,6 +100,7 @@ class Tool:
         # Extract required fields
         name = tool_def.get("name")
         description = tool_def.get("description", "")
+        skill_description = tool_def.get("skill_description", "")
         input_schema = tool_def.get("input_schema", {})
         use_cache = tool_def.get("use_cache", False)
         disable_parallel = tool_def.get("disable_parallel", False)
@@ -122,8 +128,10 @@ class Tool:
         return cls(
             name=name,
             description=description,
+            skill_description=skill_description,
             input_schema=input_schema,
             implementation=binding,
+            as_skill=as_skill,
             use_cache=use_cache,
             disable_parallel=disable_parallel,
             template_override=template_override,
@@ -214,6 +222,7 @@ class Tool:
             "name": self.name,
             "template_override": self.template_override,
             "description": self.description,
+            "skill_description": self.skill_description,
             "input_schema": self.input_schema,
             "timeout": self.timeout,
         }
@@ -222,4 +231,7 @@ class Tool:
         return f"Tool(name='{self.name}', implementation={self.implementation.__name__})"
 
     def __str__(self) -> str:
-        return f"Tool '{self.name}': {self.description[:50]}{'...' if len(self.description) > 50 else ''}"
+        tool_str = f"Tool '{self.name}': {self.description[:50]}{'...' if len(self.description) > 50 else ''}"
+        if self.skill_description:
+            tool_str += f"\nSkill description: {self.skill_description}"
+        return tool_str

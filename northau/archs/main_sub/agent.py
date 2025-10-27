@@ -27,6 +27,7 @@ from northau.archs.main_sub.agent_state import AgentState
 from northau.archs.main_sub.config import AgentConfig, ExecutionConfig
 from northau.archs.main_sub.execution.executor import Executor
 from northau.archs.main_sub.prompt_builder import PromptBuilder
+from northau.archs.main_sub.skill import Skill
 from northau.archs.main_sub.utils.cleanup_manager import cleanup_manager
 from northau.archs.main_sub.utils.token_counter import TokenCounter
 
@@ -73,6 +74,10 @@ class Agent:
         # Build tool registry for quick lookup
         self.tool_registry = {tool.name: tool for tool in self.config.tools}
         self.serial_tool_name = [tool.name for tool in self.config.tools if tool.disable_parallel]
+
+        # Build skill registry for quick lookup
+        self.skill_registry = {skill.name: skill for skill in self.config.skills}
+        self.global_storage.set("skill_registry", self.skill_registry)
 
         # Initialize prompt builder
         self.prompt_builder = PromptBuilder()
@@ -363,6 +368,7 @@ def create_agent(
     agent_id: str | None = None,
     tools: list | None = None,
     sub_agents: list[tuple[str, Callable[[], "Agent"]]] | None = None,
+    skills: list[Skill] | None = None,
     system_prompt: str | None = None,
     system_prompt_type: str = "string",
     llm_config: LLMConfig | dict[str, Any] | None = None,
@@ -407,6 +413,7 @@ def create_agent(
         system_prompt_type=system_prompt_type,
         tools=tools or [],
         sub_agents=sub_agents,
+        skills=skills or [],
         llm_config=llm_config,
         stop_tools=stop_tools or [],
         initial_state=initial_state,

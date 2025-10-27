@@ -2,9 +2,13 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from ..llm.llm_config import LLMConfig
+from ..main_sub.skill import Skill
+from ..tool import Tool
+from ..tool.builtin.skill_tool import load_skill
 
 
 @dataclass
@@ -26,8 +30,9 @@ class AgentConfig:
     agent_id: str | None = None
     system_prompt: str | None = None
     system_prompt_type: str = "string"
-    tools: list[Any] = field(default_factory=list)
+    tools: list[Tool] = field(default_factory=list)
     sub_agents: list[tuple[str, Callable[[], Any]]] | None = None
+    skills: list[Skill] = field(default_factory=list)
     llm_config: LLMConfig | dict[str, Any] | None = None
     stop_tools: list[str] = field(default_factory=list)
 
@@ -57,6 +62,21 @@ class AgentConfig:
         else:
             self.sub_agent_factories = {}
 
+        northau_package_path = Path(__file__).parent.parent.parent
+        has_skilled_tools = False
+        for tool in self.tools:
+            if tool.as_skill:
+                has_skilled_tools = True
+                break
+        if has_skilled_tools or self.skills:
+            skill_tool = Tool.from_yaml(
+                str(northau_package_path / "archs" / "tool" / "builtin" / "description" / "skill_tool.yaml"),
+                binding=load_skill,
+                as_skill=False,
+            )
+            skill_tool.description += self._generate_skill_description()
+            self.tools.append(skill_tool)
+
         # Ensure stop_tools is a set for faster lookup
         if isinstance(self.stop_tools, list):
             self.stop_tools = set(self.stop_tools)
@@ -76,3 +96,25 @@ class AgentConfig:
         # Ensure name is set
         if not self.name:
             self.name = f"agent_{id(self)}"
+
+    def _generate_skill_description(self) -> str:
+        """Generate skill description."""
+        skill_description = "<Skils>\n"
+        for skill in self.skills:
+            skill_description += "<SkillBrief>\n"
+            skill_description += f"Skill Name: {skill.name}\n"
+            skill_description += f"Skill Folder: {skill.folder}\n"
+            skill_description += f"Skill Brief Description: {skill.description}\n\n"
+            skill_description += "</SkillBrief>\n"
+
+        for tool in self.tools:
+            if tool.as_skill:
+                skill_description += "<SkillBrief>\n"
+                skill_description += f"Skill: {tool.name}\n"
+                if not tool.skill_description:
+                    raise ValueError(f"Tool {tool.name} has no skill description but is marked as a skill")
+                skill_description += f"Skill Brief Description: {tool.skill_description}\n\n"
+                skill_description += "</SkillBrief>\n"
+
+        skill_description += "</Skills>\n"
+        return skill_description

@@ -205,6 +205,208 @@ class TestAgentBuilder:
         with pytest.raises(ConfigError, match="'llm_config' is required"):
             builder.build_llm_config()
 
+    def test_build_skills_from_folders(self, temp_dir):
+        """Test building skills from skill folders."""
+        # Create two skill folders
+        skill1_folder = Path(temp_dir) / "skill1"
+        skill1_folder.mkdir()
+        skill1_content = """---
+name: skill-one
+description: First test skill
+---
+
+Details for skill one.
+"""
+        (skill1_folder / "SKILL.md").write_text(skill1_content)
+
+        skill2_folder = Path(temp_dir) / "skill2"
+        skill2_folder.mkdir()
+        skill2_content = """---
+name: skill-two
+description: Second test skill
+---
+
+Details for skill two.
+"""
+        (skill2_folder / "SKILL.md").write_text(skill2_content)
+
+        config = {"skills": [str(skill1_folder), str(skill2_folder)]}
+
+        builder = AgentBuilder(config, Path(temp_dir))
+        result = builder.build_skills()
+
+        assert len(result.agent_params["skills"]) == 2
+        assert result.agent_params["skills"][0].name == "skill-one"
+        assert result.agent_params["skills"][1].name == "skill-two"
+
+    def test_build_skills_with_relative_paths(self, temp_dir):
+        """Test building skills with relative paths."""
+        # Create skill folder
+        skill_folder = Path(temp_dir) / "relative_skill"
+        skill_folder.mkdir()
+        skill_content = """---
+name: relative-skill
+description: Skill with relative path
+---
+
+Details here.
+"""
+        (skill_folder / "SKILL.md").write_text(skill_content)
+
+        config = {
+            "skills": ["relative_skill"]  # Relative path
+        }
+
+        builder = AgentBuilder(config, Path(temp_dir))
+        result = builder.build_skills()
+
+        assert len(result.agent_params["skills"]) == 1
+        assert result.agent_params["skills"][0].name == "relative-skill"
+
+    def test_build_skills_empty_list(self):
+        """Test building skills with empty skills list."""
+        config = {"skills": []}
+
+        builder = AgentBuilder(config, Path("."))
+        result = builder.build_skills()
+
+        assert result.agent_params["skills"] == []
+
+    def test_build_skills_no_skills_config(self):
+        """Test building skills when skills key is not in config."""
+        config = {}
+
+        builder = AgentBuilder(config, Path("."))
+        result = builder.build_skills()
+
+        assert result.agent_params["skills"] == []
+
+    def test_build_skills_invalid_folder(self, temp_dir):
+        """Test building skills with invalid folder path."""
+        config = {"skills": [str(Path(temp_dir) / "nonexistent")]}
+
+        builder = AgentBuilder(config, Path(temp_dir))
+
+        with pytest.raises(ConfigError, match="Error loading skill"):
+            builder.build_skills()
+
+    def test_build_skills_folder_without_skill_md(self, temp_dir):
+        """Test building skills from folder without SKILL.md."""
+        empty_folder = Path(temp_dir) / "empty"
+        empty_folder.mkdir()
+
+        config = {"skills": [str(empty_folder)]}
+
+        builder = AgentBuilder(config, Path(temp_dir))
+
+        with pytest.raises(ConfigError, match="Error loading skill"):
+            builder.build_skills()
+
+    @patch("northau.archs.config.config_loader.PromptBuilder")
+    def test_build_skills_from_tools_with_as_skill(self, mock_prompt_builder_class, temp_dir):
+        """Test building skills from tools with as_skill=True."""
+        from northau.archs.tool.tool import Tool
+
+        # Mock PromptBuilder
+        mock_builder = Mock()
+        mock_template = "Tool: {{ tool.name }}"
+        mock_builder._load_prompt_template.return_value = mock_template
+        mock_builder.jinja_env.from_string.return_value.render.return_value = "Rendered skill detail"
+        mock_prompt_builder_class.return_value = mock_builder
+
+        # Create a tool with as_skill=True
+        tool = Tool(
+            name="skill_tool",
+            description="A tool that's also a skill",
+            input_schema={"type": "object"},
+            implementation=lambda: None,
+            as_skill=True,
+            skill_description="This tool can be used as a skill",
+        )
+
+        config = {"skills": []}
+        builder = AgentBuilder(config, Path(temp_dir))
+        builder.agent_params["tools"] = [tool]
+
+        result = builder.build_skills()
+
+        assert len(result.agent_params["skills"]) == 1
+        assert result.agent_params["skills"][0].name == "skill_tool"
+        assert result.agent_params["skills"][0].description == "This tool can be used as a skill"
+        assert result.agent_params["skills"][0].detail == "Rendered skill detail"
+        assert result.agent_params["skills"][0].folder == ""
+
+    @patch("northau.archs.config.config_loader.PromptBuilder")
+    def test_build_skills_mixed_folders_and_tools(self, mock_prompt_builder_class, temp_dir):
+        """Test building skills from both folders and tools."""
+        from northau.archs.tool.tool import Tool
+
+        # Create a skill folder
+        skill_folder = Path(temp_dir) / "folder_skill"
+        skill_folder.mkdir()
+        skill_content = """---
+name: folder-skill
+description: Skill from folder
+---
+
+Folder skill details.
+"""
+        (skill_folder / "SKILL.md").write_text(skill_content)
+
+        # Mock PromptBuilder for tool-based skills
+        mock_builder = Mock()
+        mock_template = "Tool skill"
+        mock_builder._load_prompt_template.return_value = mock_template
+        mock_builder.jinja_env.from_string.return_value.render.return_value = "Tool skill detail"
+        mock_prompt_builder_class.return_value = mock_builder
+
+        # Create a tool with as_skill=True
+        tool = Tool(
+            name="tool_skill",
+            description="Tool as skill",
+            input_schema={"type": "object"},
+            implementation=lambda: None,
+            as_skill=True,
+            skill_description="Tool skill description",
+        )
+
+        config = {"skills": [str(skill_folder)]}
+        builder = AgentBuilder(config, Path(temp_dir))
+        builder.agent_params["tools"] = [tool]
+
+        result = builder.build_skills()
+
+        assert len(result.agent_params["skills"]) == 2
+        assert result.agent_params["skills"][0].name == "folder-skill"
+        assert result.agent_params["skills"][1].name == "tool_skill"
+
+    @patch("northau.archs.config.config_loader.PromptBuilder")
+    def test_build_skills_tool_without_as_skill(self, mock_prompt_builder_class, temp_dir):
+        """Test that tools with as_skill=False are not added as skills."""
+        from northau.archs.tool.tool import Tool
+
+        # Mock PromptBuilder
+        mock_builder = Mock()
+        mock_prompt_builder_class.return_value = mock_builder
+
+        # Create a regular tool (as_skill=False)
+        tool = Tool(
+            name="regular_tool",
+            description="Just a regular tool",
+            input_schema={"type": "object"},
+            implementation=lambda: None,
+            as_skill=False,
+        )
+
+        config = {"skills": []}
+        builder = AgentBuilder(config, Path(temp_dir))
+        builder.agent_params["tools"] = [tool]
+
+        result = builder.build_skills()
+
+        # Should not add the tool as a skill
+        assert len(result.agent_params["skills"]) == 0
+
 
 class TestConfigIntegration:
     """Integration tests for configuration loading."""

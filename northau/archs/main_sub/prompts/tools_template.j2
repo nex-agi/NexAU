@@ -5,9 +5,12 @@ You can use tools by including XML blocks in your response:
 {% for tool in tools %}
 
 ### {{ tool.name }}
+{% if tool.as_skill%}
+{{ tool.skill_description if tool.skill_description else 'No skill description available' }}
+{% else %}
 {{ tool.template_override or '' }}
 {% if tool.template_override is none%}
-{{ tool.description or 'No description available' }}
+{{ tool.description if tool.description else 'No description available' }}
 Usage:
 <tool_use>
   <tool_name>{{ tool.name }}</tool_name>
@@ -19,6 +22,7 @@ Usage:
 {% endif %}
   </parameter>
 </tool_use>
+{% endif %}
 {% endif %}
 {% endfor %}
 {% endif %}

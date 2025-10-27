@@ -7,7 +7,6 @@ from pathlib import Path
 
 from northau.archs.llm import LLMConfig
 from northau.archs.main_sub import create_agent
-from northau.archs.main_sub.execution.hooks import AfterModelHookInput, AfterModelHookResult
 from northau.archs.tool import Tool
 from northau.archs.tool.builtin.todo_write import todo_write
 from northau.archs.tool.builtin.web_tool import web_read, web_search
@@ -15,21 +14,6 @@ from northau.archs.tool.builtin.web_tool import web_read, web_search
 
 def get_date():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def create_increase_global_counter_hook():
-    def increase_global_counter_hook(
-        hook_input: AfterModelHookInput,
-    ) -> AfterModelHookResult:
-        if hook_input.global_storage is not None:
-            with hook_input.global_storage.lock_key("counter"):
-                counter = hook_input.global_storage.get("counter", 0)
-                print(f"Increase global counter: {counter}")
-                hook_input.global_storage.set("counter", counter + 1)
-            return AfterModelHookResult.no_changes()
-        return AfterModelHookResult.no_changes()
-
-    return increase_global_counter_hook
 
 
 def main():
@@ -78,7 +62,6 @@ When completing a task, you need to update the todo list. Todo list: {{current_t
                 tools=[web_search_tool, web_read_tool, todo_write_tool],
                 llm_config=llm_config,
                 system_prompt=system_prompt,
-                after_model_hooks=[create_increase_global_counter_hook()],
             )
 
         deep_research_agent = create_agent(
@@ -87,7 +70,6 @@ When completing a task, you need to update the todo list. Todo list: {{current_t
             llm_config=llm_config,
             system_prompt=system_prompt,
             sub_agents=[("sub_deep_research_agent", sub_agent_factory)],
-            after_model_hooks=[create_increase_global_counter_hook()],
         )
         print("✓ Sub-agents created successfully")
 

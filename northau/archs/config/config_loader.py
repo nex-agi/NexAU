@@ -3,6 +3,7 @@
 import importlib
 import logging
 import os
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,8 @@ import yaml
 from ..llm import LLMConfig
 from ..main_sub import Agent, create_agent
 from ..main_sub.agent_context import GlobalStorage
+from ..main_sub.prompt_builder import PromptBuilder
+from ..main_sub.skill import Skill
 from ..tool import Tool
 
 logger = logging.getLogger(__name__)
@@ -240,6 +243,39 @@ class AgentBuilder:
                 )
 
         self.agent_params["tools"] = tools
+        return self
+
+    def build_skills(self) -> "AgentBuilder":
+        """Build skills from configuration.
+
+        Returns:
+            Self for method chaining
+        """
+        skills = []
+
+        # build skills from skill folders
+        skill_configs = self.config.get("skills", [])
+        for skill_folder in skill_configs:
+            try:
+                if not Path(skill_folder).is_absolute():
+                    skill_folder = self.base_path / skill_folder
+                skill = Skill.from_folder(skill_folder)
+                skills.append(skill)
+            except Exception as e:
+                raise ConfigError(
+                    f"Error loading skill '{skill_folder}': {e}",
+                )
+
+        # add skill tool to tools
+        prompt_builder = PromptBuilder()
+        skill_detail_template = prompt_builder._load_prompt_template("tools_template_for_skill_detail")
+        jinja_template = prompt_builder.jinja_env.from_string(skill_detail_template)
+        for tool in self.agent_params.get("tools", []):
+            if tool.as_skill:
+                skill_detail = jinja_template.render({"tool": tool})
+                skills.append(Skill(name=tool.name, description=tool.skill_description, detail=skill_detail, folder=""))
+
+        self.agent_params["skills"] = skills
         return self
 
     def build_sub_agents(self) -> "AgentBuilder":
@@ -502,6 +538,7 @@ def load_agent_config(
             .build_hooks()
             .build_tools()
             .build_sub_agents()
+            .build_skills()
             .build_system_prompt_path()
             .get_agent(global_storage)
         )
@@ -517,6 +554,7 @@ def load_agent_config(
     except yaml.YAMLError as e:
         raise ConfigError(f"YAML parsing error in {config_path}: {e}")
     except Exception as e:
+        traceback.print_exc()
         raise ConfigError(
             f"Error loading configuration from {config_path}: {e}",
         )
@@ -539,6 +577,7 @@ def load_tool_from_config(tool_config: dict[str, Any], base_path: Path) -> Tool:
 
     yaml_path = tool_config.get("yaml_path")
     binding = tool_config.get("binding", None)
+    as_skill = tool_config.get("as_skill", False)
 
     if not yaml_path:
         raise ConfigError(f"Tool '{name}' missing 'yaml_path' field")
@@ -556,7 +595,7 @@ def load_tool_from_config(tool_config: dict[str, Any], base_path: Path) -> Tool:
             return x
 
     # Create tool
-    tool = Tool.from_yaml(str(yaml_path), binding_func)
+    tool = Tool.from_yaml(str(yaml_path), binding_func, as_skill=as_skill)
 
     return tool
 

@@ -21,12 +21,13 @@ Northau is a general-purpose agent framework inspired by Claude Code's architect
     * **[🧠 LLMs](./core-concepts/llms.md)**: Configure LLM providers and custom generators.
 
 * **Advanced Guides**
-    * **[🪝 Hooks](./advanced-guides/hooks.md)**: Intercept and modify agent behavior.
-    * **[💾 Global Storage](./advanced-guides/global-storage.md)**: Share state across tools and agents.
-    * **[📄 Templating](./advanced-guides/templating.md)**: Use Jinja2 for dynamic system prompts.
-    * **[🔍 Tracing](./advanced-guides/tracing.md)**: Dump execution traces to a file.
-    * **[☁️ MCP Integration](./advanced-guides/mcp.md)**: Connect to external services via MCP.
-    * **[🛠️ Custom LLM Generator](./advanced-guides/custom-llm-generator.md)**: Custom logics for calling LLMs.
+    * **[Skills](./advanced-guides/hooks.md)**: Skills (compatible with Claude Skill format) to dynamically ingest skill context (support both tool and file).
+    * **[Hooks](./advanced-guides/hooks.md)**: Intercept and modify agent behavior.
+    * **[Global Storage](./advanced-guides/global-storage.md)**: Share state across tools and agents.
+    * **[Templating](./advanced-guides/templating.md)**: Use Jinja2 for dynamic system prompts.
+    * **[Tracing](./advanced-guides/tracing.md)**: Dump execution traces to a file.
+    * **[MCP Integration](./advanced-guides/mcp.md)**: Connect to external services via MCP.
+    * **[Custom LLM Generator](./advanced-guides/custom-llm-generator.md)**: Custom logics for calling LLMs.
 
 ## Todos
 - [ ] Currently, sub-agent context is destoryed after sub-agent finishes. Sometimes, deliverables may be done by sub-agents and users want to interact with these sub-agents. We need to support persistent sub-agents.

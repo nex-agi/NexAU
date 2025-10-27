@@ -48,14 +48,15 @@ def main():
 
         script_dir = Path(__file__).parent
         deep_research_agent = load_agent_config(
-            str(script_dir / "deep_research_with_mcp.yaml"),
+            str(script_dir / "deep_research_agent.yaml"),
             overrides=config_overrides,
         )
         print("✓ Agent loaded successfully from YAML")
 
         print("\nTesting delegation with web research...")
         # web_message = '做一个孙悟空介绍的的html网页/Users/hanzhenhua/north-agent4agent/northau/wukong.html'
-        web_message = "List all commits in https://github.com/china-qijizhifeng/bp-sandbox"
+        # web_message = "List all commits in https://github.com/china-qijizhifeng/bp-sandbox"
+        web_message = "Show me details of the skill `algorithmic-art`"
         print(f"\nUser: {web_message}")
         print("\nAgent Response:")
         print("-" * 30)

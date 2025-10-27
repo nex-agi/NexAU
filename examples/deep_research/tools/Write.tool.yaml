@@ -19,6 +19,7 @@ description: >-
 
   - Only use emojis if the user explicitly requests it. Avoid writing emojis to
   files unless asked.
+skill_description: "Use this skill to know how to use Write tool to write a file to the local filesystem."
 input_schema:
   type: object
   properties:

@@ -7,7 +7,7 @@ description: >-
   - Can extract plain text from HTML
   - Returns page title and content
   - Configurable timeout and headers
-
+skill_description: "Use this skill to know how to use WebRead tool to fetch and read content from a web URL."
 input_schema:
   type: object
   properties:
