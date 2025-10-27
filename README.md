@@ -61,12 +61,15 @@ uv sync
     LLM_MODEL="your-llm-model"
     LLM_BASE_URL="your-llm-api-base-url"
     LLM_API_KEY="your-llm-api-key"
+    SERPER_API_KEY="api key from serper.dev" (required if you need to use web search)
     ```
 
 2.  **Run an example:**
     ```bash
     # Ensure you have python-dotenv installed (`uv pip install python-dotenv`)
-    dotenv run uv run examples/deep_research/quickstart.py
+    dotenv run uv run examples/fake_claude_code/start.py
+
+    Enter your task: Build an algorithm art about 3-body problem
     ```
 
 ## Development
