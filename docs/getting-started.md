@@ -44,14 +44,8 @@ With your environment configured, you can run the provided examples.
 # Ensure you have python-dotenv installed (`uv pip install python-dotenv`)
 # It reads variables from your .env file
 
-# Run the basic quickstart (programmatic config)
-dotenv run uv run examples/deep_research/quickstart.py
-
-# Run the YAML-based example
-dotenv run uv run examples/deep_research/quickstart_yaml.py
-
 # Run the full-featured Claude-code-like example
-dotenv run uv run examples/fake_claude_code/fake_claude_code.py
+dotenv run uv run examples/fake_claude_code/start.py
 
 # Run an MCP example
 dotenv run uv run python -m examples.mcp.mcp_amap_example

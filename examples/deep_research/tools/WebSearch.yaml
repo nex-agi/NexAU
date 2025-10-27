@@ -6,7 +6,7 @@ description: >-
   - Search for information on the web
   - Returns search results with titles, URLs, and snippets
   - Configurable number of results
-
+skill_description: "Use this skill to know how to use WebSearch tool to search the web for information."
 input_schema:
   type: object
   properties:

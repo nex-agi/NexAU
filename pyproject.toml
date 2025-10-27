@@ -48,6 +48,10 @@ northau = [
 # Set the target Python version
 target-version = "py312"
 line-length = 140
+# Exclude directories from linting
+exclude = [
+    "examples/fake_claude_code/skills",
+]
 
 [tool.ruff.lint]
 # Enable common linting rules

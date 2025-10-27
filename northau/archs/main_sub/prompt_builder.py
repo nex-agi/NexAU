@@ -6,8 +6,9 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader
 
-from .config import AgentConfig
-from .prompt_handler import PromptHandler
+from northau.archs.main_sub.config import AgentConfig
+from northau.archs.main_sub.prompt_handler import PromptHandler
+from northau.archs.tool import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ class PromptBuilder:
     def build_system_prompt(
         self,
         agent_config: AgentConfig,
-        tools: list = None,
+        tools: list[Tool] = None,
         sub_agent_factories: dict[str, Any] = None,
         runtime_context: dict | None = None,
     ) -> str:
@@ -128,7 +129,7 @@ class PromptBuilder:
 
     def _build_capabilities_docs(
         self,
-        tools: list,
+        tools: list[Tool],
         sub_agent_factories: dict[str, Any],
         runtime_context: dict | None = None,
     ) -> str:
@@ -151,7 +152,7 @@ class PromptBuilder:
 
     def _build_tools_documentation(
         self,
-        tools: list,
+        tools: list[Tool],
         runtime_context: dict | None = None,
     ) -> str:
         """Build tools documentation section."""
@@ -165,13 +166,11 @@ class PromptBuilder:
             for tool in tools:
                 tool_info = {
                     "name": tool.name,
-                    "description": getattr(
-                        tool,
-                        "description",
-                        "No description available",
-                    ),
-                    "template_override": getattr(tool, "template_override", None),
+                    "description": tool.description,
+                    "template_override": tool.template_override if tool.template_override else None,
                     "parameters": self._extract_tool_parameters(tool),
+                    "as_skill": tool.as_skill,
+                    "skill_description": tool.skill_description,
                 }
                 tools_context.append(tool_info)
 
@@ -214,7 +213,7 @@ class PromptBuilder:
             logger.warning(f"⚠️ Error building sub-agents documentation: {e}")
             raise ValueError("Error building sub-agents documentation") from e
 
-    def _extract_tool_parameters(self, tool) -> list:
+    def _extract_tool_parameters(self, tool: Tool) -> list:
         """Extract parameter information from tool schema."""
         if not hasattr(tool, "input_schema"):
             return []
