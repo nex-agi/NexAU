@@ -1,7 +1,7 @@
 name: claude_code_agent
 max_context: 100000
-system_prompt_path: ./system-workflow.md
-system_prompt_type: jinja2
+system_prompt: ./system-workflow.md
+system_prompt_type: jinja
 llm_config:
   temperature: 0.7
   max_tokens: 4096
