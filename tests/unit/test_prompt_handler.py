@@ -79,7 +79,7 @@ class TestProcessPrompt:
 
     def test_process_prompt_unknown_type(self, handler):
         """Test processing with unknown prompt type raises error."""
-        with pytest.raises(ValueError, match="Unknown prompt type: unknown"):
+        with pytest.raises(ValueError, match="Invalid prompt type: unknown"):
             handler.process_prompt("test", prompt_type="unknown")
 
     def test_process_prompt_default_type(self, handler):
@@ -533,6 +533,237 @@ class TestValidatePromptType:
         assert handler.validate_prompt_type("JINJA") is False
 
 
+class TestPromptTypeProcessing:
+    """Comprehensive tests for prompt_type processing across all methods."""
+
+    @pytest.fixture
+    def handler(self):
+        """Create a handler instance."""
+        return PromptHandler()
+
+    @pytest.fixture
+    def mock_agent(self):
+        """Create a mock agent."""
+        agent = Mock()
+        agent.name = "TestAgent"
+        agent.config = Mock()
+        agent.config.agent_id = "test_123"
+        agent.config.system_prompt_type = "string"
+        return agent
+
+    def test_process_prompt_validates_all_types(self, handler):
+        """Test that process_prompt validates all valid prompt types."""
+        # Test string type
+        result = handler.process_prompt("test", prompt_type="string")
+        assert result == "test"
+
+        # Test file type with temp file
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
+            f.write("file content")
+            temp_path = f.name
+
+        try:
+            result = handler.process_prompt(temp_path, prompt_type="file")
+            assert result == "file content"
+        finally:
+            Path(temp_path).unlink()
+
+        # Test jinja type with temp file
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".j2") as f:
+            f.write("jinja content")
+            temp_path = f.name
+
+        try:
+            result = handler.process_prompt(temp_path, prompt_type="jinja")
+            assert result == "jinja content"
+        finally:
+            Path(temp_path).unlink()
+
+    def test_process_prompt_rejects_invalid_types(self, handler):
+        """Test that process_prompt rejects various invalid prompt types."""
+        invalid_types = [
+            "xml",
+            "yaml",
+            "json",
+            "template",
+            "markdown",
+            "str",
+            "String",  # Case sensitive
+            "FILE",  # Case sensitive
+            "",  # Empty string
+            "jinja2",  # Close but not exact
+            "file_path",
+            "string_template",
+        ]
+
+        for invalid_type in invalid_types:
+            with pytest.raises(ValueError, match=f"Invalid prompt type: {invalid_type}"):
+                handler.process_prompt("test", prompt_type=invalid_type)
+
+    def test_process_prompt_with_none_type(self, handler):
+        """Test that process_prompt handles None as prompt_type."""
+        # Default should be "string"
+        result = handler.process_prompt("test")
+        assert result == "test"
+
+    def test_create_dynamic_prompt_validates_all_types(self, handler, mock_agent):
+        """Test that create_dynamic_prompt validates all template types."""
+        # Test string type
+        result = handler.create_dynamic_prompt(
+            "{{ agent_name }}",
+            mock_agent,
+            template_type="string",
+        )
+        assert "TestAgent" in result
+
+        # Test jinja type with temp file
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".j2") as f:
+            f.write("{{ agent_name }}")
+            temp_path = f.name
+
+        try:
+            result = handler.create_dynamic_prompt(
+                temp_path,
+                mock_agent,
+                template_type="jinja",
+            )
+            assert "TestAgent" in result
+        finally:
+            Path(temp_path).unlink()
+
+        # Test file type
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
+            f.write("{{ agent_name }}")
+            temp_path = f.name
+
+        try:
+            result = handler.create_dynamic_prompt(
+                temp_path,
+                mock_agent,
+                template_type="file",
+            )
+            assert "TestAgent" in result
+        finally:
+            Path(temp_path).unlink()
+
+    def test_create_dynamic_prompt_rejects_invalid_types(self, handler, mock_agent):
+        """Test that create_dynamic_prompt rejects invalid template types."""
+        invalid_types = [
+            "xml",
+            "yaml",
+            "invalid",
+            "String",  # Case sensitive
+            "",
+            "jinja2",
+        ]
+
+        for invalid_type in invalid_types:
+            with pytest.raises(ValueError, match=f"Invalid template type: {invalid_type}"):
+                handler.create_dynamic_prompt(
+                    "test",
+                    mock_agent,
+                    template_type=invalid_type,
+                )
+
+    def test_validate_prompt_type_edge_cases(self, handler):
+        """Test validate_prompt_type with edge cases."""
+        # Test with whitespace
+        assert handler.validate_prompt_type(" string") is False
+        assert handler.validate_prompt_type("string ") is False
+        assert handler.validate_prompt_type(" string ") is False
+
+        # Test with special characters
+        assert handler.validate_prompt_type("string\n") is False
+        assert handler.validate_prompt_type("string\t") is False
+
+        # Test with numeric input (should still return False)
+        assert handler.validate_prompt_type("123") is False
+
+        # Test with mixed case
+        assert handler.validate_prompt_type("sTrInG") is False
+        assert handler.validate_prompt_type("File") is False
+        assert handler.validate_prompt_type("Jinja") is False
+
+    def test_prompt_type_consistency(self, handler):
+        """Test that valid prompt types are consistent across methods."""
+        valid_types = ["string", "file", "jinja"]
+
+        for prompt_type in valid_types:
+            # Should be valid
+            assert handler.validate_prompt_type(prompt_type) is True
+
+            # Should not raise in process_prompt (with appropriate content)
+            try:
+                if prompt_type == "string":
+                    handler.process_prompt("test", prompt_type=prompt_type)
+                # For file and jinja, we'd need actual files, but validation passes
+            except (FileNotFoundError, ValueError) as e:
+                # Only FileNotFoundError is expected for file/jinja without actual files
+                if "Invalid prompt type" in str(e):
+                    pytest.fail(f"Validation failed for valid type: {prompt_type}")
+
+    def test_error_messages_are_descriptive(self, handler):
+        """Test that error messages include the invalid prompt type."""
+        invalid_type = "custom_invalid_type"
+
+        # Test in process_prompt
+        try:
+            handler.process_prompt("test", prompt_type=invalid_type)
+            pytest.fail("Should have raised ValueError")
+        except ValueError as e:
+            assert invalid_type in str(e)
+            assert "Invalid prompt type" in str(e)
+
+        # Test in create_dynamic_prompt
+        mock_agent = Mock()
+        mock_agent.name = "Test"
+
+        try:
+            handler.create_dynamic_prompt(
+                "test",
+                mock_agent,
+                template_type=invalid_type,
+            )
+            pytest.fail("Should have raised ValueError")
+        except ValueError as e:
+            assert invalid_type in str(e)
+            assert "Invalid template type" in str(e)
+
+    def test_prompt_type_validation_order(self, handler):
+        """Test that validation happens before processing."""
+        # Create a mock to track method call order
+        call_order = []
+
+        original_validate = handler.validate_prompt_type
+        original_process_string = handler._process_string_prompt
+
+        def tracked_validate(prompt_type):
+            call_order.append("validate")
+            return original_validate(prompt_type)
+
+        def tracked_process_string(prompt, context=None):
+            call_order.append("process_string")
+            return original_process_string(prompt, context)
+
+        handler.validate_prompt_type = tracked_validate
+        handler._process_string_prompt = tracked_process_string
+
+        # Valid case - should call both
+        handler.process_prompt("test", prompt_type="string")
+        assert call_order[0] == "validate"
+        assert "process_string" in call_order
+
+        # Invalid case - should only call validate
+        call_order.clear()
+        try:
+            handler.process_prompt("test", prompt_type="invalid")
+        except ValueError:
+            pass
+
+        assert call_order == ["validate"]
+        assert "process_string" not in call_order
+
+
 class TestGetTimestamp:
     """Tests for _get_timestamp method."""
 
@@ -707,15 +938,13 @@ class TestCreateDynamicPrompt:
         assert "OverriddenAgent" in result
 
     def test_create_dynamic_prompt_fallback_on_error(self, handler, mock_agent):
-        """Test fallback to base template on rendering error."""
+        """Test that rendering error raises ValueError."""
         base_template = "Simple template"
 
         # Force an error by mocking the jinja env
         with patch.object(handler._jinja_env, "from_string", side_effect=Exception("Test error")):
-            result = handler.create_dynamic_prompt(base_template, mock_agent)
-
-        # Should return the base template as fallback
-        assert result == base_template
+            with pytest.raises(ValueError, match="Error creating dynamic prompt"):
+                handler.create_dynamic_prompt(base_template, mock_agent)
 
     def test_create_dynamic_prompt_complex_template(self, handler, mock_agent):
         """Test creating dynamic prompt with complex template."""
@@ -751,6 +980,48 @@ Timestamp: {{ timestamp }}
 
         # Should return empty or minimal result
         assert isinstance(result, str)
+
+    def test_create_dynamic_prompt_invalid_template_type(self, handler, mock_agent):
+        """Test creating dynamic prompt with invalid template type raises error."""
+        base_template = "Test template"
+
+        with pytest.raises(ValueError, match="Invalid template type: invalid"):
+            handler.create_dynamic_prompt(
+                base_template,
+                mock_agent,
+                template_type="invalid",
+            )
+
+    def test_create_dynamic_prompt_case_sensitive_template_type(self, handler, mock_agent):
+        """Test that template_type validation is case sensitive."""
+        base_template = "Test template"
+
+        with pytest.raises(ValueError, match="Invalid template type: String"):
+            handler.create_dynamic_prompt(
+                base_template,
+                mock_agent,
+                template_type="String",
+            )
+
+    def test_create_dynamic_prompt_file_template_type(self, handler, mock_agent):
+        """Test creating dynamic prompt with file template type."""
+        template_content = "File template: {{ agent_name }}"
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
+            f.write(template_content)
+            temp_path = f.name
+
+        try:
+            result = handler.create_dynamic_prompt(
+                temp_path,
+                mock_agent,
+                template_type="file",
+            )
+
+            assert "TestAgent" in result
+            assert "File template" in result
+        finally:
+            Path(temp_path).unlink()
 
 
 class TestPromptHandlerIntegration:

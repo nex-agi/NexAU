@@ -40,14 +40,15 @@ class PromptHandler:
         Returns:
             Processed prompt string
         """
+        if not self.validate_prompt_type(prompt_type):
+            raise ValueError(f"Invalid prompt type: {prompt_type}")
+
         if prompt_type == "string":
             return self._process_string_prompt(prompt, context)
         elif prompt_type == "file":
             return self._process_file_prompt(prompt, context)
         elif prompt_type == "jinja":
             return self._process_jinja_prompt(prompt, context)
-        else:
-            raise ValueError(f"Unknown prompt type: {prompt_type}")
 
     def _process_string_prompt(
         self,
@@ -176,18 +177,22 @@ class PromptHandler:
         template_type: str = "string",
     ) -> str:
         """Create a dynamic prompt by combining base template with agent context."""
+
+        if not self.validate_prompt_type(template_type):
+            raise ValueError(f"Invalid template type: {template_type}")
+
         context = self.get_default_context(agent)
 
         if additional_context:
             context.update(additional_context)
 
         try:
-            if template_type == "jinja":
+            if template_type in ["jinja", "file"]:
                 # base_template is a path to a jinja template file
                 return self._process_jinja_prompt(base_template, context)
-            else:
+            elif template_type == "string":
                 template = self._jinja_env.from_string(base_template)
                 return template.render(**context)
-        except Exception:
+        except Exception as e:
             # Return base template if rendering fails
-            return base_template
+            raise ValueError(f"Error creating dynamic prompt: {e}")
