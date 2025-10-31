@@ -7,10 +7,9 @@ CRITICAL CONSTRAINT: You MUST output only ONE type of tool call XML at a time. D
 Valid tool call types (use only ONE per response):
 1. Single tool or sub_agent: <tool_use>
 2. Parallel tools or sub_agents or mixture of them: <use_parallel_tool_calls>
-3. Batch agent processing: <use_batch_agent>
 
 IMPORTANT: each response should only contain ONE type of tool call XML.
-If you generate </tool_use>, </use_parallel_tool_calls>, </use_batch_agent>, you should stop your response immediately.
+If you generate </tool_use>, </use_parallel_tool_calls>, you should stop your response immediately.
 
 IMPORTANT: After outputting any tool call XML block, you MUST STOP and WAIT for the tool execution results before continuing your response. Do NOT continue generating text after tool calls until you receive the results.
 
@@ -43,24 +42,6 @@ For parallel execution of multiple tools or sub_agents or mixture of them, use:
   </parameter>
 </parallel_tool>
 </use_parallel_tool_calls>
-
-For batch processing multiple data items with an agent, use:
-<use_batch_agent>
-  <tool_name>agent:{agent_name}</tool_name>
-  <input_data_source>
-    <file_name>/absolute/path/to/file.jsonl</file_name>
-    <format>jsonl</format>
-  </input_data_source>
-  <message>Your message template with {variable_placeholders}</message>
-</use_batch_agent>
-
-IMPORTANT: When using batch processing:
-- Ensure the JSONL file exists or will be created if not found
-- Validate that the JSONL file contains valid JSON objects
-- Make sure the message template uses valid keys that exist in the JSONL data
-- Each line in the JSONL file should be a separate JSON object
-- Variable placeholders in the message use {key_name} format from the JSON data
-- All agents in the batch will run in parallel for efficient processing
 
 EXECUTION FLOW REMINDER:
 1. Choose ONLY ONE type of tool call XML for your response
