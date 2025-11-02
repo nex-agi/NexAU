@@ -586,16 +586,8 @@ def load_tool_from_config(tool_config: dict[str, Any], base_path: Path) -> Tool:
     if not Path(yaml_path).is_absolute():
         yaml_path = base_path / yaml_path
 
-    # Import and get the binding function
-    if binding:
-        binding_func = import_from_string(binding)
-    else:
-
-        def binding_func(x):
-            return x
-
     # Create tool
-    tool = Tool.from_yaml(str(yaml_path), binding_func, as_skill=as_skill)
+    tool = Tool.from_yaml(str(yaml_path), binding, as_skill=as_skill)
 
     return tool
 
