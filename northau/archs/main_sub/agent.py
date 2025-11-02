@@ -220,7 +220,9 @@ class Agent:
                 sub_agent_factories=self.config.sub_agent_factories,
                 runtime_context=merged_context,
             )
-            self.history = [{"role": "system", "content": system_prompt}]
+
+            if not self.history:
+                self.history = [{"role": "system", "content": system_prompt}]
 
             if history:
                 # history default don't have system prompt
