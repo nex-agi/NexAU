@@ -3,6 +3,7 @@
 import functools
 import inspect
 import json
+import logging
 import traceback
 from collections.abc import Callable
 from pathlib import Path
@@ -12,6 +13,8 @@ import yaml
 from diskcache import Cache
 
 from northau.archs.main_sub.agent_state import AgentState
+
+logger = logging.getLogger(__name__)
 
 cache = Cache("./.tool_cache")
 
@@ -48,6 +51,12 @@ def cache_result(func):
     return wrapper
 
 
+class ConfigError(Exception):
+    """Exception raised for configuration errors."""
+
+    pass
+
+
 class Tool:
     """Tool class that represents a callable function with schema validation."""
 
@@ -56,7 +65,7 @@ class Tool:
         name: str,
         description: str,
         input_schema: dict,
-        implementation: Callable,
+        implementation: Callable | str | None,
         skill_description: str | None = None,
         as_skill: bool = False,
         use_cache: bool = False,
@@ -70,13 +79,17 @@ class Tool:
         self.skill_description = skill_description
         self.as_skill = as_skill
         self.input_schema = input_schema
-        self.implementation = implementation
+        self.implementation = None
+        self.implementation_import_path = None
+        if isinstance(implementation, str):
+            self.implementation_import_path = implementation
+            self.implementation = None  # lazy import and bind at runtime
+        else:
+            self.implementation = implementation
         self.template_override = template_override
         self.timeout = timeout
         self.disable_parallel = disable_parallel
-
-        if use_cache:
-            self.implementation = cache_result(self.implementation)
+        self.use_cache = use_cache
 
         # Validate schema
         self._validate_schema()
@@ -85,7 +98,7 @@ class Tool:
     def from_yaml(
         cls,
         yaml_path: str,
-        binding: Callable,
+        binding: Callable | str | None,
         as_skill: bool = False,
         **kwargs,
     ) -> "Tool":
@@ -140,6 +153,21 @@ class Tool:
 
     def execute(self, **params) -> dict:
         """Execute the tool with given parameters."""
+
+        if self.implementation is None:
+            if self.implementation_import_path:
+                logger.info(f"Dynamic importing tool implementation '{self.name}': {self.implementation_import_path}")
+
+                from northau.archs.config.config_loader import import_from_string
+
+                func = import_from_string(str(self.implementation_import_path))
+
+                if self.use_cache:
+                    func = cache_result(func)
+                self.implementation = func
+            else:
+                raise ValueError(f"Tool '{self.name}' has no implementation")
+
         # Handle agent_state parameter
         filtered_params = params.copy()
         if "agent_state" in params:
