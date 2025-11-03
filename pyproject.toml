@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.scripts]
-northau-cli = "northau.cli:main"
+northau-cli = "northau.cli_wrapper:main"
 
 [tool.uv]
 dev-dependencies = [
@@ -45,6 +45,8 @@ include = ["northau*"]
 [tool.setuptools.package-data]
 northau = [
     "archs/main_sub/prompts/*.j2",
+    "cli/dist/*.js",
+    "cli/dist/*.js.map",
 ]
 
 [tool.ruff]
