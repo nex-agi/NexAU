@@ -6,6 +6,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import langfuse
+
 from northau.archs.config.config_loader import load_agent_config
 
 logging.basicConfig(level=logging.INFO)
@@ -73,6 +75,11 @@ def main():
             },
         )
         print(response)
+
+        if claude_code_agent.langfuse_trace_id:
+            print("Langfuse trace ID:", claude_code_agent.langfuse_trace_id)
+            trace_url = langfuse.get_client().get_trace_url(trace_id=claude_code_agent.langfuse_trace_id)
+            print("Langfuse trace URL:", trace_url)
 
     except Exception as e:
         print(f"✗ Error: {e}")
