@@ -66,6 +66,7 @@ class Agent:
         # Initialize services
         self.openai_client = self._initialize_openai_client()
         self.langfuse_client = self._initialize_langfuse_client()
+        self.langfuse_trace_id = self.langfuse_client.create_trace_id() if self.langfuse_client else ""
 
         # Initialize MCP tools if configured
         if self.config.mcp_servers:
@@ -107,7 +108,7 @@ class Agent:
             logger.error(f"❌ Failed to initialize OpenAI client: {e}")
             return None
 
-    def _initialize_langfuse_client(self) -> Any:
+    def _initialize_langfuse_client(self) -> Langfuse | None:
         """Initialize Langfuse client if available."""
         if not LANGFUSE_AVAILABLE:
             return None
@@ -254,6 +255,9 @@ class Agent:
                                 "model": self.config.llm_config.model,
                                 "system_prompt_type": self.config.system_prompt_type,
                                 "timestamp": datetime.now().isoformat(),
+                            },
+                            trace_context={
+                                "trace_id": self.langfuse_trace_id,
                             },
                         ):
                             logger.info(
