@@ -26,6 +26,9 @@ dependencies = [
     "diskcache>=5.6.3",
 ]
 
+[project.scripts]
+northau-cli = "northau.cli:main"
+
 [tool.uv]
 dev-dependencies = [
     "ruff>=0.8.0",

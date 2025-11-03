@@ -72,6 +72,39 @@ uv sync
     Enter your task: Build an algorithm art about 3-body problem
     ```
 
+3. **Use NorthAU CLI to run** (Simplified)
+    
+    **Option 1: Using the run-agent script (Recommended)**
+    ```bash
+    # One-liner to run any agent config
+    ./run-agent examples/fake_claude_code/cc_agent.yaml
+    ```
+    
+    **Option 2: Using npm scripts**
+    ```bash
+    # One-time setup
+    npm run setup-cli
+    
+    # Run agent (any time after setup)
+    npm run agent examples/fake_claude_code/cc_agent.yaml
+    
+    # Or use the full command name
+    npm run run-agent examples/fake_claude_code/cc_agent.yaml
+    ```
+    
+    **Option 3: Manual approach (Original)**
+    ```bash
+    # Build the cli app
+    cd cli
+    npm install
+    npm run build
+    cd ../
+    
+    # Use cli to run an agent based on a yaml config
+    dotenv run cli/dist/cli.js examples/fake_claude_code/cc_agent.yaml
+    ```
+    
+
 ## Development
 
 ### Running Tests and Quality Checks
