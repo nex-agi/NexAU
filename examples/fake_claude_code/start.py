@@ -26,33 +26,8 @@ def main():
         # Load agent from YAML configuration
         print("Loading Claude Code agent from YAML configuration...")
 
-        # Build LLM configuration from environment variables
-        llm_config_overrides = {
-            "temperature": 0.7,
-            "max_tokens": 4096,
-        }
-
-        model = os.getenv("LLM_MODEL")
-        if model:
-            llm_config_overrides["model"] = model
-        base_url = os.getenv("LLM_BASE_URL")
-        if base_url:
-            llm_config_overrides["base_url"] = base_url
-        api_key = os.getenv("LLM_API_KEY")
-        if api_key:
-            llm_config_overrides["api_key"] = api_key
-
-        config_overrides = {
-            "claude_code_agent": {
-                "llm_config": llm_config_overrides,
-            },
-        }
-
         script_dir = Path(__file__).parent
-        claude_code_agent = load_agent_config(
-            str(script_dir / "cc_agent.yaml"),
-            overrides=config_overrides,
-        )
+        claude_code_agent = load_agent_config(str(script_dir / "cc_agent.yaml"))
         print("✓ Agent loaded successfully from YAML")
 
         print("\nTesting Fake Claude Code...")
