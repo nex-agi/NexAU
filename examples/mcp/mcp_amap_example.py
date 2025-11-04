@@ -64,13 +64,13 @@ Explain what you're doing and provide context for the results.""",
         )
 
         print("✅ Agent created successfully!")
-        print(f"   Agent name: {agent.name}")
-        print(f"   Total tools available: {len(agent.tools)}")
+        print(f"   Agent name: {agent.config.name}")
+        print(f"   Total tools available: {len(agent.config.tools)}")
 
         # List available tools
-        if agent.tools:
+        if agent.config.tools:
             print("\n🗺️  Available Amap Maps tools:")
-            for tool in agent.tools:
+            for tool in agent.config.tools:
                 print(
                     f"   - {tool.name}: {getattr(tool, 'description', 'No description')}",
                 )

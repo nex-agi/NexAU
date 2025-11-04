@@ -13,6 +13,11 @@ from ..tool import Tool, cache_result
 logger = logging.getLogger(__name__)
 
 
+STREAMABLE_HTTP_ACCEPT = "application/jsonl+json, application/json"
+SSE_ACCEPT = "text/event-stream"
+DEFAULT_CONTENT_TYPE = "application/json"
+
+
 class HTTPMCPSession:
     """HTTP MCP session that handles MCP streamable HTTP with session management."""
 
@@ -28,6 +33,15 @@ class HTTPMCPSession:
         self._request_id = 0
         self._session_id: str | None = None
         self._initialized = False
+        self._transport: str | None = None
+        self._pending_requests: dict[str, asyncio.Future] = {}
+        self._sse_client = None
+        self._sse_stream_cm = None
+        self._sse_stream = None
+        self._sse_listener_task: asyncio.Task | None = None
+        self._sse_endpoint_url: str | None = None
+        self._sse_endpoint_headers: dict[str, str] = {}
+        self._sse_endpoint_ready: asyncio.Event | None = None
 
     def _get_next_id(self) -> int:
         """Get the next request ID."""
@@ -35,14 +49,28 @@ class HTTPMCPSession:
         return self._request_id
 
     async def _initialize_session(self) -> None:
-        """Initialize the MCP session."""
+        """Initialize the MCP session, with fallback to HTTP+SSE transport."""
         if self._initialized:
             return
 
         import httpx
 
-        # Send initialize request
-        init_request = {
+        try:
+            await self._initialize_streamable_http()
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if 400 <= status_code < 500:
+                logger.info(
+                    "Streamable HTTP transport not available (status %s); attempting HTTP+SSE fallback.",
+                    status_code,
+                )
+                await self._initialize_http_sse()
+            else:
+                raise
+
+    def _build_initialize_request(self) -> dict[str, Any]:
+        """Construct the MCP initialize request payload."""
+        return {
             "jsonrpc": "2.0",
             "method": "initialize",
             "params": {
@@ -59,78 +87,178 @@ class HTTPMCPSession:
             "id": self._get_next_id(),
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            if not self.config.url:
-                raise ValueError("Server URL is required")
+    def _validate_initialize_payload(
+        self,
+        payload: dict[str, Any] | None,
+        raw_text: str | None = None,
+    ) -> None:
+        """Ensure the initialize response conforms to expectations."""
+        if not payload:
+            raise Exception(
+                f"No valid response data found in initialization response: {raw_text}",
+            )
 
+        if "error" in payload:
+            raise Exception(f"MCP initialization error: {payload['error']}")
+
+        if "result" not in payload:
+            raw_text = raw_text or str(payload)
+            raise Exception(
+                f"Unexpected initialization response format - missing 'result' field: {raw_text}",
+            )
+
+        logger.debug(
+            "Initialization successful, server info: %s",
+            payload.get("result", {}).get("serverInfo", "Unknown"),
+        )
+
+    def _parse_streamable_http_payload(
+        self,
+        response_text: str,
+        expected_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Parse responses that may include SSE-formatted messages."""
+        import json
+
+        if not response_text:
+            raise Exception("Empty response from MCP server")
+
+        if "event:" in response_text and "data:" in response_text:
+            lines = response_text.strip().split("\n")
+            messages: list[dict[str, Any]] = []
+            for line in lines:
+                if line.startswith("data: "):
+                    data_segment = line[6:].strip()
+                    if not data_segment:
+                        continue
+                    try:
+                        messages.append(json.loads(data_segment))
+                    except json.JSONDecodeError:
+                        logger.debug(
+                            "Failed to parse SSE line as JSON: %s...",
+                            data_segment[:100],
+                        )
+                        continue
+
+            if not messages:
+                raise Exception(f"Could not parse SSE response: {response_text}")
+
+            if expected_id is None:
+                return messages[-1]
+
+            for message in messages:
+                if str(message.get("id")) == str(expected_id):
+                    logger.debug(
+                        "Found matching response for request ID %s",
+                        expected_id,
+                    )
+                    return message
+
+            logger.warning(
+                "No matching response found for request ID %s in SSE stream",
+                expected_id,
+            )
+            for message in reversed(messages):
+                if "result" in message or "error" in message:
+                    return message
+            return messages[-1]
+
+        try:
+            return json.loads(response_text)
+        except Exception as exc:  # pragma: no cover - re-raise with context
+            raise Exception(f"Could not parse response: {response_text}") from exc
+
+    async def _initialize_streamable_http(self) -> None:
+        """Attempt MCP initialization using Streamable HTTP transport."""
+        import httpx
+
+        if not self.config.url:
+            raise ValueError("Server URL is required")
+
+        init_request = self._build_initialize_request()
+
+        request_headers = self.headers.copy()
+        request_headers.setdefault("Accept", STREAMABLE_HTTP_ACCEPT)
+        request_headers.setdefault("Content-Type", DEFAULT_CONTENT_TYPE)
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 self.config.url,
                 json=init_request,
-                headers=self.headers,
+                headers=request_headers,
             )
             response.raise_for_status()
 
-            # Extract session ID from response headers
-            session_id = response.headers.get("mcp-session-id")
-            if session_id:
-                self._session_id = session_id
-                logger.debug(f"Captured session ID: {session_id}")
+        session_id = response.headers.get("mcp-session-id")
+        if session_id:
+            self._session_id = session_id
+            logger.debug("Captured session ID: %s", session_id)
 
-            # Parse response - handle both SSE and standard JSON formats
-            response_text = response.text
-            logger.debug(f"Initialize response: {response_text}")
+        response_text = response.text
+        logger.debug("Initialize response: %s", response_text)
 
-            result = None
+        parsed = self._parse_streamable_http_payload(
+            response_text,
+            expected_id=init_request.get("id"),
+        )
+        self._validate_initialize_payload(parsed, response_text)
 
-            if "event: message" in response_text and "data: " in response_text:
-                # Handle SSE format (FastMCP style)
-                lines = response_text.strip().split("\n")
-                json_data = None
-                for line in lines:
-                    if line.startswith("data: "):
-                        json_data = line[6:]  # Remove "data: " prefix
-                        break
+        self._transport = "streamable_http"
+        await self._send_initialized_notification()
+        self._initialized = True
+        logger.info(
+            "MCP HTTP session initialized successfully with session ID: %s",
+            self._session_id,
+        )
 
-                if json_data:
-                    import json
+    async def _initialize_http_sse(self) -> None:
+        """Fallback initialization for servers speaking HTTP+SSE transport."""
+        import httpx
 
-                    result = json.loads(json_data)
-            else:
-                # Handle standard JSON format (GitHub MCP style)
-                try:
-                    import json
+        if not self.config.url:
+            raise ValueError("Server URL is required")
 
-                    result = json.loads(response_text)
-                except json.JSONDecodeError:
-                    raise Exception(
-                        f"Could not parse initialization response as JSON: {response_text}",
-                    )
+        timeout = httpx.Timeout(
+            timeout=self.timeout,
+            connect=self.timeout,
+            read=None,
+            write=self.timeout,
+        )
 
-            if not result:
-                raise Exception(
-                    f"No valid response data found in initialization response: {response_text}",
-                )
+        base_headers = self.headers.copy()
+        base_headers.setdefault("Accept", SSE_ACCEPT)
 
-            if "error" in result:
-                raise Exception(f"MCP initialization error: {result['error']}")
+        self._pending_requests = {}
+        self._sse_endpoint_headers = {}
+        self._sse_endpoint_ready = asyncio.Event()
 
-            # Check if we got a proper initialization result
-            if "result" in result:
-                logger.debug(
-                    f"Initialization successful, server info: {result.get('result', {}).get('serverInfo', 'Unknown')}",
-                )
-                # Send initialized notification as per MCP protocol
-                await self._send_initialized_notification()
-                self._initialized = True
-                logger.info(
-                    f"MCP HTTP session initialized successfully with session ID: {self._session_id}",
-                )
-                return
+        self._sse_client = httpx.AsyncClient(timeout=timeout)
+        self._sse_stream_cm = self._sse_client.stream(
+            "GET",
+            self.config.url,
+            headers=base_headers,
+        )
+        self._sse_stream = await self._sse_stream_cm.__aenter__()
+        self._sse_stream.raise_for_status()
 
-            # If we get here, the response format was unexpected
-            raise Exception(
-                f"Unexpected initialization response format - missing 'result' field: {response_text}",
-            )
+        self._sse_listener_task = asyncio.create_task(self._consume_sse_stream())
+
+        try:
+            await asyncio.wait_for(self._sse_endpoint_ready.wait(), timeout=self.timeout)
+        except TimeoutError as exc:
+            raise TimeoutError("Timed out waiting for SSE endpoint event") from exc
+
+        if not self._sse_endpoint_url:
+            raise RuntimeError("Did not receive endpoint information from SSE stream")
+
+        init_request = self._build_initialize_request()
+        init_response = await self._send_json_rpc_via_sse(init_request, expect_response=True)
+        self._validate_initialize_payload(init_response)
+
+        self._transport = "http_sse"
+        await self._send_initialized_notification()
+        self._initialized = True
+        logger.info("MCP HTTP session initialized successfully using HTTP+SSE transport")
 
     async def _send_initialized_notification(self) -> None:
         """Send the initialized notification as per MCP protocol."""
@@ -141,8 +269,16 @@ class HTTPMCPSession:
             "method": "notifications/initialized",
         }
 
-        # Prepare headers with session ID
+        if self._transport == "http_sse":
+            try:
+                await self._send_json_rpc_via_sse(notification_data, expect_response=False)
+                logger.debug("Initialized notification sent successfully via SSE transport")
+            except Exception as exc:
+                logger.warning("Initialized notification via SSE transport failed: %s", exc)
+            return
+
         request_headers = self.headers.copy()
+        request_headers.setdefault("Content-Type", DEFAULT_CONTENT_TYPE)
         if self._session_id:
             request_headers["mcp-session-id"] = self._session_id
 
@@ -154,10 +290,10 @@ class HTTPMCPSession:
                 json=notification_data,
                 headers=request_headers,
             )
-            # Notifications don't expect a response, but check for errors
             if response.status_code >= 400:
                 logger.warning(
-                    f"Initialized notification returned status {response.status_code}",
+                    "Initialized notification returned status %s",
+                    response.status_code,
                 )
             else:
                 logger.debug("Initialized notification sent successfully")
@@ -168,35 +304,38 @@ class HTTPMCPSession:
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Make a direct HTTP request to the MCP server."""
-        import json
-
-        import httpx
-
-        # Ensure session is initialized
         if not self._initialized:
             await self._initialize_session()
 
-        request_data = {
+        request_data: dict[str, Any] = {
             "jsonrpc": "2.0",
             "method": method,
             "id": self._get_next_id(),
         }
 
-        # Only include params if they are provided and not empty
         if params:
             request_data["params"] = params
 
-        # Prepare headers with session ID if available
+        if self._transport == "http_sse":
+            return await self._send_json_rpc_via_sse(request_data, expect_response=True)
+
+        return await self._make_streamable_http_request(request_data)
+
+    async def _make_streamable_http_request(self, request_data: dict[str, Any]) -> dict[str, Any]:
+        """Send a JSON-RPC request over Streamable HTTP."""
+        import httpx
+
+        if not self.config.url:
+            raise ValueError("Server URL is required")
+
         request_headers = self.headers.copy()
+        request_headers.setdefault("Accept", STREAMABLE_HTTP_ACCEPT)
+        request_headers.setdefault("Content-Type", DEFAULT_CONTENT_TYPE)
         if self._session_id:
             request_headers["mcp-session-id"] = self._session_id
-            logger.debug(
-                f"Including session ID in request: {self._session_id}",
-            )
+            logger.debug("Including session ID in request: %s", self._session_id)
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            if not self.config.url:
-                raise ValueError("Server URL is required")
             response = await client.post(
                 self.config.url,
                 json=request_data,
@@ -204,63 +343,188 @@ class HTTPMCPSession:
             )
             response.raise_for_status()
 
-            # Handle SSE response format
-            response_text = response.text
+        response_text = response.text
+        return self._parse_streamable_http_payload(
+            response_text,
+            expected_id=request_data.get("id"),
+        )
 
-            if "event: message" in response_text and "data: " in response_text:
-                # Extract JSON from SSE format - need to find the message with matching ID
-                lines = response_text.strip().split("\n")
-                request_id = request_data.get("id")
+    async def _consume_sse_stream(self) -> None:
+        """Continuously consume SSE messages from the fallback transport."""
+        if not self._sse_stream:
+            return
 
-                # Parse all SSE messages and find the one with matching request ID
-                for line in lines:
-                    if line.startswith("data: "):
-                        try:
-                            json_data = line[6:]  # Remove "data: " prefix
-                            parsed_message = json.loads(json_data)
+        event_type = "message"
+        data_lines: list[str] = []
 
-                            # Check if this message has the matching request ID (for responses)
-                            # or if it's a notification (no ID required)
-                            if "id" in parsed_message and parsed_message["id"] == request_id:
-                                logger.debug(
-                                    f"Found matching response for request ID {request_id}",
-                                )
-                                return parsed_message
-                            elif request_id is None and "method" not in parsed_message:
-                                # For requests without ID (notifications), return first non-notification
-                                return parsed_message
-                        except json.JSONDecodeError:
-                            logger.debug(
-                                f"Failed to parse SSE line as JSON: {line[:100]}...",
-                            )
-                            continue
+        try:
+            async for raw_line in self._sse_stream.aiter_lines():
+                if raw_line is None:
+                    continue
 
-                # If no matching message found, log the issue and try to return the last valid message
-                logger.warning(
-                    f"No matching response found for request ID {request_id} in SSE stream",
-                )
-                logger.debug(f"Full SSE response: {response_text}")
+                line = raw_line.rstrip("\r")
 
-                # As fallback, try to return the last message that looks like a response
-                for line in reversed(lines):
-                    if line.startswith("data: "):
-                        try:
-                            json_data = line[6:]
-                            parsed_message = json.loads(json_data)
-                            if "result" in parsed_message or "error" in parsed_message:
-                                logger.debug(
-                                    f"Using fallback response: {parsed_message}",
-                                )
-                                return parsed_message
-                        except json.JSONDecodeError:
-                            continue
+                if line == "":
+                    if data_lines:
+                        await self._handle_sse_event(event_type, data_lines)
+                    event_type = "message"
+                    data_lines = []
+                    continue
 
-            # Fallback to regular JSON parsing
-            try:
-                return response.json()
-            except Exception:
-                # If JSON parsing fails, return the raw response
-                raise Exception(f"Could not parse response: {response_text}")
+                if line.startswith(":"):
+                    continue
+
+                if line.startswith("event:"):
+                    event_type = line[6:].strip() or "message"
+                elif line.startswith("data:"):
+                    data_lines.append(line[5:].lstrip())
+
+            if data_lines:
+                await self._handle_sse_event(event_type, data_lines)
+        except Exception as exc:  # pragma: no cover - background task
+            logger.error("SSE listener terminated with error: %s", exc, exc_info=True)
+            self._fail_pending_requests(exc)
+        finally:
+            if self._sse_endpoint_ready and not self._sse_endpoint_ready.is_set():
+                self._sse_endpoint_ready.set()
+
+            if self._sse_stream_cm is not None:
+                await self._sse_stream_cm.__aexit__(None, None, None)
+
+            self._sse_stream_cm = None
+            self._sse_stream = None
+
+    async def _handle_sse_event(self, event_type: str, data_lines: list[str]) -> None:
+        """Process individual SSE events."""
+        import json
+        from urllib.parse import urljoin
+
+        if not data_lines:
+            return
+
+        payload_text = "\n".join(data_lines).strip()
+
+        if event_type == "endpoint":
+            endpoint: str | None = None
+            headers_payload: dict[str, Any] | None = None
+
+            if payload_text:
+                try:
+                    payload = json.loads(payload_text)
+                except json.JSONDecodeError:
+                    endpoint = payload_text
+                else:
+                    if isinstance(payload, dict):
+                        endpoint = payload.get("endpoint") or payload.get("url")
+                        headers_payload = payload.get("headers")
+                    elif isinstance(payload, str):
+                        endpoint = payload
+
+            if endpoint:
+                base_url = self.config.url or ""
+                self._sse_endpoint_url = urljoin(base_url, endpoint)
+                logger.debug("SSE endpoint resolved to %s", self._sse_endpoint_url)
+            else:
+                logger.error("Endpoint event missing usable endpoint information: %s", payload_text or "<empty>")
+
+            combined_headers = self.headers.copy()
+            if isinstance(headers_payload, dict):
+                for key, value in headers_payload.items():
+                    combined_headers[str(key)] = str(value)
+            combined_headers.setdefault("Content-Type", DEFAULT_CONTENT_TYPE)
+            self._sse_endpoint_headers = combined_headers
+
+            if self._sse_endpoint_ready and not self._sse_endpoint_ready.is_set():
+                self._sse_endpoint_ready.set()
+            return
+
+        try:
+            message = json.loads(payload_text)
+        except json.JSONDecodeError:
+            logger.debug("Failed to parse SSE data as JSON: %s", payload_text[:200])
+            return
+
+        if not isinstance(message, dict):
+            return
+
+        request_id = message.get("id")
+        if request_id is not None:
+            key = str(request_id)
+            future = self._pending_requests.pop(key, None)
+            if future and not future.done():
+                future.set_result(message)
+            else:
+                logger.debug("Received SSE response for unknown request ID %s: %s", key, message)
+        else:
+            logger.debug("Received SSE notification: %s", message)
+
+    def _fail_pending_requests(self, exc: Exception) -> None:
+        """Fail any pending SSE requests if the stream is closed."""
+        if not self._pending_requests:
+            return
+
+        for key, future in list(self._pending_requests.items()):
+            if future and not future.done():
+                future.set_exception(exc)
+            self._pending_requests.pop(key, None)
+
+    async def _send_json_rpc_via_sse(
+        self,
+        payload: dict[str, Any],
+        *,
+        expect_response: bool,
+    ) -> dict[str, Any]:
+        """Send JSON-RPC payload over HTTP+SSE transport."""
+
+        if not self._sse_client or not self._sse_endpoint_url:
+            raise RuntimeError("SSE transport is not initialized")
+
+        request_headers = self._sse_endpoint_headers.copy()
+        if self._session_id:
+            request_headers.setdefault("mcp-session-id", self._session_id)
+
+        request_id = payload.get("id")
+        future: asyncio.Future | None = None
+        key: str | None = None
+
+        if expect_response:
+            if request_id is None:
+                raise ValueError("Expected request ID for response tracking")
+            key = str(request_id)
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            self._pending_requests[key] = future
+
+        try:
+            response = await self._sse_client.post(
+                self._sse_endpoint_url,
+                json=payload,
+                headers=request_headers,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            if key is not None:
+                pending = self._pending_requests.pop(key, None)
+                if pending and not pending.done():
+                    pending.set_exception(exc)
+            raise
+
+        if not expect_response:
+            return {}
+
+        assert future is not None  # for type checkers
+
+        try:
+            result = await asyncio.wait_for(future, timeout=self.timeout)
+            return result
+        except TimeoutError as exc:
+            if key is not None:
+                pending = self._pending_requests.pop(key, None)
+                if pending and not pending.done():
+                    pending.set_exception(exc)
+            raise TimeoutError(
+                f"SSE response timed out for request {request_id}",
+            ) from exc
 
     async def list_tools(self):
         """List tools by making a direct HTTP request."""
@@ -893,9 +1157,9 @@ class MCPClient:
                     # Ensure proper headers for FastMCP streamable HTTP protocol
                     headers = config.headers or {}
                     if "Accept" not in headers:
-                        headers["Accept"] = "application/json, text/event-stream"
+                        headers["Accept"] = STREAMABLE_HTTP_ACCEPT
                     if "Content-Type" not in headers:
-                        headers["Content-Type"] = "application/json"
+                        headers["Content-Type"] = DEFAULT_CONTENT_TYPE
 
                     # Test connection with a simple session
                     test_session = HTTPMCPSession(
