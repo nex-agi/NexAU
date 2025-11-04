@@ -1,6 +1,7 @@
 """LLM configuration class for handling model-related arguments."""
 
 import os
+from collections.abc import Iterable
 from typing import Any
 
 
@@ -20,6 +21,7 @@ class LLMConfig:
         timeout: float | None = None,
         max_retries: int = 3,
         debug: bool = False,
+        additional_drop_params: Iterable[str] | None = None,
         **kwargs,
     ):
         """
@@ -50,6 +52,7 @@ class LLMConfig:
         self.timeout = timeout
         self.max_retries = max_retries
         self.debug = debug
+        self.additional_drop_params = tuple(param for param in (additional_drop_params or []) if isinstance(param, str))
 
         # Store additional parameters
         self.extra_params = kwargs
@@ -124,7 +127,7 @@ class LLMConfig:
         # Add extra parameters
         params.update(self.extra_params)
 
-        return params
+        return self.apply_param_drops(params)
 
     def to_client_kwargs(self) -> dict[str, Any]:
         """Convert to OpenAI client initialization kwargs."""
@@ -140,6 +143,16 @@ class LLMConfig:
             kwargs["max_retries"] = self.max_retries
 
         return kwargs
+
+    def apply_param_drops(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Remove any params requested via additional_drop_params."""
+        if not self.additional_drop_params:
+            return params
+
+        for key in self.additional_drop_params:
+            params.pop(key, None)
+
+        return params
 
     def get_param(self, key: str, default: Any = None) -> Any:
         """Get a parameter value."""
@@ -173,6 +186,7 @@ class LLMConfig:
             timeout=self.timeout,
             max_retries=self.max_retries,
             debug=self.debug,
+            additional_drop_params=self.additional_drop_params,
             **self.extra_params,
         )
 

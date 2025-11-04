@@ -147,6 +147,27 @@ class TestLLMCallerBasicCalls:
         assert "custom_stop_2" in stop_sequences
         assert "</tool_use>" in stop_sequences
 
+    def test_call_llm_applies_additional_drop_params(self, mock_openai_client, mock_llm_config, agent_state):
+        """Test that additional_drop_params are applied before sending request."""
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message.content = "Response"
+        mock_openai_client.chat.completions.create.return_value = mock_response
+
+        mock_llm_config.additional_drop_params = ("stop", "temperature")
+
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=mock_llm_config,
+        )
+
+        messages = [{"role": "user", "content": "Hello"}]
+        caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
+
+        call_args = mock_openai_client.chat.completions.create.call_args
+        assert "stop" not in call_args.kwargs
+        assert "temperature" not in call_args.kwargs
+
     def test_call_llm_handles_string_stop_sequence(self, mock_openai_client, mock_llm_config, agent_state):
         """Test that string stop sequences are converted to list."""
         mock_response = Mock()
