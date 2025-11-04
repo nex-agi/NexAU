@@ -88,6 +88,11 @@ class LLMCaller:
 
         api_params["stop"] = existing_stop + xml_stop_sequences
 
+        # Drop any params the config marks as incompatible
+        dropper = getattr(self.llm_config, "apply_param_drops", None)
+        if callable(dropper):
+            api_params = dropper(api_params)
+
         # Debug logging for LLM messages
         if self.llm_config.debug:
             logger.info("🐛 [DEBUG] LLM Request Messages:")

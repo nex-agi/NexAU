@@ -92,6 +92,20 @@ class TestLLMConfig:
         assert params["frequency_penalty"] == 0.2
         assert params["presence_penalty"] == 0.3
 
+    def test_additional_drop_params(self):
+        """Test that additional_drop_params removes entries from params."""
+        config = LLMConfig(
+            model="gpt-4o-mini",
+            temperature=0.5,
+            stop=["custom"],
+            additional_drop_params=["temperature", "stop"],
+        )
+
+        params = config.to_openai_params()
+
+        assert "temperature" not in params
+        assert "stop" not in params
+
     def test_to_client_kwargs(self):
         """Test conversion to client kwargs."""
         config = LLMConfig(
@@ -142,6 +156,7 @@ class TestLLMConfig:
             model="gpt-4",
             temperature=0.5,
             custom_param="value",
+            additional_drop_params=["stop"],
         )
 
         copied = original.copy()
@@ -149,6 +164,7 @@ class TestLLMConfig:
         assert copied.model == original.model
         assert copied.temperature == original.temperature
         assert copied.get_param("custom_param") == "value"
+        assert copied.additional_drop_params == original.additional_drop_params
         assert copied is not original
 
     def test_repr_and_str(self):
