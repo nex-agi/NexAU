@@ -170,7 +170,7 @@ class TestGenerateSkillDescription:
 
         description = config._generate_skill_description()
 
-        assert "<Skils>" in description
+        assert "<Skills>" in description
         assert "</Skills>" in description
         assert "<SkillBrief>" in description
         assert "</SkillBrief>" in description
@@ -273,7 +273,7 @@ class TestGenerateSkillDescription:
         skill_tool = skill_tools[0]
         # The description should include the generated skill description
         assert "test-skill" in skill_tool.description
-        assert "<Skils>" in skill_tool.description
+        assert "<Skills>" in skill_tool.description
 
 
 class TestAgentConfigPostInit:
