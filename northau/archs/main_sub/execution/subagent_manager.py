@@ -115,6 +115,17 @@ class SubAgentManager:
             sub_agent = sub_agent_factory()
         self.running_sub_agents[sub_agent.config.agent_id] = sub_agent
 
+        parent_trace_id = getattr(parent_agent_state, "langfuse_trace_id", None)
+        if parent_trace_id:
+            sub_agent.langfuse_trace_id = parent_trace_id
+        # Ensure sub-agents reuse the parent's Langfuse client and trace when available
+        if self.langfuse_client:
+            sub_agent.langfuse_client = self.langfuse_client
+            if hasattr(sub_agent, "executor") and sub_agent.executor:
+                sub_agent.executor.langfuse_client = self.langfuse_client
+                if hasattr(sub_agent.executor, "subagent_manager") and sub_agent.executor.subagent_manager:
+                    sub_agent.executor.subagent_manager.langfuse_client = self.langfuse_client
+
         try:
             # Generate sub-agent trace path if main agent has tracing enabled
             sub_agent_trace_path = None
@@ -133,59 +144,22 @@ class SubAgentManager:
                                 f"📊 Sub-agent '{sub_agent_name}' will generate trace to: {sub_agent_trace_path}",
                             )
 
-            # Pass current agent context state, config, and context to sub-agent
-            current_context = get_context()
-            if current_context:
-                # Use context from current agent context if not explicitly provided
-                effective_context: dict[
-                    str,
-                    Any,
-                ] = context or current_context.context.copy()
-
-                if self.langfuse_client:
-                    try:
-                        with self.langfuse_client.start_as_current_generation(
-                            name=f"subagent_{sub_agent_name}",
-                            input=message,
-                            metadata={
-                                "sub_agent_name": sub_agent_name,
-                                "type": "sub_agent_execution",
-                            },
-                        ):
-                            result = sub_agent.run(
-                                message,
-                                context=effective_context,
-                                dump_trace_path=sub_agent_trace_path,
-                                parent_agent_state=parent_agent_state,
-                            )
-                            self.langfuse_client.update_current_generation(
-                                output=result,
-                            )
-                        self.langfuse_client.flush()
-                    except Exception as langfuse_error:
-                        logger.warning(
-                            f"⚠️ Langfuse subagent tracing failed: {langfuse_error}",
-                        )
-                        result = sub_agent.run(
-                            message,
-                            context=effective_context,
-                            dump_trace_path=sub_agent_trace_path,
-                            parent_agent_state=parent_agent_state,
-                        )
-                else:
-                    result = sub_agent.run(
-                        message,
-                        context=effective_context,
-                        dump_trace_path=sub_agent_trace_path,
-                        parent_agent_state=parent_agent_state,
-                    )
+            effective_context = None
+            if context:
+                effective_context = context
             else:
-                result = sub_agent.run(
-                    message,
-                    context=context,
-                    dump_trace_path=sub_agent_trace_path,
-                    parent_agent_state=parent_agent_state,
-                )
+                # Pass current agent context state, config, and context to sub-agent
+                current_context = get_context()
+                if current_context:
+                    # Use context from current agent context if not explicitly provided
+                    effective_context = current_context.context.copy()
+
+            result = sub_agent.run(
+                message,
+                context=effective_context,
+                dump_trace_path=sub_agent_trace_path,
+                parent_agent_state=parent_agent_state,
+            )
 
             logger.info(
                 f"✅ Sub-agent '{sub_agent_name}' returned result to agent '{self.agent_name}'",

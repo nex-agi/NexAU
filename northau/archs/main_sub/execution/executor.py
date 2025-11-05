@@ -8,6 +8,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
+from copy import deepcopy
 from typing import Any
 
 from northau.archs.main_sub.agent_state import AgentState
@@ -22,6 +23,7 @@ from northau.archs.main_sub.execution.hooks import (
     ToolHookManager,
 )
 from northau.archs.main_sub.execution.llm_caller import LLMCaller
+from northau.archs.main_sub.execution.model_response import ModelResponse
 from northau.archs.main_sub.execution.parse_structures import (
     BatchAgentCall,
     ParsedResponse,
@@ -32,6 +34,10 @@ from northau.archs.main_sub.execution.response_parser import ResponseParser
 from northau.archs.main_sub.execution.stop_reason import AgentStopReason
 from northau.archs.main_sub.execution.subagent_manager import SubAgentManager
 from northau.archs.main_sub.execution.tool_executor import ToolExecutor
+from northau.archs.main_sub.tool_call_modes import (
+    STRUCTURED_TOOL_CALL_MODES,
+    normalize_tool_call_mode,
+)
 from northau.archs.main_sub.tracing.trace_dumper import TraceDumper
 from northau.archs.main_sub.tracing.tracer import Tracer
 from northau.archs.main_sub.utils.token_counter import TokenCounter
@@ -63,6 +69,8 @@ class Executor:
         serial_tool_name: list[str] | None = None,
         global_storage: Any = None,
         custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None,
+        tool_call_mode: str = "openai",
+        openai_tools: list[dict[str, Any]] | None = None,
     ):
         """Initialize executor.
 
@@ -85,6 +93,8 @@ class Executor:
             after_model_hooks: Optional list of hooks called after parsing LLM response
             after_tool_hooks: Optional list of hooks called after tool execution
             custom_llm_generator: Optional custom LLM generator function
+            tool_call_mode: Preferred tool call format ('xml', 'openai', or 'anthorpic')
+            openai_tools: Structured tool definitions for OpenAI/Anthorpic tool calls
         """
         self.agent_name = agent_name
         self.agent_id = agent_id
@@ -134,6 +144,16 @@ class Executor:
         # Token counting
         self.token_counter = token_counter or TokenCounter()
 
+        # Tool call behavior
+        self.serial_tool_name = serial_tool_name or []
+        self.tool_call_mode = normalize_tool_call_mode(tool_call_mode)
+        self.use_structured_tool_calls = self.tool_call_mode in STRUCTURED_TOOL_CALL_MODES
+        self.structured_tool_payload = deepcopy(openai_tools) if openai_tools else []
+        if self.use_structured_tool_calls and not self.structured_tool_payload:
+            logger.warning(
+                f"⚠️ {self.tool_call_mode.capitalize()} tool call mode enabled but no tool definitions were provided.",
+            )
+
         # Process tracking for parallel execution
         self._running_executors = {}  # Maps executor_id to ThreadPoolExecutor
         self._executor_lock = threading.Lock()
@@ -142,9 +162,6 @@ class Executor:
 
         # Message queue for dynamic message enqueueing during execution
         self.queued_messages = []
-
-        # Serial tool name
-        self.serial_tool_name = serial_tool_name
 
     def enqueue_message(self, message: dict[str, str]) -> None:
         """Enqueue a message to be processed during execution.
@@ -159,10 +176,10 @@ class Executor:
 
     def execute(
         self,
-        history: list[dict[str, str]],
+        history: list[dict[str, Any]],
         agent_state: "AgentState",
         dump_trace_path: str | None = None,
-    ) -> tuple[str, list[dict[str, str]]]:
+    ) -> tuple[str, list[dict[str, Any]]]:
         """Execute agent task with full orchestration.
 
         Args:
@@ -291,39 +308,42 @@ class Executor:
                 logger.info(
                     f"🧠 Calling LLM for agent '{self.agent_name}' with {calculated_max_tokens} max tokens...",
                 )
-                assistant_response = self.llm_caller.call_llm(
+                model_response = self.llm_caller.call_llm(
                     messages,
                     calculated_max_tokens,
                     force_stop_reason,
                     agent_state,
+                    tool_call_mode=self.tool_call_mode,
+                    tools=self.structured_tool_payload if self.use_structured_tool_calls else None,
                 )
-                if assistant_response is None:
+                if model_response is None:
                     break
+
+                assistant_content = model_response.content or ""
+                assistant_log_text = model_response.render_text() or assistant_content
 
                 # Log LLM response to trace if enabled
                 if dump_trace_path:
                     # Create a mock response object for tracing compatibility
                     self.tracer.add_llm_response(
                         iteration + 1,
-                        assistant_response,
+                        assistant_log_text,
                     )
 
                 logger.info(
-                    f"💬 LLM Response for agent '{self.agent_name}': {assistant_response}",
+                    f"💬 LLM Response for agent '{self.agent_name}': {assistant_log_text}",
                 )
 
                 # Store this as the latest response (potential final response)
-                final_response = assistant_response
+                final_response = assistant_content
 
                 # Parse response to check for actions
                 parsed_response = self.response_parser.parse_response(
-                    assistant_response,
+                    model_response,
                 )
 
                 # Add the assistant's original response to conversation
-                messages.append(
-                    {"role": "assistant", "content": assistant_response},
-                )
+                messages.append(model_response.to_message_dict())
 
                 # Process tool calls and sub-agent calls
                 logger.info(
@@ -333,18 +353,27 @@ class Executor:
                     agent_state=agent_state,
                     max_iterations=self.max_iterations,
                     current_iteration=iteration,
-                    original_response=assistant_response,
+                    original_response=assistant_content,
                     parsed_response=parsed_response,
                     messages=messages,
+                    model_response=model_response,
                 )
 
-                processed_response, should_stop, stop_tool_result, updated_messages = self._process_xml_calls(
+                (
+                    processed_response,
+                    should_stop,
+                    stop_tool_result,
+                    updated_messages,
+                    execution_feedbacks,
+                ) = self._process_xml_calls(
                     after_model_hook_input,
                     tracer=self.tracer if dump_trace_path else None,
                 )
 
                 # Update messages with any modifications from hooks
                 messages = updated_messages
+
+                processed_parsed_response = after_model_hook_input.parsed_response
 
                 # Check if a stop tool was executed
                 if should_stop and len(self.queued_messages) == 0:
@@ -374,10 +403,43 @@ class Executor:
                         break
 
                 # Extract just the tool results from processed_response
-                tool_results = processed_response.replace(
-                    assistant_response,
-                    "",
-                ).strip()
+                openai_tool_mode = bool(
+                    processed_parsed_response
+                    and processed_parsed_response.model_response
+                    and processed_parsed_response.model_response.tool_calls
+                )
+
+                if openai_tool_mode:
+                    for feedback in execution_feedbacks:
+                        call_obj = feedback.get("call")
+                        call_type = feedback.get("call_type")
+                        content = feedback.get("content") or ""
+
+                        if call_type == "tool":
+                            call_id = getattr(call_obj, "tool_call_id", None)
+                        elif call_type == "sub_agent":
+                            call_id = getattr(call_obj, "tool_call_id", None) or getattr(call_obj, "sub_agent_call_id", None)
+                        else:
+                            call_id = None
+
+                        if not call_id:
+                            continue
+
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": call_id,
+                                "content": content,
+                            },
+                        )
+
+                    tool_results = ""
+                else:
+                    tool_results = processed_response.replace(
+                        assistant_content,
+                        "",
+                        1,
+                    ).strip()
 
                 # Add tool results as user feedback with iteration context
                 remaining_iterations = self.max_iterations - iteration - 1
@@ -470,7 +532,7 @@ class Executor:
         self,
         hook_input: AfterModelHookInput,
         tracer: Tracer | None = None,
-    ) -> tuple[str, bool, str | None, list[dict[str, str]]]:
+    ) -> tuple[str, bool, str | None, list[dict[str, Any]], list[dict[str, Any]]]:
         """Process XML tool calls and sub-agent calls using two-phase approach.
 
         Args:
@@ -483,8 +545,9 @@ class Executor:
         """
         # Phase 1: Parse the response to extract all calls
         logger.info("📋 Phase 1: Parsing LLM response for all executable calls")
-        parsed_response = self.response_parser.parse_response(
-            hook_input.original_response,
+        response_payload: str | ModelResponse = hook_input.model_response or hook_input.original_response
+        parsed_response = hook_input.parsed_response or self.response_parser.parse_response(
+            response_payload,
         )
         hook_input.parsed_response = parsed_response
 
@@ -506,18 +569,18 @@ class Executor:
 
         # If no calls found after hooks, return original response
         if not parsed_response or not parsed_response.has_calls():
-            return hook_input.original_response, True, None, current_messages
+            return hook_input.original_response, True, None, current_messages, []
 
         # Phase 2: Execute all parsed calls
         logger.info(
             f"⚡ Phase 2: Executing {parsed_response.get_call_summary()}",
         )
-        processed_response, should_stop, stop_tool_result = self._execute_parsed_calls(
+        processed_response, should_stop, stop_tool_result, execution_feedbacks = self._execute_parsed_calls(
             parsed_response,
             hook_input.agent_state,
             tracer=tracer,
         )
-        return processed_response, should_stop, stop_tool_result, current_messages
+        return processed_response, should_stop, stop_tool_result, current_messages, execution_feedbacks
 
     def _execute_parsed_calls(
         self,
@@ -542,7 +605,7 @@ class Executor:
             logger.warning(
                 f"⚠️ Agent '{self.agent_name}' ({self.agent_id}) is shutting down, skipping new task execution",
             )
-            return processed_response, False, None
+            return processed_response, False, None, []
 
         # Handle batch agent calls first (they take priority and are not parallelized)
         if parsed_response.batch_agent_calls:
@@ -563,11 +626,11 @@ class Executor:
 <error>{str(e)}</error>
 </tool_result>
 """
-            return processed_response, False, None
+            return processed_response, False, None, []
 
         # Execute tool calls and sub-agent calls in parallel
         if not parsed_response.tool_calls and not parsed_response.sub_agent_calls:
-            return processed_response, False, None
+            return processed_response, False, None, []
 
         # Get current context to pass to sub-agents
         from ..agent_context import get_context
@@ -602,6 +665,8 @@ class Executor:
                     f"{sub_agent_call.sub_agent_call_id}_{seen_sub_agent_call_ids[sub_agent_call.sub_agent_call_id]}"
                 )
 
+        serial_tool_names = set(self.serial_tool_name)
+
         try:
             # Submit tool execution tasks
             tool_futures = {}
@@ -616,7 +681,7 @@ class Executor:
                 )
                 tool_futures[future] = ("tool", tool_call)
 
-                if tool_call.tool_name in self.serial_tool_name:
+                if tool_call.tool_name in serial_tool_names:
                     future.result()
 
             # Submit sub-agent execution tasks
@@ -638,6 +703,7 @@ class Executor:
 
             # Collect results as they complete
             tool_results = []
+            execution_feedbacks: list[dict[str, Any]] = []
             stop_tool_detected = False
             stop_tool_result = None
 
@@ -647,29 +713,41 @@ class Executor:
                     result_data = future.result()
                     if call_type == "tool":
                         tool_name, result, is_error = result_data
+                        execution_feedbacks.append(
+                            {
+                                "call_type": "tool",
+                                "call": call_obj,
+                                "content": result,
+                                "is_error": is_error,
+                            },
+                        )
                         if is_error:
                             logger.error(
                                 f"❌ Tool '{tool_name}' error: {result}",
                             )
-                            tool_results.append(
-                                f"""
+                            should_append_xml = getattr(call_obj, "source", "xml") != "openai"
+                            if should_append_xml:
+                                tool_results.append(
+                                    f"""
 <tool_result>
 <tool_name>{tool_name}</tool_name>
 <error>{result}</error>
 </tool_result>
 """,
-                            )
+                                )
                         else:
                             logger.info(
                                 f"📤 Tool '{tool_name}' result: {result}",
                             )
+                            should_append_xml = getattr(call_obj, "source", "xml") != "openai"
                             tool_result_xml = f"""
 <tool_result>
 <tool_name>{tool_name}</tool_name>
 <result>{result}</result>
 </tool_result>
 """
-                            tool_results.append(tool_result_xml)
+                            if should_append_xml:
+                                tool_results.append(tool_result_xml)
 
                             # Check if this tool result indicates a stop tool was executed
                             try:
@@ -707,30 +785,43 @@ class Executor:
                                 pass
                     elif call_type == "sub_agent":
                         agent_name, result, is_error = result_data
+                        result_str = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+                        execution_feedbacks.append(
+                            {
+                                "call_type": "sub_agent",
+                                "call": call_obj,
+                                "content": result_str,
+                                "is_error": is_error,
+                            },
+                        )
                         if is_error:
                             logger.error(
                                 f"❌ Sub-agent '{agent_name}' error: {result}",
                             )
-                            tool_results.append(
-                                f"""
+                            should_append_xml = not getattr(call_obj, "tool_call_id", None)
+                            if should_append_xml:
+                                tool_results.append(
+                                    f"""
 <tool_result>
 <tool_name>{agent_name}_sub_agent</tool_name>
 <error>{result}</error>
 </tool_result>
 """,
-                            )
+                                )
                         else:
                             logger.info(
                                 f"📤 Sub-agent '{agent_name}' result: {result}",
                             )
-                            tool_results.append(
-                                f"""
+                            should_append_xml = not getattr(call_obj, "tool_call_id", None)
+                            if should_append_xml:
+                                tool_results.append(
+                                    f"""
 <tool_result>
 <tool_name>{agent_name}_sub_agent</tool_name>
 <result>{result}</result>
 </tool_result>
 """,
-                            )
+                                )
                 except Exception as e:
                     logger.error(
                         f"❌ Unexpected error processing {call_type}: {e}",
@@ -763,7 +854,7 @@ class Executor:
                         None,
                     )
 
-        return processed_response, stop_tool_detected, stop_tool_result
+        return processed_response, stop_tool_detected, stop_tool_result, execution_feedbacks
 
     def _execute_tool_call_safe(
         self,

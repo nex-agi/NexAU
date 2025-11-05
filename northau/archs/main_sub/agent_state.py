@@ -22,6 +22,8 @@ class AgentState:
         context: AgentContext,
         global_storage: GlobalStorage,
         parent_agent_state: Optional["AgentState"] = None,
+        langfuse_trace_id: str | None = None,
+        langfuse_span_id: str | None = None,
     ):
         """Initialize agent state.
 
@@ -36,6 +38,8 @@ class AgentState:
         self.context = context
         self.global_storage = global_storage
         self.parent_agent_state = parent_agent_state
+        self.langfuse_trace_id = langfuse_trace_id
+        self.langfuse_span_id = langfuse_span_id
 
     def get_context_value(self, key: str, default: Any = None) -> Any:
         """Get a value from the context.

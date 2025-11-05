@@ -34,6 +34,18 @@ class TestExecutionConfig:
         assert config.max_running_subagents == 3
         assert config.retry_attempts == 3
         assert config.timeout == 180
+        assert config.tool_call_mode == "xml"
+
+    def test_execution_config_supports_anthorpic_mode(self):
+        """ExecutionConfig should normalize Anthorpic mode."""
+        config = ExecutionConfig(tool_call_mode="ANTHORPIC")
+
+        assert config.tool_call_mode == "anthorpic"
+
+    def test_execution_config_invalid_tool_call_mode(self):
+        """Invalid tool_call_mode values should raise ValueError."""
+        with pytest.raises(ValueError):
+            ExecutionConfig(tool_call_mode="json")
 
 
 class TestAgentConfigSkills:

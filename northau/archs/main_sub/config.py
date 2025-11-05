@@ -9,6 +9,7 @@ from ..llm.llm_config import LLMConfig
 from ..main_sub.skill import Skill
 from ..tool import Tool
 from ..tool.builtin.skill_tool import load_skill
+from .tool_call_modes import normalize_tool_call_mode
 
 
 @dataclass
@@ -20,6 +21,11 @@ class ExecutionConfig:
     max_running_subagents: int = 5
     retry_attempts: int = 5
     timeout: int = 300
+    tool_call_mode: str = "xml"
+
+    def __post_init__(self) -> None:
+        """Validate execution configuration."""
+        self.tool_call_mode = normalize_tool_call_mode(self.tool_call_mode)
 
 
 @dataclass

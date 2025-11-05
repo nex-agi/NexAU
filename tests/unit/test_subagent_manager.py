@@ -312,16 +312,63 @@ class TestSubAgentManager:
         result = manager.call_sub_agent("test_sub", "message")
 
         assert result == "result"
-        mock_langfuse.start_as_current_generation.assert_called_once_with(
-            name="subagent_test_sub",
-            input="message",
-            metadata={
-                "sub_agent_name": "test_sub",
-                "type": "sub_agent_execution",
-            },
+        mock_sub_agent.run.assert_called_once_with(
+            "message",
+            context={"key": "value"},
+            dump_trace_path=None,
+            parent_agent_state=None,
         )
-        mock_langfuse.update_current_generation.assert_called_once_with(output="result")
-        mock_langfuse.flush.assert_called_once()
+
+    @patch("northau.archs.main_sub.agent_context.get_context")
+    def test_call_sub_agent_shares_langfuse_trace(
+        self,
+        mock_get_context,
+        sub_agent_factories,
+    ):
+        """Child agents should reuse parent's Langfuse trace and client."""
+
+        mock_langfuse = Mock()
+        mock_context_manager = MagicMock()
+        mock_langfuse.start_as_current_generation.return_value = mock_context_manager
+
+        mock_sub_agent = Mock()
+        mock_sub_agent.config.agent_id = "sub_123"
+        mock_sub_agent.run.return_value = "result"
+        mock_sub_agent.executor = Mock()
+        mock_sub_agent.executor.subagent_manager = Mock()
+
+        factories = {"test_sub": Mock(return_value=mock_sub_agent)}
+        manager = SubAgentManager(
+            agent_name="parent",
+            sub_agent_factories=factories,
+            langfuse_client=mock_langfuse,
+        )
+
+        mock_agent_context = Mock()
+        mock_agent_context.context = {"key": "value"}
+        mock_get_context.return_value = mock_agent_context
+
+        parent_state = Mock()
+        parent_state.langfuse_trace_id = "trace-abc"
+        parent_state.langfuse_span_id = "parent-span"
+
+        result = manager.call_sub_agent(
+            "test_sub",
+            "message",
+            parent_agent_state=parent_state,
+        )
+
+        assert result == "result"
+        mock_sub_agent.run.assert_called_once_with(
+            "message",
+            context={"key": "value"},
+            dump_trace_path=None,
+            parent_agent_state=parent_state,
+        )
+        assert mock_sub_agent.langfuse_trace_id == "trace-abc"
+        assert mock_sub_agent.langfuse_client == mock_langfuse
+        assert mock_sub_agent.executor.langfuse_client == mock_langfuse
+        assert mock_sub_agent.executor.subagent_manager.langfuse_client == mock_langfuse
 
     @patch("northau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_langfuse_error(self, mock_get_context, sub_agent_factories):

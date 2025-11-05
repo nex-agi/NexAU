@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
+from .model_response import ModelResponse
 from .parse_structures import ParsedResponse
 
 if TYPE_CHECKING:
@@ -23,7 +24,7 @@ class BeforeModelHookInput:
     agent_state: "AgentState"
     max_iterations: int
     current_iteration: int
-    messages: list[dict[str, str]]
+    messages: list[dict[str, Any]]
 
 
 @dataclass
@@ -36,7 +37,8 @@ class AfterModelHookInput(BeforeModelHookInput):
     """
 
     original_response: str
-    parsed_response: ParsedResponse | None
+    parsed_response: ParsedResponse | None = None
+    model_response: ModelResponse | None = None
 
 
 @dataclass
@@ -49,7 +51,7 @@ class BeforeModelHookResult:
     If both fields are None, it indicates the hook made no modifications.
     """
 
-    messages: list[dict[str, str]] | None = None
+    messages: list[dict[str, Any]] | None = None
 
     def has_modifications(self) -> bool:
         """Check if this result contains any modifications."""
@@ -63,7 +65,7 @@ class BeforeModelHookResult:
     @classmethod
     def with_modifications(
         cls,
-        messages: list[dict[str, str]] | None = None,
+        messages: list[dict[str, Any]] | None = None,
     ) -> "BeforeModelHookResult":
         """Create a BeforeModelHookResult with specified modifications.
 
@@ -88,7 +90,7 @@ class AfterModelHookResult:
     """
 
     parsed_response: ParsedResponse | None = None
-    messages: list[dict[str, str]] | None = None
+    messages: list[dict[str, Any]] | None = None
 
     def has_modifications(self) -> bool:
         """Check if this result contains any modifications."""
@@ -103,7 +105,7 @@ class AfterModelHookResult:
     def with_modifications(
         cls,
         parsed_response: ParsedResponse | None = None,
-        messages: list[dict[str, str]] | None = None,
+        messages: list[dict[str, Any]] | None = None,
     ) -> "AfterModelHookResult":
         """Create a AfterModelHookResult with specified modifications.
 

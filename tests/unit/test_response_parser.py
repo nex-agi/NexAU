@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
+from northau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
 from northau.archs.main_sub.execution.parse_structures import (
     BatchAgentCall,
     SubAgentCall,
@@ -95,13 +96,58 @@ class TestResponseParser:
         assert result.tool_calls[1].tool_name == "tool_two"
         assert result.get_call_summary() == "2 tool calls"
 
+    def test_parse_openai_tool_call(self, parser):
+        """Test parsing tool calls from OpenAI structured response."""
+        model_response = ModelResponse(
+            content=None,
+            tool_calls=[
+                ModelToolCall(
+                    call_id="call_123",
+                    name="sample_tool",
+                    arguments={"param": "value"},
+                    raw_arguments='{"param": "value"}',
+                ),
+            ],
+        )
+
+        result = parser.parse_response(model_response)
+
+        assert result.model_response is model_response
+        assert len(result.tool_calls) == 1
+        tool_call = result.tool_calls[0]
+        assert tool_call.tool_name == "sample_tool"
+        assert tool_call.parameters["param"] == "value"
+        assert tool_call.source == "openai"
+
+    def test_parse_openai_sub_agent_call(self, parser):
+        """Test parsing OpenAI tool call that targets a sub-agent."""
+        model_response = ModelResponse(
+            content=None,
+            tool_calls=[
+                ModelToolCall(
+                    call_id="call_agent",
+                    name="sub-agent.researcher",
+                    arguments={"task": "Analyze data"},
+                    raw_arguments='{"task": "Analyze data"}',
+                ),
+            ],
+        )
+
+        result = parser.parse_response(model_response)
+
+        assert len(result.sub_agent_calls) == 1
+        sub_agent_call = result.sub_agent_calls[0]
+        assert sub_agent_call.agent_name == "researcher"
+        assert "task: Analyze data" in sub_agent_call.message
+        assert result.get_call_summary() == "1 sub-agent calls"
+
     # ========== Sub-Agent Call Tests ==========
 
     def test_parse_sub_agent_call(self, parser):
         """Test parsing a sub-agent call."""
         response = """
 <tool_use>
-<tool_name>agent:researcher</tool_name>
+<tool_name>sub-agent.researcher</tool_name>
 <parameter>
 <task>Research quantum computing</task>
 <deadline>2025-12-31</deadline>
@@ -120,7 +166,7 @@ class TestResponseParser:
         """Test parsing sub-agent call with empty parameters."""
         response = """
 <tool_use>
-<tool_name>agent:worker</tool_name>
+<tool_name>sub-agent.worker</tool_name>
 <parameter>
 <task></task>
 </parameter>
@@ -131,6 +177,22 @@ class TestResponseParser:
         assert len(result.sub_agent_calls) == 1
         # Empty parameters should not appear in message
         assert result.sub_agent_calls[0].message == ""
+
+    def test_parse_sub_agent_call_legacy_prefix(self, parser):
+        """Legacy agent: prefix should still be parsed for backward compatibility."""
+        response = """
+<tool_use>
+<tool_name>agent:legacy</tool_name>
+<parameter>
+<task>Legacy task</task>
+</parameter>
+</tool_use>
+"""
+
+        result = parser.parse_response(response)
+
+        assert len(result.sub_agent_calls) == 1
+        assert result.sub_agent_calls[0].agent_name == "legacy"
 
     # ========== Batch Agent Call Tests ==========
 
@@ -253,7 +315,7 @@ class TestResponseParser:
 </parameter>
 </parallel_tool>
 <parallel_tool>
-<tool_name>agent:worker</tool_name>
+<tool_name>sub-agent.worker</tool_name>
 <parameter>
 <task>Do work</task>
 </parameter>
@@ -538,7 +600,7 @@ outer
     def test_parse_sub_agent_call_direct(self, parser):
         """Test parsing sub-agent call directly."""
         xml_content = """
-<tool_name>agent:researcher</tool_name>
+<tool_name>sub-agent.researcher</tool_name>
 <parameter>
 <task>Research topic</task>
 <priority>high</priority>
@@ -565,7 +627,7 @@ outer
     def test_parse_sub_agent_call_invalid_xml(self, parser):
         """Test parsing sub-agent call with invalid XML."""
         xml_content = """
-<tool_name>agent:broken
+<tool_name>sub-agent.broken
 <parameter>
 <task>Do something</task>
 """
@@ -578,7 +640,7 @@ outer
         """Test parsing sub-agent call with value error that has successful fallback."""
         # Create well-formed XML that will trigger fallback parsing
         xml_content = """
-<tool_name>agent:worker</tool_name>
+<tool_name>sub-agent.worker</tool_name>
 <parameter>
 <task>Do work</task>
 </parameter>
@@ -598,7 +660,7 @@ outer
     def test_parse_sub_agent_call_no_parameters(self, parser):
         """Test parsing sub-agent call with no parameters."""
         xml_content = """
-<tool_name>agent:simple</tool_name>
+<tool_name>sub-agent.simple</tool_name>
 """
         sub_agent_call = parser._parse_sub_agent_call(xml_content)
 

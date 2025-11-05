@@ -16,6 +16,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from northau.archs.main_sub.execution.executor import Executor
+from northau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
 from northau.archs.main_sub.execution.parse_structures import (
     BatchAgentCall,
     ParsedResponse,
@@ -179,7 +180,7 @@ class TestExecutorExecution:
         # We need to mock the LLM caller to set the stop signal during execution
         def set_stop_signal(*args, **kwargs):
             executor.stop_signal = True
-            return "Response before stop"
+            return ModelResponse(content="Response before stop")
 
         with patch.object(executor.llm_caller, "call_llm", side_effect=set_stop_signal):
             with patch.object(executor.response_parser, "parse_response") as mock_parse:
@@ -194,6 +195,90 @@ class TestExecutorExecution:
 
                 # On next iteration it should stop
                 assert "Stop signal received" in response or "Response before stop" in response
+
+    def test_execute_openai_tool_messages(self, mock_llm_config, agent_state):
+        """Test that OpenAI tool results are appended as tool messages."""
+
+        def simple_tool(x: int) -> dict:
+            return {"result": x + 1}
+
+        tool = Tool(
+            name="simple_tool",
+            description="A simple tool",
+            input_schema={
+                "type": "object",
+                "properties": {"x": {"type": "integer"}},
+                "required": ["x"],
+            },
+            implementation=simple_tool,
+        )
+
+        openai_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "simple_tool",
+                    "description": "A simple tool",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"x": {"type": "integer"}},
+                        "required": ["x"],
+                    },
+                },
+            },
+        ]
+
+        executor = Executor(
+            agent_name="test_agent",
+            agent_id="test_id",
+            tool_registry={"simple_tool": tool},
+            sub_agent_factories={},
+            stop_tools=set(),
+            openai_client=Mock(),
+            llm_config=mock_llm_config,
+            max_iterations=2,
+            tool_call_mode="openai",
+            openai_tools=openai_tools,
+        )
+
+        history = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Use the tool"},
+        ]
+
+        first_response = ModelResponse(
+            content="",
+            tool_calls=[
+                ModelToolCall(
+                    call_id="call_123",
+                    name="simple_tool",
+                    arguments={"x": 3},
+                    raw_arguments='{"x": 3}',
+                ),
+            ],
+        )
+        second_response = ModelResponse(content="Final response")
+
+        with patch.object(executor.llm_caller, "call_llm", side_effect=[first_response, second_response]):
+            response, messages = executor.execute(history, agent_state)
+
+        # Response should be the final assistant content
+        assert response == "Final response"
+
+        # Tool result should be appended as a tool message with matching call ID
+        tool_messages = [msg for msg in messages if msg.get("role") == "tool"]
+        assert tool_messages, "Expected at least one tool message"
+
+        matching_tool_messages = [msg for msg in tool_messages if msg.get("tool_call_id") == "call_123"]
+        assert matching_tool_messages, "Tool message should reuse original tool_call_id"
+
+        tool_content = matching_tool_messages[0]["content"]
+        assert '"result"' in tool_content
+
+        # Tool message should appear before the user iteration hint
+        tool_index = messages.index(matching_tool_messages[0])
+        assert tool_index + 1 < len(messages)
+        assert messages[tool_index + 1]["role"] == "user"
 
     def test_execute_with_max_iterations(self, mock_llm_config, agent_state):
         """Test execution stops at max iterations."""
@@ -218,7 +303,7 @@ class TestExecutorExecution:
 
         # Mock the LLM caller to return simple responses
         with patch.object(executor.llm_caller, "call_llm") as mock_call_llm:
-            mock_call_llm.return_value = "Simple response with no tool calls"
+            mock_call_llm.return_value = ModelResponse(content="Simple response with no tool calls")
 
             # Mock response parser to return no calls
             with patch.object(executor.response_parser, "parse_response") as mock_parse:
@@ -258,7 +343,7 @@ class TestExecutorExecution:
 
         # Mock the LLM caller to return simple responses
         with patch.object(executor.llm_caller, "call_llm") as mock_call_llm:
-            mock_call_llm.return_value = "Simple response"
+            mock_call_llm.return_value = ModelResponse(content="Simple response")
 
             # Mock response parser to return no calls
             with patch.object(executor.response_parser, "parse_response") as mock_parse:
@@ -327,7 +412,7 @@ class TestExecutorExecution:
 
         # Mock the LLM caller to return simple responses
         with patch.object(executor.llm_caller, "call_llm") as mock_call_llm:
-            mock_call_llm.return_value = "Simple response"
+            mock_call_llm.return_value = ModelResponse(content="Simple response")
 
             # Mock response parser to return no calls
             with patch.object(executor.response_parser, "parse_response") as mock_parse:
@@ -407,11 +492,12 @@ class TestExecutorXMLCallProcessing:
             messages=[],
         )
 
-        processed, should_stop, result, messages = executor._process_xml_calls(hook_input)
+        processed, should_stop, result, messages, feedbacks = executor._process_xml_calls(hook_input)
 
         assert processed == "Just a plain response"
         assert should_stop is True
         assert result is None
+        assert feedbacks == []
 
     def test_process_xml_calls_with_tool_calls(self, mock_llm_config, agent_state):
         """Test processing response with tool calls."""
@@ -447,7 +533,7 @@ class TestExecutorXMLCallProcessing:
         tool_call = ToolCall(
             tool_name="simple_tool",
             parameters={"x": 5},
-            xml_content="<tool_call>...</tool_call>",
+            raw_content="<tool_call>...</tool_call>",
             tool_call_id="call_123",
         )
 
@@ -471,11 +557,12 @@ class TestExecutorXMLCallProcessing:
                 messages=[],
             )
 
-            processed, should_stop, result, messages = executor._process_xml_calls(hook_input)
+            processed, should_stop, result, messages, feedbacks = executor._process_xml_calls(hook_input)
 
             # Tool results should be appended to the response
             assert "<tool_result>" in processed
             assert "simple_tool" in processed
+            assert len(feedbacks) == 1
 
     def test_process_xml_calls_with_batch_calls(self, mock_llm_config, agent_state, temp_dir):
         """Test processing response with batch calls."""
@@ -504,7 +591,7 @@ class TestExecutorXMLCallProcessing:
             file_path=test_file,
             data_format="json",
             message_template="Process: {value}",
-            xml_content="<batch_agent>...</batch_agent>",
+            raw_content="<batch_agent>...</batch_agent>",
         )
 
         parsed_response = ParsedResponse(
@@ -530,11 +617,12 @@ class TestExecutorXMLCallProcessing:
                     messages=[],
                 )
 
-                processed, should_stop, result, messages = executor._process_xml_calls(hook_input)
+                processed, should_stop, result, messages, feedbacks = executor._process_xml_calls(hook_input)
 
                 # Batch results should be appended to the response
                 assert "batch_agent" in processed or "Batch processed" in processed
                 mock_batch.assert_called_once()
+                assert feedbacks == []
 
 
 class TestExecutorToolExecution:
@@ -570,7 +658,7 @@ class TestExecutorToolExecution:
         tool_call = ToolCall(
             tool_name="test_tool",
             parameters={"x": 5},
-            xml_content="<tool_call>...</tool_call>",
+            raw_content="<tool_call>...</tool_call>",
         )
 
         tool_name, result, is_error = executor._execute_tool_call_safe(tool_call, agent_state)
@@ -609,7 +697,7 @@ class TestExecutorToolExecution:
         tool_call = ToolCall(
             tool_name="error_tool",
             parameters={"x": 5},
-            xml_content="<tool_call>...</tool_call>",
+            raw_content="<tool_call>...</tool_call>",
         )
 
         tool_name, result, is_error = executor._execute_tool_call_safe(tool_call, agent_state)
@@ -644,7 +732,7 @@ class TestExecutorSubAgentExecution:
         sub_agent_call = SubAgentCall(
             agent_name="sub_agent",
             message="Test message",
-            xml_content="<sub_agent>...</sub_agent>",
+            raw_content="<sub_agent>...</sub_agent>",
         )
 
         # Mock the subagent manager
@@ -674,7 +762,7 @@ class TestExecutorSubAgentExecution:
         sub_agent_call = SubAgentCall(
             agent_name="non_existent",
             message="Test message",
-            xml_content="<sub_agent>...</sub_agent>",
+            raw_content="<sub_agent>...</sub_agent>",
         )
 
         # Mock the subagent manager to raise an error
@@ -900,7 +988,7 @@ class TestExecutorStopToolHandling:
         tool_call = ToolCall(
             tool_name="stop_tool",
             parameters={},
-            xml_content="<tool_call>...</tool_call>",
+            raw_content="<tool_call>...</tool_call>",
         )
 
         parsed_response = ParsedResponse(
@@ -910,10 +998,11 @@ class TestExecutorStopToolHandling:
             batch_agent_calls=[],
         )
 
-        processed, should_stop, result = executor._execute_parsed_calls(parsed_response, agent_state)
+        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(parsed_response, agent_state)
 
         # The stop tool should be detected in the result
         assert "<tool_result>" in processed
+        assert len(feedbacks) == 1
 
 
 class TestExecutorParallelExecution:
@@ -964,14 +1053,14 @@ class TestExecutorParallelExecution:
         tool_call1 = ToolCall(
             tool_name="tool1",
             parameters={"x": 5},
-            xml_content="<tool_call>...</tool_call>",
+            raw_content="<tool_call>...</tool_call>",
             tool_call_id="call_1",
         )
 
         tool_call2 = ToolCall(
             tool_name="tool2",
             parameters={"y": 7},
-            xml_content="<tool_call>...</tool_call>",
+            raw_content="<tool_call>...</tool_call>",
             tool_call_id="call_2",
         )
 
@@ -982,11 +1071,12 @@ class TestExecutorParallelExecution:
             batch_agent_calls=[],
         )
 
-        processed, should_stop, result = executor._execute_parsed_calls(parsed_response, agent_state)
+        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(parsed_response, agent_state)
 
         # Both tools should be executed
         assert "tool1" in processed
         assert "tool2" in processed
+        assert len(feedbacks) == 2
 
     def test_duplicate_tool_call_ids_handling(self, mock_llm_config, agent_state):
         """Test handling of duplicate tool_call_ids."""
@@ -1020,14 +1110,14 @@ class TestExecutorParallelExecution:
         tool_call1 = ToolCall(
             tool_name="test_tool",
             parameters={"x": 1},
-            xml_content="<tool_call>...</tool_call>",
+            raw_content="<tool_call>...</tool_call>",
             tool_call_id="call_123",
         )
 
         tool_call2 = ToolCall(
             tool_name="test_tool",
             parameters={"x": 2},
-            xml_content="<tool_call>...</tool_call>",
+            raw_content="<tool_call>...</tool_call>",
             tool_call_id="call_123",  # Duplicate ID
         )
 
@@ -1038,7 +1128,7 @@ class TestExecutorParallelExecution:
             batch_agent_calls=[],
         )
 
-        processed, should_stop, result = executor._execute_parsed_calls(parsed_response, agent_state)
+        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(parsed_response, agent_state)
 
         # Both tools should be executed despite duplicate IDs
         # The second one should have a modified ID (this happens in-place during execution)
@@ -1046,6 +1136,7 @@ class TestExecutorParallelExecution:
         assert "test_tool" in processed
         # The ID modification happens during execution, verify both calls were processed
         assert processed.count("<tool_result>") >= 2 or "result" in processed
+        assert len(feedbacks) == 2
 
 
 class TestExecutorWithHooks:
@@ -1078,7 +1169,7 @@ class TestExecutorWithHooks:
 
         # Mock LLM caller
         with patch.object(executor.llm_caller, "call_llm") as mock_call_llm:
-            mock_call_llm.return_value = "Response"
+            mock_call_llm.return_value = ModelResponse(content="Response")
 
             # Mock response parser
             with patch.object(executor.response_parser, "parse_response") as mock_parse:
@@ -1121,7 +1212,7 @@ class TestExecutorEdgeCases:
         tool_call = ToolCall(
             tool_name="test_tool",
             parameters={},
-            xml_content="<tool_call>...</tool_call>",
+            raw_content="<tool_call>...</tool_call>",
         )
 
         parsed_response = ParsedResponse(
@@ -1131,10 +1222,11 @@ class TestExecutorEdgeCases:
             batch_agent_calls=[],
         )
 
-        processed, should_stop, result = executor._execute_parsed_calls(parsed_response, agent_state)
+        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(parsed_response, agent_state)
 
         # Should return early without executing
         assert should_stop is False
+        assert feedbacks == []
 
     def test_execute_batch_call(self, mock_llm_config, temp_dir):
         """Test batch call execution."""
@@ -1160,7 +1252,7 @@ class TestExecutorEdgeCases:
             file_path=test_file,
             data_format="json",
             message_template="Process {id}",
-            xml_content="<batch_agent>...</batch_agent>",
+            raw_content="<batch_agent>...</batch_agent>",
         )
 
         # Mock batch processor
