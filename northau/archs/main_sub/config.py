@@ -105,7 +105,7 @@ class AgentConfig:
 
     def _generate_skill_description(self) -> str:
         """Generate skill description."""
-        skill_description = "<Skils>\n"
+        skill_description = "<Skills>\n"
         for skill in self.skills:
             skill_description += "<SkillBrief>\n"
             skill_description += f"Skill Name: {skill.name}\n"
