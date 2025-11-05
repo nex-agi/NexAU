@@ -15,6 +15,8 @@ import langfuse
 # Add parent directory to path to import northau
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from cli_subagent_adapter import attach_cli_to_agent
+
 from northau.archs.main_sub.execution.hooks import (
     AfterModelHookInput,
     AfterModelHookResult,
@@ -39,6 +41,27 @@ def create_cli_progress_hook():
     """Create a hook that reports tool calls to the CLI."""
 
     def progress_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
+        agent_state = hook_input.agent_state
+        agent_name = getattr(agent_state, "agent_name", "agent")
+        agent_id = getattr(agent_state, "agent_id", "")
+        parent_state = getattr(agent_state, "parent_agent_state", None)
+        is_sub_agent = parent_state is not None
+
+        base_metadata = {
+            "agent_name": agent_name,
+            "agent_id": agent_id,
+            "is_sub_agent": is_sub_agent,
+            "parent_agent_name": getattr(parent_state, "agent_name", None) if parent_state else None,
+            "parent_agent_id": getattr(parent_state, "agent_id", None) if parent_state else None,
+            "iteration": hook_input.current_iteration,
+        }
+
+        def build_metadata(extra: dict | None = None) -> dict:
+            metadata = {k: v for k, v in base_metadata.items() if v is not None}
+            if extra:
+                metadata.update(extra)
+            return metadata
+
         if hook_input.parsed_response:
             # Extract and display agent's text response (non-tool thinking)
             # This shows what the agent is thinking before executing tools
@@ -57,10 +80,11 @@ def create_cli_progress_hook():
 
                     # Check if this looks like meaningful text (not just XML/JSON)
                     if not response_text.startswith(("<", "{", "[")):
+                        message_type = "subagent_text" if is_sub_agent else "agent_text"
                         send_message(
-                            "agent_text",
+                            message_type,
                             display_text,
-                            metadata={"type": "agent_thinking", "iteration": hook_input.current_iteration},
+                            metadata=build_metadata({"type": "agent_thinking"}),
                         )
 
             # Report tool calls with prettier formatting
@@ -95,26 +119,25 @@ def create_cli_progress_hook():
 
                 # Send summary message
                 execution_type = "parallel" if is_parallel else "sequential"
+                message_type = "subagent_step" if is_sub_agent else "step"
                 send_message(
-                    "step",
+                    message_type,
                     f"Planning to execute {tool_count} tool(s) [{execution_type}]:",
-                    metadata={
-                        "type": "tool_plan_header",
-                        "tool_count": tool_count,
-                        "is_parallel": is_parallel,
-                        "iteration": hook_input.current_iteration,
-                    },
+                    metadata=build_metadata(
+                        {
+                            "type": "tool_plan_header",
+                            "tool_count": tool_count,
+                            "is_parallel": is_parallel,
+                        }
+                    ),
                 )
 
                 # Send each tool as a separate step for better readability
                 for i, tool_detail in enumerate(tool_details, 1):
                     send_message(
-                        "step",
+                        message_type,
                         f"  {i}. {tool_detail}",
-                        metadata={
-                            "type": "tool_detail",
-                            "iteration": hook_input.current_iteration,
-                        },
+                        metadata=build_metadata({"type": "tool_detail"}),
                     )
 
             # Report sub-agent calls
@@ -123,14 +146,15 @@ def create_cli_progress_hook():
                 agent_names = [call.agent_name for call in hook_input.parsed_response.sub_agent_calls]
 
                 send_message(
-                    "step",
+                    message_type,
                     f"Calling {agent_count} sub-agent(s): {', '.join(agent_names)}",
-                    metadata={
-                        "type": "subagent_plan",
-                        "agent_count": agent_count,
-                        "agents": agent_names,
-                        "iteration": hook_input.current_iteration,
-                    },
+                    metadata=build_metadata(
+                        {
+                            "type": "subagent_plan",
+                            "agent_count": agent_count,
+                            "agents": agent_names,
+                        }
+                    ),
                 )
 
         return AfterModelHookResult.no_changes()
@@ -149,14 +173,30 @@ def create_cli_tool_hook():
         else:
             output_preview = output_preview + f" ({len(output_preview)} chars)"
 
+        agent_state = hook_input.agent_state
+        parent_state = getattr(agent_state, "parent_agent_state", None)
+        is_sub_agent = parent_state is not None
+
+        metadata = {
+            "type": "tool_executed",
+            "tool_name": hook_input.tool_name,
+            "output_preview": output_preview,
+            "agent_name": getattr(agent_state, "agent_name", "agent"),
+            "agent_id": getattr(agent_state, "agent_id", ""),
+            "is_sub_agent": is_sub_agent,
+            "parent_agent_name": getattr(parent_state, "agent_name", None) if parent_state else None,
+            "parent_agent_id": getattr(parent_state, "agent_id", None) if parent_state else None,
+        }
+
+        # Remove None values for cleanliness
+        metadata = {k: v for k, v in metadata.items() if v is not None}
+
+        message_type = "subagent_step" if is_sub_agent else "step"
+
         send_message(
-            "step",
+            message_type,
             f"Tool '{hook_input.tool_name}' completed",
-            metadata={
-                "type": "tool_executed",
-                "tool_name": hook_input.tool_name,
-                "output_preview": output_preview,
-            },
+            metadata=metadata,
         )
 
         return AfterToolHookResult.no_changes()
@@ -178,6 +218,21 @@ def main():
         # Create our CLI progress hooks
         cli_progress_hook = create_cli_progress_hook()
         cli_tool_hook = create_cli_tool_hook()
+
+        # Helper to forward sub-agent lifecycle events to the CLI
+        def handle_subagent_event(event_type: str, payload: dict):
+            event_mapping = {
+                "start": ("subagent_start", "message"),
+                "complete": ("subagent_complete", "result"),
+                "error": ("subagent_error", "error"),
+            }
+
+            if event_type not in event_mapping:
+                return
+
+            message_type, content_field = event_mapping[event_type]
+            content = payload.get(content_field, "")
+            send_message(message_type, content, metadata=payload)
 
         # Load the YAML config and inject our hooks
         from pathlib import Path
@@ -211,6 +266,8 @@ def main():
             .build_system_prompt_path()
             .get_agent()
         )
+
+        attach_cli_to_agent(agent, cli_progress_hook, cli_tool_hook, handle_subagent_event)
 
         send_message("status", "Agent loaded successfully")
         send_message("ready", "Agent is ready for input")
@@ -260,6 +317,8 @@ def main():
                             .build_system_prompt_path()
                             .get_agent()
                         )
+
+                        attach_cli_to_agent(agent, cli_progress_hook, cli_tool_hook, handle_subagent_event)
 
                         send_message("status", "Agent re-initialized successfully")
                         send_message("response", "Agent has been re-initialized. Conversation history cleared.")

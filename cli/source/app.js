@@ -127,9 +127,37 @@ export default function App({yamlPath}) {
 	const [statusMessage, setStatusMessage] = useState('Initializing...');
 	const [isReady, setIsReady] = useState(false);
 	const [error, setError] = useState(null);
+	const [subAgentTraces, setSubAgentTraces] = useState(() => new Map());
+	const [activeSubAgentId, setActiveSubAgentId] = useState(null);
 	const agentProcess = useRef(null);
 	const currentStepsRef = useRef([]);
 	const {exit} = useApp();
+
+	const ensureSubAgentEntry = (metadata = {}, content = '') => ({
+		agentId: metadata.agent_id || 'unknown',
+		agentName: metadata.agent_name || 'Sub-Agent',
+		displayName: metadata.display_name || metadata.agent_name || 'Sub-Agent',
+		parentAgentName: metadata.parent_agent_name || '',
+		parentAgentId: metadata.parent_agent_id || '',
+		message: content || metadata.message || '',
+		steps: [],
+		status: 'running',
+		result: '',
+		error: '',
+		lastUpdated: Date.now(),
+	});
+
+	useEffect(() => {
+		if (subAgentTraces.size === 0) {
+			setActiveSubAgentId(null);
+			return;
+		}
+
+		if (activeSubAgentId && !subAgentTraces.has(activeSubAgentId)) {
+			const firstId = subAgentTraces.keys().next().value;
+			setActiveSubAgentId(firstId || null);
+		}
+	}, [subAgentTraces, activeSubAgentId]);
 
 	useEffect(() => {
 		// Display welcome message
@@ -153,6 +181,7 @@ export default function App({yamlPath}) {
 			for (const line of lines) {
 				try {
 					const message = JSON.parse(line);
+					const metadata = message.metadata || {};
 
 					switch (message.type) {
 						case 'status':
@@ -164,6 +193,65 @@ export default function App({yamlPath}) {
 							setStatusMessage('');
 							// Don't clear steps - they're now part of history
 							break;
+						case 'subagent_start': {
+							const agentId = metadata.agent_id;
+							if (!agentId) break;
+
+							setSubAgentTraces(prev => {
+								const next = new Map(prev);
+								next.set(agentId, ensureSubAgentEntry(metadata, message.content));
+								return next;
+							});
+							setActiveSubAgentId(prev => prev ?? agentId);
+							break;
+						}
+						case 'subagent_step':
+						case 'subagent_text': {
+							const agentId = metadata.agent_id;
+							if (!agentId) break;
+
+							setSubAgentTraces(prev => {
+								const next = new Map(prev);
+								const existing = next.get(agentId) || ensureSubAgentEntry(metadata);
+								const updated = {
+									...existing,
+									agentName: metadata.agent_name || existing.agentName,
+									displayName: metadata.display_name || existing.displayName,
+									parentAgentName: metadata.parent_agent_name ?? existing.parentAgentName,
+									parentAgentId: metadata.parent_agent_id ?? existing.parentAgentId,
+									steps: [...existing.steps, {content: message.content, metadata}],
+									lastUpdated: Date.now(),
+								};
+								next.set(agentId, updated);
+								return next;
+							});
+							setActiveSubAgentId(prev => prev ?? agentId);
+							break;
+						}
+						case 'subagent_complete': {
+							const agentId = metadata.agent_id;
+							if (!agentId) break;
+
+							setSubAgentTraces(prev => {
+								if (!prev.has(agentId)) return prev;
+								const next = new Map(prev);
+								next.delete(agentId);
+								return next;
+							});
+							break;
+						}
+						case 'subagent_error': {
+							const agentId = metadata.agent_id;
+							if (!agentId) break;
+
+							setSubAgentTraces(prev => {
+								if (!prev.has(agentId)) return prev;
+								const next = new Map(prev);
+								next.delete(agentId);
+								return next;
+							});
+							break;
+						}
 						case 'step':
 							// Add intermediate step
 							const newStep = {
@@ -248,6 +336,8 @@ export default function App({yamlPath}) {
 			setError(null);
 			currentStepsRef.current = [];
 			setCurrentSteps([]);
+			setSubAgentTraces(new Map());
+			setActiveSubAgentId(null);
 			
 			// Send message to Python agent
 			if (agentProcess.current) {
@@ -284,7 +374,27 @@ export default function App({yamlPath}) {
 
 			exit();
 		}
+
+		if (key.ctrl && input === 't' && subAgentTraces.size > 0) {
+			setActiveSubAgentId(prev => {
+				const ids = Array.from(subAgentTraces.keys());
+				if (ids.length === 0) return prev;
+				const currentIndex = prev ? ids.indexOf(prev) : -1;
+				const nextIndex = (currentIndex + 1) % ids.length;
+				return ids[nextIndex];
+			});
+		}
 	});
+
+	const subAgentEntries = Array.from(subAgentTraces.values());
+	const activeSubAgent =
+		activeSubAgentId && subAgentTraces.has(activeSubAgentId)
+			? subAgentTraces.get(activeSubAgentId)
+			: subAgentEntries[0] || null;
+	const activeSubAgentIndex = activeSubAgent
+		? subAgentEntries.findIndex(entry => entry.agentId === activeSubAgent.agentId)
+		: -1;
+	const totalSubAgents = subAgentEntries.length;
 
 	return (
 		<Box flexDirection="column" height="100%">
@@ -301,43 +411,104 @@ export default function App({yamlPath}) {
 				<Text dimColor> (Press Esc or Ctrl+C to exit)</Text>
 			</Box>
 
-			{/* Conversation History */}
-			<Box flexDirection="column" flexGrow={1} marginBottom={1} paddingX={1}>
-				{messages.map((msg, index) => (
-					<Message
-						key={index}
-						role={msg.role}
-						content={msg.content}
-						steps={msg.steps}
-					/>
-				))}
+			{/* Main Content */}
+			<Box flexDirection="row" flexGrow={1} marginBottom={1} paddingX={1}>
+				<Box flexDirection="column" flexGrow={2} marginRight={activeSubAgent ? 1 : 0}>
+					{messages.map((msg, index) => (
+						<Message
+							key={index}
+							role={msg.role}
+							content={msg.content}
+							steps={msg.steps}
+						/>
+					))}
 
-				{error && (
-					<Box marginBottom={1}>
-						<Text color="red">✗ Error: {error}</Text>
-					</Box>
-				)}
-
-				{/* Show current steps (work in progress) */}
-				{currentSteps.length > 0 && (
-					<Box flexDirection="column" marginBottom={1}>
-						<Box paddingLeft={2} marginBottom={0}>
-							<Text color="yellow" bold>
-								<Spinner type="dots" /> Working...
-							</Text>
+					{error && (
+						<Box marginBottom={1}>
+							<Text color="red">✗ Error: {error}</Text>
 						</Box>
-						{currentSteps.map((step, index) => (
+					)}
+
+					{/* Show current steps (work in progress) */}
+					{currentSteps.length > 0 && (
+						<Box flexDirection="column" marginBottom={1}>
+							<Box paddingLeft={2} marginBottom={0}>
+								<Text color="yellow" bold>
+									<Spinner type="dots" /> Working...
+								</Text>
+							</Box>
+							{currentSteps.map((step, index) => (
+								<StepMessage
+									key={index}
+									content={step.content}
+									metadata={step.metadata}
+								/>
+							))}
+						</Box>
+					)}
+
+					{statusMessage && !currentSteps.length && (
+						<StatusMessage message={statusMessage} isThinking={isProcessing} />
+					)}
+				</Box>
+
+				{activeSubAgent && (
+					<Box
+						flexDirection="column"
+						flexGrow={1}
+						borderStyle="round"
+						borderColor="cyan"
+						paddingX={1}
+					>
+						<Box marginBottom={1} flexDirection="column">
+							<Text bold color="cyan">
+								Sub-Agent Trace
+							</Text>
+							<Text dimColor>
+								{activeSubAgent.displayName}
+								{totalSubAgents > 1 && activeSubAgentIndex >= 0 && ` (${activeSubAgentIndex + 1}/${totalSubAgents}, press "ctrl+t" to switch)`}
+							</Text>
+							{activeSubAgent.parentAgentName && (
+								<Text dimColor>
+									Parent: {activeSubAgent.parentAgentName}
+								</Text>
+							)}
+						</Box>
+
+						{activeSubAgent.message && (
+							<Box marginBottom={1}>
+								<Text dimColor>Message: {activeSubAgent.message}</Text>
+							</Box>
+						)}
+
+						{activeSubAgent.status === 'running' && (
+							<Box marginBottom={1}>
+								<Text color="yellow">
+									<Spinner type="dots" /> Running...
+								</Text>
+							</Box>
+						)}
+
+						{activeSubAgent.steps.map((step, index) => (
 							<StepMessage
 								key={index}
 								content={step.content}
 								metadata={step.metadata}
 							/>
 						))}
-					</Box>
-				)}
 
-				{statusMessage && !currentSteps.length && (
-					<StatusMessage message={statusMessage} isThinking={isProcessing} />
+						{activeSubAgent.status === 'complete' && activeSubAgent.result && (
+							<Box marginTop={1}>
+								<Text color="green">Result: {activeSubAgent.result}</Text>
+							</Box>
+						)}
+
+						{activeSubAgent.status === 'error' && activeSubAgent.error && (
+							<Box marginTop={1}>
+								<Text color="red">Error: {activeSubAgent.error}</Text>
+							</Box>
+						)}
+					</Box>
 				)}
 			</Box>
 
