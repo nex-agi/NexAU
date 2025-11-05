@@ -53,6 +53,7 @@ class PromptBuilder:
         tools: list[Tool] = None,
         sub_agent_factories: dict[str, Any] = None,
         runtime_context: dict | None = None,
+        include_tool_instructions: bool = True,
     ) -> str:
         """Build the complete system prompt including tool and sub-agent docs.
 
@@ -72,17 +73,22 @@ class PromptBuilder:
                 runtime_context,
             )
 
-            # Build capabilities documentation
-            capabilities_docs = self._build_capabilities_docs(
-                tools or agent_config.tools,
-                sub_agent_factories or agent_config.sub_agent_factories,
-                runtime_context,
-            )
+            if include_tool_instructions:
+                # Build capabilities documentation
+                capabilities_docs = self._build_capabilities_docs(
+                    tools or agent_config.tools,
+                    sub_agent_factories or agent_config.sub_agent_factories,
+                    runtime_context,
+                )
 
-            # Add tool execution instructions
-            execution_instructions = self._get_tool_execution_instructions()
+                # Add tool execution instructions
+                execution_instructions = ""
 
-            return f"{base_prompt}{capabilities_docs}{execution_instructions}"
+                execution_instructions = self._get_tool_execution_instructions()
+
+                return f"{base_prompt}{capabilities_docs}{execution_instructions}"
+            else:
+                return base_prompt
 
         except Exception as e:
             logger.error(f"❌ Error building system prompt: {e}")

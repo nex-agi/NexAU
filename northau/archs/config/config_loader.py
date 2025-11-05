@@ -110,6 +110,7 @@ class AgentBuilder:
 
         self.agent_params["stop_tools"] = self.config.get("stop_tools", [])
         self.agent_params["max_iterations"] = self.config.get("max_iterations", 100)
+        self.agent_params["tool_call_mode"] = self.config.get("tool_call_mode", "openai")
 
         return self
 

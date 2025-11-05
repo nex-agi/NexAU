@@ -61,19 +61,19 @@ def parsed_response():
     tool_call = ToolCall(
         tool_name="test_tool",
         parameters={"param1": "value1"},
-        xml_content="<tool>test</tool>",
+        raw_content="<tool>test</tool>",
     )
     sub_agent_call = SubAgentCall(
         agent_name="sub_agent",
         message="test message",
-        xml_content="<sub_agent>test</sub_agent>",
+        raw_content="<sub_agent>test</sub_agent>",
     )
     batch_call = BatchAgentCall(
         agent_name="batch_agent",
         file_path="test.json",
         data_format="json",
         message_template="Process: {{item}}",
-        xml_content="<batch>test</batch>",
+        raw_content="<batch>test</batch>",
     )
     return ParsedResponse(
         original_response="test response",

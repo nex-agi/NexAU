@@ -1,5 +1,6 @@
 """Refactored Agent implementation for the Northau framework."""
 
+import copy
 import logging
 import uuid
 from collections.abc import Callable
@@ -28,6 +29,10 @@ from northau.archs.main_sub.config import AgentConfig, ExecutionConfig
 from northau.archs.main_sub.execution.executor import Executor
 from northau.archs.main_sub.prompt_builder import PromptBuilder
 from northau.archs.main_sub.skill import Skill
+from northau.archs.main_sub.tool_call_modes import (
+    STRUCTURED_TOOL_CALL_MODES,
+    normalize_tool_call_mode,
+)
 from northau.archs.main_sub.utils.cleanup_manager import cleanup_manager
 from northau.archs.main_sub.utils.token_counter import TokenCounter
 
@@ -62,6 +67,10 @@ class Agent:
         self.config = config
         self.global_storage = global_storage if global_storage is not None else GlobalStorage()
         self.exec_config = exec_config if exec_config is not None else ExecutionConfig()
+
+        self.tool_call_mode = normalize_tool_call_mode(self.exec_config.tool_call_mode)
+        self.use_structured_tool_calls = self.tool_call_mode in STRUCTURED_TOOL_CALL_MODES
+        self.tool_call_payload = self._build_tool_call_payload() if self.use_structured_tool_calls else []
 
         # Initialize services
         self.openai_client = self._initialize_openai_client()
@@ -160,6 +169,104 @@ class Agent:
         except Exception as e:
             logger.error(f"Failed to initialize MCP tools: {e}")
 
+    def _build_openai_tool_specs(self) -> list[dict[str, Any]]:
+        """Convert configured tools and sub-agents into OpenAI tool definitions."""
+        tools_spec: list[dict[str, Any]] = []
+
+        for tool in self.config.tools:
+            parameters = copy.deepcopy(tool.input_schema or {})
+            if not parameters:
+                parameters = {"type": "object", "properties": {}}
+            elif "type" not in parameters:
+                parameters = {
+                    "type": "object",
+                    "properties": parameters.get("properties", {}),
+                }
+
+            tools_spec.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description or "",
+                        "parameters": parameters,
+                    },
+                },
+            )
+
+        for sub_agent_name in (self.config.sub_agent_factories or {}).keys():
+            tools_spec.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": f"sub-agent.{sub_agent_name}",
+                        "description": f"Delegate work to sub-agent '{sub_agent_name}'.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string",
+                                    "description": "Task or question for the sub-agent.",
+                                },
+                            },
+                            "required": ["message"],
+                        },
+                    },
+                },
+            )
+
+        return tools_spec
+
+    def _build_tool_call_payload(self) -> list[dict[str, Any]]:
+        """Build structured tool definitions for the active tool_call_mode."""
+        if self.tool_call_mode == "openai":
+            return self._build_openai_tool_specs()
+        if self.tool_call_mode == "anthorpic":
+            return self._build_anthorpic_tool_specs()
+        return []
+
+    def _build_anthorpic_tool_specs(self) -> list[dict[str, Any]]:
+        """Convert tools and sub-agents into Anthorpic tool definitions."""
+        tools_spec: list[dict[str, Any]] = []
+
+        for tool in self.config.tools:
+            input_schema = copy.deepcopy(tool.input_schema or {})
+            if not input_schema:
+                input_schema = {"type": "object", "properties": {}}
+            elif "type" not in input_schema:
+                input_schema = {
+                    "type": "object",
+                    "properties": input_schema.get("properties", {}),
+                }
+
+            tools_spec.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "input_schema": input_schema,
+                },
+            )
+
+        for sub_agent_name in (self.config.sub_agent_factories or {}).keys():
+            tools_spec.append(
+                {
+                    "name": f"sub-agent.{sub_agent_name}",
+                    "description": f"Delegate work to sub-agent '{sub_agent_name}'.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "message": {
+                                "type": "string",
+                                "description": "Task or question for the sub-agent.",
+                            },
+                        },
+                        "required": ["message"],
+                    },
+                },
+            )
+
+        return tools_spec
+
     def _initialize_execution_components(self) -> None:
         """Initialize execution components."""
         # Initialize the Executor
@@ -183,6 +290,8 @@ class Agent:
             before_model_hooks=self.config.before_model_hooks,
             global_storage=self.global_storage,
             custom_llm_generator=self.config.custom_llm_generator,
+            tool_call_mode=self.tool_call_mode,
+            openai_tools=self.tool_call_payload,
         )
 
     def run(
@@ -220,6 +329,7 @@ class Agent:
                 tools=self.config.tools,
                 sub_agent_factories=self.config.sub_agent_factories,
                 runtime_context=merged_context,
+                include_tool_instructions=not self.use_structured_tool_calls,
             )
             if not self.history:
                 self.history = [{"role": "system", "content": system_prompt}]
@@ -237,12 +347,19 @@ class Agent:
                 global_storage=self.global_storage,
                 parent_agent_state=parent_agent_state,
             )
+            agent_state.langfuse_trace_id = self.langfuse_trace_id
 
             try:
                 # Execute using the executor
                 if self.langfuse_client:
                     try:
                         from datetime import datetime
+
+                        trace_context = {
+                            "trace_id": self.langfuse_trace_id,
+                        }
+                        if parent_agent_state and parent_agent_state.langfuse_span_id:
+                            trace_context["parent_span_id"] = parent_agent_state.langfuse_span_id
 
                         with self.langfuse_client.start_as_current_span(
                             name=f"agent_{self.config.name}",
@@ -254,14 +371,13 @@ class Agent:
                                 "system_prompt_type": self.config.system_prompt_type,
                                 "timestamp": datetime.now().isoformat(),
                             },
-                            trace_context={
-                                "trace_id": self.langfuse_trace_id,
-                            },
-                        ):
+                            trace_context=trace_context,
+                        ) as current_span:
                             logger.info(
                                 f"📊 Created Langfuse span for agent: {self.config.name}",
                             )
 
+                            agent_state.langfuse_span_id = current_span.id
                             response, updated_messages = self.executor.execute(
                                 self.history,
                                 agent_state,
@@ -400,6 +516,7 @@ def create_agent(
     global_storage: GlobalStorage | None = None,
     # Custom LLM generator parameter
     custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None,
+    tool_call_mode: str = "xml",
     **llm_kwargs,
 ) -> Agent:
     """Create a new agent with specified configuration."""
@@ -439,6 +556,7 @@ def create_agent(
         max_running_subagents=max_running_subagents,
         retry_attempts=retry_attempts,
         timeout=timeout,
+        tool_call_mode=tool_call_mode,
     )
 
     return Agent(agent_config, global_storage, exec_config)

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from .model_response import ModelResponse
+
 
 class CallType(Enum):
     """Types of executable calls."""
@@ -20,12 +22,17 @@ class ToolCall:
 
     tool_name: str
     parameters: dict[str, Any]
-    xml_content: str  # Original XML for error reporting
+    raw_content: str | None = None  # Original representation for error reporting/debugging
     tool_call_id: str | None = None
+    source: str = "xml"
 
     def __post_init__(self):
         if self.tool_call_id is None:
             self.tool_call_id = "tool_call_" + str(uuid.uuid4())
+
+    @property
+    def xml_content(self) -> str | None:  # pragma: no cover - backward compatibility
+        return self.raw_content
 
 
 @dataclass
@@ -34,12 +41,17 @@ class SubAgentCall:
 
     agent_name: str
     message: str
-    xml_content: str  # Original XML for error reporting
+    raw_content: str | None = None  # Original representation for error reporting/debugging
+    tool_call_id: str | None = None
     sub_agent_call_id: str | None = None
 
     def __post_init__(self):
         if self.sub_agent_call_id is None:
             self.sub_agent_call_id = "sub_agent_call_" + str(uuid.uuid4())
+
+    @property
+    def xml_content(self) -> str | None:  # pragma: no cover - backward compatibility
+        return self.raw_content
 
 
 @dataclass
@@ -50,12 +62,16 @@ class BatchAgentCall:
     file_path: str
     data_format: str
     message_template: str
-    xml_content: str  # Original XML for error reporting
+    raw_content: str | None = None  # Original representation for error reporting/debugging
     batch_agent_call_id: str | None = None
 
     def __post_init__(self):
         if self.batch_agent_call_id is None:
             self.batch_agent_call_id = "batch_agent_call_" + str(uuid.uuid4())
+
+    @property
+    def xml_content(self) -> str | None:  # pragma: no cover - backward compatibility
+        return self.raw_content
 
 
 # Union type for all call types
@@ -72,6 +88,7 @@ class ParsedResponse:
     batch_agent_calls: list[BatchAgentCall]
     is_parallel_tools: bool = False
     is_parallel_sub_agents: bool = False
+    model_response: ModelResponse | None = None
 
     def get_all_calls(self) -> list[ExecutableCall]:
         """Get all calls in execution order."""

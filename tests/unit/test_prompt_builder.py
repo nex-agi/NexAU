@@ -164,6 +164,21 @@ class TestBuildSystemPrompt:
         mock_base.assert_called_once()
         mock_caps.assert_called_once()
 
+    def test_build_system_prompt_without_tool_instructions(self, mock_config):
+        """Ensure tool instructions can be skipped when requested."""
+        builder = PromptBuilder()
+
+        with patch.object(builder, "_get_base_system_prompt", return_value="Base\n"):
+            with patch.object(builder, "_build_capabilities_docs", return_value="Caps\n"):
+                with patch.object(builder, "_get_tool_execution_instructions", return_value="ShouldNotAppear\n") as mock_exec:
+                    result = builder.build_system_prompt(
+                        mock_config,
+                        include_tool_instructions=False,
+                    )
+
+        mock_exec.assert_not_called()
+        assert "ShouldNotAppear" not in result
+
     def test_build_system_prompt_error_handling(self, mock_config):
         """Test error handling in build_system_prompt."""
         builder = PromptBuilder()

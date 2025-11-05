@@ -19,6 +19,7 @@ from unittest.mock import Mock, call, patch
 import pytest
 
 from northau.archs.main_sub.execution.llm_caller import LLMCaller, bypass_llm_generator
+from northau.archs.main_sub.execution.model_response import ModelResponse
 from northau.archs.main_sub.execution.stop_reason import AgentStopReason
 
 
@@ -71,6 +72,7 @@ class TestLLMCallerBasicCalls:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Hello! How can I help you?"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -81,7 +83,8 @@ class TestLLMCallerBasicCalls:
         messages = [{"role": "user", "content": "Hello"}]
         response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
-        assert response == "Hello! How can I help you?"
+        assert isinstance(response, ModelResponse)
+        assert response.content == "Hello! How can I help you?"
         mock_openai_client.chat.completions.create.assert_called_once()
 
     def test_call_llm_without_client_raises_error(self, mock_llm_config):
@@ -101,6 +104,7 @@ class TestLLMCallerBasicCalls:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -124,6 +128,7 @@ class TestLLMCallerBasicCalls:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         # Setup llm_config with existing stop sequences
@@ -147,11 +152,79 @@ class TestLLMCallerBasicCalls:
         assert "custom_stop_2" in stop_sequences
         assert "</tool_use>" in stop_sequences
 
+    def test_call_llm_with_openai_tools(self, mock_openai_client, mock_llm_config, agent_state):
+        """Test that tools parameter is forwarded and XML stops are omitted."""
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message.tool_calls = []
+        mock_openai_client.chat.completions.create.return_value = mock_response
+
+        mock_llm_config.to_openai_params = Mock(
+            return_value={"model": "gpt-4o-mini", "temperature": 0.7},
+        )
+
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=mock_llm_config,
+        )
+
+        messages = [{"role": "user", "content": "Hello"}]
+        tools_payload = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "simple_tool",
+                    "description": "A simple tool",
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
+            },
+        ]
+
+        caller.call_llm(
+            messages,
+            max_tokens=100,
+            force_stop_reason=AgentStopReason.SUCCESS,
+            agent_state=agent_state,
+            tool_call_mode="openai",
+            tools=tools_payload,
+        )
+
+        call_args = mock_openai_client.chat.completions.create.call_args
+        assert call_args[1]["tools"] == tools_payload
+        assert "tool_choice" in call_args[1]
+        assert "stop" not in call_args[1] or "</tool_use>" not in call_args[1].get("stop", [])
+
+    def test_call_llm_anthorpic_mode_not_supported(
+        self,
+        mock_openai_client,
+        mock_llm_config,
+        agent_state,
+    ):
+        """Anthorpic mode should clearly signal lack of support."""
+
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=mock_llm_config,
+        )
+
+        messages = [{"role": "user", "content": "Hello"}]
+
+        with pytest.raises(RuntimeError, match="not supported"):
+            caller.call_llm(
+                messages,
+                max_tokens=50,
+                force_stop_reason=AgentStopReason.SUCCESS,
+                agent_state=agent_state,
+                tool_call_mode="anthorpic",
+            )
+
     def test_call_llm_applies_additional_drop_params(self, mock_openai_client, mock_llm_config, agent_state):
         """Test that additional_drop_params are applied before sending request."""
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         mock_llm_config.additional_drop_params = ("stop", "temperature")
@@ -173,6 +246,7 @@ class TestLLMCallerBasicCalls:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         # Setup llm_config with string stop sequence
@@ -202,6 +276,7 @@ class TestLLMCallerXMLRestoration:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "<tool_use><tool_name>test"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -213,7 +288,7 @@ class TestLLMCallerXMLRestoration:
         response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         # The XMLUtils.restore_closing_tags should add </tool_use>
-        assert "</tool_use>" in response
+        assert "</tool_use>" in response.content
 
     def test_call_llm_splits_response_at_stop_sequences(self, mock_openai_client, mock_llm_config, agent_state):
         """Test that response is split at stop sequences."""
@@ -222,6 +297,7 @@ class TestLLMCallerXMLRestoration:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = full_response
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -234,8 +310,8 @@ class TestLLMCallerXMLRestoration:
 
         # Response should be split at the stop sequence
         # After split and restoration, it should have the closing tag but not extra content
-        assert "Response content" in response
-        assert "Extra content" not in response
+        assert "Response content" in response.content
+        assert "Extra content" not in response.content
 
 
 class TestLLMCallerDebugLogging:
@@ -246,6 +322,7 @@ class TestLLMCallerDebugLogging:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Debug response"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         # Enable debug mode
@@ -270,6 +347,7 @@ class TestLLMCallerDebugLogging:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         # Disable debug mode
@@ -299,7 +377,7 @@ class TestLLMCallerRetryLogic:
         mock_openai_client.chat.completions.create.side_effect = [
             Exception("API Error 1"),
             Exception("API Error 2"),
-            Mock(choices=[Mock(message=Mock(content="Success after retry"))]),
+            Mock(choices=[Mock(message=Mock(content="Success after retry", tool_calls=[]))]),
         ]
 
         caller = LLMCaller(
@@ -313,7 +391,8 @@ class TestLLMCallerRetryLogic:
         with patch("time.sleep"):  # Mock sleep to speed up test
             response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
-        assert response == "Success after retry"
+        assert isinstance(response, ModelResponse)
+        assert response.content == "Success after retry"
         assert mock_openai_client.chat.completions.create.call_count == 3
 
     def test_call_llm_exhausts_retries(self, mock_openai_client, mock_llm_config, agent_state):
@@ -341,7 +420,7 @@ class TestLLMCallerRetryLogic:
         mock_openai_client.chat.completions.create.side_effect = [
             Exception("Error 1"),
             Exception("Error 2"),
-            Mock(choices=[Mock(message=Mock(content="Success"))]),
+            Mock(choices=[Mock(message=Mock(content="Success", tool_calls=[]))]),
         ]
 
         caller = LLMCaller(
@@ -365,8 +444,8 @@ class TestLLMCallerRetryLogic:
         """Test that empty response content triggers retry."""
         # First call returns empty content, second succeeds
         mock_openai_client.chat.completions.create.side_effect = [
-            Mock(choices=[Mock(message=Mock(content=""))]),
-            Mock(choices=[Mock(message=Mock(content="Valid response"))]),
+            Mock(choices=[Mock(message=Mock(content="", tool_calls=[]))]),
+            Mock(choices=[Mock(message=Mock(content="Valid response", tool_calls=[]))]),
         ]
 
         caller = LLMCaller(
@@ -380,7 +459,8 @@ class TestLLMCallerRetryLogic:
         with patch("time.sleep"):
             response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
-        assert response == "Valid response"
+        assert isinstance(response, ModelResponse)
+        assert response.content == "Valid response"
         assert mock_openai_client.chat.completions.create.call_count == 2
 
 
@@ -392,6 +472,7 @@ class TestLLMCallerForceStopReason:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Normal response"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -407,7 +488,8 @@ class TestLLMCallerForceStopReason:
             agent_state=agent_state,
         )
 
-        assert response == "Normal response"
+        assert isinstance(response, ModelResponse)
+        assert response.content == "Normal response"
         mock_openai_client.chat.completions.create.assert_called_once()
 
     def test_call_llm_with_non_success_stop_reason_returns_none(self, mock_openai_client, mock_llm_config, agent_state):
@@ -471,7 +553,8 @@ class TestLLMCallerCustomGenerator:
             agent_state=agent_state,
         )
 
-        assert response == "Custom generator response"
+        assert isinstance(response, ModelResponse)
+        assert response.content == "Custom generator response"
         # OpenAI client should not be called when custom generator is used
         mock_openai_client.chat.completions.create.assert_not_called()
 
@@ -534,7 +617,8 @@ class TestLLMCallerCustomGenerator:
                 agent_state=agent_state,
             )
 
-        assert response == "Success after retry"
+        assert isinstance(response, ModelResponse)
+        assert response.content == "Success after retry"
         assert call_count[0] == 3
 
     def test_call_llm_custom_generator_with_non_success_stop(self, mock_openai_client, mock_llm_config, agent_state):
@@ -562,7 +646,8 @@ class TestLLMCallerCustomGenerator:
         )
 
         # Should return "Stopped" from the custom generator
-        assert response == "Stopped"
+        assert isinstance(response, ModelResponse)
+        assert response.content == "Stopped"
 
 
 class TestBypassLLMGenerator:
@@ -573,6 +658,7 @@ class TestBypassLLMGenerator:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "API response"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         kwargs = {
@@ -588,7 +674,8 @@ class TestBypassLLMGenerator:
             agent_state,
         )
 
-        assert result == "API response"
+        assert isinstance(result, ModelResponse)
+        assert result.content == "API response"
         captured = capsys.readouterr()
         assert "Custom LLM Generator called with 1 messages" in captured.out
 
@@ -617,6 +704,7 @@ class TestBypassLLMGenerator:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         kwargs = {
@@ -635,7 +723,8 @@ class TestBypassLLMGenerator:
             agent_state,
         )
 
-        assert result == "Response"
+        assert isinstance(result, ModelResponse)
+        assert result.content == "Response"
         captured = capsys.readouterr()
         assert "Custom LLM Generator called with 3 messages" in captured.out
 
@@ -648,6 +737,7 @@ class TestLLMCallerEdgeCases:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -657,7 +747,8 @@ class TestLLMCallerEdgeCases:
 
         response = caller.call_llm([], max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
-        assert response == "Response"
+        assert isinstance(response, ModelResponse)
+        assert response.content == "Response"
         # Check that empty messages were passed
         call_args = mock_openai_client.chat.completions.create.call_args
         assert call_args[1]["messages"] == []
@@ -667,6 +758,7 @@ class TestLLMCallerEdgeCases:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -677,7 +769,8 @@ class TestLLMCallerEdgeCases:
         messages = [{"role": "user", "content": "Hello"}]
         response = caller.call_llm(messages, max_tokens=0, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
-        assert response == "Response"
+        assert isinstance(response, ModelResponse)
+        assert response.content == "Response"
         call_args = mock_openai_client.chat.completions.create.call_args
         assert call_args[1]["max_tokens"] == 0
 
@@ -686,6 +779,7 @@ class TestLLMCallerEdgeCases:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         # Setup llm_config with None stop sequences
@@ -699,7 +793,8 @@ class TestLLMCallerEdgeCases:
         messages = [{"role": "user", "content": "Hello"}]
         response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
-        assert response == "Response"
+        assert isinstance(response, ModelResponse)
+        assert response.content == "Response"
         call_args = mock_openai_client.chat.completions.create.call_args
         stop_sequences = call_args[1]["stop"]
         # Should only have XML stop sequences
@@ -718,6 +813,7 @@ class TestLLMCallerEdgeCases:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = complex_response
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -729,14 +825,15 @@ class TestLLMCallerEdgeCases:
         response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         # Response should preserve special characters
-        assert "complex & special < > characters" in response
-        assert "<tool_use>" in response
+        assert "complex & special < > characters" in response.content
+        assert "<tool_use>" in response.content
 
     def test_call_llm_with_very_large_retry_attempts(self, mock_openai_client, mock_llm_config, agent_state):
         """Test LLM caller with very large retry attempts."""
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -748,15 +845,16 @@ class TestLLMCallerEdgeCases:
         messages = [{"role": "user", "content": "Hello"}]
         response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
-        assert response == "Response"
+        assert isinstance(response, ModelResponse)
+        assert response.content == "Response"
         assert caller.retry_attempts == 100
 
     def test_call_llm_response_content_none_triggers_exception(self, mock_openai_client, mock_llm_config, agent_state):
         """Test that None response content triggers retry."""
         # First call returns None, second succeeds
         mock_openai_client.chat.completions.create.side_effect = [
-            Mock(choices=[Mock(message=Mock(content=None))]),
-            Mock(choices=[Mock(message=Mock(content="Valid response"))]),
+            Mock(choices=[Mock(message=Mock(content=None, tool_calls=[]))]),
+            Mock(choices=[Mock(message=Mock(content="Valid response", tool_calls=[]))]),
         ]
 
         caller = LLMCaller(
@@ -770,7 +868,8 @@ class TestLLMCallerEdgeCases:
         with patch("time.sleep"):
             response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
-        assert response == "Valid response"
+        assert isinstance(response, ModelResponse)
+        assert response.content == "Valid response"
         assert mock_openai_client.chat.completions.create.call_count == 2
 
 
@@ -783,6 +882,7 @@ class TestLLMCallerIntegration:
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "<tool_use><tool_name>test</tool_name>"
+        mock_response.choices[0].message.tool_calls = []
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         # Enable debug mode
@@ -805,8 +905,8 @@ class TestLLMCallerIntegration:
         )
 
         # Verify response has closing tag restored
-        assert "</tool_use>" in response
-        assert "<tool_use>" in response
+        assert "</tool_use>" in response.content
+        assert "<tool_use>" in response.content
 
         # Verify API was called with correct parameters
         call_args = mock_openai_client.chat.completions.create.call_args
@@ -843,8 +943,8 @@ class TestLLMCallerIntegration:
             )
 
         # Should succeed after retries
-        assert "success" in response
-        assert "</tool_use>" in response  # Tag restored
+        assert "success" in response.content
+        assert "</tool_use>" in response.content  # Tag restored
         assert call_count[0] == 3
 
         # Verify exponential backoff

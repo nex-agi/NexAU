@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class TokenCounter:
         self.model = model
         self._counter = self._create_counter()
 
-    def _create_counter(self) -> Callable[[list[dict[str, str]]], int]:
+    def _create_counter(self) -> Callable[[list[dict[str, Any]]], int]:
         """Create the appropriate token counter based on strategy."""
         if self.strategy == "tiktoken" and TIKTOKEN_AVAILABLE:
             return self._create_tiktoken_counter()
@@ -39,12 +40,12 @@ class TokenCounter:
                 )
             return self._create_fallback_counter()
 
-    def _create_tiktoken_counter(self) -> Callable[[list[dict[str, str]]], int]:
+    def _create_tiktoken_counter(self) -> Callable[[list[dict[str, Any]]], int]:
         """Create tiktoken-based counter."""
         try:
             encoding = tiktoken.encoding_for_model(self.model)
 
-            def tiktoken_message_counter(messages: list[dict[str, str]]) -> int:
+            def tiktoken_message_counter(messages: list[dict[str, Any]]) -> int:
                 """Count tokens in messages using tiktoken."""
                 total_tokens = 0
                 for message in messages:
@@ -64,10 +65,10 @@ class TokenCounter:
             )
             return self._create_fallback_counter()
 
-    def _create_fallback_counter(self) -> Callable[[list[dict[str, str]]], int]:
+    def _create_fallback_counter(self) -> Callable[[list[dict[str, Any]]], int]:
         """Create fallback counter using character approximation."""
 
-        def fallback_message_counter(messages: list[dict[str, str]]) -> int:
+        def fallback_message_counter(messages: list[dict[str, Any]]) -> int:
             """Fallback token counter using character approximation."""
             total_tokens = 0
             for message in messages:
@@ -80,7 +81,7 @@ class TokenCounter:
 
         return fallback_message_counter
 
-    def count_tokens(self, messages: list[dict[str, str]]) -> int:
+    def count_tokens(self, messages: list[dict[str, Any]]) -> int:
         """Count total tokens in a list of messages.
 
         Args:

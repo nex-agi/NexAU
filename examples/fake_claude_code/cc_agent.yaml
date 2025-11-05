@@ -2,11 +2,10 @@ name: claude_code_agent
 max_context_tokens: 100000
 system_prompt: ./system-workflow.md
 system_prompt_type: jinja
+tool_call_mode: openai
 llm_config:
   temperature: 0.7
   max_tokens: 4096
-  additional_drop_params:
-    - stop
 custom_llm_generator: "northau.archs.main_sub.execution.llm_caller:bypass_llm_generator"
 tools:
   - name: web_search
@@ -66,4 +65,3 @@ after_model_hooks:
   - import: northau.archs.main_sub.execution.hooks:create_logging_hook
     params:
       logger_name: "claude_code_model_debug"
-

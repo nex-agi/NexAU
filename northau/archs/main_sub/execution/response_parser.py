@@ -1,10 +1,16 @@
 """Unified parser for LLM responses containing tool calls, sub-agent calls, and batch operations."""
 
+from __future__ import annotations
+
+import json
 import logging
 import re
 import xml.etree.ElementTree as ET
+from typing import Any
 
+from ..sub_agent_naming import extract_sub_agent_name, is_sub_agent_tool_name
 from ..utils.xml_utils import XMLParser
+from .model_response import ModelResponse
 from .parse_structures import BatchAgentCall, ParsedResponse, SubAgentCall, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -13,104 +19,149 @@ logger = logging.getLogger(__name__)
 class ResponseParser:
     """Parses LLM responses to extract all executable calls."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.xml_parser = XMLParser()
 
-    def parse_response(self, response: str) -> ParsedResponse:
-        """Parse LLM response to extract all tool calls, sub-agent calls, and batch operations.
-
-        Args:
-            response: The LLM response containing XML calls
-
-        Returns:
-            ParsedResponse containing all parsed calls
-        """
+    def parse_response(self, response: str | ModelResponse) -> ParsedResponse:
+        """Parse LLM response to extract all tool calls, sub-agent calls, and batch operations."""
         logger.info("🔍 Parsing LLM response for executable calls")
 
-        tool_calls = []
-        sub_agent_calls = []
-        batch_agent_calls = []
+        tool_calls: list[ToolCall] = []
+        sub_agent_calls: list[SubAgentCall] = []
+        batch_agent_calls: list[BatchAgentCall] = []
         is_parallel_tools = False
         is_parallel_sub_agents = False
 
-        # Check for batch agent calls first (they take priority)
-        batch_agent_pattern = r"<use_batch_agent>(.*?)</use_batch_agent>"
-        batch_agent_match = re.search(batch_agent_pattern, response, re.DOTALL)
+        model_response = response if isinstance(response, ModelResponse) else None
+        response_text = (model_response.content or "") if model_response else (response or "")
 
-        if batch_agent_match:
-            logger.info("📊 Found batch agent call")
-            batch_call = self._parse_batch_agent_call(
-                batch_agent_match.group(1),
-            )
-            if batch_call:
-                batch_agent_calls.append(batch_call)
+        # Parse OpenAI tool calls first if present
+        if model_response and model_response.tool_calls:
+            logger.info("🔧 Found structured OpenAI tool calls, normalizing")
+            for call in model_response.tool_calls:
+                parameters = call.arguments if isinstance(call.arguments, dict) else {"raw_arguments": call.arguments}
 
-        # Check for parallel execution formats
-        parallel_tool_calls_pattern = r"<use_parallel_tool_calls>(.*?)</use_parallel_tool_calls>"
-        parallel_tool_calls_match = re.search(
-            parallel_tool_calls_pattern,
-            response,
-            re.DOTALL,
-        )
-
-        if parallel_tool_calls_match:
-            logger.info("🔧⚡ Found parallel tool calls")
-            is_parallel_tools = True
-            parallel_content = parallel_tool_calls_match.group(1)
-            tool_pattern = r"<parallel_tool>(.*?)</parallel_tool>"
-            tool_matches = re.findall(
-                tool_pattern,
-                parallel_content,
-                re.DOTALL,
-            )
-            for tool_xml in tool_matches:
-                tool_call = self._parse_tool_call(tool_xml)
-                if tool_call.tool_name.startswith("agent:"):
-                    sub_agent_call = self._parse_sub_agent_call(tool_xml)
-                    if sub_agent_call:
-                        sub_agent_calls.append(sub_agent_call)
-                else:
-                    if tool_call:
-                        tool_calls.append(tool_call)
-
-        else:
-            # Fall back to individual tool calls and sub-agent calls
-            logger.info("🔧 Looking for individual tool and sub-agent calls")
-
-            # Find individual tool calls
-            tool_pattern = r"<tool_use>(.*?)</tool_use>"
-            tool_matches = re.findall(tool_pattern, response, re.DOTALL)
-            for tool_xml in tool_matches:
-                tool_call = self._parse_tool_call(tool_xml)
-                logger.info(
-                    f"🔍 Parsed tool call: {tool_call} with tool_name: {tool_call.tool_name}",
+                normalized_tool_call = ToolCall(
+                    tool_name=call.name,
+                    parameters=parameters,
+                    raw_content=call.raw_arguments,
+                    tool_call_id=call.call_id,
+                    source="openai",
                 )
-                if tool_call.tool_name.startswith("agent:"):
-                    sub_agent_call = self._parse_sub_agent_call(tool_xml)
-                    if sub_agent_call:
-                        sub_agent_calls.append(sub_agent_call)
+
+                if is_sub_agent_tool_name(call.name):
+                    agent_name = extract_sub_agent_name(call.name)
+                    if not agent_name:
+                        continue
+                    message = self._format_parameters_for_message(parameters)
+                    sub_agent_calls.append(
+                        SubAgentCall(
+                            agent_name=agent_name,
+                            message=message,
+                            raw_content=call.raw_arguments,
+                            tool_call_id=call.call_id,
+                        ),
+                    )
                 else:
-                    if tool_call:
-                        tool_calls.append(tool_call)
+                    tool_calls.append(normalized_tool_call)
+
+        # Parse XML-based constructs (batch calls, parallel sections, fallback tool parsing)
+        xml_report = self._parse_xml_constructs(
+            response_text,
+            tool_calls,
+            sub_agent_calls,
+            batch_agent_calls,
+        )
+        if xml_report.get("is_parallel_tools"):
+            is_parallel_tools = True
 
         parsed_response = ParsedResponse(
-            original_response=response,
+            original_response=response_text,
             tool_calls=tool_calls,
             sub_agent_calls=sub_agent_calls,
             batch_agent_calls=batch_agent_calls,
             is_parallel_tools=is_parallel_tools,
             is_parallel_sub_agents=is_parallel_sub_agents,
+            model_response=model_response,
         )
 
         logger.info(f"✅ Parsed response: {parsed_response.get_call_summary()}")
         return parsed_response
 
-    def _parse_tool_call(self, xml_content: str) -> ToolCall:
+    # ---------------------------------------------------------------------
+    # XML parsing helpers
+    # ---------------------------------------------------------------------
+
+    def _parse_xml_constructs(
+        self,
+        response_text: str,
+        tool_calls: list[ToolCall],
+        sub_agent_calls: list[SubAgentCall],
+        batch_agent_calls: list[BatchAgentCall],
+    ) -> dict[str, bool]:
+        """Parse XML-based constructs from the response text."""
+        report = {"is_parallel_tools": False}
+        # Batch agent calls
+        batch_agent_pattern = r"<use_batch_agent>(.*?)</use_batch_agent>"
+        batch_agent_match = re.search(batch_agent_pattern, response_text, re.DOTALL)
+        if batch_agent_match:
+            logger.info("📊 Found batch agent call")
+            batch_call = self._parse_batch_agent_call(batch_agent_match.group(1))
+            if batch_call:
+                batch_agent_calls.append(batch_call)
+
+        # Parallel tool calls (XML-only feature)
+        parallel_tool_calls_pattern = r"<use_parallel_tool_calls>(.*?)</use_parallel_tool_calls>"
+        parallel_tool_calls_match = re.search(
+            parallel_tool_calls_pattern,
+            response_text,
+            re.DOTALL,
+        )
+
+        if parallel_tool_calls_match:
+            logger.info("🔧⚡ Found parallel tool calls")
+            report["is_parallel_tools"] = True
+            parallel_content = parallel_tool_calls_match.group(1)
+            tool_pattern = r"<parallel_tool>(.*?)</parallel_tool>"
+            tool_matches = re.findall(tool_pattern, parallel_content, re.DOTALL)
+            for tool_xml in tool_matches:
+                tool_call = self._parse_tool_call(tool_xml)
+                if tool_call is None:
+                    continue
+                if is_sub_agent_tool_name(tool_call.tool_name):
+                    sub_agent_call = self._parse_sub_agent_call(tool_xml)
+                    if sub_agent_call:
+                        sub_agent_calls.append(sub_agent_call)
+                else:
+                    tool_calls.append(tool_call)
+            return report  # Parallel block already parsed individual calls
+
+        # Individual XML tool calls (only if not already parsed in parallel block)
+        tool_pattern = r"<tool_use>(.*?)</tool_use>"
+        tool_matches = re.findall(tool_pattern, response_text, re.DOTALL)
+        for tool_xml in tool_matches:
+            tool_call = self._parse_tool_call(tool_xml)
+            if tool_call is None:
+                continue
+            logger.info(
+                "🔍 Parsed tool call: %s with tool_name: %s",
+                tool_call,
+                tool_call.tool_name,
+            )
+            if is_sub_agent_tool_name(tool_call.tool_name):
+                sub_agent_call = self._parse_sub_agent_call(tool_xml)
+                if sub_agent_call:
+                    sub_agent_calls.append(sub_agent_call)
+            else:
+                tool_calls.append(tool_call)
+
+        return report
+
+    def _parse_tool_call(self, xml_content: str) -> ToolCall | None:
         """Parse tool call XML content."""
         try:
             root = self.xml_parser.parse_xml_content(xml_content)
 
-            # Get tool name
             tool_name_elem = root.find("tool_name")
             if tool_name_elem is None:
                 logger.warning("❌ Missing tool_name in tool_use XML")
@@ -118,7 +169,6 @@ class ResponseParser:
 
             tool_name = (tool_name_elem.text or "").strip()
 
-            # Get parameters
             parameters = {}
             params_elem = root.find("parameter")
             if params_elem is not None:
@@ -126,11 +176,8 @@ class ResponseParser:
                     param_name = param.tag
                     param_value = param.text or ""
 
-                    # Handle nested content (like HTML) by getting all text content
                     if not param_value.strip() and len(param) > 0:
-                        # If the parameter has child elements, get the full XML content
                         param_value = ET.tostring(param, encoding="unicode", method="html")
-                        # Remove the outer tag to get just the content
                         if param_value.startswith(f"<{param_name}"):
                             start_tag_end = param_value.find(">") + 1
                             end_tag_start = param_value.rfind(f"</{param_name}>")
@@ -142,14 +189,13 @@ class ResponseParser:
             return ToolCall(
                 tool_name=tool_name,
                 parameters=parameters,
-                xml_content=xml_content,
+                raw_content=xml_content,
+                source="xml",
             )
 
         except ET.ParseError as e:
             logger.error(f"❌ Invalid XML format in tool call: {e}")
             logger.debug(f"XML content preview: {xml_content[:200]}...")
-
-            # Try regex-based parsing as fallback for malformed XML
             tool_call = self._parse_tool_call_with_regex(xml_content)
             if tool_call:
                 return tool_call
@@ -160,12 +206,10 @@ class ResponseParser:
             )
             logger.debug(f"Full XML content: {xml_content}")
 
-            # Try regex-based parsing as fallback before raw content fallback
             tool_call = self._parse_tool_call_with_regex(xml_content)
             if tool_call:
                 return tool_call
 
-            # Try one final fallback: extract tool name and treat all content as raw
             from ..utils.xml_utils import XMLUtils
 
             tool_name = XMLUtils.extract_tool_name_from_xml(xml_content)
@@ -176,7 +220,8 @@ class ResponseParser:
                 return ToolCall(
                     tool_name=tool_name,
                     parameters={"raw_xml_content": xml_content},
-                    xml_content=xml_content,
+                    raw_content=xml_content,
+                    source="xml",
                 )
             return None
         except Exception as e:
@@ -184,10 +229,9 @@ class ResponseParser:
             logger.debug(f"XML content: {xml_content}")
             return None
 
-    def _parse_tool_call_with_regex(self, xml_content: str) -> ToolCall:
+    def _parse_tool_call_with_regex(self, xml_content: str) -> ToolCall | None:
         """Parse tool call using regex as fallback for malformed XML."""
         try:
-            # Extract tool name
             tool_name_match = re.search(r"<tool_name>\s*([^<]+)\s*</tool_name>", xml_content, re.DOTALL)
             if not tool_name_match:
                 logger.warning("❌ Missing tool_name in regex parsing")
@@ -195,7 +239,6 @@ class ResponseParser:
 
             tool_name = tool_name_match.group(1).strip()
 
-            # Extract parameters using shared helper
             parameters = self._extract_parameters_with_regex(
                 xml_content=xml_content,
                 prefer_parameter_block=True,
@@ -206,7 +249,8 @@ class ResponseParser:
             return ToolCall(
                 tool_name=tool_name,
                 parameters=parameters,
-                xml_content=xml_content,
+                raw_content=xml_content,
+                source="xml",
             )
 
         except Exception as e:
@@ -220,15 +264,9 @@ class ResponseParser:
         allow_global_fallback: bool = False,
         exclude_tags: set[str] | None = None,
     ) -> dict[str, str]:
-        """Extract parameters from XML-ish content using regex with basic nesting support.
-
-        - If prefer_parameter_block is True, will first try within the first <parameter>...</parameter> block.
-        - If allow_global_fallback is True and no parameter block is found, will scan the entire content.
-        - exclude_tags can be provided to skip structural tags when doing global scanning.
-        """
+        """Extract parameters from XML-ish content using regex with basic nesting support."""
         parameters: dict[str, str] = {}
 
-        # Try to find a <parameter>...</parameter> block
         param_block_match = None
         if prefer_parameter_block:
             param_block_match = re.search(
@@ -240,7 +278,6 @@ class ResponseParser:
         if param_block_match:
             param_content = param_block_match.group(1)
 
-            # Walk through param_content and capture child tags with basic nesting support
             current_pos = 0
             content_len = len(param_content)
             while current_pos < content_len:
@@ -257,17 +294,13 @@ class ResponseParser:
                     current_pos = tag_end + 1
                     continue
 
-                # Support attributes by splitting on whitespace
                 tag_name = raw_tag_header.split()[0]
 
-                # Basic validation: tag names are alnum or underscore
                 if not tag_name.replace("_", "").isalnum():
                     current_pos = tag_end + 1
                     continue
 
-                # Prepare search tokens
                 closing_tag = f"</{tag_name}>"
-                # For nested same-name tags, consider openings with optional attributes
                 open_token = f"<{tag_name}"
 
                 search_start = tag_end + 1
@@ -294,14 +327,11 @@ class ResponseParser:
                             pos = next_close + len(closing_tag)
 
                 if open_count > 0:
-                    # Could not find a matching closing tag; skip this tag
                     current_pos = tag_end + 1
             return parameters
 
-        # If no parameter block found, optionally perform a global scan
         if allow_global_fallback:
             exclude = set(exclude_tags or {"parameter", "tool_name", "root"})
-            # Capture simple pairs with optional attributes; not robust to cross nesting
             for match in re.finditer(r"<([^/>\s]+)[^>]*>(.*?)</\1>", xml_content, re.DOTALL | re.IGNORECASE):
                 name = match.group(1)
                 if name in exclude:
@@ -311,22 +341,22 @@ class ResponseParser:
                     parameters[name] = value
         return parameters
 
-    def _parse_sub_agent_call(self, xml_content: str) -> SubAgentCall:
+    def _parse_sub_agent_call(self, xml_content: str) -> SubAgentCall | None:
         """Parse sub-agent call XML content."""
         try:
             root = self.xml_parser.parse_xml_content(xml_content)
 
-            # Get agent name
             agent_name_elem = root.find("tool_name")
             if agent_name_elem is None:
                 logger.warning("❌ Missing agent_name in sub-agent XML")
                 return None
 
-            agent_name = (agent_name_elem.text or "").strip()
-            agent_name = agent_name.replace("agent:", "")
+            agent_name = extract_sub_agent_name((agent_name_elem.text or "").strip())
+            if not agent_name:
+                logger.warning("❌ Unable to extract sub-agent name from tool identifier")
+                return None
 
-            # Get parameters
-            parameters = {}
+            parameters: dict[str, Any] = {}
             params_elem = root.find("parameter")
             if params_elem is not None:
                 for param in params_elem:
@@ -334,18 +364,12 @@ class ResponseParser:
                     param_value = param.text
                     parameters[param_name] = param_value
 
-            # Build formatted message with all parameters
-            message_parts = []
-            for param_name, param_value in parameters.items():
-                if param_value:  # Only include non-empty parameters
-                    message_parts.append(f"{param_name}: {param_value}")
-
-            message = "\n".join(message_parts)
+            message = self._format_parameters_for_message(parameters)
 
             return SubAgentCall(
                 agent_name=agent_name,
                 message=message,
-                xml_content=xml_content,
+                raw_content=xml_content,
             )
 
         except ET.ParseError as e:
@@ -358,7 +382,6 @@ class ResponseParser:
             )
             logger.debug(f"Full XML content: {xml_content}")
 
-            # Try one final fallback: extract agent name and collect all parameters
             from ..utils.xml_utils import XMLUtils
 
             agent_name = XMLUtils.extract_agent_name_from_xml(xml_content)
@@ -366,25 +389,17 @@ class ResponseParser:
                 logger.info(
                     f"🤖 Fallback: Creating minimal sub-agent call for {agent_name}",
                 )
-                # Use shared regex parameter extraction helper
                 extracted_params = self._extract_parameters_with_regex(
                     xml_content=xml_content,
                     prefer_parameter_block=True,
                     allow_global_fallback=True,
                     exclude_tags={"parameter", "tool_name", "root"},
                 )
-
-                message_parts = [
-                    f"{param_name}: {param_value.strip()}"
-                    for param_name, param_value in extracted_params.items()
-                    if param_value and param_value.strip()
-                ]
-
-                message = "\n".join(message_parts) if message_parts else "Unable to parse message content"
+                message = self._format_parameters_for_message(extracted_params)
                 return SubAgentCall(
                     agent_name=agent_name,
-                    message=message,
-                    xml_content=xml_content,
+                    message=message if message else "Unable to parse message content",
+                    raw_content=xml_content,
                 )
             return None
         except Exception as e:
@@ -392,12 +407,11 @@ class ResponseParser:
             logger.debug(f"XML content: {xml_content}")
             return None
 
-    def _parse_batch_agent_call(self, xml_content: str) -> BatchAgentCall:
+    def _parse_batch_agent_call(self, xml_content: str) -> BatchAgentCall | None:
         """Parse batch agent call XML content."""
         try:
             root = self.xml_parser.parse_xml_content(xml_content)
 
-            # Get agent name
             agent_name_elem = root.find("agent_name")
             if agent_name_elem is None:
                 logger.warning("❌ Missing agent_name in batch agent XML")
@@ -405,7 +419,6 @@ class ResponseParser:
 
             agent_name = (agent_name_elem.text or "").strip()
 
-            # Get input data source
             input_data_elem = root.find("input_data_source")
             if input_data_elem is None:
                 logger.warning(
@@ -423,7 +436,6 @@ class ResponseParser:
             format_elem = input_data_elem.find("format")
             data_format = (format_elem.text or "jsonl").strip() if format_elem is not None else "jsonl"
 
-            # Get message template
             message_elem = root.find("message")
             if message_elem is None:
                 logger.warning("❌ Missing message in batch agent XML")
@@ -436,7 +448,7 @@ class ResponseParser:
                 file_path=file_path,
                 data_format=data_format,
                 message_template=message_template,
-                xml_content=xml_content,
+                raw_content=xml_content,
             )
 
         except ET.ParseError as e:
@@ -445,3 +457,22 @@ class ResponseParser:
         except Exception as e:
             logger.error(f"❌ Error parsing batch agent call: {e}")
             return None
+
+    # ------------------------------------------------------------------
+    # Utility helpers
+    # ------------------------------------------------------------------
+
+    def _format_parameters_for_message(self, parameters: dict[str, Any]) -> str:
+        """Format parameters dictionary into human-readable message string."""
+        message_parts: list[str] = []
+        for param_name, param_value in parameters.items():
+            if param_value is None:
+                continue
+            if isinstance(param_value, (dict, list)):
+                value_str = json.dumps(param_value, ensure_ascii=False)
+            else:
+                value_str = str(param_value)
+            value_str = value_str.strip()
+            if value_str:
+                message_parts.append(f"{param_name}: {value_str}")
+        return "\n".join(message_parts)
