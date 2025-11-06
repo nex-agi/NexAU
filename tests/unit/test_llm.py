@@ -40,6 +40,7 @@ class TestLLMConfig:
         assert config.timeout == 30.0
         assert config.max_retries == 3
         assert config.debug is True
+        assert config.api_type == "openai_chat_completion"
 
     def test_llm_config_defaults(self):
         """Test LLM config initialization with default values."""
@@ -49,6 +50,7 @@ class TestLLMConfig:
         assert config.max_retries == 3
         assert config.debug is False
         assert config.extra_params == {}
+        assert config.api_type == "openai_chat_completion"
 
     def test_llm_config_from_env(self):
         """Test LLM config initialization from environment variables."""
@@ -59,6 +61,7 @@ class TestLLMConfig:
                 "LLM_BASE_URL": "https://custom.api.com/v1",
                 "LLM_API_KEY": "env-key",
             },
+            clear=True,
         ):
             config = LLMConfig()
 
@@ -165,6 +168,7 @@ class TestLLMConfig:
         assert copied.temperature == original.temperature
         assert copied.get_param("custom_param") == "value"
         assert copied.additional_drop_params == original.additional_drop_params
+        assert copied.api_type == original.api_type
         assert copied is not original
 
     def test_repr_and_str(self):

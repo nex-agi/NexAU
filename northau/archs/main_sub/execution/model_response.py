@@ -7,6 +7,45 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+def _item_get(item: Any, key: str, default: Any = None) -> Any:
+    """Best-effort attribute/dict access helper for SDK objects."""
+
+    if isinstance(item, dict):
+        return item.get(key, default)
+
+    # openai/anthropic SDK objects expose attributes directly
+    return getattr(item, key, default)
+
+
+def _to_serializable_dict(payload: Any) -> dict[str, Any]:
+    """Attempt to coerce SDK payloads into simple dicts for parsing."""
+
+    if isinstance(payload, dict):
+        return payload
+
+    # Prefer model_dump if available (pydantic models)
+    model_dump = getattr(payload, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return model_dump()
+        except Exception:  # pragma: no cover - fallback
+            pass
+
+    # Fallback to attribute introspection (best-effort, non-recursive)
+    result: dict[str, Any] = {}
+    for attr in dir(payload):  # pragma: no cover - defensive
+        if attr.startswith("_"):
+            continue
+        try:
+            value = getattr(payload, attr)
+        except Exception:
+            continue
+        if callable(value):
+            continue
+        result[attr] = value
+    return result
+
+
 @dataclass
 class ModelToolCall:
     """Represents a tool call emitted by the model in a model-agnostic format."""
@@ -98,10 +137,25 @@ class ModelResponse:
     tool_calls: list[ModelToolCall] = field(default_factory=list)
     role: str = "assistant"
     raw_message: Any = None
+    response_items: list[dict[str, Any]] = field(default_factory=list)
+    reasoning_items: list[dict[str, Any]] = field(default_factory=list)
+    reasoning_traces: list[str] = field(default_factory=list)
+    reasoning_description: str | None = None
+    """A description of the chain of thought used by a reasoning model while generating a response.
+
+    Be sure to include these items in your input to the Responses API for subsequent turns of a
+    conversation if you are manually managing context.
+    """
 
     def __post_init__(self) -> None:
         if self.tool_calls is None:
             self.tool_calls = []
+        if self.response_items is None:
+            self.response_items = []
+        if self.reasoning_items is None:
+            self.reasoning_items = []
+        if self.reasoning_traces is None:
+            self.reasoning_traces = []
 
     @classmethod
     def from_openai_message(cls, message: Any) -> ModelResponse:
@@ -206,6 +260,152 @@ class ModelResponse:
             raw_message=message,
         )
 
+    @classmethod
+    def from_openai_response(cls, response: Any) -> ModelResponse:
+        """Create a ModelResponse from an OpenAI Responses API payload."""
+        if response is None:
+            raise ValueError("response cannot be None")
+
+        output_items = _item_get(response, "output", []) or []
+        response_items: list[dict[str, Any]] = []
+        reasoning_items: list[dict[str, Any]] = []
+        reasoning_traces: list[str] = []
+        collected_content: list[str] = []
+        tool_calls: list[ModelToolCall] = []
+        detected_role = "assistant"
+
+        for raw_item in output_items:
+            item_dict = _to_serializable_dict(raw_item)
+            response_items.append(item_dict)
+            item_type = item_dict.get("type")
+
+            if item_type == "message":
+                detected_role = item_dict.get("role", detected_role) or detected_role
+                content_blocks = item_dict.get("content", []) or []
+
+                text_parts: list[str] = []
+                for block in content_blocks:
+                    block_type = _item_get(block, "type")
+                    if block_type in {"output_text", "text"}:
+                        text = _item_get(block, "text", "")
+                        if text:
+                            text_parts.append(str(text))
+                if text_parts:
+                    collected_content.append("\n".join(text_parts))
+
+            elif item_type == "reasoning":
+                reasoning_items.append(item_dict)
+                trace_parts: list[str] = []
+
+                content_blocks = item_dict.get("content", []) or []
+                for block in content_blocks:
+                    text = _item_get(block, "text")
+                    if text:
+                        trace_parts.append(str(text))
+
+                summaries = item_dict.get("summary", []) or []
+                for summary in summaries:
+                    text = _item_get(summary, "text")
+                    if text:
+                        trace_parts.append(str(text))
+
+                if trace_parts:
+                    reasoning_traces.append("\n".join(trace_parts))
+
+            elif item_type in {"function_call", "tool_call"}:
+                maybe_call = cls._tool_call_from_response_item(item_dict)
+                if maybe_call:
+                    tool_calls.append(maybe_call)
+
+        # Fallback to response.output_text helper if no message blocks were found
+        if not collected_content:
+            output_text = _item_get(response, "output_text", None)
+            if output_text:
+                collected_content.append(str(output_text))
+
+        combined_content = "\n".join(part for part in collected_content if part).strip() or None
+
+        reasoning_description: str | None = None
+        if reasoning_traces:
+            reasoning_description = "\n\n".join(reasoning_traces)
+
+        return cls(
+            content=combined_content,
+            tool_calls=tool_calls,
+            role=detected_role,
+            raw_message=response,
+            response_items=response_items,
+            reasoning_items=reasoning_items,
+            reasoning_traces=reasoning_traces,
+            reasoning_description=reasoning_description,
+        )
+
+    @staticmethod
+    def _tool_call_from_response_item(item: Any) -> ModelToolCall | None:
+        """Normalize Responses API function/tool call item into ModelToolCall."""
+
+        call_id = _item_get(item, "call_id") or _item_get(item, "id")
+        call_name = _item_get(item, "name")
+        call_type = _item_get(item, "type", "function")
+
+        function_payload = _item_get(item, "function")
+        if function_payload:
+            function_payload = _to_serializable_dict(function_payload)
+            call_name = call_name or function_payload.get("name")
+            arguments_payload = function_payload.get("arguments")
+        else:
+            arguments_payload = _item_get(item, "arguments")
+
+        raw_arguments: str | None = None
+        parsed_arguments: dict[str, Any] = {}
+
+        if isinstance(arguments_payload, str):
+            raw_arguments = arguments_payload
+            payload_str = arguments_payload.strip()
+            if payload_str:
+                try:
+                    parsed = json.loads(payload_str)
+                    if isinstance(parsed, dict):
+                        parsed_arguments = parsed
+                    else:
+                        parsed_arguments = {"_": parsed}
+                except json.JSONDecodeError:
+                    parsed_arguments = {"raw_arguments": payload_str}
+        elif isinstance(arguments_payload, dict):
+            parsed_arguments = arguments_payload
+            raw_arguments = json.dumps(arguments_payload, ensure_ascii=False)
+        elif isinstance(arguments_payload, list):
+            # Responses SDK may return arguments as structured content blocks
+            try:
+                flattened = "".join(str(_item_get(part, "text", "")) for part in arguments_payload).strip()
+            except Exception:
+                flattened = ""
+            if flattened:
+                raw_arguments = flattened
+                try:
+                    parsed = json.loads(flattened)
+                    if isinstance(parsed, dict):
+                        parsed_arguments = parsed
+                    else:
+                        parsed_arguments = {"_": parsed}
+                except json.JSONDecodeError:
+                    parsed_arguments = {"raw_arguments": flattened}
+        elif arguments_payload is not None:
+            raw_arguments = json.dumps(arguments_payload, ensure_ascii=False)
+            parsed_arguments = {"raw_arguments": raw_arguments}
+
+        if not call_name:
+            call_name = "unknown"
+
+        return ModelToolCall(
+            call_id=str(call_id) if call_id is not None else None,
+            name=str(call_name),
+            arguments=parsed_arguments,
+            raw_arguments=raw_arguments,
+            call_type=str(call_type) if call_type else "function",
+            raw_call=item,
+        )
+
     def has_content(self) -> bool:
         return bool(self.content and self.content.strip())
 
@@ -215,6 +415,10 @@ class ModelResponse:
     def render_text(self) -> str:
         """Render the response as a human-readable string for logging."""
         parts: list[str] = []
+        if self.reasoning_traces:
+            for trace in self.reasoning_traces:
+                if trace:
+                    parts.append(f"[reasoning] {trace.strip()}")
         if self.has_content():
             parts.append(self.content.strip())
         for call in self.tool_calls:
@@ -232,6 +436,14 @@ class ModelResponse:
         message: dict[str, Any] = {"role": self.role, "content": self.content or ""}
         if self.tool_calls:
             message["tool_calls"] = [call.to_openai_dict() for call in self.tool_calls]
+        if self.response_items:
+            message["response_items"] = self.response_items
+        if self.reasoning_items:
+            message["reasoning"] = self.reasoning_items
+        if self.reasoning_traces:
+            message["reasoning_traces"] = self.reasoning_traces
+        if self.reasoning_description:
+            message["reasoning_description"] = self.reasoning_description
         return message
 
     def __str__(self) -> str:  # pragma: no cover - convenience

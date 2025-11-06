@@ -14,6 +14,7 @@ Tests cover:
 """
 
 import logging
+from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
 import pytest
@@ -86,6 +87,222 @@ class TestLLMCallerBasicCalls:
         assert isinstance(response, ModelResponse)
         assert response.content == "Hello! How can I help you?"
         mock_openai_client.chat.completions.create.assert_called_once()
+
+    def test_call_llm_success_responses_api(self, mock_openai_client, responses_llm_config, agent_state):
+        """Test successful call flow when using the Responses API."""
+        # Setup mock Responses payload
+        message_item = {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "Hello from responses!"}],
+        }
+
+        responses_payload = SimpleNamespace(
+            output=[message_item],
+            output_text="Hello from responses!",
+        )
+        mock_openai_client.responses.create.return_value = responses_payload
+
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=responses_llm_config,
+        )
+
+        messages = [{"role": "user", "content": "Hello"}]
+        response = caller.call_llm(messages, max_tokens=120, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
+
+        assert isinstance(response, ModelResponse)
+        assert response.content == "Hello from responses!"
+        assert response.response_items == responses_payload.output
+        assert response.reasoning_items == []
+        assert response.reasoning_traces == []
+
+        mock_openai_client.responses.create.assert_called_once()
+        call_kwargs = mock_openai_client.responses.create.call_args.kwargs
+        expected_input = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Hello"}],
+            }
+        ]
+        assert call_kwargs["input"] == expected_input
+        assert call_kwargs["max_output_tokens"] == 120
+
+    def test_call_llm_responses_api_carries_reasoning(self, mock_openai_client, responses_llm_config, agent_state):
+        """Reasoning items should be preserved for subsequent turns."""
+
+        reasoning_item = {
+            "id": "rs_123",
+            "type": "reasoning",
+            "content": [{"type": "text", "text": "Thought step"}],
+            "summary": [{"type": "text", "text": "Summary"}],
+        }
+        message_item = {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "Assistant reply"}],
+        }
+
+        responses_payload = SimpleNamespace(
+            output=[reasoning_item, message_item],
+            output_text="Assistant reply",
+        )
+        mock_openai_client.responses.create.return_value = responses_payload
+
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=responses_llm_config,
+        )
+
+        messages = [{"role": "user", "content": "Hello"}]
+        response = caller.call_llm(messages, max_tokens=60, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
+
+        assert response.reasoning_items == [reasoning_item]
+        assert response.reasoning_traces == ["Thought step\nSummary"]
+        assert "[reasoning]" in response.render_text()
+
+        # Append to history and ensure reasoning makes it into subsequent input
+        history = messages + [response.to_message_dict()]
+        mock_openai_client.responses.create.reset_mock()
+
+        caller.call_llm(history, max_tokens=60, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
+
+        followup_input = mock_openai_client.responses.create.call_args.kwargs["input"]
+        assert reasoning_item in followup_input
+
+    def test_call_llm_responses_api_normalizes_tools(self, mock_openai_client, responses_llm_config, agent_state):
+        """Ensure tool payloads satisfy Responses API expectations."""
+
+        message_item = {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "Tool ready"}],
+        }
+
+        responses_payload = SimpleNamespace(
+            output=[message_item],
+            output_text="Tool ready",
+        )
+        mock_openai_client.responses.create.return_value = responses_payload
+
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=responses_llm_config,
+        )
+
+        tools_payload = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "simple_tool",
+                    "description": "A simple test tool",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+        ]
+
+        caller.call_llm(
+            messages=[{"role": "user", "content": "Hello"}],
+            max_tokens=50,
+            force_stop_reason=AgentStopReason.SUCCESS,
+            agent_state=agent_state,
+            tool_call_mode="openai",
+            tools=tools_payload,
+        )
+
+        call_kwargs = mock_openai_client.responses.create.call_args.kwargs
+        normalized_tool = call_kwargs["tools"][0]
+
+        assert normalized_tool["name"] == "simple_tool"
+        assert normalized_tool["type"] == "function"
+        assert normalized_tool["description"] == "A simple test tool"
+        assert normalized_tool["parameters"] == tools_payload[0]["function"]["parameters"]
+        assert "function" not in normalized_tool
+
+    def test_call_llm_responses_api_strips_status_from_history(self, mock_openai_client, responses_llm_config, agent_state):
+        """Status fields from prior outputs should be removed when replaying context."""
+
+        first_output_item = {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "Using tool"}],
+        }
+        first_function_call = {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "WebSearch",
+            "arguments": "{}",
+        }
+        tool_result_item = {
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": [
+                {
+                    "type": "output_text",
+                    "text": "Result text",
+                }
+            ],
+        }
+
+        responses_payload_first = SimpleNamespace(
+            output=[first_output_item, first_function_call, tool_result_item],
+            output_text="Using tool",
+        )
+
+        second_output_item = {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Done"}],
+        }
+
+        responses_payload_second = SimpleNamespace(
+            output=[second_output_item],
+            output_text="Done",
+        )
+
+        mock_openai_client.responses.create.side_effect = [responses_payload_first, responses_payload_second]
+
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=responses_llm_config,
+        )
+
+        messages = [{"role": "user", "content": "Hello"}]
+        first_response = caller.call_llm(messages, max_tokens=80, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
+
+        history = messages + [first_response.to_message_dict()]
+        history.append(
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "{}",
+            },
+        )
+
+        caller.call_llm(history, max_tokens=80, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
+
+        _, kwargs = mock_openai_client.responses.create.call_args
+        replay_items = kwargs["input"]
+
+        message_items = [item for item in replay_items if isinstance(item, dict) and item.get("type") == "message"]
+        assert message_items, "Expected at least one message item in replayed input"
+        for item in message_items:
+            assert "status" not in item
+
+        function_outputs = [item for item in replay_items if isinstance(item, dict) and item.get("type") == "function_call_output"]
+        assert function_outputs, "Expected tool outputs to be replayed"
+        output_values = [output_item.get("output") for output_item in function_outputs]
+        for output_value in output_values:
+            assert isinstance(output_value, str)
+        assert "Result text" in output_values
 
     def test_call_llm_without_client_raises_error(self, mock_llm_config):
         """Test that calling LLM without client raises RuntimeError."""

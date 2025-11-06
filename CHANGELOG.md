@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Actions CI/CD workflows for automated testing, linting, and releases
 - Automated PyPI publishing on version tags
 - Comprehensive release documentation
+- Optional OpenAI Responses API support (`api_type: openai_responses`) including preservation of reasoning output for multi-turn conversations
 
 ## [0.1.0] - 2024-10-26
 
@@ -40,4 +41,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Unreleased]: https://github.com/china-qijizhifeng/northau/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/china-qijizhifeng/northau/releases/tag/v0.1.0
-
