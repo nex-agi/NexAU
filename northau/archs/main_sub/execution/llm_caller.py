@@ -217,6 +217,8 @@ def call_llm_with_different_client(
     """Call LLM with the given messages and return response content."""
     if llm_config.api_type == "anthropic_chat_completion":
         return call_llm_with_anthropic_chat_completion(client, kwargs)
+    elif llm_config.api_type == "openai_responses":
+        return call_llm_with_openai_responses(client, kwargs)
     elif llm_config.api_type == "openai_chat_completion":
         return call_llm_with_openai_chat_completion(client, kwargs)
     else:
@@ -330,6 +332,193 @@ def call_llm_with_openai_chat_completion(
     response = client.chat.completions.create(**kwargs)
     message = response.choices[0].message
     return ModelResponse.from_openai_message(message)
+
+
+def call_llm_with_openai_responses(
+    client: Any,
+    kwargs: dict[str, Any],
+) -> ModelResponse:
+    """Call OpenAI Responses API and normalize the outcome."""
+
+    request_payload = kwargs.copy()
+
+    messages = request_payload.pop("messages", None)
+    if messages is not None:
+        response_items = _prepare_responses_api_input(messages)
+        request_payload.setdefault("input", response_items)
+
+    # Responses API uses max_output_tokens instead of max_tokens
+    max_tokens = request_payload.pop("max_tokens", None)
+    if max_tokens is not None:
+        request_payload.setdefault("max_output_tokens", max_tokens)
+
+    tools = request_payload.get("tools")
+    if tools:
+        request_payload["tools"] = _normalize_responses_api_tools(tools)
+
+    response = client.responses.create(**request_payload)
+    return ModelResponse.from_openai_response(response)
+
+
+def _prepare_responses_api_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert internal message representation into Responses API input items."""
+
+    prepared: list[dict[str, Any]] = []
+
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+
+        # If the message already carries raw response items, reuse them directly
+        response_items = message.get("response_items")
+        if response_items:
+            prepared.extend(_sanitize_response_items_for_input(response_items))
+            continue
+
+        role = message.get("role", "user")
+        content = message.get("content", "") or ""
+
+        if role == "tool":
+            tool_call_id = message.get("tool_call_id")
+            if tool_call_id:
+                prepared.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": tool_call_id,
+                        "output": _coerce_tool_output_text(content),
+                    },
+                )
+            continue
+
+        # Build message item for standard roles
+        if role in {"user", "system"}:
+            text_type = "input_text"
+        else:
+            text_type = "output_text"
+
+        content_parts: list[dict[str, Any]] = []
+        if content:
+            content_parts.append({"type": text_type, "text": str(content)})
+
+        message_item: dict[str, Any] = {
+            "type": "message",
+            "role": role,
+            "content": content_parts,
+        }
+
+        prepared.append(message_item)
+
+        # Reconstruct tool calls if present on assistant messages
+        tool_calls = message.get("tool_calls", [])
+        for tool_call in tool_calls or []:
+            function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+            prepared.append(
+                {
+                    "type": "function_call",
+                    "call_id": tool_call.get("id"),
+                    "name": function.get("name"),
+                    "arguments": function.get("arguments"),
+                },
+            )
+
+        # Include stored reasoning items if available
+        reasoning_items = message.get("reasoning")
+        if reasoning_items:
+            if isinstance(reasoning_items, list):
+                prepared.extend(reasoning_items)
+
+    return prepared
+
+
+def _normalize_responses_api_tools(tools: list[Any]) -> list[dict[str, Any]]:
+    """Ensure tool definitions align with the Responses API schema."""
+
+    normalized: list[dict[str, Any]] = []
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            normalized.append(tool)
+            continue
+
+        tool_dict = dict(tool)
+        tool_type = tool_dict.get("type")
+
+        if tool_type == "function":
+            function_spec = tool_dict.get("function")
+
+            if isinstance(function_spec, dict):
+                name = function_spec.get("name")
+                description = function_spec.get("description")
+                parameters = function_spec.get("parameters")
+                strict = function_spec.get("strict")
+
+                if name and not tool_dict.get("name"):
+                    tool_dict["name"] = name
+                if description and not tool_dict.get("description"):
+                    tool_dict["description"] = description
+                if parameters is not None and "parameters" not in tool_dict:
+                    tool_dict["parameters"] = parameters
+                if strict is not None and "strict" not in tool_dict:
+                    tool_dict["strict"] = strict
+
+            # The Responses API expects function tools to specify the name at the top level
+            # and uses the Chat Completions style schema for parameters/description.
+            if tool_dict.get("name"):
+                tool_dict.pop("function", None)
+
+        normalized.append(tool_dict)
+
+    return normalized
+
+
+def _sanitize_response_items_for_input(items: list[Any]) -> list[dict[str, Any]]:
+    """Strip response-only fields that the Responses API rejects on input."""
+
+    sanitized: list[dict[str, Any]] = []
+
+    for item in items:
+        if isinstance(item, dict):
+            item_copy = dict(item)
+            item_copy.pop("status", None)
+            item_type = item_copy.get("type")
+            if item_type == "message":
+                item_copy.pop("status", None)
+            elif item_type == "function_call_output":
+                item_copy["output"] = _coerce_tool_output_text(item_copy.get("output"))
+        else:
+            sanitized.append(item)
+            continue
+
+        sanitized.append(item_copy)
+
+    return sanitized
+
+
+def _coerce_tool_output_text(output: Any) -> str:
+    """Convert arbitrary tool output into Responses-compatible string."""
+
+    if output is None:
+        return ""
+
+    if isinstance(output, list):
+        # Responses API rejects nested output_text objects; join textual parts instead
+        parts: list[str] = []
+        for item in output:
+            if isinstance(item, dict):
+                text_value = item.get("text") or item.get("content")
+                if text_value:
+                    parts.append(str(text_value))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+
+    if isinstance(output, dict):
+        text_value = output.get("text") or output.get("content")
+        if text_value:
+            return str(text_value)
+        return json.dumps(output, ensure_ascii=False)
+
+    return str(output)
 
 
 def bypass_llm_generator(
