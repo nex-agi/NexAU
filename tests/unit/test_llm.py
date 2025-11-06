@@ -46,7 +46,7 @@ class TestLLMConfig:
         """Test LLM config initialization with default values."""
         config = LLMConfig()
 
-        assert config.temperature == 0.7
+        assert config.temperature is None
         assert config.max_retries == 3
         assert config.debug is False
         assert config.extra_params == {}
@@ -130,7 +130,7 @@ class TestLLMConfig:
         config = LLMConfig()
 
         # Test getting existing parameter
-        assert config.get_param("temperature") == 0.7
+        assert config.get_param("temperature") is None
 
         # Test getting non-existing parameter with default
         assert config.get_param("nonexistent", "default") == "default"

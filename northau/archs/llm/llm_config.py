@@ -13,7 +13,7 @@ class LLMConfig:
         model: str | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         top_p: float | None = None,
         frequency_penalty: float | None = None,
