@@ -22,6 +22,8 @@ except ImportError:
     except ImportError:
         openai = None
 
+import anthropic
+
 from northau.archs.llm.llm_config import LLMConfig
 from northau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from northau.archs.main_sub.agent_state import AgentState
@@ -29,6 +31,7 @@ from northau.archs.main_sub.config import AgentConfig, ExecutionConfig
 from northau.archs.main_sub.execution.executor import Executor
 from northau.archs.main_sub.prompt_builder import PromptBuilder
 from northau.archs.main_sub.skill import Skill
+from northau.archs.main_sub.sub_agent_naming import build_sub_agent_tool_name
 from northau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
     normalize_tool_call_mode,
@@ -111,8 +114,12 @@ class Agent:
             return None
 
         try:
-            client_kwargs = self.config.llm_config.to_client_kwargs()
-            return openai.OpenAI(**client_kwargs)
+            if self.config.llm_config.api_type == "anthropic_chat_completion":
+                client_kwargs = self.config.llm_config.to_client_kwargs()
+                return anthropic.Anthropic(**client_kwargs)
+            else:
+                client_kwargs = self.config.llm_config.to_client_kwargs()
+                return openai.OpenAI(**client_kwargs)
         except Exception as e:
             logger.error(f"❌ Failed to initialize OpenAI client: {e}")
             return None
@@ -199,7 +206,7 @@ class Agent:
                 {
                     "type": "function",
                     "function": {
-                        "name": f"sub-agent.{sub_agent_name}",
+                        "name": build_sub_agent_tool_name(sub_agent_name),
                         "description": f"Delegate work to sub-agent '{sub_agent_name}'.",
                         "parameters": {
                             "type": "object",
@@ -250,7 +257,7 @@ class Agent:
         for sub_agent_name in (self.config.sub_agent_factories or {}).keys():
             tools_spec.append(
                 {
-                    "name": f"sub-agent.{sub_agent_name}",
+                    "name": build_sub_agent_tool_name(sub_agent_name),
                     "description": f"Delegate work to sub-agent '{sub_agent_name}'.",
                     "input_schema": {
                         "type": "object",

@@ -24,6 +24,8 @@ dependencies = [
     "tiktoken>=0.5.0",
     "fastmcp",
     "diskcache>=5.6.3",
+    "anthropic>=0.72.0",
+    "opentelemetry-instrumentation-anthropic>=0.47.5",
 ]
 
 [project.scripts]

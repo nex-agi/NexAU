@@ -1,9 +1,14 @@
 """Simple LLM API caller component."""
 
+import json
 import logging
 import time
 from collections.abc import Callable
 from typing import Any
+
+from langfuse import get_client, observe
+
+from northau.archs.llm.llm_config import LLMConfig
 
 from ..agent_state import AgentState
 from ..tool_call_modes import STRUCTURED_TOOL_CALL_MODES, normalize_tool_call_mode
@@ -82,9 +87,8 @@ class LLMCaller:
         api_params["max_tokens"] = max_tokens
 
         if normalized_mode == "anthorpic":
-            raise RuntimeError(
-                "Anthorpic tool_call_mode is not supported yet.",
-            )
+            api_params["tools"] = tools
+            api_params.setdefault("tool_choice", {"type": "auto"})
 
         if tools and normalized_mode == "openai":
             api_params["tools"] = tools
@@ -167,6 +171,7 @@ class LLMCaller:
                 if self.custom_llm_generator:
                     generator_result = self.custom_llm_generator(
                         self.openai_client,
+                        self.llm_config,
                         kwargs,
                         force_stop_reason,
                         agent_state,
@@ -180,11 +185,7 @@ class LLMCaller:
                 else:
                     if force_stop_reason != AgentStopReason.SUCCESS:
                         return None
-                    response = self.openai_client.chat.completions.create(
-                        **kwargs,
-                    )
-                    message = response.choices[0].message
-                    response_content = ModelResponse.from_openai_message(message)
+                    response_content = call_llm_with_different_client(self.openai_client, self.llm_config, kwargs)
 
                 stop = kwargs.get("stop", [])
                 if isinstance(stop, str):
@@ -208,8 +209,132 @@ class LLMCaller:
                 backoff *= 2
 
 
+def call_llm_with_different_client(
+    client: Any,
+    llm_config: LLMConfig,
+    kwargs: dict[str, Any],
+) -> ModelResponse:
+    """Call LLM with the given messages and return response content."""
+    if llm_config.api_type == "anthropic_chat_completion":
+        return call_llm_with_anthropic_chat_completion(client, kwargs)
+    elif llm_config.api_type == "openai_chat_completion":
+        return call_llm_with_openai_chat_completion(client, kwargs)
+    else:
+        raise ValueError(f"Invalid API type: {llm_config.api_type}")
+
+
+def openai_to_anthropic_message(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Convert an OpenAI message to an Anthropic message."""
+    system_messages = []
+    user_messages = []
+    for message in messages:
+        if message.get("role") == "system":
+            system_messages.append({"type": "text", "text": message.get("content", "")})
+        elif message.get("role") == "user":
+            user_messages.append({"role": "user", "content": [{"type": "text", "text": message.get("content", "")}]})
+        elif message.get("role") == "tool":
+            user_messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": message.get("tool_call_id", ""), "content": message.get("content", "")}
+                    ],
+                }
+            )
+        elif message.get("role") == "assistant":
+            new_message = {"role": "assistant", "content": []}
+            if message.get("content", ""):
+                # if content is not empty, add it to the content list
+                new_message["content"].append({"type": "text", "text": message.get("content", "")})
+            tool_calls = message.get("tool_calls", [])
+            new_tool_calls = []
+            for tool_call in tool_calls:
+                new_tool_calls.append(
+                    {
+                        "type": "tool_use",
+                        "id": tool_call.get("id", ""),
+                        "name": tool_call.get("function", {}).get("name", ""),
+                        "input": json.loads(tool_call.get("function", {}).get("arguments", {})),
+                    }
+                )
+            new_message["content"].extend(new_tool_calls)
+            user_messages.append(new_message)
+        else:
+            raise ValueError(f"Invalid message role: {message.get('role')}")
+    return system_messages, user_messages
+
+
+def call_llm_with_anthropic_chat_completion(
+    client: Any,
+    kwargs: dict[str, Any],
+) -> ModelResponse:
+    """Call Anthropic chat completion with the given messages and return response content."""
+    messages = kwargs.get("messages", [])
+
+    @observe(name="anthropic_run", as_type="generation")
+    def llm_call(messages: list[dict[str, Any]]):
+        # 组装 Anthropic 参数
+        system_messages, user_messages = openai_to_anthropic_message(messages)
+        # set cache control ttl
+        if user_messages and user_messages[-1].get("content"):
+            content = user_messages[-1]["content"]
+            if isinstance(content, list) and content:
+                content[0]["cache_control"] = {
+                    "type": "ephemeral",
+                    "ttl": kwargs.get("anthropic_cache_control_ttl", "5m"),
+                }
+
+        new_kwargs = kwargs.copy()
+        new_kwargs.pop("messages", None)
+        new_kwargs.pop("anthropic_cache_control_ttl", None)
+
+        # 调用 Anthropic
+        resp = client.messages.create(system=system_messages, messages=user_messages, **new_kwargs)
+
+        # 获取 usage 详情
+        usage_details = None
+        if getattr(resp, "usage", None):
+            cache_creation_input_tokens = getattr(resp.usage, "cache_creation_input_tokens", 0) or 0
+            cache_read_input_tokens = getattr(resp.usage, "cache_read_input_tokens", 0) or 0
+            input_tokens = getattr(resp.usage, "input_tokens", 0) or 0
+            output_tokens = getattr(resp.usage, "output_tokens", 0) or 0
+            total_output_tokens = output_tokens
+            usage_details = {
+                "input_tokens": input_tokens,
+                "output_tokens": total_output_tokens,
+                "cache_creation_input_tokens": cache_creation_input_tokens,
+                "cache_read_input_tokens": cache_read_input_tokens,
+            }
+
+        model_name = new_kwargs.get("model") or getattr(resp, "model", None)
+
+        # 更新当前 generation（让前端显示成 LLM 卡片）
+        langfuse_client = get_client()
+        langfuse_client.update_current_generation(
+            model=model_name,
+            input=messages,
+            usage_details=usage_details,
+            metadata={"provider": "anthropic", "api": "messages.create"},
+        )
+        return resp
+
+    response = llm_call(messages)
+    return ModelResponse.from_anthropic_message(response)
+
+
+def call_llm_with_openai_chat_completion(
+    client: Any,
+    kwargs: dict[str, Any],
+) -> ModelResponse:
+    """Call OpenAI chat completion with the given messages and return response content."""
+    response = client.chat.completions.create(**kwargs)
+    message = response.choices[0].message
+    return ModelResponse.from_openai_message(message)
+
+
 def bypass_llm_generator(
     openai_client: Any,
+    llm_config: LLMConfig,
     kwargs: dict[str, Any],
     force_stop_reason: str,
     agent_state: AgentState,
@@ -229,10 +354,7 @@ def bypass_llm_generator(
     )
 
     try:
-        # Call the original OpenAI API
-        response = openai_client.chat.completions.create(**kwargs)
-        message = response.choices[0].message
-        return ModelResponse.from_openai_message(message)
+        return call_llm_with_different_client(openai_client, llm_config, kwargs)
 
     except Exception as e:
         print(f"❌ Bypass LLM generator error: {e}")
