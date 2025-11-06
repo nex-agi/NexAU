@@ -145,6 +145,67 @@ class ModelResponse:
             raw_message=message,
         )
 
+    @classmethod
+    def from_anthropic_message(cls, message: Any) -> ModelResponse:
+        """Create a ModelResponse from an Anthropic chat completion message."""
+        if message is None:
+            raise ValueError("message cannot be None")
+
+        content_blocks = getattr(message, "content", None)
+        if content_blocks is None and isinstance(message, dict):
+            content_blocks = message.get("content")
+        if content_blocks is None:
+            content_blocks = []
+
+        # Extract text content from content blocks
+        text_parts: list[str] = []
+        raw_tool_calls: list[Any] = []
+
+        for block in content_blocks:
+            block_type = getattr(block, "type", None) if not isinstance(block, dict) else block.get("type")
+            if block_type == "text":
+                text = getattr(block, "text", None) if not isinstance(block, dict) else block.get("text")
+                if text:
+                    text_parts.append(text)
+            elif block_type == "tool_use":
+                raw_tool_calls.append(block)
+
+        content = "\n".join(text_parts) if text_parts else ""
+
+        tool_calls: list[ModelToolCall] = []
+        if raw_tool_calls:
+            for call in raw_tool_calls:
+                # Handle both dict and object (ToolUseBlock) cases
+                if isinstance(call, dict):
+                    call_id = call.get("id")
+                    name = call.get("name")
+                    arguments = call.get("input", {})
+                    call_type = call.get("type", "function")
+                else:
+                    call_id = getattr(call, "id", None)
+                    name = getattr(call, "name", None)
+                    arguments = getattr(call, "input", {})
+                    call_type = getattr(call, "type", "function")
+
+                tool_calls.append(
+                    ModelToolCall(
+                        call_id=call_id,
+                        name=name,
+                        arguments=arguments,
+                        raw_arguments=json.dumps(arguments, ensure_ascii=False),
+                        call_type=call_type,
+                        raw_call=call,
+                    ),
+                )
+
+        role = getattr(message, "role", "assistant") if not isinstance(message, dict) else message.get("role", "assistant")
+        return cls(
+            content=content,
+            tool_calls=tool_calls,
+            role=role,
+            raw_message=message,
+        )
+
     def has_content(self) -> bool:
         return bool(self.content and self.content.strip())
 

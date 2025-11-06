@@ -22,6 +22,7 @@ class LLMConfig:
         max_retries: int = 3,
         debug: bool = False,
         additional_drop_params: Iterable[str] | None = None,
+        api_type: str = "openai_chat_completion",
         **kwargs,
     ):
         """
@@ -39,6 +40,7 @@ class LLMConfig:
             timeout: Request timeout in seconds
             max_retries: Maximum number of retries
             debug: Enable debug logging of LLM messages
+            api_type: API type
             **kwargs: Additional model-specific parameters
         """
         self.model = model or self._get_model_from_env()
@@ -53,6 +55,7 @@ class LLMConfig:
         self.max_retries = max_retries
         self.debug = debug
         self.additional_drop_params = tuple(param for param in (additional_drop_params or []) if isinstance(param, str))
+        self.api_type = api_type
 
         # Store additional parameters
         self.extra_params = kwargs

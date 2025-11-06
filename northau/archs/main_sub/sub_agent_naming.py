@@ -1,6 +1,6 @@
 """Utilities for consistent sub-agent tool naming."""
 
-SUB_AGENT_TOOL_PREFIX = "sub-agent."
+SUB_AGENT_TOOL_PREFIX = "sub-agent-"
 LEGACY_SUB_AGENT_TOOL_PREFIX = "agent:"
 
 

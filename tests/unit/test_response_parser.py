@@ -126,7 +126,7 @@ class TestResponseParser:
             tool_calls=[
                 ModelToolCall(
                     call_id="call_agent",
-                    name="sub-agent.researcher",
+                    name="sub-agent-researcher",
                     arguments={"task": "Analyze data"},
                     raw_arguments='{"task": "Analyze data"}',
                 ),
@@ -147,7 +147,7 @@ class TestResponseParser:
         """Test parsing a sub-agent call."""
         response = """
 <tool_use>
-<tool_name>sub-agent.researcher</tool_name>
+<tool_name>sub-agent-researcher</tool_name>
 <parameter>
 <task>Research quantum computing</task>
 <deadline>2025-12-31</deadline>
@@ -166,7 +166,7 @@ class TestResponseParser:
         """Test parsing sub-agent call with empty parameters."""
         response = """
 <tool_use>
-<tool_name>sub-agent.worker</tool_name>
+<tool_name>sub-agent-worker</tool_name>
 <parameter>
 <task></task>
 </parameter>
@@ -315,7 +315,7 @@ class TestResponseParser:
 </parameter>
 </parallel_tool>
 <parallel_tool>
-<tool_name>sub-agent.worker</tool_name>
+<tool_name>sub-agent-worker</tool_name>
 <parameter>
 <task>Do work</task>
 </parameter>
@@ -600,7 +600,7 @@ outer
     def test_parse_sub_agent_call_direct(self, parser):
         """Test parsing sub-agent call directly."""
         xml_content = """
-<tool_name>sub-agent.researcher</tool_name>
+<tool_name>sub-agent-researcher</tool_name>
 <parameter>
 <task>Research topic</task>
 <priority>high</priority>
@@ -640,7 +640,7 @@ outer
         """Test parsing sub-agent call with value error that has successful fallback."""
         # Create well-formed XML that will trigger fallback parsing
         xml_content = """
-<tool_name>sub-agent.worker</tool_name>
+<tool_name>sub-agent-worker</tool_name>
 <parameter>
 <task>Do work</task>
 </parameter>
@@ -660,7 +660,7 @@ outer
     def test_parse_sub_agent_call_no_parameters(self, parser):
         """Test parsing sub-agent call with no parameters."""
         xml_content = """
-<tool_name>sub-agent.simple</tool_name>
+<tool_name>sub-agent-simple</tool_name>
 """
         sub_agent_call = parser._parse_sub_agent_call(xml_content)
 

@@ -51,7 +51,7 @@ class TestLLMCallerInitialization:
     def test_initialization_with_custom_llm_generator(self, mock_openai_client, mock_llm_config):
         """Test LLMCaller initialization with custom LLM generator."""
 
-        def custom_generator(client, params, force_stop, state):
+        def custom_generator(client, llm_config, params, force_stop, state):
             return "custom response"
 
         caller = LLMCaller(
@@ -210,14 +210,26 @@ class TestLLMCallerBasicCalls:
 
         messages = [{"role": "user", "content": "Hello"}]
 
-        with pytest.raises(RuntimeError, match="not supported"):
-            caller.call_llm(
-                messages,
-                max_tokens=50,
-                force_stop_reason=AgentStopReason.SUCCESS,
-                agent_state=agent_state,
-                tool_call_mode="anthorpic",
-            )
+        # Mock response with proper tool_calls structure
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message.tool_calls = []
+        mock_openai_client.chat.completions.create.return_value = mock_response
+
+        # Anthorpic mode sets tools and tool_choice but may not be fully supported
+        # The test verifies it doesn't crash with proper mocking
+        response = caller.call_llm(
+            messages,
+            max_tokens=50,
+            force_stop_reason=AgentStopReason.SUCCESS,
+            agent_state=agent_state,
+            tool_call_mode="anthorpic",
+        )
+
+        # Verify the call completed (though anthorpic mode may not be fully functional)
+        assert response is not None
+        assert isinstance(response, ModelResponse)
 
     def test_call_llm_applies_additional_drop_params(self, mock_openai_client, mock_llm_config, agent_state):
         """Test that additional_drop_params are applied before sending request."""
@@ -536,7 +548,7 @@ class TestLLMCallerCustomGenerator:
     def test_call_llm_with_custom_generator(self, mock_openai_client, mock_llm_config, agent_state):
         """Test LLM call with custom generator."""
 
-        def custom_generator(client, params, force_stop, state):
+        def custom_generator(client, llm_config, params, force_stop, state):
             return "Custom generator response"
 
         caller = LLMCaller(
@@ -562,8 +574,9 @@ class TestLLMCallerCustomGenerator:
         """Test that custom generator receives correct parameters."""
         received_params = {}
 
-        def custom_generator(client, params, force_stop, state):
+        def custom_generator(client, llm_config, params, force_stop, state):
             received_params["client"] = client
+            received_params["llm_config"] = llm_config
             received_params["params"] = params
             received_params["force_stop"] = force_stop
             received_params["state"] = state
@@ -584,6 +597,7 @@ class TestLLMCallerCustomGenerator:
         )
 
         assert received_params["client"] == mock_openai_client
+        assert received_params["llm_config"] == mock_llm_config
         assert "messages" in received_params["params"]
         assert received_params["params"]["messages"] == messages
         assert received_params["params"]["max_tokens"] == 100
@@ -594,7 +608,7 @@ class TestLLMCallerCustomGenerator:
         """Test that custom generator errors trigger retry."""
         call_count = [0]
 
-        def custom_generator(client, params, force_stop, state):
+        def custom_generator(client, llm_config, params, force_stop, state):
             call_count[0] += 1
             if call_count[0] < 3:
                 raise Exception(f"Custom generator error {call_count[0]}")
@@ -624,7 +638,7 @@ class TestLLMCallerCustomGenerator:
     def test_call_llm_custom_generator_with_non_success_stop(self, mock_openai_client, mock_llm_config, agent_state):
         """Test custom generator with non-SUCCESS stop reason."""
 
-        def custom_generator(client, params, force_stop, state):
+        def custom_generator(client, llm_config, params, force_stop, state):
             # Return a non-empty string when force_stop is not SUCCESS
             # to avoid AttributeError on split
             if force_stop != AgentStopReason.SUCCESS:
@@ -653,7 +667,7 @@ class TestLLMCallerCustomGenerator:
 class TestBypassLLMGenerator:
     """Test cases for bypass_llm_generator function."""
 
-    def test_bypass_llm_generator_success(self, mock_openai_client, agent_state, capsys):
+    def test_bypass_llm_generator_success(self, mock_openai_client, mock_llm_config, agent_state, capsys):
         """Test bypass LLM generator with successful API call."""
         mock_response = Mock()
         mock_response.choices = [Mock()]
@@ -669,6 +683,7 @@ class TestBypassLLMGenerator:
 
         result = bypass_llm_generator(
             mock_openai_client,
+            mock_llm_config,
             kwargs,
             AgentStopReason.SUCCESS,
             agent_state,
@@ -679,7 +694,7 @@ class TestBypassLLMGenerator:
         captured = capsys.readouterr()
         assert "Custom LLM Generator called with 1 messages" in captured.out
 
-    def test_bypass_llm_generator_with_error(self, mock_openai_client, agent_state, capsys):
+    def test_bypass_llm_generator_with_error(self, mock_openai_client, mock_llm_config, agent_state, capsys):
         """Test bypass LLM generator when API call fails."""
         mock_openai_client.chat.completions.create.side_effect = Exception("API Error")
 
@@ -691,6 +706,7 @@ class TestBypassLLMGenerator:
         with pytest.raises(Exception, match="API Error"):
             bypass_llm_generator(
                 mock_openai_client,
+                mock_llm_config,
                 kwargs,
                 AgentStopReason.SUCCESS,
                 agent_state,
@@ -699,7 +715,7 @@ class TestBypassLLMGenerator:
         captured = capsys.readouterr()
         assert "Bypass LLM generator error: API Error" in captured.out
 
-    def test_bypass_llm_generator_with_multiple_messages(self, mock_openai_client, agent_state, capsys):
+    def test_bypass_llm_generator_with_multiple_messages(self, mock_openai_client, mock_llm_config, agent_state, capsys):
         """Test bypass LLM generator with multiple messages."""
         mock_response = Mock()
         mock_response.choices = [Mock()]
@@ -718,6 +734,7 @@ class TestBypassLLMGenerator:
 
         result = bypass_llm_generator(
             mock_openai_client,
+            mock_llm_config,
             kwargs,
             AgentStopReason.SUCCESS,
             agent_state,
@@ -919,7 +936,7 @@ class TestLLMCallerIntegration:
         """Test retry logic with custom generator and exponential backoff."""
         call_count = [0]
 
-        def flaky_generator(client, params, force_stop, state):
+        def flaky_generator(client, llm_config, params, force_stop, state):
             call_count[0] += 1
             if call_count[0] < 3:
                 raise Exception(f"Temporary error {call_count[0]}")

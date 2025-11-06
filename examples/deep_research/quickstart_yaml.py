@@ -54,9 +54,10 @@ def main():
         print("✓ Agent loaded successfully from YAML")
 
         print("\nTesting delegation with web research...")
-        # web_message = '做一个孙悟空介绍的的html网页/Users/hanzhenhua/north-agent4agent/northau/wukong.html'
+        # web_message = '做一个孙悟空介绍的的html网页'
         # web_message = "List all commits in https://github.com/china-qijizhifeng/bp-sandbox"
-        web_message = "Show me details of the skill `algorithmic-art`"
+        # web_message = "Show me details of the skill `algorithmic-art`"
+        web_message = "请使用sub_deep_research_agent调研英伟达股票市场"
         print(f"\nUser: {web_message}")
         print("\nAgent Response:")
         print("-" * 30)
