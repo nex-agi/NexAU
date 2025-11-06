@@ -8,19 +8,51 @@ for all tests in the northau test suite.
 import asyncio
 import os
 import shutil
+import sys
 import tempfile
+import types
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
 import yaml
 
-from northau.archs.llm.llm_config import LLMConfig
-from northau.archs.main_sub.agent import create_agent
-from northau.archs.main_sub.agent_context import AgentContext, GlobalStorage
-from northau.archs.main_sub.agent_state import AgentState
-from northau.archs.main_sub.config import AgentConfig, ExecutionConfig
-from northau.archs.tool.tool import Tool
+# Provide a lightweight anthropic stub for environments without the package
+sys.modules.setdefault("anthropic", Mock())
+
+
+def _load_northau_dependencies():
+    from northau.archs.llm.llm_config import LLMConfig as _LLMConfig
+    from northau.archs.main_sub.agent import create_agent as _create_agent
+    from northau.archs.main_sub.agent_context import AgentContext as _AgentContext
+    from northau.archs.main_sub.agent_context import GlobalStorage as _GlobalStorage
+    from northau.archs.main_sub.agent_state import AgentState as _AgentState
+    from northau.archs.main_sub.config import AgentConfig as _AgentConfig
+    from northau.archs.main_sub.config import ExecutionConfig as _ExecutionConfig
+    from northau.archs.tool.tool import Tool as _Tool
+
+    return (
+        _LLMConfig,
+        _create_agent,
+        _AgentContext,
+        _GlobalStorage,
+        _AgentState,
+        _AgentConfig,
+        _ExecutionConfig,
+        _Tool,
+    )
+
+
+(
+    LLMConfig,
+    create_agent,
+    AgentContext,
+    GlobalStorage,
+    AgentState,
+    AgentConfig,
+    ExecutionConfig,
+    Tool,
+) = _load_northau_dependencies()
 
 
 # Test configuration
@@ -65,6 +97,20 @@ def mock_llm_config():
         api_key="test-key",
         temperature=0.1,
         max_tokens=1000,
+        api_type="openai_chat_completion",
+    )
+
+
+@pytest.fixture
+def responses_llm_config():
+    """LLM config configured for the Responses API."""
+    return LLMConfig(
+        model="gpt-4o-mini",
+        base_url="https://api.openai.com/v1",
+        api_key="test-key",
+        temperature=0.1,
+        max_tokens=1000,
+        api_type="openai_responses",
     )
 
 
@@ -219,6 +265,20 @@ def mock_openai_client():
     mock_response.choices = [Mock()]
     mock_response.choices[0].message.content = "Mocked LLM response"
     mock_client.chat.completions.create.return_value = mock_response
+
+    # Mock Responses API
+    message_item = {
+        "type": "message",
+        "role": "assistant",
+        "status": "completed",
+        "content": [{"type": "output_text", "text": "Mocked LLM response"}],
+    }
+
+    responses_payload = types.SimpleNamespace(
+        output=[message_item],
+        output_text="Mocked LLM response",
+    )
+    mock_client.responses.create.return_value = responses_payload
 
     return mock_client
 

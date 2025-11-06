@@ -6,6 +6,7 @@ tool_call_mode: openai
 llm_config:
   temperature: 0.7
   max_tokens: 4096
+  api_type: openai_chat_completion # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
 custom_llm_generator: "northau.archs.main_sub.execution.llm_caller:bypass_llm_generator"
 tools:
   - name: web_search
