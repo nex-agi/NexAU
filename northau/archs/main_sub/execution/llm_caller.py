@@ -3,10 +3,12 @@
 import json
 import logging
 import time
+import openai
 from collections.abc import Callable
 from typing import Any
 
 from langfuse import get_client, observe
+
 
 from northau.archs.llm.llm_config import LLMConfig
 
@@ -325,11 +327,22 @@ def call_llm_with_anthropic_chat_completion(
 
 
 def call_llm_with_openai_chat_completion(
-    client: Any,
+    client: openai.OpenAI,
     kwargs: dict[str, Any],
 ) -> ModelResponse:
     """Call OpenAI chat completion with the given messages and return response content."""
-    response = client.chat.completions.create(**kwargs)
+    
+    @observe(name="OpenAI-Chat Completion", as_type="generation")
+    def call_llm(kwargs):
+        response = client.chat.completions.create(**kwargs)
+        langfuse_client = get_client()
+        langfuse_client.update_current_generation(
+            model=response.model,
+            usage_details=response.usage
+        )
+        return response
+    
+    response = call_llm(kwargs)
     message = response.choices[0].message
     return ModelResponse.from_openai_message(message)
 
@@ -356,8 +369,17 @@ def call_llm_with_openai_responses(
     if tools:
         request_payload["tools"] = _normalize_responses_api_tools(tools)
 
-    response = client.responses.create(**request_payload)
-    return ModelResponse.from_openai_response(response)
+    @observe(name="OpenAI-Responses API", as_type="generation")
+    def call_llm(request_payload):
+        response = client.responses.create(**request_payload)
+        langfuse_client = get_client()
+        langfuse_client.update_current_generation(
+            model=response.model,
+            usage_details=response.usage
+        )
+        return response
+
+    return ModelResponse.from_openai_response(call_llm(request_payload))
 
 
 def _prepare_responses_api_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
