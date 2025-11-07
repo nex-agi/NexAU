@@ -7,8 +7,9 @@ from collections.abc import Callable
 from typing import Any
 
 try:
-    from langfuse import Langfuse
     import openai
+    from langfuse import Langfuse
+
     LANGFUSE_AVAILABLE = True
 except ImportError:
     LANGFUSE_AVAILABLE = False
