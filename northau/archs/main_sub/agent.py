@@ -8,11 +8,7 @@ from typing import Any
 
 try:
     from langfuse import Langfuse
-
-    try:
-        from langfuse import openai
-    except ImportError:
-        import openai
+    import openai
     LANGFUSE_AVAILABLE = True
 except ImportError:
     LANGFUSE_AVAILABLE = False
