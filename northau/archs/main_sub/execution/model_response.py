@@ -151,7 +151,6 @@ class ModelResponse:
         if self.response_items is None:
             self.response_items = []
 
-
     @classmethod
     def from_openai_message(cls, message: Any) -> ModelResponse:
         """Create a ModelResponse from an OpenAI chat completion message."""
