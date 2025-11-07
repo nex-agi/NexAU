@@ -138,9 +138,7 @@ class ModelResponse:
     role: str = "assistant"
     raw_message: Any = None
     response_items: list[dict[str, Any]] = field(default_factory=list)
-    reasoning_items: list[dict[str, Any]] = field(default_factory=list)
-    reasoning_traces: list[str] = field(default_factory=list)
-    reasoning_description: str | None = None
+    reasoning_content: str | None = None
     """A description of the chain of thought used by a reasoning model while generating a response.
 
     Be sure to include these items in your input to the Responses API for subsequent turns of a
@@ -152,10 +150,7 @@ class ModelResponse:
             self.tool_calls = []
         if self.response_items is None:
             self.response_items = []
-        if self.reasoning_items is None:
-            self.reasoning_items = []
-        if self.reasoning_traces is None:
-            self.reasoning_traces = []
+
 
     @classmethod
     def from_openai_message(cls, message: Any) -> ModelResponse:
@@ -191,12 +186,20 @@ class ModelResponse:
                         ),
                     )
 
+        # Extract reasoning_content if available (for models like kimi-k2-thinking)
+        reasoning_content = None
+        if hasattr(message, "reasoning_content"):
+            reasoning_content = getattr(message, "reasoning_content")
+        elif isinstance(message, dict) and "reasoning_content" in message:
+            reasoning_content = message["reasoning_content"]
+
         role = getattr(message, "role", "assistant") if not isinstance(message, dict) else message.get("role", "assistant")
         return cls(
             content=content,
             tool_calls=tool_calls,
             role=role,
             raw_message=message,
+            reasoning_content=reasoning_content if reasoning_content else None,
         )
 
     @classmethod
@@ -268,8 +271,6 @@ class ModelResponse:
 
         output_items = _item_get(response, "output", []) or []
         response_items: list[dict[str, Any]] = []
-        reasoning_items: list[dict[str, Any]] = []
-        reasoning_traces: list[str] = []
         collected_content: list[str] = []
         tool_calls: list[ModelToolCall] = []
         detected_role = "assistant"
@@ -294,7 +295,6 @@ class ModelResponse:
                     collected_content.append("\n".join(text_parts))
 
             elif item_type == "reasoning":
-                reasoning_items.append(item_dict)
                 trace_parts: list[str] = []
 
                 content_blocks = item_dict.get("content", []) or []
@@ -309,9 +309,6 @@ class ModelResponse:
                     if text:
                         trace_parts.append(str(text))
 
-                if trace_parts:
-                    reasoning_traces.append("\n".join(trace_parts))
-
             elif item_type in {"function_call", "tool_call"}:
                 maybe_call = cls._tool_call_from_response_item(item_dict)
                 if maybe_call:
@@ -325,9 +322,26 @@ class ModelResponse:
 
         combined_content = "\n".join(part for part in collected_content if part).strip() or None
 
-        reasoning_description: str | None = None
-        if reasoning_traces:
-            reasoning_description = "\n\n".join(reasoning_traces)
+        reasoning_content: str | None = None
+        # Collect reasoning content from reasoning items
+        reasoning_parts: list[str] = []
+        for raw_item in output_items:
+            item_dict = _to_serializable_dict(raw_item)
+            if item_dict.get("type") == "reasoning":
+                content_blocks = item_dict.get("content", []) or []
+                for block in content_blocks:
+                    text = _item_get(block, "text")
+                    if text:
+                        reasoning_parts.append(str(text))
+
+                summaries = item_dict.get("summary", []) or []
+                for summary in summaries:
+                    text = _item_get(summary, "text")
+                    if text:
+                        reasoning_parts.append(str(text))
+
+        if reasoning_parts:
+            reasoning_content = "\n".join(reasoning_parts)
 
         return cls(
             content=combined_content,
@@ -335,9 +349,7 @@ class ModelResponse:
             role=detected_role,
             raw_message=response,
             response_items=response_items,
-            reasoning_items=reasoning_items,
-            reasoning_traces=reasoning_traces,
-            reasoning_description=reasoning_description,
+            reasoning_content=reasoning_content,
         )
 
     @staticmethod
@@ -415,12 +427,10 @@ class ModelResponse:
     def render_text(self) -> str:
         """Render the response as a human-readable string for logging."""
         parts: list[str] = []
-        if self.reasoning_traces:
-            for trace in self.reasoning_traces:
-                if trace:
-                    parts.append(f"[reasoning] {trace.strip()}")
         if self.has_content():
             parts.append(self.content.strip())
+        if self.reasoning_content:
+            parts.append(f"[reasoning]\n{self.reasoning_content}")
         for call in self.tool_calls:
             try:
                 arg_preview = json.dumps(call.arguments, ensure_ascii=False)
@@ -438,12 +448,8 @@ class ModelResponse:
             message["tool_calls"] = [call.to_openai_dict() for call in self.tool_calls]
         if self.response_items:
             message["response_items"] = self.response_items
-        if self.reasoning_items:
-            message["reasoning"] = self.reasoning_items
-        if self.reasoning_traces:
-            message["reasoning_traces"] = self.reasoning_traces
-        if self.reasoning_description:
-            message["reasoning_description"] = self.reasoning_description
+        if self.reasoning_content:
+            message["reasoning_content"] = self.reasoning_content
         return message
 
     def __str__(self) -> str:  # pragma: no cover - convenience

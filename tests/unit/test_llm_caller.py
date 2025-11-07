@@ -24,6 +24,40 @@ from northau.archs.main_sub.execution.model_response import ModelResponse
 from northau.archs.main_sub.execution.stop_reason import AgentStopReason
 
 
+@pytest.fixture(autouse=True)
+def mock_openai_module():
+    """Mock the openai module to prevent any real API calls."""
+    with patch("northau.archs.main_sub.execution.llm_caller.openai") as mock_openai:
+        # Ensure OpenAI client cannot be instantiated
+        mock_openai.OpenAI.side_effect = RuntimeError("Real OpenAI client cannot be instantiated in tests")
+        yield mock_openai
+
+
+@pytest.fixture(autouse=True)
+def mock_langfuse_module():
+    """Mock langfuse functions to prevent any real connections to Langfuse server."""
+    with patch("northau.archs.main_sub.execution.llm_caller.get_client") as mock_get_client, \
+         patch("northau.archs.main_sub.execution.llm_caller.observe") as mock_observe:
+        
+        # Mock get_client to return a mock client
+        mock_langfuse_client = Mock()
+        mock_get_client.return_value = mock_langfuse_client
+        
+        # Mock observe decorator to pass through the original function
+        def mock_observe_decorator(*args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+        
+        mock_observe.side_effect = mock_observe_decorator
+        
+        yield {
+            "get_client": mock_get_client,
+            "observe": mock_observe,
+            "client": mock_langfuse_client
+        }
+
+
 class TestLLMCallerInitialization:
     """Test cases for LLMCaller initialization."""
 
@@ -101,6 +135,8 @@ class TestLLMCallerBasicCalls:
         responses_payload = SimpleNamespace(
             output=[message_item],
             output_text="Hello from responses!",
+            model="gpt-4o-mini",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
         )
         mock_openai_client.responses.create.return_value = responses_payload
 
@@ -115,8 +151,6 @@ class TestLLMCallerBasicCalls:
         assert isinstance(response, ModelResponse)
         assert response.content == "Hello from responses!"
         assert response.response_items == responses_payload.output
-        assert response.reasoning_items == []
-        assert response.reasoning_traces == []
 
         mock_openai_client.responses.create.assert_called_once()
         call_kwargs = mock_openai_client.responses.create.call_args.kwargs
@@ -149,6 +183,8 @@ class TestLLMCallerBasicCalls:
         responses_payload = SimpleNamespace(
             output=[reasoning_item, message_item],
             output_text="Assistant reply",
+            model="gpt-4o-mini",
+            usage=SimpleNamespace(input_tokens=15, output_tokens=8),
         )
         mock_openai_client.responses.create.return_value = responses_payload
 
@@ -160,8 +196,6 @@ class TestLLMCallerBasicCalls:
         messages = [{"role": "user", "content": "Hello"}]
         response = caller.call_llm(messages, max_tokens=60, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
-        assert response.reasoning_items == [reasoning_item]
-        assert response.reasoning_traces == ["Thought step\nSummary"]
         assert "[reasoning]" in response.render_text()
 
         # Append to history and ensure reasoning makes it into subsequent input
@@ -186,6 +220,8 @@ class TestLLMCallerBasicCalls:
         responses_payload = SimpleNamespace(
             output=[message_item],
             output_text="Tool ready",
+            model="gpt-4o-mini",
+            usage=SimpleNamespace(input_tokens=8, output_tokens=4),
         )
         mock_openai_client.responses.create.return_value = responses_payload
 
@@ -255,6 +291,8 @@ class TestLLMCallerBasicCalls:
         responses_payload_first = SimpleNamespace(
             output=[first_output_item, first_function_call, tool_result_item],
             output_text="Using tool",
+            model="gpt-4o-mini",
+            usage=SimpleNamespace(input_tokens=20, output_tokens=10),
         )
 
         second_output_item = {
@@ -266,6 +304,8 @@ class TestLLMCallerBasicCalls:
         responses_payload_second = SimpleNamespace(
             output=[second_output_item],
             output_text="Done",
+            model="gpt-4o-mini",
+            usage=SimpleNamespace(input_tokens=25, output_tokens=5),
         )
 
         mock_openai_client.responses.create.side_effect = [responses_payload_first, responses_payload_second]

@@ -12,6 +12,15 @@ from northau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from northau.archs.main_sub.agent_state import AgentState
 
 
+@pytest.fixture(autouse=True)
+def mock_langfuse_client():
+    """Mock Langfuse client to prevent any real connections to Langfuse server."""
+    with patch("northau.archs.main_sub.agent.Langfuse") as mock_langfuse_class:
+        mock_langfuse = Mock()
+        mock_langfuse_class.return_value = mock_langfuse
+        yield mock_langfuse
+
+
 class TestAgent:
     """Test cases for Agent class."""
 
