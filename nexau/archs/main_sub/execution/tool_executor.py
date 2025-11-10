@@ -69,6 +69,9 @@ class ToolExecutor:
             raise ValueError(error_msg)
 
         tool = self.tool_registry[tool_name]
+        result = None
+        execution_error = None
+
         try:
             # Add agent_state to parameters
             execution_params = parameters.copy()
@@ -99,16 +102,33 @@ class ToolExecutor:
 
             logger.info(f"✅ Tool '{tool_name}' executed successfully")
 
-            # Execute tool hooks if available
-            if self.tool_hook_manager:
-                hook_input = AfterToolHookInput(
-                    agent_state=agent_state,
-                    tool_name=tool_name,
-                    tool_input=parameters,
-                    tool_output=result,
-                    tool_call_id=tool_call_id,
-                )
-                result = self.tool_hook_manager.execute_hooks(hook_input)
+        except Exception as e:
+            logger.error(f"❌ Tool '{tool_name}' execution failed: {e}")
+            execution_error = e
+            # 创建错误结果，确保 hook 仍然可以被调用
+            result = {
+                "status": "error",
+                "error": str(e),
+                "error_type": type(e).__name__,
+            }
+
+        finally:
+            if self.tool_hook_manager and result is not None:
+                try:
+                    hook_input = AfterToolHookInput(
+                        agent_state=agent_state,
+                        tool_name=tool_name,
+                        tool_input=parameters,
+                        tool_output=result,
+                        tool_call_id=tool_call_id,
+                    )
+                    result = self.tool_hook_manager.execute_hooks(hook_input)
+                except Exception as hook_error:
+                    logger.error(f"❌ Tool hook execution failed for '{tool_name}': {hook_error}")
+
+            # 如果工具执行失败，在执行完 hooks 后再抛出异常
+            if execution_error:
+                raise execution_error
 
             # Check if this is a stop tool
             if tool_name in self.stop_tools:
@@ -129,10 +149,6 @@ class ToolExecutor:
                 result["_is_stop_tool"] = False
 
             return result
-
-        except Exception as e:
-            logger.error(f"❌ Tool '{tool_name}' execution failed: {e}")
-            raise
 
     def _convert_parameter_type(self, tool_name: str, param_name: str, param_value):
         """Convert parameter value to the correct type based on tool schema.
