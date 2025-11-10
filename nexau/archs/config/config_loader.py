@@ -6,14 +6,16 @@ import os
 import traceback
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import dotenv
 import yaml
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..llm import LLMConfig
 from ..main_sub import Agent, create_agent
 from ..main_sub.agent_context import GlobalStorage
+from ..main_sub.config import AgentConfigBase, HookDefinition
 from ..main_sub.prompt_builder import PromptBuilder
 from ..main_sub.skill import Skill
 from ..tool import Tool
@@ -27,6 +29,74 @@ class ConfigError(Exception):
     """Exception raised for configuration errors."""
 
     pass
+
+
+class ToolConfigEntry(BaseModel):
+    """Schema for tool entries in agent configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    yaml_path: str
+    binding: str | None = None
+    as_skill: bool = False
+
+
+class SubAgentConfigEntry(BaseModel):
+    """Schema for sub-agent configuration references."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    config_path: str
+
+
+class MCPServerBaseModel(BaseModel):
+    """Shared attributes for MCP server definitions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    timeout: int | None = Field(default=None, gt=0)
+    env: dict[str, str] | None = None
+    use_cache: bool = False
+    disable_parallel: bool = False
+
+
+class MCPStdIOServer(MCPServerBaseModel):
+    type: Literal["stdio"] = "stdio"
+    command: str
+    args: list[str] | None = None
+
+
+class MCPHttpServer(MCPServerBaseModel):
+    type: Literal["http"] = "http"
+    url: str
+    headers: dict[str, str] | None = None
+
+
+class MCPSseServer(MCPServerBaseModel):
+    type: Literal["sse"] = "sse"
+    url: str
+    headers: dict[str, str] | None = None
+
+
+MCPServerConfig = MCPStdIOServer | MCPHttpServer | MCPSseServer
+
+
+class AgentConfigSchema(
+    AgentConfigBase[ToolConfigEntry, str, SubAgentConfigEntry, HookDefinition],
+):
+    """Top-level schema for agent YAML files."""
+
+    llm_config: dict[str, Any]
+    mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
+    global_storage: dict[str, Any] = Field(default_factory=dict)
+    after_model_hooks: list[HookDefinition] = Field(default_factory=list)
+    after_tool_hooks: list[HookDefinition] = Field(default_factory=list)
+    before_model_hooks: list[HookDefinition] = Field(default_factory=list)
+    custom_llm_generator: HookDefinition | None = None
+    token_counter: HookDefinition | None = None
 
 
 class AgentBuilder:
@@ -524,7 +594,9 @@ def load_agent_config(
                 f"Empty or invalid configuration file: {config_path}",
             )
 
-        # Apply overrides based on agent name
+        config = normalize_agent_config_dict(config)
+
+        # Apply overrides based on agent name after validation
         if overrides:
             config = apply_agent_name_overrides(config, overrides)
 
@@ -617,9 +689,13 @@ def load_sub_agent_from_config(
     if not config_path:
         raise ConfigError(f"Sub-agent '{name}' missing 'config_path' field")
 
+    config_path = Path(config_path)
+
     # Resolve config path
-    if not Path(config_path).is_absolute():
+    if not config_path.is_absolute():
         config_path = base_path / config_path
+
+    _prevalidate_agent_file(config_path)
 
     # Create factory function that loads agent when called
     def agent_factory(global_storage: GlobalStorage | None = None):
@@ -672,71 +748,60 @@ def import_from_string(import_string: str) -> Any:
 
 
 def validate_config_schema(config: dict[str, Any]) -> bool:
-    """
-    Validate agent configuration schema.
+    """Validate agent configuration schema using the shared Pydantic model."""
 
-    Args:
-        config: Configuration dictionary to validate
-
-    Returns:
-        True if valid, raises ConfigError if invalid
-    """
-    required_fields = []  # No strictly required fields for flexibility
-
-    # Check for required fields
-    for field in required_fields:
-        if field not in config:
-            raise ConfigError(
-                f"Required field '{field}' missing from configuration",
-            )
-
-    # Validate tool configurations
-    tools = config.get("tools", [])
-    if not isinstance(tools, list):
-        raise ConfigError("'tools' field must be a list")
-
-    for i, tool_config in enumerate(tools):
-        if not isinstance(tool_config, dict):
-            raise ConfigError(f"Tool configuration {i} must be a dictionary")
-
-        if "name" not in tool_config:
-            raise ConfigError(f"Tool configuration {i} missing 'name' field")
-
-    # Validate sub-agent configurations
-    sub_agents = config.get("sub_agents", [])
-    if not isinstance(sub_agents, list):
-        raise ConfigError("'sub_agents' field must be a list")
-
-    for i, sub_config in enumerate(sub_agents):
-        if not isinstance(sub_config, dict):
-            raise ConfigError(
-                f"Sub-agent configuration {i} must be a dictionary",
-            )
-
-        if "name" not in sub_config:
-            raise ConfigError(
-                f"Sub-agent configuration {i} missing 'name' field",
-            )
-
-    # Validate MCP servers configurations
-    mcp_servers = config.get("mcp_servers", [])
-    if not isinstance(mcp_servers, list):
-        raise ConfigError("'mcp_servers' field must be a list")
-
-    for i, server_config in enumerate(mcp_servers):
-        if not isinstance(server_config, dict):
-            raise ConfigError(
-                f"MCP server configuration {i} must be a dictionary",
-            )
-
-        if "name" not in server_config:
-            raise ConfigError(
-                f"MCP server configuration {i} missing 'name' field",
-            )
-
-        if "type" not in server_config:
-            raise ConfigError(
-                f"MCP server configuration {i} missing 'type' field",
-            )
+    try:
+        AgentConfigSchema.model_validate(config)
+    except ValidationError as exc:
+        raise ConfigError(
+            f"Invalid agent configuration: {_format_validation_error(exc)}",
+        ) from exc
 
     return True
+
+
+def normalize_agent_config_dict(config: dict[str, Any]) -> dict[str, Any]:
+    """Validate and normalize a raw agent config dictionary."""
+
+    try:
+        config_model = AgentConfigSchema.model_validate(config)
+    except ValidationError as exc:
+        raise ConfigError(
+            f"Invalid agent configuration: {_format_validation_error(exc)}",
+        ) from exc
+
+    return config_model.model_dump(
+        mode="python",
+        by_alias=True,
+        exclude_none=True,
+    )
+
+
+def _format_validation_error(exc: ValidationError) -> str:
+    """Return a compact, readable validation error summary."""
+
+    formatted_errors = []
+    for error in exc.errors():
+        location = "->".join(str(segment) for segment in error.get("loc", [])) or "root"
+        formatted_errors.append(f"{location}: {error.get('msg')}")
+    return "; ".join(formatted_errors)
+
+
+def _prevalidate_agent_file(path: Path) -> None:
+    """Validate a referenced agent config file once to surface schema errors early."""
+
+    resolved = path.resolve()
+    if resolved in _validated_agent_paths:
+        return
+    if not resolved.exists():
+        raise ConfigError(f"Sub-agent configuration file not found: {resolved}")
+
+    config = load_yaml_with_vars(resolved)
+    if not config:
+        raise ConfigError(f"Empty or invalid configuration file: {resolved}")
+
+    normalize_agent_config_dict(config)
+    _validated_agent_paths.add(resolved)
+
+
+_validated_agent_paths: set[Path] = set()
