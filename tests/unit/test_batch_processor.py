@@ -8,8 +8,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from northau.archs.main_sub.execution.batch_processor import BatchProcessor
-from northau.archs.main_sub.utils.xml_utils import XMLParser
+from nexau.archs.main_sub.execution.batch_processor import BatchProcessor
+from nexau.archs.main_sub.utils.xml_utils import XMLParser
 
 
 class TestBatchProcessor:

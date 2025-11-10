@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Agent runner for NorthAU CLI with real-time progress tracking.
-This script runs the NorthAU agent and communicates via stdin/stdout.
+Agent runner for NexAU CLI with real-time progress tracking.
+This script runs the NexAU agent and communicates via stdin/stdout.
 """
 
 import json
@@ -12,12 +12,12 @@ from pathlib import Path
 
 import langfuse
 
-# Add parent directory to path to import northau
+# Add parent directory to path to import nexau
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cli_subagent_adapter import attach_cli_to_agent
 
-from northau.archs.main_sub.execution.hooks import (
+from nexau.archs.main_sub.execution.hooks import (
     AfterModelHookInput,
     AfterModelHookResult,
     AfterToolHookInput,
@@ -239,7 +239,7 @@ def main():
 
         import yaml
 
-        from northau.archs.config.config_loader import AgentBuilder
+        from nexau.archs.config.config_loader import AgentBuilder
 
         config_path = Path(yaml_path)
         with open(config_path) as f:

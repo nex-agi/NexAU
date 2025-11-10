@@ -32,7 +32,7 @@ response = agent.run(
 #### Using Full Context Object
 
 ```python
-from northau.archs.main_sub.agent_context import get_context
+from nexau.archs.main_sub.agent_context import get_context
 
 def context_aware_tool(action: str) -> dict:
     """Tool that uses the full context object for advanced operations."""

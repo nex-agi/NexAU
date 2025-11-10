@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from northau.archs.config.config_loader import load_agent_config
+from nexau.archs.config.config_loader import load_agent_config
 
 
 class TestConfigIntegration:
@@ -62,7 +62,7 @@ class TestConfigIntegration:
                 "name": "agent_with_tools",
                 "llm_config": {"model": "gpt-4o-mini"},
                 "tools": [
-                    {"name": "test_tool", "yaml_path": "tools/test_tool.yaml", "binding": "northau.archs.tool.builtin.bash_tool:bash_tool"}
+                    {"name": "test_tool", "yaml_path": "tools/test_tool.yaml", "binding": "nexau.archs.tool.builtin.bash_tool:bash_tool"}
                 ],
             }
             with open(config_path, "w") as f:
@@ -153,7 +153,7 @@ class TestAgentBuilderIntegration:
             with open(config_path, "w") as f:
                 yaml.dump(config, f)
 
-            with patch("northau.archs.config.config_loader.create_agent") as mock_create:
+            with patch("nexau.archs.config.config_loader.create_agent") as mock_create:
                 mock_agent = MagicMock()
                 mock_create.return_value = mock_agent
 

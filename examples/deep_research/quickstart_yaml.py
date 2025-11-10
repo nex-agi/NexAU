@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from northau.archs.config.config_loader import load_agent_config
+from nexau.archs.config.config_loader import load_agent_config
 
 logging.basicConfig(level=logging.INFO)
 
@@ -17,7 +17,7 @@ def get_date():
 
 def main():
     """Test the quick start example with YAML-based agent configuration."""
-    print("Testing Northau Framework Quick Start Example (YAML-based)")
+    print("Testing NexAU Framework Quick Start Example (YAML-based)")
     print("=" * 60)
 
     try:

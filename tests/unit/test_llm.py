@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from northau.archs.llm.llm_config import LLMConfig
+from nexau.archs.llm.llm_config import LLMConfig
 
 
 class TestLLMConfig:

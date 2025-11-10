@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from northau.archs.main_sub.agent_context import get_context
-from northau.archs.main_sub.execution.hooks import ToolHookManager
-from northau.archs.main_sub.execution.subagent_manager import SubAgentManager
+from nexau.archs.main_sub.agent_context import get_context
+from nexau.archs.main_sub.execution.hooks import ToolHookManager
+from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
 
 
 class CLIEnabledSubAgentManager(SubAgentManager):

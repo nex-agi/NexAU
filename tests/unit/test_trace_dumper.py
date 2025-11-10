@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from northau.archs.main_sub.tracing.trace_dumper import TraceDumper
+from nexau.archs.main_sub.tracing.trace_dumper import TraceDumper
 
 
 class TestTraceDumperBasic:

@@ -1,7 +1,7 @@
 # Test Coverage Summary: BatchProcessor
 
 ## Overview
-Comprehensive test suite created for `northau/archs/main_sub/execution/batch_processor.py` achieving **100% code coverage**.
+Comprehensive test suite created for `nexau/archs/main_sub/execution/batch_processor.py` achieving **100% code coverage**.
 
 ## Test Statistics
 - **Total Tests**: 44
@@ -120,7 +120,7 @@ Test data includes:
 ```
 Name                                                  Stmts   Miss  Cover
 -------------------------------------------------------------------------
-northau/archs/main_sub/execution/batch_processor.py     123      0   100%
+nexau/archs/main_sub/execution/batch_processor.py     123      0   100%
 -------------------------------------------------------------------------
 TOTAL                                                   123      0   100%
 ```
@@ -133,7 +133,7 @@ pytest tests/unit/test_batch_processor.py -v
 
 # Run with coverage report
 python -m coverage run -m pytest tests/unit/test_batch_processor.py
-python -m coverage report --include="northau/archs/main_sub/execution/batch_processor.py"
+python -m coverage report --include="nexau/archs/main_sub/execution/batch_processor.py"
 ```
 
 ## Code Quality

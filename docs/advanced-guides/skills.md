@@ -1,6 +1,6 @@
 # Skills
 
-Skills are reusable capabilities that can be loaded and used by agents. Northau supports two types of skills:
+Skills are reusable capabilities that can be loaded and used by agents. NexAU supports two types of skills:
 
 1. **Folder-based skills**: Skills defined in dedicated folders with a `SKILL.md` file
 2. **Tool-based skills**: Regular tools marked as skills using the `as_skill` parameter
@@ -86,7 +86,7 @@ results = analyze_data(data)
 **Using Python:**
 
 ```python
-from northau import create_agent
+from nexau import create_agent
 
 agent = create_agent(
     name="data_analyst",
@@ -140,7 +140,7 @@ Tool-based skills are regular tools that are marked as skills. This is useful wh
 #### Step 1: Create a Tool with `as_skill=True`
 
 ```python
-from northau import Tool
+from nexau import Tool
 
 # Create a tool that's also a skill
 code_generator = Tool(
@@ -206,7 +206,7 @@ skill_description: Code generation skill for multiple programming languages
 You can use both folder-based and tool-based skills together in the same agent:
 
 ```python
-from northau import create_agent, Tool
+from nexau import create_agent, Tool
 
 # Define a tool-based skill
 web_search = Tool(
@@ -431,7 +431,7 @@ description: Advanced data visualization capabilities
 ### Example 1: Research Assistant with Multiple Skills
 
 ```python
-from northau import create_agent, Tool
+from nexau import create_agent, Tool
 
 # Tool-based skill for web search
 web_search_tool = Tool(

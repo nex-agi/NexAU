@@ -1,7 +1,7 @@
 
 ### Hooks
 
-The Northau framework provides a powerful hook system that allows you to intercept and modify agent behavior after the LLM generates a response but before tool/agent execution. This enables custom logic, safety measures, conversation management, and much more.
+The NexAU framework provides a powerful hook system that allows you to intercept and modify agent behavior after the LLM generates a response but before tool/agent execution. This enables custom logic, safety measures, conversation management, and much more.
 
 #### Hook System Overview
 
@@ -19,7 +19,7 @@ Hooks return a `AfterModelHookResult` that can modify:
 #### Basic Hook Usage
 
 ```python
-from northau.archs.main_sub.execution.hooks import AfterModelHook, AfterModelHookResult, AfterModelHookInput
+from nexau.archs.main_sub.execution.hooks import AfterModelHook, AfterModelHookResult, AfterModelHookInput
 
 def create_context_hook() -> AfterModelHook:
     def context_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
@@ -49,7 +49,7 @@ agent = create_agent(
 
 ##### Logging Hook
 ```python
-from northau.archs.main_sub.execution.hooks import create_logging_hook
+from nexau.archs.main_sub.execution.hooks import create_logging_hook
 
 # Logs detailed information about each hook execution
 logging_hook = create_logging_hook("my_logger")
@@ -57,7 +57,7 @@ logging_hook = create_logging_hook("my_logger")
 
 ##### Filter Hook
 ```python
-from northau.archs.main_sub.execution.hooks import create_filter_hook
+from nexau.archs.main_sub.execution.hooks import create_filter_hook
 
 # Only allow specific tools and agents
 filter_hook = create_filter_hook(
@@ -68,7 +68,7 @@ filter_hook = create_filter_hook(
 
 ##### Remaining Iterations Hook
 ```python
-from northau.archs.main_sub.execution.hooks import create_remaining_reminder_hook
+from nexau.archs.main_sub.execution.hooks import create_remaining_reminder_hook
 
 # Adds iteration count reminders to conversation
 reminder_hook = create_remaining_reminder_hook()
@@ -77,7 +77,7 @@ reminder_hook = create_remaining_reminder_hook()
 Each time the tool with `tool_name` is called, the CLI prompts whether to approve (y/n). If no, the agent stops.
 
 ```python
-from northau.archs.main_sub.execution.hooks import create_tool_after_approve_hook
+from nexau.archs.main_sub.execution.hooks import create_tool_after_approve_hook
 
 tool_after_approve_hook = create_tool_after_approve_hook(
     tool_name='WebSearch'
@@ -103,7 +103,7 @@ def create_safety_hook() -> AfterModelHook:
 
         if len(safe_calls) != len(hook_input.parsed_response.tool_calls):
             # Create modified parsed response
-            from northau.archs.main_sub.execution.parse_structures import ParsedResponse
+            from nexau.archs.main_sub.execution.parse_structures import ParsedResponse
             modified_parsed = ParsedResponse(
                 original_response=hook_input.parsed_response.original_response,
                 tool_calls=safe_calls,
@@ -179,7 +179,7 @@ def create_business_logic_hook(user_permissions: set[str]) -> AfterModelHook:
 
         if len(allowed_calls) != len(hook_input.parsed_response.tool_calls):
             # Create modified response with business logic applied
-            from northau.archs.main_sub.execution.parse_structures import ParsedResponse
+            from nexau.archs.main_sub.execution.parse_structures import ParsedResponse
             modified_parsed = ParsedResponse(
                 original_response=hook_input.parsed_response.original_response,
                 tool_calls=allowed_calls,
@@ -256,7 +256,7 @@ The hook system provides powerful capabilities for customizing agent behavior wh
 
 ### Tool Hooks
 
-In addition to model hooks, Northau provides `after_tool_hooks` that intercept and modify tool execution results. These hooks are called after each tool is executed but before the result is processed by the agent.
+In addition to model hooks, NexAU provides `after_tool_hooks` that intercept and modify tool execution results. These hooks are called after each tool is executed but before the result is processed by the agent.
 
 #### Tool Hook System Overview
 
@@ -272,7 +272,7 @@ Tool hooks return an `AfterToolHookResult` that can modify:
 #### Basic Tool Hook Usage
 
 ```python
-from northau.archs.main_sub.execution.hooks import AfterToolHook, AfterToolHookInput, AfterToolHookResult
+from nexau.archs.main_sub.execution.hooks import AfterToolHook, AfterToolHookInput, AfterToolHookResult
 
 def create_tool_output_logger() -> AfterToolHook:
     def tool_logger_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
@@ -298,7 +298,7 @@ agent = create_agent(
 
 ##### Tool Logging Hook
 ```python
-from northau.archs.main_sub.execution.hooks import create_tool_logging_hook
+from nexau.archs.main_sub.execution.hooks import create_tool_logging_hook
 
 # Logs detailed tool execution information
 tool_logging_hook = create_tool_logging_hook("tool_debug_logger")
@@ -317,13 +317,13 @@ llm_config:
 tools:
   - name: web_search
     yaml_path: ./tools/WebSearch.yaml
-    binding: northau.archs.tool.builtin.web_tool:web_search
+    binding: nexau.archs.tool.builtin.web_tool:web_search
   - name: web_read
     yaml_path: ./tools/WebRead.yaml
-    binding: northau.archs.tool.builtin.web_tool:web_read
+    binding: nexau.archs.tool.builtin.web_tool:web_read
 after_tool_hooks:
   # Simple logging hook
-  - import: northau.archs.main_sub.execution.hooks:create_tool_logging_hook
+  - import: nexau.archs.main_sub.execution.hooks:create_tool_logging_hook
     params:
       logger_name: "research_tool_debug"
 

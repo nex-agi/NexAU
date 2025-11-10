@@ -15,13 +15,13 @@ from unittest.mock import patch
 
 import pytest
 
-from northau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
-from northau.archs.main_sub.execution.parse_structures import (
+from nexau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
+from nexau.archs.main_sub.execution.parse_structures import (
     BatchAgentCall,
     SubAgentCall,
     ToolCall,
 )
-from northau.archs.main_sub.execution.response_parser import ResponseParser
+from nexau.archs.main_sub.execution.response_parser import ResponseParser
 
 
 class TestResponseParser:
@@ -471,7 +471,7 @@ class TestResponseParser:
     def test_parse_tool_call_with_regex_error(self, parser):
         """Test regex parsing error handling."""
         # Create malformed content that causes regex to fail
-        with patch("northau.archs.main_sub.execution.response_parser.re.search", side_effect=Exception("Regex error")):
+        with patch("nexau.archs.main_sub.execution.response_parser.re.search", side_effect=Exception("Regex error")):
             xml_content = "<tool_name>test</tool_name>"
             tool_call = parser._parse_tool_call_with_regex(xml_content)
 
@@ -648,7 +648,7 @@ outer
         # Mock the XML parser to raise ValueError, triggering fallback
         with patch.object(parser.xml_parser, "parse_xml_content", side_effect=ValueError("Parse error")):
             # Mock the XMLUtils module (imported inside the function)
-            with patch("northau.archs.main_sub.utils.xml_utils.XMLUtils") as mock_utils:
+            with patch("nexau.archs.main_sub.utils.xml_utils.XMLUtils") as mock_utils:
                 mock_utils.extract_agent_name_from_xml.return_value = "worker"
 
                 sub_agent_call = parser._parse_sub_agent_call(xml_content)
@@ -1038,7 +1038,7 @@ And that's what I'll do.
 
         with patch.object(parser.xml_parser, "parse_xml_content", side_effect=ValueError("Parse error")):
             with patch.object(parser, "_parse_tool_call_with_regex", return_value=None):
-                with patch("northau.archs.main_sub.utils.xml_utils.XMLUtils") as mock_utils:
+                with patch("nexau.archs.main_sub.utils.xml_utils.XMLUtils") as mock_utils:
                     mock_utils.extract_tool_name_from_xml.return_value = "unknown"
 
                     tool_call = parser._parse_tool_call(xml_content)
@@ -1052,7 +1052,7 @@ And that's what I'll do.
 
         with patch.object(parser.xml_parser, "parse_xml_content", side_effect=ValueError("Parse error")):
             with patch.object(parser, "_parse_tool_call_with_regex", return_value=None):
-                with patch("northau.archs.main_sub.utils.xml_utils.XMLUtils") as mock_utils:
+                with patch("nexau.archs.main_sub.utils.xml_utils.XMLUtils") as mock_utils:
                     mock_utils.extract_tool_name_from_xml.return_value = "recovered_tool"
 
                     tool_call = parser._parse_tool_call(xml_content)

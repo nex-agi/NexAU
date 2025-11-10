@@ -1,4 +1,4 @@
-"""Refactored Agent implementation for the Northau framework."""
+"""Refactored Agent implementation for the NexAU framework."""
 
 import copy
 import logging
@@ -21,20 +21,20 @@ except ImportError:
 
 import anthropic
 
-from northau.archs.llm.llm_config import LLMConfig
-from northau.archs.main_sub.agent_context import AgentContext, GlobalStorage
-from northau.archs.main_sub.agent_state import AgentState
-from northau.archs.main_sub.config import AgentConfig, ExecutionConfig
-from northau.archs.main_sub.execution.executor import Executor
-from northau.archs.main_sub.prompt_builder import PromptBuilder
-from northau.archs.main_sub.skill import Skill
-from northau.archs.main_sub.sub_agent_naming import build_sub_agent_tool_name
-from northau.archs.main_sub.tool_call_modes import (
+from nexau.archs.llm.llm_config import LLMConfig
+from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
+from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.main_sub.config import AgentConfig, ExecutionConfig
+from nexau.archs.main_sub.execution.executor import Executor
+from nexau.archs.main_sub.prompt_builder import PromptBuilder
+from nexau.archs.main_sub.skill import Skill
+from nexau.archs.main_sub.sub_agent_naming import build_sub_agent_tool_name
+from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
     normalize_tool_call_mode,
 )
-from northau.archs.main_sub.utils.cleanup_manager import cleanup_manager
-from northau.archs.main_sub.utils.token_counter import TokenCounter
+from nexau.archs.main_sub.utils.cleanup_manager import cleanup_manager
+from nexau.archs.main_sub.utils.token_counter import TokenCounter
 
 # Setup logger for agent execution
 logger = logging.getLogger(__name__)

@@ -1,10 +1,10 @@
 # MCP (Model Context Protocol) Integration
 
-This document describes the MCP integration implementation in the Northau framework.
+This document describes the MCP integration implementation in the NexAU framework.
 
 ## Overview
 
-The Northau framework now supports MCP servers, allowing agents to dynamically discover and use tools from MCP-compliant servers. This enables integration with a wide variety of external services and tools.
+The NexAU framework now supports MCP servers, allowing agents to dynamically discover and use tools from MCP-compliant servers. This enables integration with a wide variety of external services and tools.
 
 ## Implementation
 
@@ -29,11 +29,11 @@ class MCPServerConfig:
 ```
 
 ### 2. MCPTool
-Wrapper class that adapts MCP tools to the Northau Tool interface:
+Wrapper class that adapts MCP tools to the NexAU Tool interface:
 
 ```python
 class MCPTool(Tool):
-    """Wrapper for MCP tools to conform to Northau Tool interface."""
+    """Wrapper for MCP tools to conform to NexAU Tool interface."""
 
     def __init__(self, mcp_tool: MCPToolType, client_session: ClientSession):
         self.mcp_tool = mcp_tool
@@ -78,7 +78,7 @@ class MCPManager:
 ### Basic Usage
 
 ```python
-from northau.archs.main_sub.agent import create_agent
+from nexau.archs.main_sub.agent import create_agent
 
 # Configure MCP servers
 mcp_servers = [
@@ -152,11 +152,11 @@ agent = create_agent(
 
 ## Integration Points
 
-The MCP integration plugs into the Northau framework at several points:
+The MCP integration plugs into the NexAU framework at several points:
 
 1. **Agent Constructor**: The `mcp_servers` parameter in `create_agent()` and `Agent.__init__()`
-2. **Tool System**: MCP tools are converted to Northau tools and added to the agent's tool registry
-3. **Builtin Tools**: MCP client components are exported from `northau.archs.tool.builtin`
+2. **Tool System**: MCP tools are converted to NexAU tools and added to the agent's tool registry
+3. **Builtin Tools**: MCP client components are exported from `nexau.archs.tool.builtin`
 
 ## Testing
 
@@ -189,4 +189,4 @@ Server configurations follow this schema:
 }
 ```
 
-This MCP integration makes the Northau framework compatible with the growing ecosystem of MCP servers and tools.
+This MCP integration makes the NexAU framework compatible with the growing ecosystem of MCP servers and tools.

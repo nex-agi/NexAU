@@ -9,7 +9,7 @@ from typing import Any
 import openai
 from langfuse import get_client, observe
 
-from northau.archs.llm.llm_config import LLMConfig
+from nexau.archs.llm.llm_config import LLMConfig
 
 from ..agent_state import AgentState
 from ..tool_call_modes import STRUCTURED_TOOL_CALL_MODES, normalize_tool_call_mode

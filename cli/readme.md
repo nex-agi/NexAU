@@ -1,17 +1,17 @@
-# NorthAU CLI
+# NexAU CLI
 
-An interactive command-line interface for NorthAU agents, inspired by Claude Code. Run your NorthAU agents in a beautiful terminal UI with conversation history and real-time interaction.
+An interactive command-line interface for NexAU agents, inspired by Claude Code. Run your NexAU agents in a beautiful terminal UI with conversation history and real-time interaction.
 
 ## Features
 
 - 🎨 **Beautiful Terminal UI** - Clean, intuitive interface built with Ink
-- 💬 **Interactive Chat** - Real-time conversation with your NorthAU agent
+- 💬 **Interactive Chat** - Real-time conversation with your NexAU agent
 - 📜 **Conversation History** - View all messages in the current session
 - ⚡ **Live Status Updates** - See when the agent is thinking or processing
 - 🔍 **Progress Tracking** - Watch intermediate steps like tool calls and sub-agent execution in real-time
 - 🧠 **Thinking Visualization** - See agent reasoning and planning steps
 - 🔧 **Tool Execution Feedback** - Get notified when tools are called and completed
-- 🎯 **YAML Configuration** - Load any NorthAU agent from a YAML file
+- 🎯 **YAML Configuration** - Load any NexAU agent from a YAML file
 - ⌨️ **Keyboard Controls** - Easy navigation with Esc or Ctrl+C to exit
 
 ## Installation
@@ -92,9 +92,9 @@ The CLI provides two main regions:
 ## Requirements
 
 - Node.js >= 16
-- Python 3.x with NorthAU installed
+- Python 3.x with NexAU installed
 - **uv** (Python package manager) - [Install from here](https://docs.astral.sh/uv/)
-- A valid NorthAU agent YAML configuration file
+- A valid NexAU agent YAML configuration file
 
 The CLI uses `uv run` to execute the Python agent with proper dependency management.
 
@@ -126,7 +126,7 @@ cli/
 The CLI consists of two main components:
 
 1. **Node.js Frontend (Ink)** - Provides the terminal UI and handles user interaction
-2. **Python Backend (agent_runner.py)** - Runs the NorthAU agent and communicates via stdin/stdout
+2. **Python Backend (agent_runner.py)** - Runs the NexAU agent and communicates via stdin/stdout
 
 When you start the CLI:
 1. The Node.js process spawns a Python subprocess with your agent YAML file

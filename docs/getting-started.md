@@ -1,13 +1,13 @@
 # 🚀 Getting Started
 
-This guide will walk you through installing the Northau framework and running your first agent.
+This guide will walk you through installing the NexAU framework and running your first agent.
 
 ## Installation
 
 ```bash
 # Clone the repository
-git clone git@github.com:/northau.git
-cd northau
+git clone git@github.com:/nexau.git
+cd nexau
 
 # Install dependencies using uv
 pip install uv

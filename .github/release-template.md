@@ -5,18 +5,18 @@
 ## Installation
 
 ```bash
-pip install northau=={VERSION}
+pip install nexau=={VERSION}
 ```
 
 ## Upgrading
 
 ```bash
-pip install --upgrade northau
+pip install --upgrade nexau
 ```
 
 ## Documentation
 
-Full documentation is available in the [docs/](https://github.com//northau/tree/main/docs) directory.
+Full documentation is available in the [docs/](https://github.com//nexau/tree/main/docs) directory.
 
 ## Contributors
 

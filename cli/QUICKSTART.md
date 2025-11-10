@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-Get up and running with NorthAU CLI in under 2 minutes!
+Get up and running with NexAU CLI in under 2 minutes!
 
 ## Step 1: Install Dependencies
 
@@ -41,7 +41,7 @@ node dist/cli.js path/to/your/agent.yaml
 
 ```
 ┌─────────────────────────────────────────┐
-│ 🤖 NorthAU Agent CLI (Press Esc or Ctrl+C to exit) │
+│ 🤖 NexAU Agent CLI (Press Esc or Ctrl+C to exit) │
 └─────────────────────────────────────────┘
 
 [Conversation history appears here]
@@ -89,7 +89,7 @@ uv --version
 ```
 
 ### "Module not found"
-Make sure you've installed NorthAU dependencies:
+Make sure you've installed NexAU dependencies:
 ```bash
 cd ..
 uv sync

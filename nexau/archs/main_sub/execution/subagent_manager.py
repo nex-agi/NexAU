@@ -5,8 +5,8 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from northau.archs.main_sub.agent_state import AgentState
-from northau.archs.main_sub.utils.xml_utils import XMLParser
+from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.main_sub.utils.xml_utils import XMLParser
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class SubAgentManager:
             global_storage: Optional global storage to share with sub-agents
             main_tracer: Optional main agent's tracer for generating sub-agent trace paths
         """
-        from northau.archs.main_sub.agent import Agent
+        from nexau.archs.main_sub.agent import Agent
 
         self.agent_name = agent_name
         self.sub_agent_factories = sub_agent_factories

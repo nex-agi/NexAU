@@ -6,9 +6,9 @@ from unittest.mock import Mock, mock_open, patch
 import pytest
 from jinja2 import Environment, FileSystemLoader
 
-from northau.archs.llm.llm_config import LLMConfig
-from northau.archs.main_sub.config import AgentConfig
-from northau.archs.main_sub.prompt_builder import PromptBuilder, _get_python_type_from_json_schema
+from nexau.archs.llm.llm_config import LLMConfig
+from nexau.archs.main_sub.config import AgentConfig
+from nexau.archs.main_sub.prompt_builder import PromptBuilder, _get_python_type_from_json_schema
 
 
 class TestGetPythonTypeFromJsonSchema:

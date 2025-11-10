@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Example demonstrating MiniMax MCP server integration with Northau agents."""
+"""Example demonstrating MiniMax MCP server integration with NexAU agents."""
 
 import logging
 import os
 
-from northau.archs.llm import LLMConfig
-from northau.archs.main_sub.agent import create_agent
-from northau.archs.main_sub.execution.hooks import create_tool_after_approve_hook
-from northau.archs.tool import Tool
-from northau.archs.tool.builtin.bash_tool import bash_tool
-from northau.archs.tool.builtin.feishu import (
+from nexau.archs.llm import LLMConfig
+from nexau.archs.main_sub.agent import create_agent
+from nexau.archs.main_sub.execution.hooks import create_tool_after_approve_hook
+from nexau.archs.tool import Tool
+from nexau.archs.tool.builtin.bash_tool import bash_tool
+from nexau.archs.tool.builtin.feishu import (
     get_feishu_chat_list,
     send_feishu_message,
     upload_feishu_file,
 )
-from northau.archs.tool.builtin.web_tool import web_read, web_search
+from nexau.archs.tool.builtin.web_tool import web_read, web_search
 
 # Configure logging for hooks to ensure they appear
 logging.basicConfig(
