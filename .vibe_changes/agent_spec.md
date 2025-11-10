@@ -665,7 +665,7 @@ def create_agent(
     system_prompt_type: str = "string",
     model: str = "claude-3-sonnet",
     model_base_url: Optional[str] = None,
-    max_context: int = 100000,
+    max_context_tokens: int = 100000,
     error_handler: Optional[Callable] = None,
     retry_attempts: int = 5,
     timeout: int = 300
@@ -681,7 +681,7 @@ def create_agent(
         system_prompt_type: Type of system prompt (string|file|jinja)
         model: LLM model to use (gpt-4, gpt-3.5-turbo, etc.)
         model_base_url: Base URL for OpenAI-compatible API endpoints
-        max_context: Maximum context window size
+        max_context_tokens: Maximum context window size
         error_handler: Custom error handling function
         retry_attempts: Number of retries on failure
         timeout: Task timeout in seconds
@@ -764,7 +764,7 @@ class Agent:
 ```yaml
 # config/agents/code_assistant.yaml
 name: code_assistant
-max_context: 100000
+max_context_tokens: 100000
 system_prompt: |
   You are a software engineering assistant. You help with coding tasks,
   debugging, and project management.

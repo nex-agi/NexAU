@@ -7,3 +7,4 @@ data/
 htmlcov/
 node_modules/
 .coverage
+to_scan.txt

@@ -1,13 +1,12 @@
 name: deep_research_agent
-max_context: 100000
+max_context_tokens: 1000000
 system_prompt: "Date: {{date}}. You are a deep research agent. You are given a message and you need to search for the information that matches the message. Use the web_search and web_read tools to get the information. Wait for the web_read tool to finish before you continue your response."
 system_prompt_type: string
-tool_call_mode: anthorpic
+tool_call_mode: openai
 llm_config:
   temperature: 0.7
   max_tokens: 4096
-  api_type: anthropic_chat_completion
-  anthropic_cache_control_ttl: "1h"
+  api_type: openai_chat_completion
 custom_llm_generator: "nexau.archs.main_sub.execution.llm_caller:bypass_llm_generator"
 tools:
   - name: web_search
@@ -29,7 +28,7 @@ skills:
   - ./skills/algorithmic-art
 sub_agents:
   - name: sub_deep_research_agent
-    config_path: deep_research_agent.yaml
+    config_path: subagent.yaml
 after_tool_hooks:
   - import: nexau.archs.main_sub.execution.hooks:create_tool_logging_hook
     params:

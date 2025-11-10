@@ -7,16 +7,34 @@ import logging
 import traceback
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import jsonschema
 import yaml
 from diskcache import Cache
+from pydantic import BaseModel, ConfigDict, Field
 
 from nexau.archs.main_sub.agent_state import AgentState
 
 logger = logging.getLogger(__name__)
 
 cache = Cache("./.tool_cache")
+
+
+class ToolYamlSchema(BaseModel):
+    """Schema describing a tool YAML definition."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    skill_description: str | None = None
+    use_cache: bool = False
+    disable_parallel: bool = False
+    template_override: str | None = None
+    timeout: int | None = Field(default=None, gt=0)
+    builtin: str | None = None
 
 
 def cache_result(func):
@@ -108,11 +126,12 @@ class Tool:
             raise FileNotFoundError(f"Tool YAML file not found: {yaml_path}")
 
         with open(path) as f:
-            tool_def = yaml.safe_load(f)
+            tool_def_model = ToolYamlSchema.model_validate(yaml.safe_load(f))
+        tool_def = tool_def_model.model_dump()
 
         # Extract required fields
-        name = tool_def.get("name")
-        description = tool_def.get("description", "")
+        name = tool_def["name"]
+        description = tool_def["description"]
         skill_description = tool_def.get("skill_description", "")
         input_schema = tool_def.get("input_schema", {})
         use_cache = tool_def.get("use_cache", False)
@@ -130,12 +149,8 @@ class Tool:
                 "which will be injected by the framework, please remove it from the tool definition."
             )
 
-        template_override = tool_def.get("template_override", None)
-
-        if not name:
-            raise ValueError(
-                f"Tool definition missing 'name' field in {yaml_path}",
-            )
+        template_override = tool_def.get("template_override")
+        timeout = tool_def.get("timeout")
 
         # Create tool instance
         return cls(
@@ -148,6 +163,7 @@ class Tool:
             use_cache=use_cache,
             disable_parallel=disable_parallel,
             template_override=template_override,
+            timeout=timeout,
             **kwargs,
         )
 

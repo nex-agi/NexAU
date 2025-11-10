@@ -56,7 +56,7 @@ For a more declarative approach, you can define an agent's entire configuration 
     **File: `agents/my_agent.yaml`**
     ```yaml
     name: my_research_agent
-    max_context: 100000
+    max_context_tokens: 100000
     system_prompt: |
       Date: {{date}}. You are a research agent specialized in finding and analyzing information.
       Use web_search to find relevant information, then web_read to get detailed content.

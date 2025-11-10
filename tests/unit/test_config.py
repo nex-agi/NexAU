@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from nexau.archs.config.config_loader import (
     AgentBuilder,
@@ -71,7 +72,7 @@ llm_config:
             "tools": "not_a_list"  # Should be a list
         }
 
-        with pytest.raises(ConfigError, match="'tools' field must be a list"):
+        with pytest.raises(ConfigError, match="tools"):
             validate_config_schema(invalid_config)
 
     def test_validate_config_schema_invalid_sub_agents(self):
@@ -80,7 +81,19 @@ llm_config:
             "sub_agents": "not_a_list"  # Should be a list
         }
 
-        with pytest.raises(ConfigError, match="'sub_agents' field must be a list"):
+        with pytest.raises(ConfigError, match="sub_agents"):
+            validate_config_schema(invalid_config)
+
+    def test_validate_config_schema_unknown_field(self):
+        """Ensure unknown keys are rejected so typos are caught early."""
+        invalid_config = {
+            "name": "test_agent",
+            "llm_config": {"model": "gpt-4"},
+            "tools": [],
+            "unexpected": True,
+        }
+
+        with pytest.raises(ConfigError, match="unexpected"):
             validate_config_schema(invalid_config)
 
 
@@ -448,6 +461,47 @@ class TestConfigIntegration:
         with pytest.raises(ConfigError):
             load_agent_config(str(config_path))
 
+    def test_load_agent_config_rejects_max_context_alias(self, temp_dir):
+        """Legacy 'max_context' key should now trigger validation errors."""
+        config = {
+            "name": "test_agent",
+            "max_context": 16000,
+            "system_prompt": "Alias test",
+            "llm_config": {
+                "model": "gpt-4o-mini",
+            },
+            "tools": [],
+        }
+
+        config_path = Path(temp_dir) / "agent_alias.yaml"
+        with open(config_path, "w") as f:
+            yaml.dump(config, f)
+
+        with pytest.raises(ConfigError):
+            load_agent_config(str(config_path))
+
+    def test_sub_agent_configs_validated_eagerly(self, temp_dir):
+        """Invalid referenced sub-agent configs should fail during main load."""
+        sub_agent_path = Path(temp_dir) / "sub.yaml"
+        with open(sub_agent_path, "w") as f:
+            yaml.dump({"name": "sub"}, f)
+
+        main_config = {
+            "name": "main",
+            "llm_config": {"model": "gpt-4o-mini"},
+            "tools": [],
+            "sub_agents": [
+                {"name": "sub", "config_path": str(sub_agent_path)},
+            ],
+        }
+
+        config_path = Path(temp_dir) / "main.yaml"
+        with open(config_path, "w") as f:
+            yaml.dump(main_config, f)
+
+        with pytest.raises(ConfigError, match="sub-agent"):
+            load_agent_config(str(config_path))
+
     def test_load_tool_from_config(self, temp_dir):
         """Test loading tool from configuration."""
         # Create a mock tool YAML file
@@ -468,6 +522,17 @@ class TestConfigIntegration:
 
         assert tool.name == "test_tool"
         assert tool.description == "A test tool"
+
+    def test_load_tool_from_config_invalid_yaml(self, temp_dir):
+        """Tool YAML missing required fields should raise validation errors."""
+        tool_path = Path(temp_dir) / "invalid_tool.yaml"
+        with open(tool_path, "w") as f:
+            yaml.dump({"description": "missing name"}, f)
+
+        config = {"name": "invalid_tool", "yaml_path": str(tool_path), "binding": "builtins:print"}
+
+        with pytest.raises(ValidationError):
+            load_tool_from_config(config, Path(temp_dir))
 
     def test_load_sub_agent_from_config(self, temp_dir):
         """Test loading sub-agent from configuration."""
