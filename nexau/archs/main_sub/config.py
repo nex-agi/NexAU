@@ -1,15 +1,74 @@
 """Configuration models for the NexAU agent framework."""
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeVar
+
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..llm.llm_config import LLMConfig
 from ..main_sub.skill import Skill
 from ..tool import Tool
 from ..tool.builtin.skill_tool import load_skill
 from .tool_call_modes import normalize_tool_call_mode
+
+TTool = TypeVar("TTool")
+TSkill = TypeVar("TSkill")
+TSubAgent = TypeVar("TSubAgent")
+THook = TypeVar("THook")
+
+
+class HookImportConfig(BaseModel):
+    """Configuration block for importing a hook callable."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    import_path: str = Field(alias="import")
+    params: dict[str, Any] | None = None
+
+
+HookCallable = Callable[..., Any]
+HookDefinition = HookCallable | HookImportConfig | str
+
+
+class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
+    """Generic base for agent configuration structures."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        arbitrary_types_allowed=True,
+        populate_by_name=True,
+    )
+
+    name: str | None = None
+    agent_id: str | None = None
+    system_prompt: str | None = None
+    system_prompt_type: Literal["string", "file", "jinja"] = "string"
+    tools: list[TTool] = Field(default_factory=list)
+    sub_agents: list[TSubAgent] | None = None
+    skills: list[TSkill] = Field(default_factory=list)
+    llm_config: Any | None = None
+    stop_tools: list[str] = Field(default_factory=list)
+    initial_state: dict[str, Any] | None = None
+    initial_config: dict[str, Any] | None = None
+    initial_context: dict[str, Any] | None = Field(
+        default=None,
+        alias="context",
+        validation_alias=AliasChoices("context", "initial_context"),
+    )
+    mcp_servers: list[Any] = Field(default_factory=list)
+    after_model_hooks: list[THook] | None = None
+    after_tool_hooks: list[THook] | None = None
+    before_model_hooks: list[THook] | None = None
+    error_handler: Callable | None = None
+    token_counter: Callable | None = None
+    custom_llm_generator: Callable | None = None
+    global_storage: dict[str, Any] = Field(default_factory=dict)
+    max_context_tokens: int = Field(default=128000, ge=1)
+    max_running_subagents: int = Field(default=5, ge=0)
+    max_iterations: int = Field(default=100, ge=1)
+    tool_call_mode: str = "openai"
 
 
 @dataclass
@@ -28,40 +87,51 @@ class ExecutionConfig:
         self.tool_call_mode = normalize_tool_call_mode(self.tool_call_mode)
 
 
-@dataclass
-class AgentConfig:
+class AgentConfig(
+    AgentConfigBase[
+        Tool,
+        Skill,
+        tuple[str, Callable[[], Any]],
+        HookCallable,
+    ],
+):
     """Configuration for an Agent's definition and behavior."""
 
-    name: str | None = None
-    agent_id: str | None = None
-    system_prompt: str | None = None
-    system_prompt_type: str = "string"
-    tools: list[Tool] = field(default_factory=list)
+    model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True)
+
     sub_agents: list[tuple[str, Callable[[], Any]]] | None = None
-    skills: list[Skill] = field(default_factory=list)
     llm_config: LLMConfig | dict[str, Any] | None = None
-    stop_tools: list[str] = field(default_factory=list)
-
-    # Context parameters
-    initial_state: dict[str, Any] | None = None
-    initial_config: dict[str, Any] | None = None
-    initial_context: dict[str, Any] | None = None
-
-    # MCP parameters
-    mcp_servers: list[dict[str, Any]] | None = None
-
-    # Hook parameters
+    stop_tools: set[str] | None = None
+    mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     after_model_hooks: list[Callable] | None = None
     after_tool_hooks: list[Callable] | None = None
     before_model_hooks: list[Callable] | None = None
+    sub_agent_factories: dict[str, Callable[[], Any]] = Field(
+        default_factory=dict,
+        exclude=True,
+    )
 
-    # Advanced features
-    error_handler: Callable | None = None
-    token_counter: Callable[[list[dict[str, str]]], int] | None = None
-    custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None
+    @field_validator("llm_config", mode="before")
+    @classmethod
+    def _validate_llm_config(cls, value):
+        if value is None:
+            return value
+        if isinstance(value, (LLMConfig, dict)):
+            return value
+        raise ValueError(
+            f"Invalid llm_config type: {type(value)}",
+        )
 
-    def __post_init__(self):
-        """Post-initialization processing."""
+    @field_validator("mcp_servers", mode="before")
+    @classmethod
+    def _ensure_mcp_servers(cls, value):
+        if value is None:
+            return []
+        return value
+
+    @model_validator(mode="after")
+    def _finalize(self):  # type: ignore[override]
+        """Finalize configuration by normalizing fields and injecting skill tool."""
         # Convert sub_agents list to dictionary if provided
         if self.sub_agents:
             self.sub_agent_factories = dict(self.sub_agents)
@@ -69,11 +139,7 @@ class AgentConfig:
             self.sub_agent_factories = {}
 
         nexau_package_path = Path(__file__).parent.parent.parent
-        has_skilled_tools = False
-        for tool in self.tools:
-            if tool.as_skill:
-                has_skilled_tools = True
-                break
+        has_skilled_tools = any(tool.as_skill for tool in self.tools)
         if has_skilled_tools or self.skills:
             skill_tool = Tool.from_yaml(
                 str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "skill_tool.yaml"),
@@ -92,7 +158,7 @@ class AgentConfig:
         # Handle LLM configuration
         if self.llm_config is None:
             raise ValueError("llm_config is required")
-        elif isinstance(self.llm_config, dict):
+        if isinstance(self.llm_config, dict):
             self.llm_config = LLMConfig(**self.llm_config)
         elif not isinstance(self.llm_config, LLMConfig):
             raise ValueError(
@@ -102,6 +168,8 @@ class AgentConfig:
         # Ensure name is set
         if not self.name:
             self.name = f"agent_{id(self)}"
+
+        return self
 
     def _generate_skill_description(self) -> str:
         """Generate skill description."""

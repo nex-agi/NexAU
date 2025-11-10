@@ -4,11 +4,14 @@ Agent runner for NexAU CLI with real-time progress tracking.
 This script runs the NexAU agent and communicates via stdin/stdout.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import langfuse
 
@@ -17,12 +20,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cli_subagent_adapter import attach_cli_to_agent
 
+from nexau.archs.config.config_loader import (
+    AgentBuilder,
+    ConfigError,
+    load_yaml_with_vars,
+    normalize_agent_config_dict,
+)
 from nexau.archs.main_sub.execution.hooks import (
     AfterModelHookInput,
     AfterModelHookResult,
     AfterToolHookInput,
     AfterToolHookResult,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
+    from nexau.archs.main_sub.agent import Agent
 
 
 def get_date():
@@ -234,38 +246,37 @@ def main():
             content = payload.get(content_field, "")
             send_message(message_type, content, metadata=payload)
 
-        # Load the YAML config and inject our hooks
-        from pathlib import Path
-
-        import yaml
-
-        from nexau.archs.config.config_loader import AgentBuilder
-
         config_path = Path(yaml_path)
-        with open(config_path) as f:
-            config = yaml.safe_load(f)
 
-        # Inject our hooks into the config (prepend so they run first)
-        existing_model_hooks = config.get("after_model_hooks", [])
-        existing_tool_hooks = config.get("after_tool_hooks", [])
+        def build_agent_from_config() -> Agent:
+            raw_config = load_yaml_with_vars(str(config_path))
+            if not raw_config:
+                raise ConfigError(
+                    f"Empty or invalid configuration file: {config_path}",
+                )
 
-        # Prepend our CLI hooks so they run before any user-defined hooks
-        config["after_model_hooks"] = [cli_progress_hook] + existing_model_hooks
-        config["after_tool_hooks"] = [cli_tool_hook] + existing_tool_hooks
+            normalized_config = normalize_agent_config_dict(raw_config)
 
-        # Build the agent with modified config
-        builder = AgentBuilder(config, config_path.parent)
-        agent = (
-            builder.build_core_properties()
-            .build_llm_config()
-            .build_mcp_servers()
-            .build_hooks()
-            .build_tools()
-            .build_sub_agents()
-            .build_skills()
-            .build_system_prompt_path()
-            .get_agent()
-        )
+            existing_model_hooks = list(normalized_config.get("after_model_hooks", []))
+            existing_tool_hooks = list(normalized_config.get("after_tool_hooks", []))
+
+            normalized_config["after_model_hooks"] = [cli_progress_hook] + existing_model_hooks
+            normalized_config["after_tool_hooks"] = [cli_tool_hook] + existing_tool_hooks
+
+            builder = AgentBuilder(normalized_config, config_path.parent)
+            return (
+                builder.build_core_properties()
+                .build_llm_config()
+                .build_mcp_servers()
+                .build_hooks()
+                .build_tools()
+                .build_sub_agents()
+                .build_skills()
+                .build_system_prompt_path()
+                .get_agent()
+            )
+
+        agent = build_agent_from_config()
 
         attach_cli_to_agent(agent, cli_progress_hook, cli_tool_hook, handle_subagent_event)
 
@@ -294,29 +305,7 @@ def main():
                     if user_message.strip() == "/clear":
                         send_message("status", "Re-initializing agent...")
 
-                        # Rebuild the agent from config
-                        with open(config_path) as f:
-                            config = yaml.safe_load(f)
-
-                        # Re-inject our hooks
-                        existing_model_hooks = config.get("after_model_hooks", [])
-                        existing_tool_hooks = config.get("after_tool_hooks", [])
-                        config["after_model_hooks"] = [cli_progress_hook] + existing_model_hooks
-                        config["after_tool_hooks"] = [cli_tool_hook] + existing_tool_hooks
-
-                        # Rebuild agent
-                        builder = AgentBuilder(config, config_path.parent)
-                        agent = (
-                            builder.build_core_properties()
-                            .build_llm_config()
-                            .build_mcp_servers()
-                            .build_hooks()
-                            .build_tools()
-                            .build_sub_agents()
-                            .build_skills()
-                            .build_system_prompt_path()
-                            .get_agent()
-                        )
+                        agent = build_agent_from_config()
 
                         attach_cli_to_agent(agent, cli_progress_hook, cli_tool_hook, handle_subagent_event)
 
@@ -349,6 +338,9 @@ def main():
                     send_message("response", response)
                     send_message("ready", "")
 
+            except ConfigError as e:
+                send_message("error", str(e))
+                send_message("ready", "")
             except json.JSONDecodeError:
                 send_message("error", f"Invalid JSON received: {line}")
             except Exception as e:
@@ -358,6 +350,9 @@ def main():
                 send_message("error", f"{str(e)}\n{error_details}")
                 send_message("ready", "")
 
+    except ConfigError as e:
+        send_message("error", str(e))
+        sys.exit(1)
     except Exception as e:
         import traceback
 
