@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from northau.archs.main_sub.agent_context import GlobalStorage
-from northau.archs.main_sub.execution.subagent_manager import SubAgentManager
+from nexau.archs.main_sub.agent_context import GlobalStorage
+from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
 
 
 class TestSubAgentManager:
@@ -82,7 +82,7 @@ class TestSubAgentManager:
         with pytest.raises(RuntimeError, match="Agent 'parent_agent' is shutting down"):
             subagent_manager.call_sub_agent("test_sub_agent", "test message")
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_success_no_context(self, mock_get_context, subagent_manager, mock_sub_agent):
         """Test successful sub-agent call without context."""
         mock_get_context.return_value = None
@@ -97,7 +97,7 @@ class TestSubAgentManager:
         assert call_args[1]["dump_trace_path"] is None
         assert call_args[1]["parent_agent_state"] is None
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_success_with_context(self, mock_get_context, subagent_manager, mock_sub_agent):
         """Test successful sub-agent call with context."""
         mock_context = Mock()
@@ -112,7 +112,7 @@ class TestSubAgentManager:
         assert call_args[0][0] == "test message"
         assert call_args[1]["context"] == {"key": "value"}
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_with_explicit_context(self, mock_get_context, subagent_manager, mock_sub_agent):
         """Test sub-agent call with explicitly provided context."""
         mock_context = Mock()
@@ -127,7 +127,7 @@ class TestSubAgentManager:
         # Explicit context should be used
         assert call_args[1]["context"] == explicit_context
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_with_parent_state(self, mock_get_context, subagent_manager, mock_sub_agent, agent_state):
         """Test sub-agent call with parent agent state."""
         mock_get_context.return_value = None
@@ -138,7 +138,7 @@ class TestSubAgentManager:
         call_args = mock_sub_agent.run.call_args
         assert call_args[1]["parent_agent_state"] == agent_state
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_with_global_storage(self, mock_get_context, sub_agent_factories):
         """Test sub-agent call with global storage."""
         mock_storage = GlobalStorage()
@@ -160,7 +160,7 @@ class TestSubAgentManager:
         assert result == "result"
         mock_sub_agent.run.assert_called_once()
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_global_storage_fallback(self, mock_get_context, sub_agent_factories):
         """Test sub-agent call with global storage fallback when factory doesn't support it."""
         mock_storage = GlobalStorage()
@@ -184,7 +184,7 @@ class TestSubAgentManager:
         assert mock_sub_agent.global_storage == mock_storage
         assert mock_sub_agent.executor.global_storage == mock_storage
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_global_storage_with_subagent_manager(self, mock_get_context, sub_agent_factories):
         """Test global storage propagation to nested subagent manager."""
         mock_storage = GlobalStorage()
@@ -208,7 +208,7 @@ class TestSubAgentManager:
         # Global storage should be propagated to nested subagent manager
         assert mock_sub_agent.executor.subagent_manager.global_storage == mock_storage
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_with_tracer(self, mock_get_context, sub_agent_factories):
         """Test sub-agent call with main tracer."""
         mock_tracer = Mock()
@@ -231,7 +231,7 @@ class TestSubAgentManager:
         call_args = mock_sub_agent.run.call_args
         assert call_args[1]["dump_trace_path"] == "/path/to/sub/trace"
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_tracer_not_tracing(self, mock_get_context, sub_agent_factories):
         """Test sub-agent call when tracer is not tracing."""
         mock_tracer = Mock()
@@ -250,7 +250,7 @@ class TestSubAgentManager:
         assert result == "result"
         mock_tracer.generate_sub_agent_trace_path.assert_not_called()
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_tracer_no_dump_path(self, mock_get_context, sub_agent_factories):
         """Test sub-agent call when tracer has no dump path."""
         mock_tracer = Mock()
@@ -270,7 +270,7 @@ class TestSubAgentManager:
         assert result == "result"
         mock_tracer.generate_sub_agent_trace_path.assert_not_called()
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_tracer_no_generate_method(self, mock_get_context, sub_agent_factories):
         """Test sub-agent call when tracer doesn't have generate_sub_agent_trace_path."""
         mock_tracer = Mock()
@@ -291,7 +291,7 @@ class TestSubAgentManager:
         assert result == "result"
         # Should not crash when method doesn't exist
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_with_langfuse(self, mock_get_context, sub_agent_factories):
         """Test sub-agent call with Langfuse tracing."""
         mock_langfuse = Mock()
@@ -319,7 +319,7 @@ class TestSubAgentManager:
             parent_agent_state=None,
         )
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_shares_langfuse_trace(
         self,
         mock_get_context,
@@ -370,7 +370,7 @@ class TestSubAgentManager:
         assert mock_sub_agent.executor.langfuse_client == mock_langfuse
         assert mock_sub_agent.executor.subagent_manager.langfuse_client == mock_langfuse
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_langfuse_error(self, mock_get_context, sub_agent_factories):
         """Test sub-agent call when Langfuse tracing fails."""
         mock_langfuse = Mock()
@@ -394,7 +394,7 @@ class TestSubAgentManager:
         # Sub-agent should still run
         assert mock_sub_agent.run.call_count == 1
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_execution_error(self, mock_get_context, subagent_manager, mock_sub_agent):
         """Test sub-agent call when execution fails."""
         mock_get_context.return_value = None
@@ -403,7 +403,7 @@ class TestSubAgentManager:
         with pytest.raises(Exception, match="Execution error"):
             subagent_manager.call_sub_agent("test_sub_agent", "test message")
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_running_agents_tracking(self, mock_get_context, subagent_manager, mock_sub_agent):
         """Test that running sub-agents are tracked and cleaned up."""
         mock_get_context.return_value = None
@@ -463,7 +463,7 @@ class TestSubAgentManager:
 
         assert subagent_manager.sub_agent_factories["test_sub_agent"] == new_factory
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_without_global_storage(self, mock_get_context, sub_agent_factories):
         """Test sub-agent call without global storage."""
         mock_sub_agent = Mock()
@@ -480,7 +480,7 @@ class TestSubAgentManager:
         # Factory should be called without global_storage
         factories["test_sub"].assert_called_once_with()
 
-    @patch("northau.archs.main_sub.agent_context.get_context")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_multiple_times(self, mock_get_context, subagent_manager):
         """Test calling sub-agent multiple times."""
         mock_get_context.return_value = None

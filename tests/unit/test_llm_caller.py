@@ -19,15 +19,15 @@ from unittest.mock import Mock, call, patch
 
 import pytest
 
-from northau.archs.main_sub.execution.llm_caller import LLMCaller, bypass_llm_generator
-from northau.archs.main_sub.execution.model_response import ModelResponse
-from northau.archs.main_sub.execution.stop_reason import AgentStopReason
+from nexau.archs.main_sub.execution.llm_caller import LLMCaller, bypass_llm_generator
+from nexau.archs.main_sub.execution.model_response import ModelResponse
+from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 
 
 @pytest.fixture(autouse=True)
 def mock_openai_module():
     """Mock the openai module to prevent any real API calls."""
-    with patch("northau.archs.main_sub.execution.llm_caller.openai") as mock_openai:
+    with patch("nexau.archs.main_sub.execution.llm_caller.openai") as mock_openai:
         # Ensure OpenAI client cannot be instantiated
         mock_openai.OpenAI.side_effect = RuntimeError("Real OpenAI client cannot be instantiated in tests")
         yield mock_openai
@@ -37,8 +37,8 @@ def mock_openai_module():
 def mock_langfuse_module():
     """Mock langfuse functions to prevent any real connections to Langfuse server."""
     with (
-        patch("northau.archs.main_sub.execution.llm_caller.get_client") as mock_get_client,
-        patch("northau.archs.main_sub.execution.llm_caller.observe") as mock_observe,
+        patch("nexau.archs.main_sub.execution.llm_caller.get_client") as mock_get_client,
+        patch("nexau.archs.main_sub.execution.llm_caller.observe") as mock_observe,
     ):
         # Mock get_client to return a mock client
         mock_langfuse_client = Mock()

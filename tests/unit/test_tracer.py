@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from northau.archs.main_sub.tracing.tracer import Tracer
+from nexau.archs.main_sub.tracing.tracer import Tracer
 
 
 class TestTracerInitialization:
@@ -577,7 +577,7 @@ class TestSubAgentTracePathGeneration:
         """Test that errors in path generation are logged."""
         tracer = Tracer(agent_name="main_agent")
 
-        with patch("northau.archs.main_sub.tracing.tracer.Path", side_effect=Exception("Mock error")):
+        with patch("nexau.archs.main_sub.tracing.tracer.Path", side_effect=Exception("Mock error")):
             with caplog.at_level(logging.ERROR):
                 result = tracer.generate_sub_agent_trace_path("sub", "/tmp/trace.json")
 

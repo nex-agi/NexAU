@@ -1,4 +1,4 @@
-"""Tool implementation for the Northau framework."""
+"""Tool implementation for the NexAU framework."""
 
 import functools
 import inspect
@@ -12,7 +12,7 @@ import jsonschema
 import yaml
 from diskcache import Cache
 
-from northau.archs.main_sub.agent_state import AgentState
+from nexau.archs.main_sub.agent_state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ class Tool:
             if self.implementation_import_path:
                 logger.info(f"Dynamic importing tool implementation '{self.name}': {self.implementation_import_path}")
 
-                from northau.archs.config.config_loader import import_from_string
+                from nexau.archs.config.config_loader import import_from_string
 
                 func = import_from_string(str(self.implementation_import_path))
 

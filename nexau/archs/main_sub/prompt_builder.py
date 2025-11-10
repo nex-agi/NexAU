@@ -6,9 +6,9 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader
 
-from northau.archs.main_sub.config import AgentConfig
-from northau.archs.main_sub.prompt_handler import PromptHandler
-from northau.archs.tool import Tool
+from nexau.archs.main_sub.config import AgentConfig
+from nexau.archs.main_sub.prompt_handler import PromptHandler
+from nexau.archs.tool import Tool
 
 logger = logging.getLogger(__name__)
 

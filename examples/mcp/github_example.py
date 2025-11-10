@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Example demonstrating Amap Maps MCP server integration with Northau agents."""
+"""Example demonstrating Amap Maps MCP server integration with NexAU agents."""
 
 import os
 
-from northau.archs.llm import LLMConfig
-from northau.archs.main_sub.agent import create_agent
+from nexau.archs.llm import LLMConfig
+from nexau.archs.main_sub.agent import create_agent
 
 
 def main():
@@ -91,7 +91,7 @@ Explain what you're doing and provide context for the results.""",
             print("\n⚠️  No tools available")
 
         response = agent.run(
-            "https://github.com/china-qijizhifeng/northau/tree/main 的代码结构是什么样的？",
+            "https://github.com/china-qijizhifeng/nexau/tree/main 的代码结构是什么样的？",
         )
         print(response)
 

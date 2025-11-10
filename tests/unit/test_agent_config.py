@@ -6,10 +6,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from northau.archs.llm.llm_config import LLMConfig
-from northau.archs.main_sub.config import AgentConfig, ExecutionConfig
-from northau.archs.main_sub.skill import Skill
-from northau.archs.tool.tool import Tool
+from nexau.archs.llm.llm_config import LLMConfig
+from nexau.archs.main_sub.config import AgentConfig, ExecutionConfig
+from nexau.archs.main_sub.skill import Skill
+from nexau.archs.tool.tool import Tool
 
 
 class TestExecutionConfig:

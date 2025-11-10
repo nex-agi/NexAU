@@ -1,10 +1,10 @@
-# NorthAU CLI Architecture
+# NexAU CLI Architecture
 
-This document explains the technical architecture of the NorthAU CLI.
+This document explains the technical architecture of the NexAU CLI.
 
 ## Overview
 
-The NorthAU CLI is a split architecture application with a Node.js frontend (for UI) and a Python backend (for agent execution). The two processes communicate via stdin/stdout using JSON messages.
+The NexAU CLI is a split architecture application with a Node.js frontend (for UI) and a Python backend (for agent execution). The two processes communicate via stdin/stdout using JSON messages.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -40,7 +40,7 @@ The NorthAU CLI is a split architecture application with a Node.js frontend (for
               │ Agent execution
               │
 ┌─────────────▼──────────────────────────────────────────┐
-│              NorthAU Agent Framework                     │
+│              NexAU Agent Framework                     │
 │  - LLM calls                                             │
 │  - Tool execution                                        │
 │  - Skill invocation                                      │
@@ -285,7 +285,7 @@ dist/
 
 ### Python Side
 - `uv`: Python package manager (required)
-- `northau`: The agent framework
+- `nexau`: The agent framework
 - All dependencies managed via `pyproject.toml` and `uv.lock`
 
 The CLI spawns Python using `uv run python` to ensure proper dependency isolation.

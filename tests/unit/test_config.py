@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import pytest
 import yaml
 
-from northau.archs.config.config_loader import (
+from nexau.archs.config.config_loader import (
     AgentBuilder,
     ConfigError,
     apply_agent_name_overrides,
@@ -17,7 +17,7 @@ from northau.archs.config.config_loader import (
     load_tool_from_config,
     validate_config_schema,
 )
-from northau.archs.llm.llm_config import LLMConfig
+from nexau.archs.llm.llm_config import LLMConfig
 
 
 class TestConfigLoader:
@@ -47,7 +47,7 @@ llm_config:
         config_file = Path(temp_dir) / "test_config.yaml"
         config_file.write_text(config_content)
 
-        from northau.archs.config.config_loader import load_yaml_with_vars
+        from nexau.archs.config.config_loader import load_yaml_with_vars
 
         result = load_yaml_with_vars(str(config_file))
 
@@ -152,7 +152,7 @@ class TestAgentBuilder:
         with pytest.raises(ConfigError, match="missing 'command' field"):
             builder.build_mcp_servers()
 
-    @patch("northau.archs.config.config_loader.import_from_string")
+    @patch("nexau.archs.config.config_loader.import_from_string")
     def test_build_hooks_valid(self, mock_import):
         """Test building hooks with valid configuration."""
         mock_import.return_value = lambda: None
@@ -302,10 +302,10 @@ Details here.
         with pytest.raises(ConfigError, match="Error loading skill"):
             builder.build_skills()
 
-    @patch("northau.archs.config.config_loader.PromptBuilder")
+    @patch("nexau.archs.config.config_loader.PromptBuilder")
     def test_build_skills_from_tools_with_as_skill(self, mock_prompt_builder_class, temp_dir):
         """Test building skills from tools with as_skill=True."""
-        from northau.archs.tool.tool import Tool
+        from nexau.archs.tool.tool import Tool
 
         # Mock PromptBuilder
         mock_builder = Mock()
@@ -336,10 +336,10 @@ Details here.
         assert result.agent_params["skills"][0].detail == "Rendered skill detail"
         assert result.agent_params["skills"][0].folder == ""
 
-    @patch("northau.archs.config.config_loader.PromptBuilder")
+    @patch("nexau.archs.config.config_loader.PromptBuilder")
     def test_build_skills_mixed_folders_and_tools(self, mock_prompt_builder_class, temp_dir):
         """Test building skills from both folders and tools."""
-        from northau.archs.tool.tool import Tool
+        from nexau.archs.tool.tool import Tool
 
         # Create a skill folder
         skill_folder = Path(temp_dir) / "folder_skill"
@@ -380,10 +380,10 @@ Folder skill details.
         assert result.agent_params["skills"][0].name == "folder-skill"
         assert result.agent_params["skills"][1].name == "tool_skill"
 
-    @patch("northau.archs.config.config_loader.PromptBuilder")
+    @patch("nexau.archs.config.config_loader.PromptBuilder")
     def test_build_skills_tool_without_as_skill(self, mock_prompt_builder_class, temp_dir):
         """Test that tools with as_skill=False are not added as skills."""
-        from northau.archs.tool.tool import Tool
+        from nexau.archs.tool.tool import Tool
 
         # Mock PromptBuilder
         mock_builder = Mock()
@@ -427,7 +427,7 @@ class TestConfigIntegration:
         with open(config_path, "w") as f:
             yaml.dump(config, f)
 
-        with patch("northau.archs.main_sub.agent.openai") as mock_openai:
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
             agent = load_agent_config(str(config_path))

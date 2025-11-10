@@ -2,7 +2,7 @@
 
 ## Summary
 
-Enhanced the NorthAU CLI to provide a more transparent and informative user experience by:
+Enhanced the NexAU CLI to provide a more transparent and informative user experience by:
 1. **Preserving action history** - Steps remain visible after task completion
 2. **Displaying agent reasoning** - Show the agent's thought process before tool execution
 
@@ -185,7 +185,7 @@ npm run build
 
 ## Compatibility
 
-- Compatible with all NorthAU agents
+- Compatible with all NexAU agents
 - Works with any tools and sub-agents
 - No changes needed to existing agent YAML files
 - Hooks are injected automatically by the CLI

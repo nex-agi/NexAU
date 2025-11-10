@@ -36,7 +36,7 @@ class TestFullWorkflow:
                 "usage": {"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70},
             }
 
-            with patch("northau.archs.main_sub.agent.openai") as mock_openai:
+            with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
                 mock_client = MagicMock()
                 mock_client.chat.completions.create.return_value = mock_response
                 mock_openai.OpenAI.return_value = mock_client

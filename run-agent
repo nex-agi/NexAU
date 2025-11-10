@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# NorthAU Agent Runner - Simple script to build and run agents
+# NexAU Agent Runner - Simple script to build and run agents
 # Usage: ./run-agent <path-to-yaml-config>
 
 set -e
@@ -12,7 +12,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}NorthAU Agent Runner${NC}"
+echo -e "${BLUE}NexAU Agent Runner${NC}"
 
 # Check if config file is provided
 if [ -z "$1" ]; then

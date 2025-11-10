@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the Northau framework will be documented in this file.
+All notable changes to the NexAU framework will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2024-10-26
 
 ### Added
-- Initial release of Northau framework
+- Initial release of NexAU framework
 - General-purpose agent framework inspired by Claude Code's architecture
 - Modular tool system with builtin tools
 - Flexible agent architecture with main/sub agent support
@@ -39,5 +39,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hooks**: Lifecycle hooks for customization
 - **Global Storage**: Shared state management across agents
 
-[Unreleased]: https://github.com/china-qijizhifeng/northau/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/china-qijizhifeng/northau/releases/tag/v0.1.0
+[Unreleased]: https://github.com/china-qijizhifeng/nexau/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/china-qijizhifeng/nexau/releases/tag/v0.1.0

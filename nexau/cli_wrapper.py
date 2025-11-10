@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Wrapper script to launch the Node.js northau-cli from the Python package installation.
+Wrapper script to launch the Node.js nexau-cli from the Python package installation.
 
 This script locates the installed Node.js CLI files and executes them with node,
-allowing users to run 'northau-cli <yaml-file>' after installing the Python package.
+allowing users to run 'nexau-cli <yaml-file>' after installing the Python package.
 """
 
 import subprocess
@@ -29,9 +29,9 @@ def find_node_cli():
 
     # Location 3: In package data (installed package)
     # When the package is installed, the CLI files should be in package data
-    import northau
+    import nexau
 
-    package_dir = Path(northau.__file__).parent
+    package_dir = Path(nexau.__file__).parent
     installed_cli_path = package_dir / "cli" / "dist" / "cli.js"
     if installed_cli_path.exists():
         return installed_cli_path
@@ -39,10 +39,10 @@ def find_node_cli():
     # Location 4: Check if node_modules is available and CLI is in expected location
     # This handles the case where the package is installed with pip but CLI is in a known location
     possible_paths = [
-        Path(sys.prefix) / "lib" / "python3.12" / "site-packages" / "northau-cli" / "cli" / "dist" / "cli.js",
-        Path(sys.prefix) / "local" / "lib" / "python3.12" / "site-packages" / "northau-cli" / "cli" / "dist" / "cli.js",
-        Path("/usr/local/lib/python3.12/site-packages/northau-cli/cli/dist/cli.js"),
-        Path("/usr/lib/python3.12/site-packages/northau-cli/cli/dist/cli.js"),
+        Path(sys.prefix) / "lib" / "python3.12" / "site-packages" / "nexau-cli" / "cli" / "dist" / "cli.js",
+        Path(sys.prefix) / "local" / "lib" / "python3.12" / "site-packages" / "nexau-cli" / "cli" / "dist" / "cli.js",
+        Path("/usr/local/lib/python3.12/site-packages/nexau-cli/cli/dist/cli.js"),
+        Path("/usr/lib/python3.12/site-packages/nexau-cli/cli/dist/cli.js"),
     ]
 
     for path in possible_paths:
@@ -54,7 +54,7 @@ def find_node_cli():
         import importlib.resources as resources
 
         # Get the package directory
-        package_dir = resources.files("northau")
+        package_dir = resources.files("nexau")
         # Try to access the CLI file
         cli_path = package_dir / "cli" / "dist" / "cli.js"
         if cli_path.exists():
@@ -67,13 +67,13 @@ def find_node_cli():
 
 
 def main():
-    """Main entry point for the northau-cli wrapper."""
+    """Main entry point for the nexau-cli wrapper."""
     # Find the Node.js CLI
     node_cli_path = find_node_cli()
 
     if not node_cli_path:
-        print("Error: Could not locate northau Node.js CLI executable.", file=sys.stderr)
-        print("Make sure the northau package is properly installed.", file=sys.stderr)
+        print("Error: Could not locate nexau Node.js CLI executable.", file=sys.stderr)
+        print("Make sure the nexau package is properly installed.", file=sys.stderr)
         sys.exit(1)
 
     # Check if Node.js is available
@@ -81,7 +81,7 @@ def main():
         subprocess.run(["node", "--version"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
         print("Error: Node.js is not installed or not in PATH.", file=sys.stderr)
-        print("Please install Node.js (>=16) to use northau-cli.", file=sys.stderr)
+        print("Please install Node.js (>=16) to use nexau-cli.", file=sys.stderr)
         sys.exit(1)
 
     # Build the command to execute
@@ -94,7 +94,7 @@ def main():
         print("\nInterrupted by user", file=sys.stderr)
         sys.exit(130)
     except Exception as e:
-        print(f"Error executing northau-cli: {e}", file=sys.stderr)
+        print(f"Error executing nexau-cli: {e}", file=sys.stderr)
         sys.exit(1)
 
 

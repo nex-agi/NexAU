@@ -1,14 +1,14 @@
 
 ### Global Storage System
 
-The Northau framework provides a thread-safe GlobalStorage system that allows tools and hooks to share data across the entire agent hierarchy. This is particularly useful for maintaining state across multiple tool calls and sub-agents.
+The NexAU framework provides a thread-safe GlobalStorage system that allows tools and hooks to share data across the entire agent hierarchy. This is particularly useful for maintaining state across multiple tool calls and sub-agents.
 
 #### Using GlobalStorage in Tools
 
 Tools can optionally receive a `global_storage` parameter by including it in their function signature:
 
 ```python
-from northau.archs.main_sub.agent_context import GlobalStorage
+from nexau.archs.main_sub.agent_context import GlobalStorage
 
 def my_tool_with_storage(param1: str, global_storage: GlobalStorage) -> dict:
     """Tool that uses global storage for persistent data."""
@@ -51,8 +51,8 @@ def my_tool_without_storage(param1: str) -> dict:
 Hooks can access global storage through the agent context:
 
 ```python
-from northau.archs.main_sub.execution.hooks import AfterModelHook, AfterModelHookResult, AfterModelHookInput
-from northau.archs.main_sub.agent_context import get_context
+from nexau.archs.main_sub.execution.hooks import AfterModelHook, AfterModelHookResult, AfterModelHookInput
+from nexau.archs.main_sub.agent_context import get_context
 
 def create_storage_hook() -> AfterModelHook:
     def storage_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
@@ -117,7 +117,7 @@ with storage.lock_multiple("key1", "key2", "key3"):  # Lock multiple keys
 #### Practical Example: Session Analytics Tool
 
 ```python
-from northau.archs.main_sub.agent_context import GlobalStorage
+from nexau.archs.main_sub.agent_context import GlobalStorage
 from datetime import datetime
 
 def session_analytics(action: str, data: dict = None, global_storage: GlobalStorage = None) -> dict:

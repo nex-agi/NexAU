@@ -1,4 +1,4 @@
-"""MCP client implementation for Northau framework."""
+"""MCP client implementation for NexAU framework."""
 
 import asyncio
 import logging
@@ -80,7 +80,7 @@ class HTTPMCPSession:
                     "sampling": {},
                 },
                 "clientInfo": {
-                    "name": "northau-mcp-client",
+                    "name": "nexau-mcp-client",
                     "version": "1.0.0",
                 },
             },
@@ -602,7 +602,7 @@ class MCPServerConfig:
 
 
 class MCPTool(Tool):
-    """Wrapper for MCP tools to conform to Northau Tool interface."""
+    """Wrapper for MCP tools to conform to NexAU Tool interface."""
 
     def __init__(
         self,
@@ -629,7 +629,7 @@ class MCPTool(Tool):
         if server_config and server_config.use_cache:
             self._execute_sync = cache_result(self._execute_sync)
 
-        # Convert MCP tool to Northau tool format
+        # Convert MCP tool to NexAU tool format
         super().__init__(
             name=mcp_tool.name,
             description=mcp_tool.description or "",
@@ -716,7 +716,7 @@ class MCPTool(Tool):
                                     "sampling": {},
                                 },
                                 "clientInfo": {
-                                    "name": "northau-mcp-client",
+                                    "name": "nexau-mcp-client",
                                     "version": "1.0.0",
                                 },
                             },
@@ -1014,7 +1014,7 @@ class MCPClient:
                                     "sampling": {},
                                 },
                                 "clientInfo": {
-                                    "name": "northau-mcp-client",
+                                    "name": "nexau-mcp-client",
                                     "version": "1.0.0",
                                 },
                             },
@@ -1233,7 +1233,7 @@ class MCPClient:
             # List available tools
             tools_result = await session.list_tools()
 
-            # Convert MCP tools to Northau tools
+            # Convert MCP tools to NexAU tools
             discovered_tools = []
             server_config = self.servers.get(server_name)
 

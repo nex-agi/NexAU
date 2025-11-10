@@ -5,11 +5,11 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from northau.archs.llm import LLMConfig
-from northau.archs.main_sub import create_agent
-from northau.archs.tool import Tool
-from northau.archs.tool.builtin.todo_write import todo_write
-from northau.archs.tool.builtin.web_tool import web_read, web_search
+from nexau.archs.llm import LLMConfig
+from nexau.archs.main_sub import create_agent
+from nexau.archs.tool import Tool
+from nexau.archs.tool.builtin.todo_write import todo_write
+from nexau.archs.tool.builtin.web_tool import web_read, web_search
 
 
 def get_date():
@@ -18,7 +18,7 @@ def get_date():
 
 def main():
     """Test the quick start example."""
-    print("Testing Northau Framework Quick Start Example")
+    print("Testing NexAU Framework Quick Start Example")
     print("=" * 50)
 
     try:

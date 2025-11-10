@@ -148,8 +148,8 @@ def create_combined_hook(allowed_tools: set[str]) -> AfterModelHook:
 ### Using Hooks with Agent
 
 ```python
-from northau.archs.main_sub.agent import create_agent
-from northau.archs.main_sub.execution.hooks import AfterModelHookInput, HookResult
+from nexau.archs.main_sub.agent import create_agent
+from nexau.archs.main_sub.execution.hooks import AfterModelHookInput, HookResult
 
 # Create hooks
 history_hook = create_context_hook()

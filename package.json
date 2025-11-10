@@ -1,14 +1,14 @@
 {
-  "name": "northau",
+  "name": "nexau",
   "version": "0.1.1",
-  "description": "NorthAU - Agent Framework",
+  "description": "NexAU - Agent Framework",
   "scripts": {
     "setup-cli": "cd cli && npm install && npm run build && cd ..",
     "run-agent": "bash run-agent",
     "agent": "bash run-agent"
   },
   "bin": {
-    "northau-cli": "./cli/dist/cli.js"
+    "nexau-cli": "./cli/dist/cli.js"
   },
   "dependencies": {
     "ink": "^6.4.0",

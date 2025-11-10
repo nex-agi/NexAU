@@ -3,7 +3,7 @@ from typing import Any
 
 import yaml
 
-from northau.archs.main_sub.agent_state import AgentState
+from nexau.archs.main_sub.agent_state import AgentState
 
 
 class Skill:

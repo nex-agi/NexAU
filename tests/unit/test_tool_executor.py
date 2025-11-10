@@ -16,13 +16,13 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
-from northau.archs.main_sub.execution.hooks import (
+from nexau.archs.main_sub.execution.hooks import (
     AfterToolHook,
     AfterToolHookInput,
     ToolHookManager,
 )
-from northau.archs.main_sub.execution.tool_executor import ToolExecutor
-from northau.archs.tool.tool import Tool
+from nexau.archs.main_sub.execution.tool_executor import ToolExecutor
+from nexau.archs.tool.tool import Tool
 
 
 class TestToolExecutorInitialization:

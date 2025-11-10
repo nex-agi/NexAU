@@ -1,5 +1,5 @@
 """
-End-to-end tests for northau framework.
+End-to-end tests for nexau framework.
 
 This module contains end-to-end tests that test complete workflows
 from start to finish. These tests may use real external services

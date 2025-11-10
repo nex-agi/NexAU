@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from northau.archs.main_sub.skill import Skill, load_skill
+from nexau.archs.main_sub.skill import Skill, load_skill
 
 
 class TestSkillInit:

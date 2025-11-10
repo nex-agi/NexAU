@@ -163,7 +163,7 @@ export default function App({yamlPath}) {
 		// Display welcome message
 		setMessages([{
 			role: 'assistant',
-			content: 'Welcome to NorthAU Agent CLI! I\'m ready to help you with your tasks.\n\nAvailable commands:\n• Type your message to start a task\n• /clear - Clear the conversation history\n\nPress Esc or Ctrl+C to exit.',
+			content: 'Welcome to NexAU Agent CLI! I\'m ready to help you with your tasks.\n\nAvailable commands:\n• Type your message to start a task\n• /clear - Clear the conversation history\n\nPress Esc or Ctrl+C to exit.',
 			steps: []
 		}]);
 
@@ -406,7 +406,7 @@ export default function App({yamlPath}) {
 				marginBottom={1}
 			>
 				<Text bold color="blue">
-					🤖 NorthAU Agent CLI
+					🤖 NexAU Agent CLI
 				</Text>
 				<Text dimColor> (Press Esc or Ctrl+C to exit)</Text>
 			</Box>

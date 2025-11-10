@@ -1,7 +1,7 @@
 """
 Unit tests for builtin tools.
 
-This module contains unit tests for each builtin tool in the northau framework.
+This module contains unit tests for each builtin tool in the nexau framework.
 Each test should focus on a single tool's functionality in isolation.
 """
 

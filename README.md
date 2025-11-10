@@ -1,4 +1,4 @@
-# Northau Framework
+# NexAU Framework
 
 A general-purpose agent framework inspired by Claude Code's architecture for building intelligent agents with tool capabilities.
 
@@ -14,40 +14,40 @@ This framework provides a modular tool system, a flexible agent architecture, an
 
 **Using pip:**
 ```bash
-# Install from the latest release tag using SSH (you need to use ssh because northau is a private repo)
-pip install git+ssh://git@github.com/china-qijizhifeng/northau.git@v0.1.0
+# Install from the latest release tag using SSH (you need to use ssh because nexau is a private repo)
+pip install git+ssh://git@github.com/china-qijizhifeng/nexau.git@v0.1.0
 
-# or visit https://github.com/china-qijizhifeng/northau/releases/ and download whl, then
-pip install northau-0.1.0-py3-none-any.whl
+# or visit https://github.com/china-qijizhifeng/nexau/releases/ and download whl, then
+pip install nexau-0.1.0-py3-none-any.whl
 ```
 
 **Using uv:**
 ```bash
 # Install from the latest release tag using SSH
-uv pip install git+ssh://git@github.com/china-qijizhifeng/northau.git@v0.1.0
+uv pip install git+ssh://git@github.com/china-qijizhifeng/nexau.git@v0.1.0
 
-# or visit https://github.com/china-qijizhifeng/northau/releases/ and download whl, then
-uv pip install northau-0.1.0-py3-none-any.whl
+# or visit https://github.com/china-qijizhifeng/nexau/releases/ and download whl, then
+uv pip install nexau-0.1.0-py3-none-any.whl
 ```
 
 ### Install Latest from Main Branch
 
 **Using pip:**
 ```bash
-pip install git+ssh://git@github.com/china-qijizhifeng/northau.git
+pip install git+ssh://git@github.com/china-qijizhifeng/nexau.git
 ```
 
 **Using uv:**
 ```bash
-uv pip install git+ssh://git@github.com/china-qijizhifeng/northau.git
+uv pip install git+ssh://git@github.com/china-qijizhifeng/nexau.git
 ```
 
 ### From Source
 
 ```bash
 # Clone the repository
-git clone git@github.com:china-qijizhifeng/northau.git
-cd northau
+git clone git@github.com:china-qijizhifeng/nexau.git
+cd nexau
 
 # Install dependencies using uv
 pip install uv
@@ -72,7 +72,7 @@ uv sync
     Enter your task: Build an algorithm art about 3-body problem
     ```
 
-3. **Use NorthAU CLI to run** (Simplified)
+3. **Use NexAU CLI to run** (Simplified)
     
     **Option 1: Using the run-agent script (Recommended)**
     ```bash
@@ -128,7 +128,7 @@ uv run ruff check --fix .
 uv run ruff format .
 
 # Run tests with coverage
-uv run pytest --cov=northau --cov-report=html --cov-report=term
+uv run pytest --cov=nexau --cov-report=html --cov-report=term
 ```
 
 The coverage report will be generated in the `htmlcov/` directory. Open `htmlcov/index.html` in your browser to view the detailed coverage report.

@@ -8,22 +8,22 @@ llm_config:
   max_tokens: 4096
   api_type: anthropic_chat_completion
   anthropic_cache_control_ttl: "1h"
-custom_llm_generator: "northau.archs.main_sub.execution.llm_caller:bypass_llm_generator"
+custom_llm_generator: "nexau.archs.main_sub.execution.llm_caller:bypass_llm_generator"
 tools:
   - name: web_search
     yaml_path: ./tools/WebSearch.yaml
-    binding: northau.archs.tool.builtin.web_tool:web_search
+    binding: nexau.archs.tool.builtin.web_tool:web_search
     as_skill: true
   - name: web_read
     yaml_path: ./tools/WebRead.yaml
-    binding: northau.archs.tool.builtin.web_tool:web_read
+    binding: nexau.archs.tool.builtin.web_tool:web_read
     as_skill: true
   - name: todo_write
     yaml_path: ./tools/TodoWrite.tool.yaml
-    binding: northau.archs.tool.builtin.todo_write:todo_write
+    binding: nexau.archs.tool.builtin.todo_write:todo_write
   - name: file_write
     yaml_path: ./tools/Write.tool.yaml
-    binding: northau.archs.tool.builtin.file_tools.file_write_tool:file_write_tool
+    binding: nexau.archs.tool.builtin.file_tools.file_write_tool:file_write_tool
     as_skill: true
 skills:
   - ./skills/algorithmic-art
@@ -31,10 +31,10 @@ sub_agents:
   - name: sub_deep_research_agent
     config_path: deep_research_agent.yaml
 after_tool_hooks:
-  - import: northau.archs.main_sub.execution.hooks:create_tool_logging_hook
+  - import: nexau.archs.main_sub.execution.hooks:create_tool_logging_hook
     params:
       logger_name: "deep_research_tool_debug"
 after_model_hooks:
-  - import: northau.archs.main_sub.execution.hooks:create_logging_hook
+  - import: nexau.archs.main_sub.execution.hooks:create_logging_hook
     params:
       logger_name: "deep_research_model_debug"

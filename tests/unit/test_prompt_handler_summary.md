@@ -1,7 +1,7 @@
 # Test Coverage Summary for prompt_handler.py
 
 ## Overview
-Created comprehensive unit tests for `northau/archs/main_sub/prompt_handler.py` to achieve **100% code coverage**.
+Created comprehensive unit tests for `nexau/archs/main_sub/prompt_handler.py` to achieve **100% code coverage**.
 
 ## Test File
 - **Location**: `tests/unit/test_prompt_handler.py`
@@ -149,10 +149,10 @@ pytest tests/unit/test_prompt_handler.py -v
 
 # Run with coverage
 coverage run -m pytest tests/unit/test_prompt_handler.py
-coverage report --include="northau/archs/main_sub/prompt_handler.py"
+coverage report --include="nexau/archs/main_sub/prompt_handler.py"
 
 # Generate HTML coverage report
-coverage html --include="northau/archs/main_sub/prompt_handler.py"
+coverage html --include="nexau/archs/main_sub/prompt_handler.py"
 ```
 
 ## Quality Metrics

@@ -9,17 +9,17 @@ import fs from 'fs';
 const cli = meow(
 	`
 		Usage
-		  $ northau-cli <yaml-file>
+		  $ nexau-cli <yaml-file>
 
 		Arguments
-		  <yaml-file>  Path to the NorthAU agent configuration YAML file
+		  <yaml-file>  Path to the NexAU agent configuration YAML file
 
 		Options
 		  --help       Show this help message
 
 		Examples
-		  $ northau-cli ./my_agent.yaml
-		  $ northau-cli ../examples/fake_claude_code/cc_agent.yaml
+		  $ nexau-cli ./my_agent.yaml
+		  $ nexau-cli ../examples/fake_claude_code/cc_agent.yaml
 	`,
 	{
 		importMeta: import.meta,

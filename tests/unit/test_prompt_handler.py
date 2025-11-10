@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import pytest
 from jinja2 import Environment
 
-from northau.archs.main_sub.prompt_handler import PromptHandler
+from nexau.archs.main_sub.prompt_handler import PromptHandler
 
 
 class TestPromptHandlerInit:

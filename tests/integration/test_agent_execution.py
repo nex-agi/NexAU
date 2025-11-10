@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from northau.archs.tool.tool import Tool
+from nexau.archs.tool.tool import Tool
 
 
 class TestAgentExecutionIntegration:
@@ -61,7 +61,7 @@ class TestAgentExecutionIntegration:
             ]
         }
 
-        with patch("northau.archs.main_sub.agent.openai") as mock_openai:
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_client = MagicMock()
             mock_client.chat.completions.create.return_value = mock_response
             mock_openai.OpenAI.return_value = mock_client
