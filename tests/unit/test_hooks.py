@@ -5,9 +5,9 @@ from unittest.mock import patch
 
 import pytest
 
-from northau.archs.main_sub.agent_context import AgentContext, GlobalStorage
-from northau.archs.main_sub.agent_state import AgentState
-from northau.archs.main_sub.execution.hooks import (
+from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
+from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.main_sub.execution.hooks import (
     AfterModelHookInput,
     AfterModelHookResult,
     AfterToolHookInput,
@@ -24,7 +24,7 @@ from northau.archs.main_sub.execution.hooks import (
     create_tool_output_filter_hook,
     create_tool_result_transformer_hook,
 )
-from northau.archs.main_sub.execution.parse_structures import (
+from nexau.archs.main_sub.execution.parse_structures import (
     BatchAgentCall,
     ParsedResponse,
     SubAgentCall,

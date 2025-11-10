@@ -4,7 +4,7 @@ Tools are the functions that an agent can execute to interact with the outside w
 
 ## Built-in Tools
 
-Northau comes with a variety of pre-built tools for common tasks.
+NexAU comes with a variety of pre-built tools for common tasks.
 
 #### File Tools
 - **file_read_tool**: Read file contents.
@@ -27,10 +27,10 @@ Northau comes with a variety of pre-built tools for common tasks.
 If you use python to create Agent:
 
 ```python
-from northau.archs.tool import Tool
-from northau.archs.tool.builtin.todo_write import todo_write
-from northau.archs.tool.builtin.web_tool import web_read
-from northau.archs.tool.builtin.web_tool import web_search
+from nexau.archs.tool import Tool
+from nexau.archs.tool.builtin.todo_write import todo_write
+from nexau.archs.tool.builtin.web_tool import web_read
+from nexau.archs.tool.builtin.web_tool import web_search
 
 # Create the tool instance
 # Note: you need to create the yaml files for tool config, you may refer to examples/deep_research/tools for examples
@@ -62,13 +62,13 @@ If you use agent yaml config, you can add these lines to the config file:
 tools:
   - name: web_search
     yaml_path: ./tools/WebSearch.yaml
-    binding: northau.archs.tool.builtin.web_tool:web_search
+    binding: nexau.archs.tool.builtin.web_tool:web_search
   - name: web_read
     yaml_path: ./tools/WebRead.yaml
-    binding: northau.archs.tool.builtin.web_tool:web_read
+    binding: nexau.archs.tool.builtin.web_tool:web_read
   - name: todo_write
     yaml_path: ./tools/TodoWrite.tool.yaml
-    binding: northau.archs.tool.builtin.todo_write:todo_write
+    binding: nexau.archs.tool.builtin.todo_write:todo_write
 ```
 
 ## Creating Custom Tools
@@ -129,7 +129,7 @@ input_schema:
 Load the tool from its YAML file and bind it to the Python function you created.
 
 ```python
-from northau.archs.tool import Tool
+from nexau.archs.tool import Tool
 from my_tools.calculator import simple_calculator
 
 # Create the tool instance

@@ -1,4 +1,4 @@
-"""Configuration models for the Northau agent framework."""
+"""Configuration models for the NexAU agent framework."""
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -68,7 +68,7 @@ class AgentConfig:
         else:
             self.sub_agent_factories = {}
 
-        northau_package_path = Path(__file__).parent.parent.parent
+        nexau_package_path = Path(__file__).parent.parent.parent
         has_skilled_tools = False
         for tool in self.tools:
             if tool.as_skill:
@@ -76,7 +76,7 @@ class AgentConfig:
                 break
         if has_skilled_tools or self.skills:
             skill_tool = Tool.from_yaml(
-                str(northau_package_path / "archs" / "tool" / "builtin" / "description" / "skill_tool.yaml"),
+                str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "skill_tool.yaml"),
                 binding=load_skill,
                 as_skill=False,
             )

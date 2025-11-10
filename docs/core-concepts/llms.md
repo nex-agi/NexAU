@@ -1,6 +1,6 @@
 # 🧠 Core Concepts: LLM Configuration
 
-Northau is designed to work with any OpenAI-compatible API, giving you the flexibility to choose from a wide range of providers.
+NexAU is designed to work with any OpenAI-compatible API, giving you the flexibility to choose from a wide range of providers.
 
 ## LLM Configuration
 
@@ -9,7 +9,7 @@ You configure the LLM provider using the `LLMConfig` class.
 #### Supported Providers
 
 ```python
-from northau.archs.llm import LLMConfig
+from nexau.archs.llm import LLMConfig
 
 # OpenAI
 llm_config = LLMConfig(
@@ -41,5 +41,5 @@ llm_config = LLMConfig(
 
 ## Custom LLM Generators
 
-For advanced use cases, Northau supports custom LLM generators. These are functions that intercept the request to the LLM, allowing you to add custom logic like logging, caching, parameter modification, or even routing between different providers.
+For advanced use cases, NexAU supports custom LLM generators. These are functions that intercept the request to the LLM, allowing you to add custom logic like logging, caching, parameter modification, or even routing between different providers.
 You can apply a custom generator either programmatically or through YAML configuration. Refer to [Custom LLM Generator](./advanced-guides/custom-llm-generator.md) for details.**

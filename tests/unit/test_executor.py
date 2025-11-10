@@ -15,15 +15,15 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from northau.archs.main_sub.execution.executor import Executor
-from northau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
-from northau.archs.main_sub.execution.parse_structures import (
+from nexau.archs.main_sub.execution.executor import Executor
+from nexau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
+from nexau.archs.main_sub.execution.parse_structures import (
     BatchAgentCall,
     ParsedResponse,
     SubAgentCall,
     ToolCall,
 )
-from northau.archs.tool.tool import Tool
+from nexau.archs.tool.tool import Tool
 
 
 class TestExecutorInitialization:
@@ -476,7 +476,7 @@ class TestExecutorXMLCallProcessing:
             llm_config=mock_llm_config,
         )
 
-        from northau.archs.main_sub.execution.hooks import AfterModelHookInput
+        from nexau.archs.main_sub.execution.hooks import AfterModelHookInput
 
         hook_input = AfterModelHookInput(
             agent_state=agent_state,
@@ -528,7 +528,7 @@ class TestExecutorXMLCallProcessing:
             serial_tool_name=[],  # Empty list to avoid None check issues
         )
 
-        from northau.archs.main_sub.execution.hooks import AfterModelHookInput
+        from nexau.archs.main_sub.execution.hooks import AfterModelHookInput
 
         tool_call = ToolCall(
             tool_name="simple_tool",
@@ -584,7 +584,7 @@ class TestExecutorXMLCallProcessing:
             serial_tool_name=[],  # Empty list to avoid None check issues
         )
 
-        from northau.archs.main_sub.execution.hooks import AfterModelHookInput
+        from nexau.archs.main_sub.execution.hooks import AfterModelHookInput
 
         batch_call = BatchAgentCall(
             agent_name="sub_agent",
@@ -1144,7 +1144,7 @@ class TestExecutorWithHooks:
 
     def test_execute_with_before_model_hook(self, mock_llm_config, agent_state):
         """Test execution with before model hook."""
-        from northau.archs.main_sub.execution.hooks import BeforeModelHook, BeforeModelHookInput
+        from nexau.archs.main_sub.execution.hooks import BeforeModelHook, BeforeModelHookInput
 
         class TestBeforeHook(BeforeModelHook):
             def execute(self, hook_input: BeforeModelHookInput) -> list[dict[str, str]]:

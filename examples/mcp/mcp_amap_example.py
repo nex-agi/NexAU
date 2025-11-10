@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Example demonstrating Amap Maps MCP server integration with Northau agents."""
+"""Example demonstrating Amap Maps MCP server integration with NexAU agents."""
 
 import os
 
-from northau.archs.llm import LLMConfig
-from northau.archs.main_sub.agent import create_agent
+from nexau.archs.llm import LLMConfig
+from nexau.archs.main_sub.agent import create_agent
 
 
 def main():
-    """Demonstrate Amap Maps MCP integration with Northau agents."""
-    print("🚀 Amap Maps MCP Integration Example for Northau Framework\n")
+    """Demonstrate Amap Maps MCP integration with NexAU agents."""
+    print("🚀 Amap Maps MCP Integration Example for NexAU Framework\n")
 
     # Amap Maps MCP server configuration
     # This uses the streamable HTTP MCP protocol

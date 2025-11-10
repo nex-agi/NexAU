@@ -1,7 +1,7 @@
 """
-Test suite for the Northau framework.
+Test suite for the NexAU framework.
 
-This module contains comprehensive tests for all components of the northau framework,
+This module contains comprehensive tests for all components of the nexau framework,
 including unit tests, integration tests, and end-to-end tests.
 
 Test Structure:
@@ -13,7 +13,7 @@ Test Structure:
 Running Tests:
 - Run all tests: pytest
 - Run unit tests only: pytest tests/unit/
-- Run with coverage: pytest --cov=northau --cov-report=html
+- Run with coverage: pytest --cov=nexau --cov-report=html
 - Run specific test file: pytest tests/unit/test_agent.py
 """
 

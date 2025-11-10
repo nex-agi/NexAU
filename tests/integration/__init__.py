@@ -1,5 +1,5 @@
 """
-Integration tests for northau framework components.
+Integration tests for nexau framework components.
 
 This module contains integration tests that test how different components
 work together. These tests may use mocked external dependencies but test

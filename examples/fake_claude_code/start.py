@@ -8,7 +8,7 @@ from pathlib import Path
 
 import langfuse
 
-from northau.archs.config.config_loader import load_agent_config
+from nexau.archs.config.config_loader import load_agent_config
 
 logging.basicConfig(level=logging.INFO)
 

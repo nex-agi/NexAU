@@ -14,7 +14,7 @@ Enhanced the CLI to display tool calls in a beautiful, readable format instead o
 ### After (Pretty Display)
 ```
 🔧 Planning to execute 2 tool(s) [parallel]:
-  1. web_search(query=NorthAU framework, max_results=5)
+  1. web_search(query=NexAU framework, max_results=5)
   2. web_read(url=https://example.com)
 ```
 
@@ -91,9 +91,9 @@ case 'tool_detail':
 
 ### Single Tool (Sequential)
 ```
-💭 I'll search for information about NorthAU...
+💭 I'll search for information about NexAU...
 🔧 Planning to execute 1 tool(s) [sequential]:
-  1. web_search(query=NorthAU agent framework, max_results=10)
+  1. web_search(query=NexAU agent framework, max_results=10)
 ✓ Tool 'web_search' completed
 ```
 
@@ -186,7 +186,7 @@ No configuration needed - automatically formats all tool calls for any agent.
 
 ## Compatibility
 
-- Works with all NorthAU tools
+- Works with all NexAU tools
 - Compatible with both single and parallel execution
 - Handles missing parameters gracefully
 - Supports all parameter types (str, int, dict, list, etc.)
@@ -209,7 +209,7 @@ npm run build
 ./dist/cli.js ../examples/fake_claude_code/cc_agent.yaml
 
 # Try multi-tool commands
-> Search for NorthAU and read the first result
+> Search for NexAU and read the first result
 
 # Observe:
 # - Tool count and execution mode

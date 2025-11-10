@@ -1,17 +1,17 @@
-# Northau Framework Specification
+# NexAU Framework Specification
 
 ## Overview
 
-Northau is a general-purpose agent framework inspired by Claude Code's architecture, supporting main agents with specialized sub-agents for efficient task delegation and execution.
+NexAU is a general-purpose agent framework inspired by Claude Code's architecture, supporting main agents with specialized sub-agents for efficient task delegation and execution.
 
 ## Quick Start Example
 
 ```python
-from northau.archs.main_sub import create_agent
-from northau.archs.tool import Tool
-from northau.archs.tool.builtin.bash_tool import bash
-from northau.archs.tool.builtin.file_tool import file_edit, file_search
-from northau.archs.tool.builtin.web_tool import web_search, web_read
+from nexau.archs.main_sub import create_agent
+from nexau.archs.tool import Tool
+from nexau.archs.tool.builtin.bash_tool import bash
+from nexau.archs.tool.builtin.file_tool import file_edit, file_search
+from nexau.archs.tool.builtin.web_tool import web_search, web_read
 
 
 
@@ -68,7 +68,7 @@ The framework uses a dedicated `LLMConfig` class to handle all LLM-related param
 #### LLMConfig Class
 
 ```python
-from northau.archs.llm import LLMConfig
+from nexau.archs.llm import LLMConfig
 
 # Basic configuration
 config = LLMConfig(
@@ -168,8 +168,8 @@ LLMConfig(
 #### Agent Creation
 
 ```python
-from northau.archs.main_sub import create_agent
-from northau.archs.llm import LLMConfig
+from nexau.archs.main_sub import create_agent
+from nexau.archs.llm import LLMConfig
 
 # Method 1: Using LLMConfig object (recommended)
 llm_config = LLMConfig(
@@ -314,7 +314,7 @@ input_schema:
 #### Tool Implementation and Binding
 
 ```python
-from northau.archs.tool import Tool
+from nexau.archs.tool import Tool
 
 # Define the Python implementation
 def file_edit(file_path: str, old_string: str, new_string: str, replace_all: bool = False):
@@ -599,7 +599,7 @@ def custom_tool_implementation(param1: str, param2: int = 42):
 3. **Create and register the tool**:
 
 ```python
-from northau.archs.tool import Tool
+from nexau.archs.tool import Tool
 
 custom_tool = Tool.from_yaml("CustomTool.yaml", binding=custom_tool_implementation)
 
@@ -794,10 +794,10 @@ llm_config:
 tools:
   - name: bash
     yaml_path: tools/Bash.yaml
-    binding: northau.archs.tool.builtin.bash_tool:bash
+    binding: nexau.archs.tool.builtin.bash_tool:bash
   - name: edit
     yaml_path: tools/Edit.yaml
-    binding: northau.archs.tool.builtin.file_tool:file_edit
+    binding: nexau.archs.tool.builtin.file_tool:file_edit
 
 sub_agents:
   - name: file_search
@@ -876,7 +876,7 @@ User expertise level: {{ context.user_level | default("intermediate") }}
 ### Loading from Configuration
 
 ```python
-from northau.archs.config import load_agent_config
+from nexau.archs.config import load_agent_config
 
 # Load agent from configuration file
 agent = load_agent_config("config/agents/code_assistant.yaml")

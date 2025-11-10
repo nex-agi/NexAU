@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from northau.archs.tool.builtin.bash_tool import BashTool, bash_tool
+from nexau.archs.tool.builtin.bash_tool import BashTool, bash_tool
 
 
 class TestBashTool:

@@ -1,5 +1,5 @@
 [project]
-name = "northau"
+name = "nexau"
 version = "0.1.0"
 description = "A general-purpose agent framework inspired by Claude Code's architecture"
 readme = "README.md"
@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.scripts]
-northau-cli = "northau.cli_wrapper:main"
+nexau-cli = "nexau.cli_wrapper:main"
 
 [tool.uv]
 dev-dependencies = [
@@ -42,10 +42,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["northau*"]
+include = ["nexau*"]
 
 [tool.setuptools.package-data]
-northau = [
+nexau = [
     "archs/main_sub/prompts/*.j2",
     "cli/dist/*.js",
     "cli/dist/*.js.map",

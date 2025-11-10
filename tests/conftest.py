@@ -1,8 +1,8 @@
 """
-Pytest configuration and fixtures for northau framework tests.
+Pytest configuration and fixtures for nexau framework tests.
 
 This module provides shared fixtures, configuration, and utilities
-for all tests in the northau test suite.
+for all tests in the nexau test suite.
 """
 
 import asyncio
@@ -21,15 +21,15 @@ import yaml
 sys.modules.setdefault("anthropic", Mock())
 
 
-def _load_northau_dependencies():
-    from northau.archs.llm.llm_config import LLMConfig as _LLMConfig
-    from northau.archs.main_sub.agent import create_agent as _create_agent
-    from northau.archs.main_sub.agent_context import AgentContext as _AgentContext
-    from northau.archs.main_sub.agent_context import GlobalStorage as _GlobalStorage
-    from northau.archs.main_sub.agent_state import AgentState as _AgentState
-    from northau.archs.main_sub.config import AgentConfig as _AgentConfig
-    from northau.archs.main_sub.config import ExecutionConfig as _ExecutionConfig
-    from northau.archs.tool.tool import Tool as _Tool
+def _load_nexau_dependencies():
+    from nexau.archs.llm.llm_config import LLMConfig as _LLMConfig
+    from nexau.archs.main_sub.agent import create_agent as _create_agent
+    from nexau.archs.main_sub.agent_context import AgentContext as _AgentContext
+    from nexau.archs.main_sub.agent_context import GlobalStorage as _GlobalStorage
+    from nexau.archs.main_sub.agent_state import AgentState as _AgentState
+    from nexau.archs.main_sub.config import AgentConfig as _AgentConfig
+    from nexau.archs.main_sub.config import ExecutionConfig as _ExecutionConfig
+    from nexau.archs.tool.tool import Tool as _Tool
 
     return (
         _LLMConfig,
@@ -52,7 +52,7 @@ def _load_northau_dependencies():
     AgentConfig,
     ExecutionConfig,
     Tool,
-) = _load_northau_dependencies()
+) = _load_nexau_dependencies()
 
 
 # Test configuration
@@ -205,7 +205,7 @@ def mock_tools(sample_tool):
 @pytest.fixture
 def temp_file():
     """Create a temporary file for testing."""
-    from northau.archs.tool.builtin.file_tools.file_edit_tool import mark_file_as_read
+    from nexau.archs.tool.builtin.file_tools.file_edit_tool import mark_file_as_read
 
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
         f.write("test content")
@@ -298,7 +298,7 @@ def mock_langfuse_client():
 @pytest.fixture
 def mock_agent(mock_llm_config, execution_config, global_storage):
     """Create a mock agent for testing."""
-    with patch("northau.archs.main_sub.agent.openai") as mock_openai:
+    with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
         mock_openai.OpenAI.return_value = Mock()
         agent = create_agent(
             name="test_agent",

@@ -1,6 +1,6 @@
 # Usage Examples
 
-This document provides various examples of how to use the NorthAU CLI in different scenarios.
+This document provides various examples of how to use the NexAU CLI in different scenarios.
 
 ## Basic Usage
 
@@ -218,7 +218,7 @@ import subprocess
 import json
 
 queries = [
-    "What is NorthAU?",
+    "What is NexAU?",
     "How do I create an agent?",
     "List available tools"
 ]

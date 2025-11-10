@@ -1,7 +1,7 @@
 
 ## Custom LLM Generators
 
-Northau supports custom LLM generators, allowing you to customize how LLM requests are processed. This is useful for:
+NexAU supports custom LLM generators, allowing you to customize how LLM requests are processed. This is useful for:
 - Adding custom preprocessing/postprocessing
 - Integrating with different LLM providers
 - Implementing custom caching or logging
@@ -50,8 +50,8 @@ def my_custom_generator(openai_client: Any, kwargs: Dict[str, Any]) -> Any:
 #### 1. Programmatic Usage
 
 ```python
-from northau.archs.main_sub import create_agent
-from northau.archs.llm import LLMConfig
+from nexau.archs.main_sub import create_agent
+from nexau.archs.llm import LLMConfig
 
 # Create agent with custom LLM generator
 agent = create_agent(
@@ -197,14 +197,14 @@ def caching_generator(openai_client: Any, kwargs: Dict[str, Any]) -> Any:
 
 ### Built-in Custom Generators
 
-Northau includes some built-in custom generators for common use cases:
+NexAU includes some built-in custom generators for common use cases:
 
 #### Bypass Generator
 
 A simple pass-through generator that adds logging but doesn't modify the LLM behavior:
 
 ```yaml
-custom_llm_generator: "northau.archs.main_sub.execution.response_generator:bypass_llm_generator"
+custom_llm_generator: "nexau.archs.main_sub.execution.response_generator:bypass_llm_generator"
 ```
 
 This generator:
@@ -215,7 +215,7 @@ This generator:
 ### Loading Agents with Custom Generators
 
 ```python
-from northau.archs.config.config_loader import load_agent_config
+from nexau.archs.config.config_loader import load_agent_config
 
 # Load agent from YAML with custom LLM generator
 agent = load_agent_config('path/to/config.yaml')

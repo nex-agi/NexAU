@@ -1,4 +1,4 @@
-# NorthAU CLI Changelog
+# NexAU CLI Changelog
 
 ## Version 0.1.0 - Interactive CLI with Progress Tracking
 
@@ -8,11 +8,11 @@
 - ✅ **Interactive Terminal UI** built with React + Ink
 - ✅ **Two-region layout** (conversation history + input bar)
 - ✅ **Real-time agent interaction** via stdin/stdout communication
-- ✅ **YAML configuration support** - load any NorthAU agent
+- ✅ **YAML configuration support** - load any NexAU agent
 
 #### Progress Tracking (NEW!)
 - ✅ **Live intermediate steps** - see what the agent is doing in real-time
-- ✅ **Hook-based progress tracking** using NorthAU's hook system
+- ✅ **Hook-based progress tracking** using NexAU's hook system
 - ✅ **Preserved action history** - all steps remain visible after task completion
 - ✅ **Agent reasoning display** - shows agent's text responses and thinking
 - ✅ **Color-coded step indicators**:
@@ -67,7 +67,7 @@
 
 #### Python
 - `uv` - Python package manager (required)
-- `northau` - Agent framework
+- `nexau` - Agent framework
 - `pyyaml` - YAML parsing
 
 ### Files Created
@@ -109,7 +109,7 @@ cli/dist/cli.js examples/fake_claude_code/cc_agent.yaml
 
 ```
 ┌─────────────────────────────────────────┐
-│ 🤖 NorthAU Agent CLI (Press Esc to exit)│
+│ 🤖 NexAU Agent CLI (Press Esc to exit)│
 └─────────────────────────────────────────┘
 
 ❯ You:
@@ -147,7 +147,7 @@ cli/dist/cli.js examples/fake_claude_code/cc_agent.yaml
 - Node.js >= 16
 - Python 3.x
 - uv (Python package manager)
-- Valid NorthAU agent YAML configuration
+- Valid NexAU agent YAML configuration
 
 ### Installation
 

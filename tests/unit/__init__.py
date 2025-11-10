@@ -1,5 +1,5 @@
 """
-Unit tests for northau framework components.
+Unit tests for nexau framework components.
 
 This module contains unit tests that test individual components in isolation.
 Each test should focus on a single function, method, or class without external dependencies.

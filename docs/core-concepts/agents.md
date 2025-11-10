@@ -1,6 +1,6 @@
 # 🤖 Core Concepts: Agents
 
-Agents are the central orchestrators in the Northau framework. They combine an LLM, a system prompt, and a set of tools to accomplish tasks. You can define agents either programmatically in Python or declaratively using YAML files.
+Agents are the central orchestrators in the NexAU framework. They combine an LLM, a system prompt, and a set of tools to accomplish tasks. You can define agents either programmatically in Python or declaratively using YAML files.
 
 ## Programmatic Agent Creation
 
@@ -12,10 +12,10 @@ Creating an agent in Python gives you maximum flexibility. This is ideal for dyn
 #!/usr/bin/env python3
 import os
 from datetime import datetime
-from northau.archs.main_sub import create_agent
-from northau.archs.tool import Tool
-from northau.archs.tool.builtin.web_tool import web_search, web_read
-from northau.archs.llm import LLMConfig
+from nexau.archs.main_sub import create_agent
+from nexau.archs.tool import Tool
+from nexau.archs.tool.builtin.web_tool import web_search, web_read
+from nexau.archs.llm import LLMConfig
 
 def main():
     # Create tools from YAML configurations
@@ -67,10 +67,10 @@ For a more declarative approach, you can define an agent's entire configuration 
     tools:
       - name: web_search
         yaml_path: ../tools/WebSearch.yaml
-        binding: northau.archs.tool.builtin.web_tool:web_search
+        binding: nexau.archs.tool.builtin.web_tool:web_search
       - name: web_read
         yaml_path: ../tools/WebRead.yaml
-        binding: northau.archs.tool.builtin.web_tool:web_read
+        binding: nexau.archs.tool.builtin.web_tool:web_read
     sub_agents: []
     ```
 
@@ -80,7 +80,7 @@ For a more declarative approach, you can define an agent's entire configuration 
     #!/usr/bin/env python3
     import os
     from datetime import datetime
-    from northau.archs.config.config_loader import load_agent_config
+    from nexau.archs.config.config_loader import load_agent_config
 
     def main():
         # Define overrides, e.g., for loading secrets from the environment
