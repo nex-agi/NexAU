@@ -85,38 +85,42 @@ class AfterModelHookResult:
     This class encapsulates the modifications that a hook can make:
     - parsed_response: Modified ParsedResponse, or None if no changes
     - messages: Modified conversation history, or None if no changes
+    - force_continue: Force agent to continue even if no tool calls remain (for feedback injection)
 
     If both fields are None, it indicates the hook made no modifications.
     """
 
     parsed_response: ParsedResponse | None = None
     messages: list[dict[str, Any]] | None = None
+    force_continue: bool = False
 
     def has_modifications(self) -> bool:
         """Check if this result contains any modifications."""
-        return self.parsed_response is not None or self.messages is not None
+        return self.parsed_response is not None or self.messages is not None or self.force_continue
 
     @classmethod
     def no_changes(cls) -> "AfterModelHookResult":
         """Create a AfterModelHookResult indicating no modifications."""
-        return cls(parsed_response=None, messages=None)
+        return cls(parsed_response=None, messages=None, force_continue=False)
 
     @classmethod
     def with_modifications(
         cls,
         parsed_response: ParsedResponse | None = None,
         messages: list[dict[str, Any]] | None = None,
+        force_continue: bool = False,
     ) -> "AfterModelHookResult":
         """Create a AfterModelHookResult with specified modifications.
 
         Args:
             parsed_response: Modified ParsedResponse, or None if no changes
             messages: Modified message history, or None if no changes
+            force_continue: Force agent to continue even if no tool calls remain
 
         Returns:
             AfterModelHookResult with the specified modifications
         """
-        return cls(parsed_response=parsed_response, messages=messages)
+        return cls(parsed_response=parsed_response, messages=messages, force_continue=force_continue)
 
 
 class BeforeModelHook(Protocol):
@@ -696,6 +700,10 @@ class HookManager:
 
         Args:
             hook_input: AfterModelHookInput or BeforeModelHookInput containing all hook input data
+
+        Returns:
+            For after hooks: (parsed_response, messages, force_continue)
+            For before hooks: messages
         """
         import logging
 
@@ -709,6 +717,7 @@ class HookManager:
         if hook_type == "after":
             current_parsed = hook_input.parsed_response
         current_messages = hook_input.messages
+        force_continue = False  # Track if any hook requests force_continue
 
         for i, hook in enumerate(self.hooks):
             try:
@@ -734,6 +743,13 @@ class HookManager:
                         logger.info(
                             f"🎣 Hook {i + 1} modified the message history",
                         )
+
+                    # Check force_continue flag
+                    if hook_type == "after" and result.force_continue:
+                        force_continue = True
+                        logger.info(
+                            f"🎣 Hook {i + 1} requested force_continue (agent will continue even without tool calls)",
+                        )
                 else:
                     logger.info(f"🎣 Hook {i + 1} made no modifications")
 
@@ -743,7 +759,7 @@ class HookManager:
                 continue
 
         if hook_type == "after":
-            return current_parsed, current_messages
+            return current_parsed, current_messages, force_continue
         else:
             return current_messages
 

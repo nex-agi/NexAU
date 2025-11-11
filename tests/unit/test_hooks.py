@@ -230,6 +230,49 @@ class TestAfterModelHookResult:
         assert result.messages == messages
         assert result.has_modifications() is True
 
+    def test_force_continue_default_false(self):
+        """Test force_continue defaults to False."""
+        result = AfterModelHookResult()
+        assert result.force_continue is False
+        assert result.has_modifications() is False
+
+    def test_force_continue_set_true(self):
+        """Test force_continue can be set to True."""
+        result = AfterModelHookResult(force_continue=True)
+        assert result.force_continue is True
+        assert result.has_modifications() is True
+
+    def test_no_changes_force_continue_false(self):
+        """Test no_changes returns force_continue=False."""
+        result = AfterModelHookResult.no_changes()
+        assert result.force_continue is False
+        assert result.has_modifications() is False
+
+    def test_with_modifications_force_continue_true(self):
+        """Test with_modifications with force_continue=True."""
+        messages = [{"role": "user", "content": "feedback"}]
+        result = AfterModelHookResult.with_modifications(
+            messages=messages,
+            force_continue=True,
+        )
+        assert result.messages == messages
+        assert result.force_continue is True
+        assert result.has_modifications() is True
+
+    def test_with_modifications_force_continue_default(self):
+        """Test with_modifications force_continue defaults to False."""
+        messages = [{"role": "user", "content": "test"}]
+        result = AfterModelHookResult.with_modifications(messages=messages)
+        assert result.force_continue is False
+
+    def test_has_modifications_with_force_continue_only(self):
+        """Test has_modifications returns True when only force_continue is set."""
+        result = AfterModelHookResult(force_continue=True)
+        assert result.parsed_response is None
+        assert result.messages is None
+        assert result.force_continue is True
+        assert result.has_modifications() is True
+
 
 class TestAfterToolHookInput:
     """Tests for AfterToolHookInput dataclass."""
@@ -923,10 +966,11 @@ class TestHookManager:
             parsed_response=parsed_response,
         )
 
-        result_parsed, result_messages = manager.execute_hooks(hook_input)
+        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
 
         assert result_parsed == parsed_response
         assert result_messages == messages
+        assert force_continue is False
         assert "Executing hook 1/1" in caplog.text
 
     def test_execute_hooks_after_model_multiple(self, agent_state, messages, parsed_response, caplog):
@@ -946,10 +990,11 @@ class TestHookManager:
             parsed_response=parsed_response,
         )
 
-        result_parsed, result_messages = manager.execute_hooks(hook_input)
+        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
 
         assert result_parsed == parsed_response
         assert len(result_messages) == len(messages) + 1
+        assert force_continue is False
         assert "Executing hook 1/2" in caplog.text
         assert "Executing hook 2/2" in caplog.text
 
@@ -996,11 +1041,12 @@ class TestHookManager:
             parsed_response=parsed_response,
         )
 
-        result_parsed, result_messages = manager.execute_hooks(hook_input)
+        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
 
         # Should still complete despite first hook failing
         assert result_parsed == parsed_response
         assert result_messages == messages
+        assert force_continue is False
         assert "Hook 1 failed" in caplog.text
 
     def test_execute_hooks_modify_parsed_response(self, agent_state, messages, parsed_response, caplog):
@@ -1024,9 +1070,10 @@ class TestHookManager:
             parsed_response=parsed_response,
         )
 
-        result_parsed, result_messages = manager.execute_hooks(hook_input)
+        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
 
         assert len(result_parsed.tool_calls) == 0
+        assert force_continue is False
         assert "modified the parsed response" in caplog.text
 
     def test_execute_hooks_modify_messages(self, agent_state, messages, parsed_response, caplog):
@@ -1049,10 +1096,163 @@ class TestHookManager:
             parsed_response=parsed_response,
         )
 
-        result_parsed, result_messages = manager.execute_hooks(hook_input)
+        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
 
         assert len(result_messages) == len(messages) + 1
+        assert force_continue is False
         assert "modified the message history" in caplog.text
+
+    def test_execute_hooks_force_continue_false_by_default(self, agent_state, messages, parsed_response):
+        """Test that force_continue defaults to False."""
+
+        def no_op_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
+            return AfterModelHookResult.no_changes()
+
+        manager = HookManager()
+        manager.add_hook(no_op_hook)
+
+        hook_input = AfterModelHookInput(
+            agent_state=agent_state,
+            max_iterations=10,
+            current_iteration=5,
+            messages=messages,
+            original_response="test response",
+            parsed_response=parsed_response,
+        )
+
+        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
+
+        assert force_continue is False
+        assert result_parsed == parsed_response
+        assert result_messages == messages
+
+    def test_execute_hooks_force_continue_true(self, agent_state, messages, parsed_response, caplog):
+        """Test hook that sets force_continue to True."""
+        caplog.set_level(logging.INFO)
+
+        def force_continue_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
+            # Remove all tool calls but add feedback
+            hook_input.parsed_response.tool_calls = []
+            new_messages = hook_input.messages + [{"role": "user", "content": "Please reconsider"}]
+            return AfterModelHookResult.with_modifications(
+                parsed_response=hook_input.parsed_response,
+                messages=new_messages,
+                force_continue=True,
+            )
+
+        manager = HookManager()
+        manager.add_hook(force_continue_hook)
+
+        hook_input = AfterModelHookInput(
+            agent_state=agent_state,
+            max_iterations=10,
+            current_iteration=5,
+            messages=messages.copy(),
+            original_response="test response",
+            parsed_response=parsed_response,
+        )
+
+        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
+
+        assert force_continue is True
+        assert len(result_parsed.tool_calls) == 0
+        assert len(result_messages) == len(messages) + 1
+        assert "force_continue" in caplog.text
+
+    def test_execute_hooks_multiple_force_continue(self, agent_state, messages, parsed_response, caplog):
+        """Test multiple hooks where one sets force_continue."""
+        caplog.set_level(logging.INFO)
+
+        def normal_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
+            return AfterModelHookResult.no_changes()
+
+        def force_continue_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
+            return AfterModelHookResult.with_modifications(force_continue=True)
+
+        manager = HookManager()
+        manager.add_hook(normal_hook)
+        manager.add_hook(force_continue_hook)
+        manager.add_hook(normal_hook)
+
+        hook_input = AfterModelHookInput(
+            agent_state=agent_state,
+            max_iterations=10,
+            current_iteration=5,
+            messages=messages,
+            original_response="test response",
+            parsed_response=parsed_response,
+        )
+
+        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
+
+        assert force_continue is True
+        assert "Executing hook 1/3" in caplog.text
+        assert "Executing hook 2/3" in caplog.text
+        assert "Executing hook 3/3" in caplog.text
+
+    def test_execute_hooks_force_continue_realistic_scenario(self, agent_state, messages, caplog):
+        """Test a realistic scenario: TodoWrite validation that removes tool and adds feedback."""
+        caplog.set_level(logging.INFO)
+
+        # Create a parsed response with a TodoWrite call
+        todo_call = ToolCall(
+            tool_name="TodoWrite",
+            parameters={"todos": [{"id": "1", "content": "Invalid task", "status": "pending"}]},
+            raw_content="<tool>todo</tool>",
+        )
+        parsed_response = ParsedResponse(
+            original_response="test response",
+            tool_calls=[todo_call],
+            sub_agent_calls=[],
+            batch_agent_calls=[],
+        )
+
+        def validate_todo_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
+            """Simulate TodoWrite validation hook."""
+            # Check if there's a TodoWrite call
+            todo_calls = [c for c in hook_input.parsed_response.tool_calls if c.tool_name == "TodoWrite"]
+
+            if todo_calls:
+                # Remove the TodoWrite call (validation failed)
+                hook_input.parsed_response.tool_calls = []
+
+                # Add feedback message
+                feedback = "⚠️ **TodoWrite validation failed**: The task is not reasonable. Please revise."
+                new_messages = hook_input.messages + [{"role": "user", "content": feedback}]
+
+                return AfterModelHookResult.with_modifications(
+                    parsed_response=hook_input.parsed_response,
+                    messages=new_messages,
+                    force_continue=True,  # Agent should continue despite no tool calls
+                )
+
+            return AfterModelHookResult.no_changes()
+
+        manager = HookManager()
+        manager.add_hook(validate_todo_hook)
+
+        hook_input = AfterModelHookInput(
+            agent_state=agent_state,
+            max_iterations=10,
+            current_iteration=5,
+            messages=messages.copy(),
+            original_response="test response",
+            parsed_response=parsed_response,
+        )
+
+        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
+
+        # Verify the hook removed the tool call
+        assert len(result_parsed.tool_calls) == 0
+
+        # Verify feedback was added
+        assert len(result_messages) == len(messages) + 1
+        assert "TodoWrite validation failed" in result_messages[-1]["content"]
+
+        # Verify force_continue is True so agent continues
+        assert force_continue is True
+
+        assert "force_continue" in caplog.text
 
 
 class TestHookProtocols:
