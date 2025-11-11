@@ -553,6 +553,7 @@ class Executor:
 
         # Keep track of current messages (may be modified by hooks)
         current_messages = hook_input.messages.copy()
+        force_continue = False  # Default: don't force continue
 
         # Execute hooks if any are configured (always run hooks, even if no calls)
         if self.after_model_hook_manager:
@@ -560,16 +561,27 @@ class Executor:
                 logger.info(
                     f"🎣 Executing {len(self.after_model_hook_manager)} after model hooks",
                 )
-                parsed_response, current_messages = self.after_model_hook_manager.execute_hooks(
+                parsed_response, current_messages, force_continue = self.after_model_hook_manager.execute_hooks(
                     hook_input,
                 )
             except Exception as e:
                 logger.warning(f"⚠️ Hook execution failed: {e}")
                 # Keep original parsed_response if hook fails
 
-        # If no calls found after hooks, return original response
+        # If no calls found after hooks, check if we should force continue
         if not parsed_response or not parsed_response.has_calls():
-            return hook_input.original_response, True, None, current_messages, []
+            if force_continue:
+                # Hook removed all calls but added feedback, let agent continue
+                logger.info(
+                    "🎣 No tool calls remaining, but hook requested force_continue. Agent will continue with feedback.",
+                )
+                return hook_input.original_response, False, None, current_messages, []
+            else:
+                # Normal behavior: no calls means stop
+                logger.info(
+                    "🛑 No tool calls remaining, stopping.",
+                )
+                return hook_input.original_response, True, None, current_messages, []
 
         # Phase 2: Execute all parsed calls
         logger.info(
