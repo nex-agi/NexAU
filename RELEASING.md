@@ -8,8 +8,9 @@ The project uses automated GitHub Actions workflows for continuous deployment (C
 
 1. Run all tests and linting
 2. Build the package
-3. Upload the wheel and sdist artifacts to PyPI
-4. Create a GitHub release with changelog
+3. Create a GitHub release with changelog
+
+## Prerequisites
 
 ## Release Steps
 
@@ -45,14 +46,12 @@ git push origin v0.2.0
 3. The workflow will:
    - Run tests
    - Build the package
-   - Publish the artifacts (`.whl` + `.tar.gz`) to PyPI
    - Create a GitHub release
 
 ### 4. Verify the Release
 
 - Check [GitHub Releases](https://github.com/nex-agi/nexau/releases) for the release notes
-- Test installation from PyPI: `pip install nexau==0.2.0`
-- Verify the release appears at [PyPI](https://pypi.org/project/nexau/)
+- Test installation: `pip install nexau==0.2.0`
 
 ## Version Numbering
 
@@ -111,3 +110,4 @@ All pushes and PRs to `main` and `develop` branches trigger the CI workflow:
 - Coverage reporting
 
 Make sure CI passes before creating a release tag.
+
