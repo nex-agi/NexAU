@@ -5,8 +5,6 @@ system_prompt_type: string
 llm_config:
   temperature: 0.7
   max_tokens: 4096
-custom_llm_generator: "nexau.archs.main_sub.execution.llm_caller:bypass_llm_generator"
-
 # MCP servers configuration
 mcp_servers:
   - name: github

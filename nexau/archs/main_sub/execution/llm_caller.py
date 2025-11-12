@@ -138,11 +138,10 @@ class LLMCaller:
                 **params.api_params,
             )
 
-        call_fn = base_call
         if self.middleware_manager:
-            call_fn = self.middleware_manager.wrap_model_call(call_fn)
-
-        response_payload = call_fn(model_call_params)
+            response_payload = self.middleware_manager.wrap_model_call(model_call_params, base_call)
+        else:
+            response_payload = base_call(model_call_params)
         if response_payload is None:
             return None
 
@@ -528,28 +527,3 @@ def _coerce_tool_output_text(output: Any) -> str:
         return json.dumps(output, ensure_ascii=False)
 
     return str(output)
-
-
-def bypass_llm_generator(
-    openai_client: Any,
-    llm_config: LLMConfig,
-    kwargs: dict[str, Any],
-    force_stop_reason: AgentStopReason | None,
-    agent_state: AgentState | None,
-) -> ModelResponse | None:
-    """Legacy helper that directly proxies an OpenAI request with extra logging."""
-
-    message_count = len(kwargs.get("messages", []) or [])
-    print(f"Custom LLM Generator called with {message_count} messages")
-
-    if force_stop_reason and force_stop_reason != AgentStopReason.SUCCESS:
-        print(f"Bypass LLM generator aborted due to {force_stop_reason.name}")
-        return None
-
-    try:
-        response = call_llm_with_different_client(openai_client, llm_config, kwargs)
-    except Exception as exc:
-        print(f"Bypass LLM generator error: {exc}")
-        raise
-
-    return response
