@@ -12,5 +12,5 @@ fi
 
 # Run with the fake Claude Code agent
 echo "Starting NexAU CLI with Fake Claude Code agent..."
-./dist/cli.js ../examples/fake_claude_code/cc_agent.yaml
+./dist/cli.js ../examples/code_agent/cc_agent.yaml
 

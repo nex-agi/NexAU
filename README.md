@@ -67,7 +67,7 @@ uv sync
 2.  **Run an example:**
     ```bash
     # Ensure you have python-dotenv installed (`uv pip install python-dotenv`)
-    dotenv run uv run examples/fake_claude_code/start.py
+    dotenv run uv run examples/code_agent/start.py
 
     Enter your task: Build an algorithm art about 3-body problem
     ```
@@ -77,7 +77,7 @@ uv sync
     **Option 1: Using the run-agent script (Recommended)**
     ```bash
     # One-liner to run any agent config
-    ./run-agent examples/fake_claude_code/cc_agent.yaml
+    ./run-agent examples/code_agent/cc_agent.yaml
     ```
     
     **Option 2: Using npm scripts**
@@ -86,10 +86,10 @@ uv sync
     npm run setup-cli
     
     # Run agent (any time after setup)
-    npm run agent examples/fake_claude_code/cc_agent.yaml
+    npm run agent examples/code_agent/cc_agent.yaml
     
     # Or use the full command name
-    npm run run-agent examples/fake_claude_code/cc_agent.yaml
+    npm run run-agent examples/code_agent/cc_agent.yaml
     ```
     
     **Option 3: Manual approach (Original)**
@@ -101,7 +101,7 @@ uv sync
     cd ../
     
     # Use cli to run an agent based on a yaml config
-    dotenv run cli/dist/cli.js examples/fake_claude_code/cc_agent.yaml
+    dotenv run cli/dist/cli.js examples/code_agent/cc_agent.yaml
     ```
     
 

@@ -45,7 +45,7 @@ With your environment configured, you can run the provided examples.
 # It reads variables from your .env file
 
 # Run the full-featured Claude-code-like example
-dotenv run uv run examples/fake_claude_code/start.py
+dotenv run uv run examples/code_agent/start.py
 
 # Run an MCP example
 dotenv run uv run python -m examples.mcp.mcp_amap_example

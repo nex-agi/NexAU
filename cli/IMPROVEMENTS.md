@@ -171,7 +171,7 @@ To test these features:
 ```bash
 cd cli
 npm run build
-./dist/cli.js ../examples/fake_claude_code/cc_agent.yaml
+./dist/cli.js ../examples/code_agent/cc_agent.yaml
 
 # Try a multi-step task like:
 > Write a Python script, then run it

@@ -58,7 +58,7 @@ target-version = "py312"
 line-length = 140
 # Exclude directories from linting
 exclude = [
-    "examples/fake_claude_code/skills",
+    "examples/code_agent/skills",
 ]
 
 [tool.ruff.lint]
