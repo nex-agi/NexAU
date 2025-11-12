@@ -135,7 +135,7 @@ To verify the fix:
 ```bash
 cd cli
 npm run build
-./dist/cli.js ../examples/fake_claude_code/cc_agent.yaml
+./dist/cli.js ../examples/code_agent/cc_agent.yaml
 
 # Test with a multi-step task
 > Write a hello world program in Python

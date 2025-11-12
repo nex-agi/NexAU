@@ -16,7 +16,7 @@ npm run test-fake-cc
 Or directly:
 
 ```bash
-node dist/cli.js ../examples/fake_claude_code/cc_agent.yaml
+node dist/cli.js ../examples/code_agent/cc_agent.yaml
 ```
 
 ### Example 2: Run with Deep Research Agent
@@ -54,7 +54,7 @@ node dist/cli.js "$AGENT_PATH"
 
 Usage:
 ```bash
-./launch-agent.sh examples/fake_claude_code/cc_agent.yaml
+./launch-agent.sh examples/code_agent/cc_agent.yaml
 ```
 
 ### Example 5: From Node.js
@@ -65,7 +65,7 @@ Spawn the CLI from another Node.js application:
 import { spawn } from 'child_process';
 import path from 'path';
 
-const agentPath = path.resolve('./examples/fake_claude_code/cc_agent.yaml');
+const agentPath = path.resolve('./examples/code_agent/cc_agent.yaml');
 const cliPath = path.resolve('./cli/dist/cli.js');
 
 const cli = spawn('node', [cliPath, agentPath], {
@@ -87,7 +87,7 @@ Add to your `package.json`:
 ```json
 {
   "scripts": {
-    "agent:claude": "node cli/dist/cli.js examples/fake_claude_code/cc_agent.yaml",
+    "agent:claude": "node cli/dist/cli.js examples/code_agent/cc_agent.yaml",
     "agent:research": "node cli/dist/cli.js examples/deep_research/deep_research_agent.yaml",
     "agent:custom": "node cli/dist/cli.js"
   }
@@ -110,7 +110,7 @@ Pass environment variables to customize agent behavior:
 ```bash
 OPENAI_API_KEY=sk-xxx \
 PYTHONPATH=/custom/path \
-node dist/cli.js ../examples/fake_claude_code/cc_agent.yaml
+node dist/cli.js ../examples/code_agent/cc_agent.yaml
 ```
 
 ### Example 8: Running Multiple Agents
@@ -119,7 +119,7 @@ Open multiple terminals and run different agents simultaneously:
 
 Terminal 1:
 ```bash
-node dist/cli.js ../examples/fake_claude_code/cc_agent.yaml
+node dist/cli.js ../examples/code_agent/cc_agent.yaml
 ```
 
 Terminal 2:
@@ -149,7 +149,7 @@ node cli/dist/cli.js "$@"
 
 Usage:
 ```bash
-./run-with-venv.sh examples/fake_claude_code/cc_agent.yaml
+./run-with-venv.sh examples/code_agent/cc_agent.yaml
 ```
 
 ## Testing Scenarios
@@ -160,7 +160,7 @@ Test that the CLI loads and responds:
 
 ```bash
 # Start the CLI
-node dist/cli.js ../examples/fake_claude_code/cc_agent.yaml
+node dist/cli.js ../examples/code_agent/cc_agent.yaml
 
 # Type a simple message
 > Hello, can you help me?
@@ -177,10 +177,10 @@ While developing agents, keep the CLI running and modify agent files:
 npm run dev
 
 # Terminal 2: Run the CLI
-node dist/cli.js ../examples/fake_claude_code/cc_agent.yaml
+node dist/cli.js ../examples/code_agent/cc_agent.yaml
 
 # Terminal 3: Edit agent files
-vim ../examples/fake_claude_code/cc_agent.yaml
+vim ../examples/code_agent/cc_agent.yaml
 # Save changes, restart CLI to test
 ```
 
@@ -247,7 +247,7 @@ logging.basicConfig(level=logging.DEBUG)
 Save conversation to a file:
 
 ```bash
-node dist/cli.js ../examples/fake_claude_code/cc_agent.yaml | tee conversation.log
+node dist/cli.js ../examples/code_agent/cc_agent.yaml | tee conversation.log
 ```
 
 ## Tips
