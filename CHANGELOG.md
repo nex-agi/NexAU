@@ -39,5 +39,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hooks**: Lifecycle hooks for customization
 - **Global Storage**: Shared state management across agents
 
-[Unreleased]: https://github.com/china-qijizhifeng/nexau/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/china-qijizhifeng/nexau/releases/tag/v0.1.0
+[Unreleased]: https://github.com/nex-agi/nexau/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/nex-agi/nexau/releases/tag/v0.1.0

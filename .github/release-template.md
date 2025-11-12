@@ -16,7 +16,7 @@ pip install --upgrade nexau
 
 ## Documentation
 
-Full documentation is available in the [docs/](https://github.com/china-qijizhifeng/nexau/tree/main/docs) directory.
+Full documentation is available in the [docs/](https://github.com/nex-agi/nexau/tree/main/docs) directory.
 
 ## Contributors
 
