@@ -19,6 +19,7 @@ from unittest.mock import Mock, call, patch
 
 import pytest
 
+from nexau.archs.main_sub.execution.hooks import CustomLLMGeneratorMiddleware, MiddlewareManager
 from nexau.archs.main_sub.execution.llm_caller import LLMCaller, bypass_llm_generator
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
@@ -69,7 +70,7 @@ class TestLLMCallerInitialization:
         assert caller.openai_client == mock_openai_client
         assert caller.llm_config == mock_llm_config
         assert caller.retry_attempts == 5
-        assert caller.custom_llm_generator is None
+        assert caller.middleware_manager is None
 
     def test_initialization_with_custom_retry_attempts(self, mock_openai_client, mock_llm_config):
         """Test LLMCaller initialization with custom retry attempts."""
@@ -81,19 +82,17 @@ class TestLLMCallerInitialization:
 
         assert caller.retry_attempts == 10
 
-    def test_initialization_with_custom_llm_generator(self, mock_openai_client, mock_llm_config):
-        """Test LLMCaller initialization with custom LLM generator."""
+    def test_initialization_with_middleware_manager(self, mock_openai_client, mock_llm_config):
+        """LLMCaller can be initialized with a middleware manager."""
 
-        def custom_generator(client, llm_config, params, force_stop, state):
-            return "custom response"
-
+        manager = MiddlewareManager([])
         caller = LLMCaller(
             openai_client=mock_openai_client,
             llm_config=mock_llm_config,
-            custom_llm_generator=custom_generator,
+            middleware_manager=manager,
         )
 
-        assert caller.custom_llm_generator == custom_generator
+        assert caller.middleware_manager is manager
 
 
 class TestLLMCallerBasicCalls:
@@ -806,10 +805,11 @@ class TestLLMCallerCustomGenerator:
         def custom_generator(client, llm_config, params, force_stop, state):
             return "Custom generator response"
 
+        middleware_manager = MiddlewareManager([CustomLLMGeneratorMiddleware(custom_generator)])
         caller = LLMCaller(
             openai_client=mock_openai_client,
             llm_config=mock_llm_config,
-            custom_llm_generator=custom_generator,
+            middleware_manager=middleware_manager,
         )
 
         messages = [{"role": "user", "content": "Hello"}]
@@ -837,10 +837,11 @@ class TestLLMCallerCustomGenerator:
             received_params["state"] = state
             return "Response"
 
+        middleware_manager = MiddlewareManager([CustomLLMGeneratorMiddleware(custom_generator)])
         caller = LLMCaller(
             openai_client=mock_openai_client,
             llm_config=mock_llm_config,
-            custom_llm_generator=custom_generator,
+            middleware_manager=middleware_manager,
         )
 
         messages = [{"role": "user", "content": "Hello"}]
@@ -869,11 +870,12 @@ class TestLLMCallerCustomGenerator:
                 raise Exception(f"Custom generator error {call_count[0]}")
             return "Success after retry"
 
+        middleware_manager = MiddlewareManager([CustomLLMGeneratorMiddleware(custom_generator)])
         caller = LLMCaller(
             openai_client=mock_openai_client,
             llm_config=mock_llm_config,
             retry_attempts=5,
-            custom_llm_generator=custom_generator,
+            middleware_manager=middleware_manager,
         )
 
         messages = [{"role": "user", "content": "Hello"}]
@@ -900,10 +902,11 @@ class TestLLMCallerCustomGenerator:
                 return "Stopped"
             return "Response"
 
+        middleware_manager = MiddlewareManager([CustomLLMGeneratorMiddleware(custom_generator)])
         caller = LLMCaller(
             openai_client=mock_openai_client,
             llm_config=mock_llm_config,
-            custom_llm_generator=custom_generator,
+            middleware_manager=middleware_manager,
         )
 
         messages = [{"role": "user", "content": "Hello"}]
@@ -1197,11 +1200,12 @@ class TestLLMCallerIntegration:
                 raise Exception(f"Temporary error {call_count[0]}")
             return "<tool_use><tool_name>success"
 
+        middleware_manager = MiddlewareManager([CustomLLMGeneratorMiddleware(flaky_generator)])
         caller = LLMCaller(
             openai_client=mock_openai_client,
             llm_config=mock_llm_config,
             retry_attempts=5,
-            custom_llm_generator=flaky_generator,
+            middleware_manager=middleware_manager,
         )
 
         messages = [{"role": "user", "content": "Test"}]

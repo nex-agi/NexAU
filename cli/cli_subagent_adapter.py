@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from nexau.archs.main_sub.agent_context import get_context
-from nexau.archs.main_sub.execution.hooks import ToolHookManager
+from nexau.archs.main_sub.execution.hooks import FunctionMiddleware
 from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
 
 
@@ -75,19 +75,25 @@ class CLIEnabledSubAgentManager(SubAgentManager):
         progress_hook = self.cli_progress_hook
         tool_hook = self.cli_tool_hook
 
-        if progress_hook:
-            hook_manager = getattr(sub_agent.executor, "after_model_hook_manager", None)
-            if hook_manager and progress_hook not in hook_manager.hooks:
-                hook_manager.hooks.insert(0, progress_hook)
+        middleware_manager = getattr(sub_agent.executor, "middleware_manager", None)
 
-        if tool_hook:
-            tool_executor = getattr(sub_agent.executor, "tool_executor", None)
-            if tool_executor:
-                manager = tool_executor.tool_hook_manager
-                if manager is None:
-                    tool_executor.tool_hook_manager = ToolHookManager([tool_hook])
-                elif tool_hook not in manager.hooks:
-                    manager.hooks.insert(0, tool_hook)
+        if progress_hook and middleware_manager:
+            middleware_manager.middlewares.insert(
+                0,
+                FunctionMiddleware(
+                    after_model_hook=progress_hook,
+                    name="cli_progress_hook",
+                ),
+            )
+
+        if tool_hook and middleware_manager:
+            middleware_manager.middlewares.insert(
+                0,
+                FunctionMiddleware(
+                    after_tool_hook=tool_hook,
+                    name="cli_tool_hook",
+                ),
+            )
 
         # Propagate to nested sub-agent managers
         nested_manager = getattr(sub_agent.executor, "subagent_manager", None)
@@ -239,19 +245,25 @@ def attach_cli_to_agent(agent, progress_hook, tool_hook, event_callback) -> None
     if getattr(agent, "_cli_hooks_attached", False):
         return
 
-    if progress_hook:
-        hook_manager = getattr(agent.executor, "after_model_hook_manager", None)
-        if hook_manager and progress_hook not in hook_manager.hooks:
-            hook_manager.hooks.insert(0, progress_hook)
+    middleware_manager = getattr(agent.executor, "middleware_manager", None)
 
-    if tool_hook:
-        tool_executor = getattr(agent.executor, "tool_executor", None)
-        if tool_executor:
-            manager = tool_executor.tool_hook_manager
-            if manager is None:
-                tool_executor.tool_hook_manager = ToolHookManager([tool_hook])
-            elif tool_hook not in manager.hooks:
-                manager.hooks.insert(0, tool_hook)
+    if progress_hook and middleware_manager:
+        middleware_manager.middlewares.insert(
+            0,
+            FunctionMiddleware(
+                after_model_hook=progress_hook,
+                name="cli_progress_hook",
+            ),
+        )
+
+    if tool_hook and middleware_manager:
+        middleware_manager.middlewares.insert(
+            0,
+            FunctionMiddleware(
+                after_tool_hook=tool_hook,
+                name="cli_tool_hook",
+            ),
+        )
 
     cli_manager = attach_cli_manager(
         getattr(agent.executor, "subagent_manager", None),

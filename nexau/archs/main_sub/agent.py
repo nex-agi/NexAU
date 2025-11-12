@@ -292,6 +292,8 @@ class Agent:
             after_model_hooks=self.config.after_model_hooks,
             after_tool_hooks=self.config.after_tool_hooks,
             before_model_hooks=self.config.before_model_hooks,
+            before_tool_hooks=self.config.before_tool_hooks,
+            middlewares=self.config.middlewares,
             global_storage=self.global_storage,
             custom_llm_generator=self.config.custom_llm_generator,
             tool_call_mode=self.tool_call_mode,
@@ -516,6 +518,8 @@ def create_agent(
     after_model_hooks: list[Callable] | None = None,
     after_tool_hooks: list[Callable] | None = None,
     before_model_hooks: list[Callable] | None = None,
+    before_tool_hooks: list[Callable] | None = None,
+    middlewares: list[Callable] | None = None,
     # Global storage parameter
     global_storage: GlobalStorage | None = None,
     # Custom LLM generator parameter
@@ -548,6 +552,8 @@ def create_agent(
         after_model_hooks=after_model_hooks,
         after_tool_hooks=after_tool_hooks,
         before_model_hooks=before_model_hooks,
+        before_tool_hooks=before_tool_hooks,
+        middlewares=middlewares,
         error_handler=error_handler,
         token_counter=token_counter,
         custom_llm_generator=custom_llm_generator,

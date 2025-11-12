@@ -14,16 +14,20 @@ from nexau.archs.main_sub.execution.hooks import (
     AfterToolHookResult,
     BeforeModelHookInput,
     BeforeModelHookResult,
-    HookManager,
-    ToolHookManager,
-    create_filter_hook,
+    BeforeToolHookInput,
+    FunctionMiddleware,
+    HookResult,
+    LoggingMiddleware,
+    Middleware,
+    MiddlewareManager,
+    ModelCallParams,
+    ToolCallParams,
     create_logging_hook,
     create_remaining_reminder_hook,
     create_tool_after_approve_hook,
     create_tool_logging_hook,
-    create_tool_output_filter_hook,
-    create_tool_result_transformer_hook,
 )
+from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.parse_structures import (
     BatchAgentCall,
     ParsedResponse,
@@ -412,8 +416,7 @@ class TestCreateToolAfterApproveHook:
             result = hook(hook_input)
 
             assert isinstance(result, AfterModelHookResult)
-            assert result.has_modifications() is True
-            assert len(result.parsed_response.tool_calls) == 1
+            assert result.has_modifications() is False
 
     def test_reject_tool_call(self, agent_state, messages, parsed_response):
         """Test rejecting a tool call."""
@@ -452,7 +455,7 @@ class TestCreateToolAfterApproveHook:
 
                 assert isinstance(result, AfterModelHookResult)
                 mock_print.assert_called()
-                assert len(result.parsed_response.tool_calls) == 1
+                assert result.has_modifications() is False
 
     def test_no_tool_calls(self, agent_state, messages):
         """Test with no tool calls."""
@@ -497,109 +500,6 @@ class TestCreateToolAfterApproveHook:
     def test_different_tool_name(self, agent_state, messages, parsed_response):
         """Test with different tool name."""
         hook = create_tool_after_approve_hook(tool_name="other_tool")
-        hook_input = AfterModelHookInput(
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
-            messages=messages,
-            original_response="test response",
-            parsed_response=parsed_response,
-        )
-
-        result = hook(hook_input)
-
-        assert isinstance(result, AfterModelHookResult)
-        # Should not filter because tool name doesn't match
-        assert len(result.parsed_response.tool_calls) == 1
-
-
-class TestCreateFilterHook:
-    """Tests for create_filter_hook function."""
-
-    def test_filter_allowed_tools(self, agent_state, messages, parsed_response, caplog):
-        """Test filtering with allowed tools."""
-        caplog.set_level(logging.WARNING)
-
-        hook = create_filter_hook(allowed_tools={"allowed_tool"})
-        hook_input = AfterModelHookInput(
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
-            messages=messages,
-            original_response="test response",
-            parsed_response=parsed_response,
-        )
-
-        result = hook(hook_input)
-
-        assert isinstance(result, AfterModelHookResult)
-        assert result.has_modifications() is True
-        assert len(result.parsed_response.tool_calls) == 0
-        assert "Filtered out 1 disallowed tool calls" in caplog.text
-
-    def test_filter_allowed_agents(self, agent_state, messages, parsed_response, caplog):
-        """Test filtering with allowed agents."""
-        caplog.set_level(logging.WARNING)
-
-        hook = create_filter_hook(allowed_agents={"allowed_agent"})
-        hook_input = AfterModelHookInput(
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
-            messages=messages,
-            original_response="test response",
-            parsed_response=parsed_response,
-        )
-
-        result = hook(hook_input)
-
-        assert isinstance(result, AfterModelHookResult)
-        assert result.has_modifications() is True
-        assert len(result.parsed_response.sub_agent_calls) == 0
-        assert len(result.parsed_response.batch_agent_calls) == 0
-        assert "Filtered out 1 disallowed sub-agent calls" in caplog.text
-        assert "Filtered out 1 disallowed batch agent calls" in caplog.text
-
-    def test_no_filtering_needed(self, agent_state, messages, parsed_response):
-        """Test when no filtering is needed."""
-        hook = create_filter_hook(
-            allowed_tools={"test_tool"},
-            allowed_agents={"sub_agent", "batch_agent"},
-        )
-        hook_input = AfterModelHookInput(
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
-            messages=messages,
-            original_response="test response",
-            parsed_response=parsed_response,
-        )
-
-        result = hook(hook_input)
-
-        assert isinstance(result, AfterModelHookResult)
-        assert result.has_modifications() is False
-
-    def test_none_parsed_response(self, agent_state, messages):
-        """Test with None parsed response."""
-        hook = create_filter_hook(allowed_tools={"test_tool"})
-        hook_input = AfterModelHookInput(
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
-            messages=messages,
-            original_response="test response",
-            parsed_response=None,
-        )
-
-        result = hook(hook_input)
-
-        assert isinstance(result, AfterModelHookResult)
-        assert result.has_modifications() is False
-
-    def test_none_allowed_sets(self, agent_state, messages, parsed_response):
-        """Test with None allowed sets (allow all)."""
-        hook = create_filter_hook(allowed_tools=None, allowed_agents=None)
         hook_input = AfterModelHookInput(
             agent_state=agent_state,
             max_iterations=10,
@@ -660,599 +560,242 @@ class TestCreateToolLoggingHook:
         assert "truncated" in caplog.text
 
 
-class TestCreateToolOutputFilterHook:
-    """Tests for create_tool_output_filter_hook function."""
+class TestMiddlewareManager:
+    """Tests for the unified middleware manager."""
 
-    def test_filter_sensitive_keys(self, agent_state, caplog):
-        """Test filtering sensitive keys from dict output."""
-        caplog.set_level(logging.INFO)
+    def test_run_before_model_in_order(self, agent_state, messages):
+        """Before-model hooks execute from first to last."""
+        order: list[str] = []
 
-        hook = create_tool_output_filter_hook(filter_keys={"password", "secret"})
-        hook_input = AfterToolHookInput(
-            agent_state=agent_state,
-            tool_name="test_tool",
-            tool_call_id="call_123",
-            tool_input={"param": "value"},
-            tool_output={
-                "username": "user",
-                "password": "secret123",
-                "data": "public",
-                "secret": "hidden",
-            },
+        def make_hook(name: str):
+            def hook(hook_input: BeforeModelHookInput) -> HookResult:
+                order.append(name)
+                new_messages = hook_input.messages + [{"role": "system", "content": name}]
+                return HookResult.with_modifications(messages=new_messages)
+
+            return hook
+
+        manager = MiddlewareManager(
+            [
+                FunctionMiddleware(before_model_hook=make_hook("first")),
+                FunctionMiddleware(before_model_hook=make_hook("second")),
+            ],
         )
-
-        result = hook(hook_input)
-
-        assert isinstance(result, AfterToolHookResult)
-        assert result.has_modifications() is True
-        assert "username" in result.tool_output
-        assert "data" in result.tool_output
-        assert "password" not in result.tool_output
-        assert "secret" not in result.tool_output
-        assert "Filtered 2 sensitive keys" in caplog.text
-
-    def test_no_sensitive_keys(self, agent_state):
-        """Test with no sensitive keys to filter."""
-        hook = create_tool_output_filter_hook(filter_keys={"password"})
-        hook_input = AfterToolHookInput(
-            agent_state=agent_state,
-            tool_name="test_tool",
-            tool_call_id="call_123",
-            tool_input={"param": "value"},
-            tool_output={"username": "user", "data": "public"},
-        )
-
-        result = hook(hook_input)
-
-        assert isinstance(result, AfterToolHookResult)
-        assert result.has_modifications() is False
-
-    def test_non_dict_output(self, agent_state):
-        """Test with non-dict output."""
-        hook = create_tool_output_filter_hook(filter_keys={"password"})
-        hook_input = AfterToolHookInput(
-            agent_state=agent_state,
-            tool_name="test_tool",
-            tool_call_id="call_123",
-            tool_input={"param": "value"},
-            tool_output="string output",
-        )
-
-        result = hook(hook_input)
-
-        assert isinstance(result, AfterToolHookResult)
-        assert result.has_modifications() is False
-
-
-class TestCreateToolResultTransformerHook:
-    """Tests for create_tool_result_transformer_hook function."""
-
-    def test_successful_transformation(self, agent_state):
-        """Test successful transformation."""
-
-        def transform_func(agent_name, agent_id, tool_name, tool_input, tool_output):
-            return tool_output.upper()
-
-        hook = create_tool_result_transformer_hook(transform_func)
-        hook_input = AfterToolHookInput(
-            agent_state=agent_state,
-            tool_name="test_tool",
-            tool_call_id="call_123",
-            tool_input={"param": "value"},
-            tool_output="hello",
-        )
-
-        result = hook(hook_input)
-
-        assert isinstance(result, AfterToolHookResult)
-        assert result.has_modifications() is True
-        assert result.tool_output == "HELLO"
-
-    def test_no_transformation(self, agent_state):
-        """Test when transformation returns same output."""
-
-        def transform_func(agent_name, agent_id, tool_name, tool_input, tool_output):
-            return tool_output
-
-        hook = create_tool_result_transformer_hook(transform_func)
-        hook_input = AfterToolHookInput(
-            agent_state=agent_state,
-            tool_name="test_tool",
-            tool_call_id="call_123",
-            tool_input={"param": "value"},
-            tool_output="hello",
-        )
-
-        result = hook(hook_input)
-
-        assert isinstance(result, AfterToolHookResult)
-        assert result.has_modifications() is False
-
-    def test_transformation_error(self, agent_state, caplog):
-        """Test when transformation raises an error."""
-        caplog.set_level(logging.WARNING)
-
-        def transform_func(agent_name, agent_id, tool_name, tool_input, tool_output):
-            raise ValueError("Transformation failed")
-
-        hook = create_tool_result_transformer_hook(transform_func)
-        hook_input = AfterToolHookInput(
-            agent_state=agent_state,
-            tool_name="test_tool",
-            tool_call_id="call_123",
-            tool_input={"param": "value"},
-            tool_output="hello",
-        )
-
-        result = hook(hook_input)
-
-        assert isinstance(result, AfterToolHookResult)
-        assert result.has_modifications() is False
-        assert "Tool transformation failed" in caplog.text
-
-
-class TestToolHookManager:
-    """Tests for ToolHookManager class."""
-
-    def test_init_empty(self):
-        """Test initialization with no hooks."""
-        manager = ToolHookManager()
-        assert len(manager) == 0
-        assert bool(manager) is False
-
-    def test_init_with_hooks(self):
-        """Test initialization with hooks."""
-        hook1 = create_tool_logging_hook()
-        hook2 = create_tool_output_filter_hook({"password"})
-        manager = ToolHookManager(hooks=[hook1, hook2])
-        assert len(manager) == 2
-        assert bool(manager) is True
-
-    def test_add_hook(self):
-        """Test adding a hook."""
-        manager = ToolHookManager()
-        hook = create_tool_logging_hook()
-        manager.add_hook(hook)
-        assert len(manager) == 1
-        assert hook in manager.hooks
-
-    def test_remove_hook(self):
-        """Test removing a hook."""
-        hook = create_tool_logging_hook()
-        manager = ToolHookManager(hooks=[hook])
-        assert len(manager) == 1
-        manager.remove_hook(hook)
-        assert len(manager) == 0
-
-    def test_remove_nonexistent_hook(self):
-        """Test removing a hook that doesn't exist."""
-        hook1 = create_tool_logging_hook()
-        hook2 = create_tool_output_filter_hook({"password"})
-        manager = ToolHookManager(hooks=[hook1])
-        manager.remove_hook(hook2)  # Should not raise error
-        assert len(manager) == 1
-
-    def test_execute_hooks_single(self, agent_state, caplog):
-        """Test executing a single hook."""
-        caplog.set_level(logging.INFO)
-
-        manager = ToolHookManager()
-        manager.add_hook(create_tool_logging_hook())
-
-        hook_input = AfterToolHookInput(
-            agent_state=agent_state,
-            tool_name="test_tool",
-            tool_call_id="call_123",
-            tool_input={"param": "value"},
-            tool_output="original",
-        )
-
-        result = manager.execute_hooks(hook_input)
-
-        assert result == "original"
-        assert "Executing tool hook 1/1" in caplog.text
-
-    def test_execute_hooks_multiple(self, agent_state, caplog):
-        """Test executing multiple hooks in sequence."""
-        caplog.set_level(logging.INFO)
-
-        def transform_upper(agent_name, agent_id, tool_name, tool_input, tool_output):
-            return tool_output.upper()
-
-        def transform_suffix(agent_name, agent_id, tool_name, tool_input, tool_output):
-            return tool_output + "_SUFFIX"
-
-        manager = ToolHookManager()
-        manager.add_hook(create_tool_result_transformer_hook(transform_upper))
-        manager.add_hook(create_tool_result_transformer_hook(transform_suffix))
-
-        hook_input = AfterToolHookInput(
-            agent_state=agent_state,
-            tool_name="test_tool",
-            tool_call_id="call_123",
-            tool_input={"param": "value"},
-            tool_output="hello",
-        )
-
-        result = manager.execute_hooks(hook_input)
-
-        assert result == "HELLO_SUFFIX"
-        assert "Executing tool hook 1/2" in caplog.text
-        assert "Executing tool hook 2/2" in caplog.text
-
-    def test_execute_hooks_with_error(self, agent_state, caplog):
-        """Test executing hooks when one fails."""
-        caplog.set_level(logging.WARNING)
-
-        def failing_transform(agent_name, agent_id, tool_name, tool_input, tool_output):
-            raise ValueError("Hook failed")
-
-        def working_transform(agent_name, agent_id, tool_name, tool_input, tool_output):
-            return tool_output.upper()
-
-        manager = ToolHookManager()
-        manager.add_hook(create_tool_result_transformer_hook(failing_transform))
-        manager.add_hook(create_tool_result_transformer_hook(working_transform))
-
-        hook_input = AfterToolHookInput(
-            agent_state=agent_state,
-            tool_name="test_tool",
-            tool_call_id="call_123",
-            tool_input={"param": "value"},
-            tool_output="hello",
-        )
-
-        result = manager.execute_hooks(hook_input)
-
-        # Should still apply second hook despite first failing
-        assert result == "HELLO"
-        assert "Tool transformation failed" in caplog.text
-
-
-class TestHookManager:
-    """Tests for HookManager class."""
-
-    def test_init_empty(self):
-        """Test initialization with no hooks."""
-        manager = HookManager()
-        assert len(manager) == 0
-        assert bool(manager) is False
-
-    def test_init_with_hooks(self):
-        """Test initialization with hooks."""
-        hook1 = create_logging_hook()
-        hook2 = create_remaining_reminder_hook()
-        manager = HookManager(hooks=[hook1, hook2])
-        assert len(manager) == 2
-        assert bool(manager) is True
-
-    def test_add_hook(self):
-        """Test adding a hook."""
-        manager = HookManager()
-        hook = create_logging_hook()
-        manager.add_hook(hook)
-        assert len(manager) == 1
-        assert hook in manager.hooks
-
-    def test_remove_hook(self):
-        """Test removing a hook."""
-        hook = create_logging_hook()
-        manager = HookManager(hooks=[hook])
-        assert len(manager) == 1
-        manager.remove_hook(hook)
-        assert len(manager) == 0
-
-    def test_remove_nonexistent_hook(self):
-        """Test removing a hook that doesn't exist."""
-        hook1 = create_logging_hook()
-        hook2 = create_remaining_reminder_hook()
-        manager = HookManager(hooks=[hook1])
-        manager.remove_hook(hook2)  # Should not raise error
-        assert len(manager) == 1
-
-    def test_execute_hooks_after_model_single(self, agent_state, messages, parsed_response, caplog):
-        """Test executing a single after model hook."""
-        caplog.set_level(logging.INFO)
-
-        manager = HookManager()
-        manager.add_hook(create_logging_hook())
-
-        hook_input = AfterModelHookInput(
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
-            messages=messages,
-            original_response="test response",
-            parsed_response=parsed_response,
-        )
-
-        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
-
-        assert result_parsed == parsed_response
-        assert result_messages == messages
-        assert force_continue is False
-        assert "Executing hook 1/1" in caplog.text
-
-    def test_execute_hooks_after_model_multiple(self, agent_state, messages, parsed_response, caplog):
-        """Test executing multiple after model hooks."""
-        caplog.set_level(logging.INFO)
-
-        manager = HookManager()
-        manager.add_hook(create_logging_hook())
-        manager.add_hook(create_remaining_reminder_hook())
-
-        hook_input = AfterModelHookInput(
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
-            messages=messages.copy(),
-            original_response="test response",
-            parsed_response=parsed_response,
-        )
-
-        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
-
-        assert result_parsed == parsed_response
-        assert len(result_messages) == len(messages) + 1
-        assert force_continue is False
-        assert "Executing hook 1/2" in caplog.text
-        assert "Executing hook 2/2" in caplog.text
-
-    def test_execute_hooks_before_model(self, agent_state, messages, caplog):
-        """Test executing before model hooks."""
-        caplog.set_level(logging.INFO)
-
-        def before_hook(hook_input: BeforeModelHookInput) -> BeforeModelHookResult:
-            modified_messages = hook_input.messages + [{"role": "user", "content": "Extra message"}]
-            return BeforeModelHookResult.with_modifications(messages=modified_messages)
-
-        manager = HookManager()
-        manager.add_hook(before_hook)
 
         hook_input = BeforeModelHookInput(
             agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
+            max_iterations=5,
+            current_iteration=1,
             messages=messages.copy(),
         )
 
-        result_messages = manager.execute_hooks(hook_input)
+        updated_messages = manager.run_before_model(hook_input)
+        assert order == ["first", "second"]
+        assert [msg["content"] for msg in updated_messages[-2:]] == ["first", "second"]
 
-        assert len(result_messages) == len(messages) + 1
-        assert result_messages[-1]["content"] == "Extra message"
+    def test_run_after_model_reverse_order_with_force_continue(self, agent_state, messages, parsed_response):
+        """After-model hooks execute in reverse order and can set force_continue."""
+        order: list[str] = []
 
-    def test_execute_hooks_with_error(self, agent_state, messages, parsed_response, caplog):
-        """Test executing hooks when one fails."""
-        caplog.set_level(logging.WARNING)
+        def feedback_hook(hook_input: AfterModelHookInput) -> HookResult:
+            order.append("feedback")
+            new_messages = hook_input.messages + [{"role": "user", "content": "feedback"}]
+            return HookResult.with_modifications(messages=new_messages)
 
-        def failing_hook(hook_input):
-            raise ValueError("Hook failed")
-
-        manager = HookManager()
-        manager.add_hook(failing_hook)
-        manager.add_hook(create_logging_hook())
-
-        hook_input = AfterModelHookInput(
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
-            messages=messages,
-            original_response="test response",
-            parsed_response=parsed_response,
-        )
-
-        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
-
-        # Should still complete despite first hook failing
-        assert result_parsed == parsed_response
-        assert result_messages == messages
-        assert force_continue is False
-        assert "Hook 1 failed" in caplog.text
-
-    def test_execute_hooks_modify_parsed_response(self, agent_state, messages, parsed_response, caplog):
-        """Test hook that modifies parsed response."""
-        caplog.set_level(logging.INFO)
-
-        def modify_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
-            # Clear all tool calls
+        def cleanup_hook(hook_input: AfterModelHookInput) -> HookResult:
+            order.append("cleanup")
             hook_input.parsed_response.tool_calls = []
-            return AfterModelHookResult.with_modifications(parsed_response=hook_input.parsed_response)
+            return HookResult.with_modifications(parsed_response=hook_input.parsed_response, force_continue=True)
 
-        manager = HookManager()
-        manager.add_hook(modify_hook)
-
-        hook_input = AfterModelHookInput(
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
-            messages=messages,
-            original_response="test response",
-            parsed_response=parsed_response,
+        manager = MiddlewareManager(
+            [
+                FunctionMiddleware(after_model_hook=feedback_hook),
+                FunctionMiddleware(after_model_hook=cleanup_hook),
+            ],
         )
 
-        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
-
-        assert len(result_parsed.tool_calls) == 0
-        assert force_continue is False
-        assert "modified the parsed response" in caplog.text
-
-    def test_execute_hooks_modify_messages(self, agent_state, messages, parsed_response, caplog):
-        """Test hook that modifies messages."""
-        caplog.set_level(logging.INFO)
-
-        def modify_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
-            new_messages = hook_input.messages + [{"role": "user", "content": "Additional context"}]
-            return AfterModelHookResult.with_modifications(messages=new_messages)
-
-        manager = HookManager()
-        manager.add_hook(modify_hook)
-
         hook_input = AfterModelHookInput(
             agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
+            max_iterations=5,
+            current_iteration=1,
             messages=messages.copy(),
-            original_response="test response",
+            original_response="resp",
             parsed_response=parsed_response,
         )
 
-        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
-
-        assert len(result_messages) == len(messages) + 1
-        assert force_continue is False
-        assert "modified the message history" in caplog.text
-
-    def test_execute_hooks_force_continue_false_by_default(self, agent_state, messages, parsed_response):
-        """Test that force_continue defaults to False."""
-
-        def no_op_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
-            return AfterModelHookResult.no_changes()
-
-        manager = HookManager()
-        manager.add_hook(no_op_hook)
-
-        hook_input = AfterModelHookInput(
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
-            messages=messages,
-            original_response="test response",
-            parsed_response=parsed_response,
-        )
-
-        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
-
-        assert force_continue is False
-        assert result_parsed == parsed_response
-        assert result_messages == messages
-
-    def test_execute_hooks_force_continue_true(self, agent_state, messages, parsed_response, caplog):
-        """Test hook that sets force_continue to True."""
-        caplog.set_level(logging.INFO)
-
-        def force_continue_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
-            # Remove all tool calls but add feedback
-            hook_input.parsed_response.tool_calls = []
-            new_messages = hook_input.messages + [{"role": "user", "content": "Please reconsider"}]
-            return AfterModelHookResult.with_modifications(
-                parsed_response=hook_input.parsed_response,
-                messages=new_messages,
-                force_continue=True,
-            )
-
-        manager = HookManager()
-        manager.add_hook(force_continue_hook)
-
-        hook_input = AfterModelHookInput(
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
-            messages=messages.copy(),
-            original_response="test response",
-            parsed_response=parsed_response,
-        )
-
-        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
-
-        assert force_continue is True
-        assert len(result_parsed.tool_calls) == 0
-        assert len(result_messages) == len(messages) + 1
-        assert "force_continue" in caplog.text
-
-    def test_execute_hooks_multiple_force_continue(self, agent_state, messages, parsed_response, caplog):
-        """Test multiple hooks where one sets force_continue."""
-        caplog.set_level(logging.INFO)
-
-        def normal_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
-            return AfterModelHookResult.no_changes()
-
-        def force_continue_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
-            return AfterModelHookResult.with_modifications(force_continue=True)
-
-        manager = HookManager()
-        manager.add_hook(normal_hook)
-        manager.add_hook(force_continue_hook)
-        manager.add_hook(normal_hook)
-
-        hook_input = AfterModelHookInput(
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
-            messages=messages,
-            original_response="test response",
-            parsed_response=parsed_response,
-        )
-
-        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
-
-        assert force_continue is True
-        assert "Executing hook 1/3" in caplog.text
-        assert "Executing hook 2/3" in caplog.text
-        assert "Executing hook 3/3" in caplog.text
-
-    def test_execute_hooks_force_continue_realistic_scenario(self, agent_state, messages, caplog):
-        """Test a realistic scenario: TodoWrite validation that removes tool and adds feedback."""
-        caplog.set_level(logging.INFO)
-
-        # Create a parsed response with a TodoWrite call
-        todo_call = ToolCall(
-            tool_name="TodoWrite",
-            parameters={"todos": [{"id": "1", "content": "Invalid task", "status": "pending"}]},
-            raw_content="<tool>todo</tool>",
-        )
-        parsed_response = ParsedResponse(
-            original_response="test response",
-            tool_calls=[todo_call],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
-        )
-
-        def validate_todo_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
-            """Simulate TodoWrite validation hook."""
-            # Check if there's a TodoWrite call
-            todo_calls = [c for c in hook_input.parsed_response.tool_calls if c.tool_name == "TodoWrite"]
-
-            if todo_calls:
-                # Remove the TodoWrite call (validation failed)
-                hook_input.parsed_response.tool_calls = []
-
-                # Add feedback message
-                feedback = "⚠️ **TodoWrite validation failed**: The task is not reasonable. Please revise."
-                new_messages = hook_input.messages + [{"role": "user", "content": feedback}]
-
-                return AfterModelHookResult.with_modifications(
-                    parsed_response=hook_input.parsed_response,
-                    messages=new_messages,
-                    force_continue=True,  # Agent should continue despite no tool calls
-                )
-
-            return AfterModelHookResult.no_changes()
-
-        manager = HookManager()
-        manager.add_hook(validate_todo_hook)
-
-        hook_input = AfterModelHookInput(
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=5,
-            messages=messages.copy(),
-            original_response="test response",
-            parsed_response=parsed_response,
-        )
-
-        result_parsed, result_messages, force_continue = manager.execute_hooks(hook_input)
-
-        # Verify the hook removed the tool call
-        assert len(result_parsed.tool_calls) == 0
-
-        # Verify feedback was added
-        assert len(result_messages) == len(messages) + 1
-        assert "TodoWrite validation failed" in result_messages[-1]["content"]
-
-        # Verify force_continue is True so agent continues
+        parsed, updated_messages, force_continue = manager.run_after_model(hook_input)
+        assert order == ["cleanup", "feedback"]
+        assert parsed is parsed_response
+        assert not parsed.tool_calls
+        assert updated_messages[-1]["content"] == "feedback"
         assert force_continue is True
 
-        assert "force_continue" in caplog.text
+    def test_run_after_tool_reverse_order(self, agent_state):
+        """After-tool hooks execute from last to first."""
+        order: list[str] = []
+
+        def make_tool_hook(name: str):
+            def hook(hook_input: AfterToolHookInput) -> HookResult:
+                order.append(name)
+                return HookResult.with_modifications(tool_output=f"{hook_input.tool_output}-{name}")
+
+            return hook
+
+        manager = MiddlewareManager(
+            [
+                FunctionMiddleware(after_tool_hook=make_tool_hook("first")),
+                FunctionMiddleware(after_tool_hook=make_tool_hook("second")),
+            ],
+        )
+
+        hook_input = AfterToolHookInput(
+            agent_state=agent_state,
+            tool_name="demo",
+            tool_call_id="call_1",
+            tool_input={},
+            tool_output="base",
+        )
+
+        result = manager.run_after_tool(hook_input, "base")
+        assert order == ["second", "first"]
+        assert result == "base-second-first"
+
+    def test_wrap_model_call_nested(self):
+        """wrap_model_call applies middleware in a nested fashion."""
+        call_log: list[str] = []
+
+        class RecordingMiddleware(Middleware):
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def wrap_model_call(self, call_next):  # type: ignore[override]
+                def wrapped(params: ModelCallParams):
+                    call_log.append(f"before_{self.name}")
+                    result = call_next(params)
+                    call_log.append(f"after_{self.name}")
+                    return result
+
+                return wrapped
+
+        manager = MiddlewareManager(
+            [RecordingMiddleware("outer"), RecordingMiddleware("inner")],
+        )
+
+        params = ModelCallParams(
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=10,
+            force_stop_reason=None,
+            agent_state=None,
+            tool_call_mode="xml",
+            tools=None,
+            api_params={},
+            openai_client=None,
+            llm_config=None,
+        )
+
+        def base_call(_: ModelCallParams) -> ModelResponse:
+            call_log.append("base")
+            return ModelResponse(content="ok")
+
+        wrapped = manager.wrap_model_call(base_call)
+        response = wrapped(params)
+        assert response.content == "ok"
+        assert call_log == ["before_outer", "before_inner", "base", "after_inner", "after_outer"]
+
+    def test_wrap_tool_call_nested(self, agent_state):
+        """wrap_tool_call applies middleware in a nested fashion for tools."""
+        call_log: list[str] = []
+
+        class RecordingMiddleware(Middleware):
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def wrap_tool_call(self, call_next):  # type: ignore[override]
+                def wrapped(params: ToolCallParams):
+                    call_log.append(f"before_{self.name}")
+                    result = call_next(params)
+                    call_log.append(f"after_{self.name}")
+                    return result
+
+                return wrapped
+
+        manager = MiddlewareManager(
+            [RecordingMiddleware("outer"), RecordingMiddleware("inner")],
+        )
+
+        params = ToolCallParams(
+            agent_state=agent_state,
+            tool_name="demo",
+            parameters={},
+            tool_call_id="call_1",
+            execution_params={},
+        )
+
+        def base_call(_: ToolCallParams) -> dict[str, str]:
+            call_log.append("base")
+            return {"result": "ok"}
+
+        wrapped = manager.wrap_tool_call(base_call)
+        result = wrapped(params)
+        assert result == {"result": "ok"}
+        assert call_log == ["before_outer", "before_inner", "base", "after_inner", "after_outer"]
+
+    def test_run_before_tool(self, agent_state):
+        """before_tool hooks run first-to-last and can modify input."""
+        order: list[str] = []
+
+        def make_hook(name: str):
+            def hook(hook_input: BeforeToolHookInput) -> HookResult:
+                order.append(name)
+                updated = dict(hook_input.tool_input)
+                updated[name] = True
+                return HookResult.with_modifications(tool_input=updated)
+
+            return hook
+
+        manager = MiddlewareManager(
+            [
+                FunctionMiddleware(before_tool_hook=make_hook("first")),
+                FunctionMiddleware(before_tool_hook=make_hook("second")),
+            ],
+        )
+
+        hook_input = BeforeToolHookInput(
+            agent_state=agent_state,
+            tool_name="demo",
+            tool_call_id="call_1",
+            tool_input={"initial": True},
+        )
+
+        updated = manager.run_before_tool(hook_input)
+        assert order == ["first", "second"]
+        assert updated == {"initial": True, "first": True, "second": True}
+
+    def test_logging_middleware_wrap_model_call(self, agent_state, capsys):
+        """LoggingMiddleware can wrap model calls and emit console output."""
+        middleware = LoggingMiddleware(log_model_calls=True)
+
+        params = ModelCallParams(
+            messages=[{"role": "user", "content": "hello"}],
+            max_tokens=10,
+            force_stop_reason=None,
+            agent_state=agent_state,
+            tool_call_mode="xml",
+            tools=None,
+            api_params={},
+            openai_client=None,
+            llm_config=None,
+            retry_attempts=1,
+        )
+
+        def base_call(_: ModelCallParams) -> ModelResponse:
+            return ModelResponse(content="hi")
+
+        wrapped = middleware.wrap_model_call(base_call)
+        result = wrapped(params)
+        assert isinstance(result, ModelResponse)
+        captured = capsys.readouterr().out
+        assert "Custom LLM Generator called with 1 messages" in captured
 
 
 class TestHookProtocols:

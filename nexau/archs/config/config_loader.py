@@ -95,6 +95,8 @@ class AgentConfigSchema(
     after_model_hooks: list[HookDefinition] = Field(default_factory=list)
     after_tool_hooks: list[HookDefinition] = Field(default_factory=list)
     before_model_hooks: list[HookDefinition] = Field(default_factory=list)
+    before_tool_hooks: list[HookDefinition] = Field(default_factory=list)
+    middlewares: list[HookDefinition] = Field(default_factory=list)
     custom_llm_generator: HookDefinition | None = None
     token_counter: HookDefinition | None = None
 
@@ -240,6 +242,23 @@ class AgentBuilder:
         Returns:
             Self for method chaining
         """
+        middlewares = None
+        if "middlewares" in self.config:
+            middleware_configs = self.config["middlewares"]
+            middlewares = []
+
+            if not isinstance(middleware_configs, list):
+                raise ConfigError("'middlewares' must be a list")
+
+            for i, middleware_config in enumerate(middleware_configs):
+                try:
+                    middleware = self._import_and_instantiate(middleware_config)
+                    middlewares.append(middleware)
+                except Exception as e:
+                    raise ConfigError(f"Error loading middleware {i}: {e}")
+
+        self.agent_params["middlewares"] = middlewares
+
         # Handle after_model_hooks configuration
         after_model_hooks = None
         if "after_model_hooks" in self.config:
@@ -293,6 +312,24 @@ class AgentBuilder:
                     raise ConfigError(f"Error loading before model hook {i}: {e}")
 
         self.agent_params["before_model_hooks"] = before_model_hooks
+
+        # Handle before_tool_hooks configuration
+        before_tool_hooks = None
+        if "before_tool_hooks" in self.config:
+            hooks_config = self.config["before_tool_hooks"]
+            before_tool_hooks = []
+
+            if not isinstance(hooks_config, list):
+                raise ConfigError("'before_tool_hooks' must be a list")
+
+            for i, hook_config in enumerate(hooks_config):
+                try:
+                    hook_func = self._import_and_instantiate(hook_config)
+                    before_tool_hooks.append(hook_func)
+                except Exception as e:
+                    raise ConfigError(f"Error loading before tool hook {i}: {e}")
+
+        self.agent_params["before_tool_hooks"] = before_tool_hooks
 
         return self
 

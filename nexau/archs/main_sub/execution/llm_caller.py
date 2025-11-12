@@ -3,7 +3,6 @@
 import json
 import logging
 import time
-from collections.abc import Callable
 from typing import Any
 
 import openai
@@ -13,6 +12,7 @@ from nexau.archs.llm.llm_config import LLMConfig
 
 from ..agent_state import AgentState
 from ..tool_call_modes import STRUCTURED_TOOL_CALL_MODES, normalize_tool_call_mode
+from .hooks import MiddlewareManager, ModelCallParams
 from .model_response import ModelResponse
 from .stop_reason import AgentStopReason
 
@@ -27,16 +27,7 @@ class LLMCaller:
         openai_client: Any,
         llm_config: Any,
         retry_attempts: int = 5,
-        custom_llm_generator: (
-            Callable[
-                [
-                    Any,
-                    dict[str, Any],
-                ],
-                Any,
-            ]
-            | None
-        ) = None,
+        middleware_manager: MiddlewareManager | None = None,
     ):
         """Initialize LLM caller.
 
@@ -44,12 +35,12 @@ class LLMCaller:
             openai_client: OpenAI client instance
             llm_config: LLM configuration
             retry_attempts: Number of retry attempts for API calls
-            custom_llm_generator: Optional custom LLM generator function
+            middleware_manager: Optional middleware manager for wrapping calls
         """
         self.openai_client = openai_client
         self.llm_config = llm_config
         self.retry_attempts = retry_attempts
-        self.custom_llm_generator = custom_llm_generator
+        self.middleware_manager = middleware_manager
 
     def call_llm(
         self,
@@ -74,7 +65,7 @@ class LLMCaller:
         Raises:
             RuntimeError: If OpenAI client is not available or API call fails
         """
-        if not self.openai_client and not self.custom_llm_generator:
+        if not self.openai_client and not self.middleware_manager:
             raise RuntimeError(
                 "OpenAI client is not available. Please check your API configuration.",
             )
@@ -127,12 +118,31 @@ class LLMCaller:
 
         logger.info(f"🧠 Calling LLM with {max_tokens} max tokens...")
 
-        # Call LLM with retry
-        response_payload = self._call_with_retry(
+        model_call_params = ModelCallParams(
+            messages=messages,
+            max_tokens=max_tokens,
             force_stop_reason=force_stop_reason,
             agent_state=agent_state,
-            **api_params,
+            tool_call_mode=tool_call_mode,
+            tools=tools,
+            api_params=api_params,
+            openai_client=self.openai_client,
+            llm_config=self.llm_config,
+            retry_attempts=self.retry_attempts,
         )
+
+        def base_call(params: ModelCallParams) -> ModelResponse | None:
+            return self._call_with_retry(
+                force_stop_reason=params.force_stop_reason,
+                agent_state=params.agent_state,
+                **params.api_params,
+            )
+
+        call_fn = base_call
+        if self.middleware_manager:
+            call_fn = self.middleware_manager.wrap_model_call(call_fn)
+
+        response_payload = call_fn(model_call_params)
         if response_payload is None:
             return None
 
@@ -157,7 +167,7 @@ class LLMCaller:
         agent_state: AgentState | None = None,
         **kwargs: Any,
     ) -> ModelResponse | str | None:
-        """Call OpenAI client or custom LLM generator with exponential backoff retry."""
+        """Call OpenAI client with exponential backoff retry."""
         from .executor import AgentStopReason
 
         if force_stop_reason != AgentStopReason.SUCCESS:
@@ -168,25 +178,9 @@ class LLMCaller:
         backoff = 1
         for i in range(self.retry_attempts):
             try:
-                # Use custom LLM generator if provided, otherwise use OpenAI client
-                if self.custom_llm_generator:
-                    generator_result = self.custom_llm_generator(
-                        self.openai_client,
-                        self.llm_config,
-                        kwargs,
-                        force_stop_reason,
-                        agent_state,
-                    )
-                    if generator_result is None:
-                        raise Exception("Custom generator produced no response")
-                    if isinstance(generator_result, ModelResponse):
-                        response_content = generator_result
-                    else:
-                        response_content = ModelResponse(content=str(generator_result))
-                else:
-                    if force_stop_reason != AgentStopReason.SUCCESS:
-                        return None
-                    response_content = call_llm_with_different_client(self.openai_client, self.llm_config, kwargs)
+                if force_stop_reason != AgentStopReason.SUCCESS:
+                    return None
+                response_content = call_llm_with_different_client(self.openai_client, self.llm_config, kwargs)
 
                 stop = kwargs.get("stop", [])
                 if isinstance(stop, str):
@@ -540,27 +534,22 @@ def bypass_llm_generator(
     openai_client: Any,
     llm_config: LLMConfig,
     kwargs: dict[str, Any],
-    force_stop_reason: str,
-    agent_state: AgentState,
-) -> ModelResponse:
-    """
-    Custom LLM generator that does nothing.
+    force_stop_reason: AgentStopReason | None,
+    agent_state: AgentState | None,
+) -> ModelResponse | None:
+    """Legacy helper that directly proxies an OpenAI request with extra logging."""
 
-    Args:
-        openai_client: The OpenAI client instance (can be used or ignored)
-        kwargs: The parameters that would be passed to openai_client.chat.completions.create()
+    message_count = len(kwargs.get("messages", []) or [])
+    print(f"Custom LLM Generator called with {message_count} messages")
 
-    Returns:
-        ModelResponse with the generated content and tool calls
-    """
-    print(
-        f"🔧 Custom LLM Generator called with {len(kwargs.get('messages', []))} messages",
-    )
+    if force_stop_reason and force_stop_reason != AgentStopReason.SUCCESS:
+        print(f"Bypass LLM generator aborted due to {force_stop_reason.name}")
+        return None
 
     try:
-        return call_llm_with_different_client(openai_client, llm_config, kwargs)
-
-    except Exception as e:
-        print(f"❌ Bypass LLM generator error: {e}")
-        # You could implement custom fallback logic here
+        response = call_llm_with_different_client(openai_client, llm_config, kwargs)
+    except Exception as exc:
+        print(f"Bypass LLM generator error: {exc}")
         raise
+
+    return response

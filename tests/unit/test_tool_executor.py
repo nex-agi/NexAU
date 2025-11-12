@@ -17,9 +17,10 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 from nexau.archs.main_sub.execution.hooks import (
-    AfterToolHook,
     AfterToolHookInput,
-    ToolHookManager,
+    FunctionMiddleware,
+    HookResult,
+    MiddlewareManager,
 )
 from nexau.archs.main_sub.execution.tool_executor import ToolExecutor
 from nexau.archs.tool.tool import Tool
@@ -41,7 +42,7 @@ class TestToolExecutorInitialization:
         assert executor.tool_registry == tool_registry
         assert executor.stop_tools == stop_tools
         assert executor.langfuse_client is None
-        assert executor.tool_hook_manager is None
+        assert executor.middleware_manager is None
         assert executor.xml_parser is not None
 
     def test_init_with_langfuse(self):
@@ -60,36 +61,36 @@ class TestToolExecutorInitialization:
 
     def test_init_with_hook_manager(self):
         """Test initialization with tool hook manager."""
-        mock_hook_manager = Mock(spec=ToolHookManager)
+        mock_hook_manager = MiddlewareManager()
         tool_registry = {}
         stop_tools = set()
 
         executor = ToolExecutor(
             tool_registry=tool_registry,
             stop_tools=stop_tools,
-            tool_hook_manager=mock_hook_manager,
+            middleware_manager=mock_hook_manager,
         )
 
-        assert executor.tool_hook_manager == mock_hook_manager
+        assert executor.middleware_manager == mock_hook_manager
 
     def test_init_with_all_parameters(self):
         """Test initialization with all optional parameters."""
         tool_registry = {"tool1": Mock()}
         stop_tools = {"stop_tool"}
         mock_langfuse = Mock()
-        mock_hook_manager = Mock(spec=ToolHookManager)
+        mock_hook_manager = MiddlewareManager()
 
         executor = ToolExecutor(
             tool_registry=tool_registry,
             stop_tools=stop_tools,
             langfuse_client=mock_langfuse,
-            tool_hook_manager=mock_hook_manager,
+            middleware_manager=mock_hook_manager,
         )
 
         assert executor.tool_registry == tool_registry
         assert executor.stop_tools == stop_tools
         assert executor.langfuse_client == mock_langfuse
-        assert executor.tool_hook_manager == mock_hook_manager
+        assert executor.middleware_manager == mock_hook_manager
 
 
 class TestToolExecutorExecution:
@@ -282,7 +283,7 @@ class TestToolExecutorHooks:
     """Test tool hook execution."""
 
     def test_execute_tool_with_hook(self, agent_state):
-        """Test tool execution with after-tool hook."""
+        """Test tool execution with after-tool middleware."""
 
         def simple_tool(x: int, agent_state=None) -> dict:
             return {"result": x * 2}
@@ -294,20 +295,19 @@ class TestToolExecutorHooks:
             implementation=simple_tool,
         )
 
-        # Create a hook that modifies the result
-        class TestHook(AfterToolHook):
-            def execute(self, hook_input: AfterToolHookInput) -> dict:
-                result = hook_input.tool_output.copy()
-                result["modified"] = True
-                return result
-
-        mock_hook_manager = Mock(spec=ToolHookManager)
-        mock_hook_manager.execute_hooks.return_value = {"result": 10, "modified": True}
+        hook = Mock(
+            return_value=HookResult.with_modifications(
+                tool_output={"result": 10, "modified": True},
+            ),
+        )
+        middleware_manager = MiddlewareManager(
+            [FunctionMiddleware(after_tool_hook=hook)],
+        )
 
         executor = ToolExecutor(
             tool_registry={"simple_tool": tool},
             stop_tools=set(),
-            tool_hook_manager=mock_hook_manager,
+            middleware_manager=middleware_manager,
         )
 
         result = executor.execute_tool(
@@ -317,14 +317,11 @@ class TestToolExecutorHooks:
             tool_call_id="call_123",
         )
 
-        # Verify hook was called
-        mock_hook_manager.execute_hooks.assert_called_once()
-        call_args = mock_hook_manager.execute_hooks.call_args[0][0]
+        hook.assert_called_once()
+        call_args = hook.call_args[0][0]
         assert isinstance(call_args, AfterToolHookInput)
         assert call_args.tool_name == "simple_tool"
         assert call_args.tool_input == {"x": 5}
-
-        # Verify result was modified by hook
         assert result["modified"] is True
 
     def test_execute_tool_without_hook(self, agent_state):
@@ -343,7 +340,7 @@ class TestToolExecutorHooks:
         executor = ToolExecutor(
             tool_registry={"simple_tool": tool},
             stop_tools=set(),
-            tool_hook_manager=None,
+            middleware_manager=None,
         )
 
         result = executor.execute_tool(
@@ -356,6 +353,43 @@ class TestToolExecutorHooks:
         # Result should not be modified
         assert result["result"] == 10
         assert "modified" not in result
+
+    def test_execute_tool_with_before_tool_middleware(self, agent_state):
+        """Test that before-tool middleware can modify parameters."""
+
+        def multiplier_tool(x: int, agent_state=None) -> dict:
+            return {"result": x * 2}
+
+        tool = Tool(
+            name="multiplier_tool",
+            description="Multiplies input",
+            input_schema={"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]},
+            implementation=multiplier_tool,
+        )
+
+        def before_hook(hook_input):
+            updated = dict(hook_input.tool_input)
+            updated["x"] = 10
+            return HookResult.with_modifications(tool_input=updated)
+
+        middleware_manager = MiddlewareManager(
+            [FunctionMiddleware(before_tool_hook=before_hook)],
+        )
+
+        executor = ToolExecutor(
+            tool_registry={"multiplier_tool": tool},
+            stop_tools=set(),
+            middleware_manager=middleware_manager,
+        )
+
+        result = executor.execute_tool(
+            agent_state=agent_state,
+            tool_name="multiplier_tool",
+            parameters={"x": 1},
+            tool_call_id="call_321",
+        )
+
+        assert result["result"] == 20
 
 
 class TestToolExecutorStopTools:
@@ -943,14 +977,18 @@ class TestToolExecutorIntegration:
         mock_langfuse.start_as_current_generation.return_value.__enter__ = Mock(return_value=mock_context)
         mock_langfuse.start_as_current_generation.return_value.__exit__ = Mock(return_value=None)
 
-        mock_hook_manager = Mock(spec=ToolHookManager)
-        mock_hook_manager.execute_hooks.return_value = {"result": 10, "_is_stop_tool": True, "hooked": True}
+        hook = Mock(
+            return_value=HookResult.with_modifications(
+                tool_output={"result": 10, "_is_stop_tool": True, "hooked": True},
+            ),
+        )
+        middleware_manager = MiddlewareManager([FunctionMiddleware(after_tool_hook=hook)])
 
         executor = ToolExecutor(
             tool_registry={"stop_tool": tool},
             stop_tools={"stop_tool"},
             langfuse_client=mock_langfuse,
-            tool_hook_manager=mock_hook_manager,
+            middleware_manager=middleware_manager,
         )
 
         result = executor.execute_tool(
@@ -964,4 +1002,4 @@ class TestToolExecutorIntegration:
         assert result["_is_stop_tool"] is True
         assert result["hooked"] is True
         mock_langfuse.flush.assert_called_once()
-        mock_hook_manager.execute_hooks.assert_called_once()
+        hook.assert_called_once()
