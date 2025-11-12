@@ -75,27 +75,28 @@ jobs:
         name: dist
         path: dist/
 
-  # publish-pypi:
-  #   needs: build
-  #   runs-on: ubuntu-latest
-  #   environment:
-  #     name: pypi
-  #     url: https://pypi.org/p/nexau
-  #   steps:
-  #   - uses: actions/download-artifact@v4
-  #     with:
-  #       name: dist
-  #       path: dist/
+  publish-pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/nexau
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: dist
+        path: dist/
 
-  #   - name: Publish to PyPI
-  #     uses: pypa/gh-action-pypi-publish@release/v1
-  #     with:
-  #       # Using trusted publishing - no API token needed
-  #       # Configure at: https://pypi.org/manage/account/publishing/
-  #       skip-existing: true
+    - name: Publish to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        packages-dir: dist
+        user: ${{ secrets.PYPI_USERNAME }}
+        password: ${{ secrets.PYPI_PASSWORD }}
+        skip-existing: true
 
   create-release:
-    needs: [build]
+    needs: [build, publish-pypi]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -141,4 +142,3 @@ jobs:
         prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
