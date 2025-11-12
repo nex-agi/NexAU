@@ -10,8 +10,8 @@ A middleware can implement any of these optional methods:
 - `after_model(hook_input)` – inspect/modify parsed responses and conversation state after the LLM call.
 - `before_tool(hook_input)` – adjust tool inputs (or cancel calls) right before execution.
 - `after_tool(hook_input)` – inspect/modify tool outputs before they are fed back into the loop.
-- `wrap_model_call(call_next)` – wrap the low-level LLM invocation (for custom providers, retries, tracing, etc.).
-- `wrap_tool_call(call_next)` – wrap each tool execution.
+- `wrap_model_call(params, call_next)` – intercept the low-level LLM invocation (for custom providers, retries, tracing, etc.).
+- `wrap_tool_call(params, call_next)` – intercept each tool execution.
 
 Execution order is deterministic:
 
@@ -33,11 +33,9 @@ class AuditMiddleware(Middleware):
         print("Tool", hook_input.tool_name, "returned", hook_input.tool_output)
         return HookResult.no_changes()
 
-    def wrap_model_call(self, call_next):
-        def wrapped(params):
-            print("Calling LLM with", len(params.messages), "messages")
-            return call_next(params)
-        return wrapped
+    def wrap_model_call(self, params, call_next):
+        print("Calling LLM with", len(params.messages), "messages")
+        return call_next(params)
 ```
 
 ### What Can a Middleware Change?
@@ -108,7 +106,7 @@ When building agents programmatically, pass actual middleware instances to `crea
 
 ## Customizing LLM Calls via Middleware
 
-The former `custom_llm_generator` hook chain has been retired. To customize how NexAU talks to an LLM (swap providers, add caching, manipulate parameters, etc.) you now implement the `wrap_model_call` method on a middleware.
+To customize how NexAU talks to an LLM (swap providers, add caching, manipulate parameters, etc.) you now implement the `wrap_model_call` method on a middleware.
 
 ### Why Middleware?
 
@@ -126,20 +124,17 @@ class ProviderSwitchMiddleware(Middleware):
     def __init__(self, fallback_client):
         self.fallback_client = fallback_client
 
-    def wrap_model_call(self, call_next):
-        def wrapped(params: ModelCallParams) -> ModelResponse | None:
-            # Try the default client first
-            try:
-                return call_next(params)
-            except Exception as primary_error:
-                print("Primary client failed, falling back:", primary_error)
+    def wrap_model_call(self, params: ModelCallParams, call_next):
+        # Try the default client first
+        try:
+            return call_next(params)
+        except Exception as primary_error:
+            print("Primary client failed, falling back:", primary_error)
 
-            # Fallback path – call a completely different provider
-            response = self._call_fallback(params)
-            print("Fallback response preview:", (response.content or "")[:200])
-            return response
-
-        return wrapped
+        # Fallback path – call a completely different provider
+        response = self._call_fallback(params)
+        print("Fallback response preview:", (response.content or "")[:200])
+        return response
 
     def _call_fallback(self, params: ModelCallParams) -> ModelResponse:
         raw = self.fallback_client.chat.completions.create(

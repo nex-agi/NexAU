@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
@@ -214,11 +213,15 @@ class Middleware:
     def before_tool(self, hook_input: BeforeToolHookInput) -> HookResult:
         return HookResult.no_changes()
 
-    def wrap_model_call(self, call_next: ModelCallFn) -> ModelCallFn:
-        return call_next
+    def wrap_model_call(self, params: ModelCallParams, call_next: ModelCallFn) -> ModelResponse | None:
+        """Default implementation simply forwards to the next handler."""
 
-    def wrap_tool_call(self, call_next: ToolCallFn) -> ToolCallFn:
-        return call_next
+        return call_next(params)
+
+    def wrap_tool_call(self, params: ToolCallParams, call_next: ToolCallFn) -> Any:
+        """Default implementation simply forwards to the next handler."""
+
+        return call_next(params)
 
 
 class FunctionMiddleware(Middleware):
@@ -270,58 +273,6 @@ class FunctionMiddleware(Middleware):
         if self.before_tool_hook:
             hooks.append("before_tool")
         return f"FunctionMiddleware(name={self.name}, hooks={hooks})"
-
-
-class CustomLLMGeneratorMiddleware(Middleware):
-    """Wraps legacy custom_llm_generator functions as middleware."""
-
-    def __init__(self, generator: Callable[..., Any]) -> None:
-        self.generator = generator
-
-    def wrap_model_call(self, call_next: ModelCallFn) -> ModelCallFn:
-        generator = self.generator
-
-        def wrapped(params: ModelCallParams) -> ModelResponse | None:
-            # Fallback to call_next if generator is not callable
-            if callable(generator):
-                backoff = 1
-                for attempt in range(params.retry_attempts):
-                    try:
-                        generator_result = generator(
-                            params.openai_client,
-                            params.llm_config,
-                            params.api_params,
-                            params.force_stop_reason,
-                            params.agent_state,
-                        )
-                        if generator_result is None:
-                            raise ValueError("Custom generator produced no response")
-                        if isinstance(generator_result, ModelResponse):
-                            response = generator_result
-                        else:
-                            response = ModelResponse(content=str(generator_result))
-
-                        stop = params.api_params.get("stop", [])
-                        stops = stop if isinstance(stop, list) else [stop] if stop else []
-                        if stops and response.content:
-                            for s in stops:
-                                response.content = response.content.split(s)[0]
-
-                        return response
-                    except Exception as exc:  # pragma: no cover - error path
-                        logger.error(
-                            "❌ Custom LLM generator failed (attempt %s/%s): %s",
-                            attempt + 1,
-                            params.retry_attempts,
-                            exc,
-                        )
-                        if attempt == params.retry_attempts - 1:
-                            raise
-                        time.sleep(backoff)
-                        backoff *= 2
-            return call_next(params)
-
-        return wrapped
 
 
 class LoggingMiddleware(Middleware):
@@ -389,27 +340,24 @@ class LoggingMiddleware(Middleware):
         logger.info("🔧 ===== END AFTER TOOL HOOK =====")
         return HookResult.no_changes()
 
-    def wrap_model_call(self, call_next: ModelCallFn) -> ModelCallFn:  # type: ignore[override]
+    def wrap_model_call(self, params: ModelCallParams, call_next: ModelCallFn) -> ModelResponse | None:  # type: ignore[override]
         if not self.log_model_calls and not self.model_logger:
-            return call_next
+            return call_next(params)
 
-        def wrapped(params: ModelCallParams) -> ModelResponse | None:
-            self._log_model_call(f"Custom LLM Generator called with {len(params.messages)} messages")
-            try:
-                response = call_next(params)
-                if response is None:
-                    self._log_model_call("Custom LLM Generator returned no response")
-                else:
-                    preview = (response.render_text() or response.content or "").strip()
-                    if preview:
-                        preview = preview[: self.message_preview_chars]
-                        self._log_model_call(f"Custom LLM Generator response preview: {preview}")
-                return response
-            except Exception as exc:  # pragma: no cover - logging path
-                self._log_model_call(f"Bypass LLM generator error: {exc}", error=True)
-                raise
-
-        return wrapped
+        self._log_model_call(f"LLM call invoked with {len(params.messages)} messages")
+        try:
+            response = call_next(params)
+            if response is None:
+                self._log_model_call("LLM call returned no response")
+            else:
+                preview = (response.render_text() or response.content or "").strip()
+                if preview:
+                    preview = preview[: self.message_preview_chars]
+                    self._log_model_call(f"LLM response preview: {preview}")
+            return response
+        except Exception as exc:  # pragma: no cover - logging path
+            self._log_model_call(f"LLM call wrapper error: {exc}", error=True)
+            raise
 
     def _log_model_call(self, message: str, error: bool = False) -> None:
         logger = self.model_logger
@@ -521,21 +469,39 @@ class MiddlewareManager:
                 logger.warning(f"⚠️ Before-tool middleware {middleware} failed: {exc}")
         return current_input
 
-    def wrap_model_call(self, call_next: ModelCallFn) -> ModelCallFn:
-        wrapped = call_next
-        for middleware in reversed(self.middlewares):
-            wrapper = getattr(middleware, "wrap_model_call", None)
-            if wrapper:
-                wrapped = wrapper(wrapped)
-        return wrapped
+    def wrap_model_call(self, params: ModelCallParams, call_next: ModelCallFn) -> ModelResponse | None:
+        def invoke(index: int, current_params: ModelCallParams) -> ModelResponse | None:
+            if index >= len(self.middlewares):
+                return call_next(current_params)
 
-    def wrap_tool_call(self, call_next: ToolCallFn) -> ToolCallFn:
-        wrapped = call_next
-        for middleware in reversed(self.middlewares):
+            middleware = self.middlewares[index]
+            wrapper = getattr(middleware, "wrap_model_call", None)
+            if wrapper is None:
+                return invoke(index + 1, current_params)
+
+            def next_handler(next_params: ModelCallParams) -> ModelResponse | None:
+                return invoke(index + 1, next_params)
+
+            return wrapper(current_params, next_handler)
+
+        return invoke(0, params)
+
+    def wrap_tool_call(self, params: ToolCallParams, call_next: ToolCallFn) -> Any:
+        def invoke(index: int, current_params: ToolCallParams) -> Any:
+            if index >= len(self.middlewares):
+                return call_next(current_params)
+
+            middleware = self.middlewares[index]
             wrapper = getattr(middleware, "wrap_tool_call", None)
-            if wrapper:
-                wrapped = wrapper(wrapped)
-        return wrapped
+            if wrapper is None:
+                return invoke(index + 1, current_params)
+
+            def next_handler(next_params: ToolCallParams) -> Any:
+                return invoke(index + 1, next_params)
+
+            return wrapper(current_params, next_handler)
+
+        return invoke(0, params)
 
     @staticmethod
     def _normalize_result(result: HookResult | None) -> HookResult:

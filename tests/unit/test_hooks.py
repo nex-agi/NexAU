@@ -668,14 +668,11 @@ class TestMiddlewareManager:
             def __init__(self, name: str) -> None:
                 self.name = name
 
-            def wrap_model_call(self, call_next):  # type: ignore[override]
-                def wrapped(params: ModelCallParams):
-                    call_log.append(f"before_{self.name}")
-                    result = call_next(params)
-                    call_log.append(f"after_{self.name}")
-                    return result
-
-                return wrapped
+            def wrap_model_call(self, params: ModelCallParams, call_next):  # type: ignore[override]
+                call_log.append(f"before_{self.name}")
+                result = call_next(params)
+                call_log.append(f"after_{self.name}")
+                return result
 
         manager = MiddlewareManager(
             [RecordingMiddleware("outer"), RecordingMiddleware("inner")],
@@ -697,8 +694,7 @@ class TestMiddlewareManager:
             call_log.append("base")
             return ModelResponse(content="ok")
 
-        wrapped = manager.wrap_model_call(base_call)
-        response = wrapped(params)
+        response = manager.wrap_model_call(params, base_call)
         assert response.content == "ok"
         assert call_log == ["before_outer", "before_inner", "base", "after_inner", "after_outer"]
 
@@ -710,14 +706,11 @@ class TestMiddlewareManager:
             def __init__(self, name: str) -> None:
                 self.name = name
 
-            def wrap_tool_call(self, call_next):  # type: ignore[override]
-                def wrapped(params: ToolCallParams):
-                    call_log.append(f"before_{self.name}")
-                    result = call_next(params)
-                    call_log.append(f"after_{self.name}")
-                    return result
-
-                return wrapped
+            def wrap_tool_call(self, params: ToolCallParams, call_next):  # type: ignore[override]
+                call_log.append(f"before_{self.name}")
+                result = call_next(params)
+                call_log.append(f"after_{self.name}")
+                return result
 
         manager = MiddlewareManager(
             [RecordingMiddleware("outer"), RecordingMiddleware("inner")],
@@ -735,8 +728,7 @@ class TestMiddlewareManager:
             call_log.append("base")
             return {"result": "ok"}
 
-        wrapped = manager.wrap_tool_call(base_call)
-        result = wrapped(params)
+        result = manager.wrap_tool_call(params, base_call)
         assert result == {"result": "ok"}
         assert call_log == ["before_outer", "before_inner", "base", "after_inner", "after_outer"]
 
@@ -791,11 +783,10 @@ class TestMiddlewareManager:
         def base_call(_: ModelCallParams) -> ModelResponse:
             return ModelResponse(content="hi")
 
-        wrapped = middleware.wrap_model_call(base_call)
-        result = wrapped(params)
+        result = middleware.wrap_model_call(params, base_call)
         assert isinstance(result, ModelResponse)
         captured = capsys.readouterr().out
-        assert "Custom LLM Generator called with 1 messages" in captured
+        assert "LLM call invoked with 1 messages" in captured
 
 
 class TestHookProtocols:

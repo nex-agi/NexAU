@@ -295,7 +295,6 @@ class Agent:
             before_tool_hooks=self.config.before_tool_hooks,
             middlewares=self.config.middlewares,
             global_storage=self.global_storage,
-            custom_llm_generator=self.config.custom_llm_generator,
             tool_call_mode=self.tool_call_mode,
             openai_tools=self.tool_call_payload,
         )
@@ -522,8 +521,6 @@ def create_agent(
     middlewares: list[Callable] | None = None,
     # Global storage parameter
     global_storage: GlobalStorage | None = None,
-    # Custom LLM generator parameter
-    custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None,
     tool_call_mode: str = "xml",
     **llm_kwargs,
 ) -> Agent:
@@ -556,7 +553,6 @@ def create_agent(
         middlewares=middlewares,
         error_handler=error_handler,
         token_counter=token_counter,
-        custom_llm_generator=custom_llm_generator,
     )
 
     # Create execution configuration
