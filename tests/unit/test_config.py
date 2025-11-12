@@ -174,6 +174,8 @@ class TestAgentBuilder:
             "after_model_hooks": ["module.path:hook_function"],
             "before_model_hooks": ["module.path:before_hook"],
             "after_tool_hooks": ["module.path:tool_hook"],
+            "before_tool_hooks": ["module.path:before_tool"],
+            "middlewares": ["module.path:middleware"],
         }
 
         builder = AgentBuilder(config, Path("."))
@@ -182,6 +184,8 @@ class TestAgentBuilder:
         assert len(result.agent_params["after_model_hooks"]) == 1
         assert len(result.agent_params["before_model_hooks"]) == 1
         assert len(result.agent_params["after_tool_hooks"]) == 1
+        assert len(result.agent_params["before_tool_hooks"]) == 1
+        assert len(result.agent_params["middlewares"]) == 1
 
     def test_build_hooks_invalid_format(self):
         """Test building hooks with invalid format."""

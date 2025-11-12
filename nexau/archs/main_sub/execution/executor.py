@@ -19,8 +19,11 @@ from nexau.archs.main_sub.execution.hooks import (
     AfterToolHook,
     BeforeModelHook,
     BeforeModelHookInput,
-    HookManager,
-    ToolHookManager,
+    BeforeToolHook,
+    CustomLLMGeneratorMiddleware,
+    FunctionMiddleware,
+    Middleware,
+    MiddlewareManager,
 )
 from nexau.archs.main_sub.execution.llm_caller import LLMCaller
 from nexau.archs.main_sub.execution.model_response import ModelResponse
@@ -66,6 +69,8 @@ class Executor:
         after_model_hooks: list[AfterModelHook] | None = None,
         before_model_hooks: list[BeforeModelHook] | None = None,
         after_tool_hooks: list[AfterToolHook] | None = None,
+        before_tool_hooks: list[BeforeToolHook] | None = None,
+        middlewares: list[Middleware] | None = None,
         serial_tool_name: list[str] | None = None,
         global_storage: Any = None,
         custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None,
@@ -91,7 +96,9 @@ class Executor:
             langfuse_client: Optional Langfuse client for tracing
             before_model_hooks: Optional list of hooks called before parsing LLM response
             after_model_hooks: Optional list of hooks called after parsing LLM response
+            before_tool_hooks: Optional list of hooks called before tool execution
             after_tool_hooks: Optional list of hooks called after tool execution
+            middlewares: Optional list of middleware objects applied to all phases
             custom_llm_generator: Optional custom LLM generator function
             tool_call_mode: Preferred tool call format ('xml', 'openai', or 'anthorpic')
             openai_tools: Structured tool definitions for OpenAI/Anthorpic tool calls
@@ -101,18 +108,19 @@ class Executor:
         self.max_running_subagents = max_running_subagents
 
         # Initialize components
-        tool_hook_manager = (
-            ToolHookManager(
-                after_tool_hooks,
-            )
-            if after_tool_hooks
-            else None
+        self.middleware_manager = self._build_middleware_manager(
+            middlewares or [],
+            before_model_hooks or [],
+            after_model_hooks or [],
+            after_tool_hooks or [],
+            before_tool_hooks or [],
+            custom_llm_generator,
         )
         self.tool_executor = ToolExecutor(
             tool_registry,
             stop_tools,
             langfuse_client,
-            tool_hook_manager,
+            middleware_manager=self.middleware_manager,
         )
         self.tracer = Tracer(agent_name)
         self.subagent_manager = SubAgentManager(
@@ -131,10 +139,8 @@ class Executor:
             openai_client,
             llm_config,
             retry_attempts,
-            custom_llm_generator,
+            middleware_manager=self.middleware_manager,
         )
-        self.after_model_hook_manager = HookManager(after_model_hooks)
-        self.before_model_hook_manager = HookManager(before_model_hooks)
 
         # Execution parameters
         self.max_iterations = max_iterations
@@ -293,16 +299,13 @@ class Executor:
                     messages=messages,
                 )
 
-                if self.before_model_hook_manager:
+                if self.middleware_manager:
                     try:
-                        logger.info(
-                            f"🎣 Executing {len(self.before_model_hook_manager)} before model hooks",
-                        )
-                        messages = self.before_model_hook_manager.execute_hooks(
+                        messages = self.middleware_manager.run_before_model(
                             before_model_hook_input,
                         )
                     except Exception as e:
-                        logger.warning(f"⚠️ Hook execution failed: {e}")
+                        logger.warning(f"⚠️ Before-model middleware execution failed: {e}")
 
                 # Call LLM to get response
                 logger.info(
@@ -528,6 +531,57 @@ class Executor:
             if dump_trace_path:
                 self.tracer.stop_tracing()
 
+    @staticmethod
+    def _build_middleware_manager(
+        configured_middlewares: list[Middleware],
+        before_model_hooks: list[BeforeModelHook],
+        after_model_hooks: list[AfterModelHook],
+        after_tool_hooks: list[AfterToolHook],
+        before_tool_hooks: list[BeforeToolHook],
+        custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None,
+    ) -> MiddlewareManager | None:
+        combined: list[Middleware] = list(configured_middlewares)
+
+        def _hook_name(hook: Callable[..., Any]) -> str:
+            return getattr(hook, "__name__", hook.__class__.__name__)
+
+        for hook in before_model_hooks:
+            combined.append(
+                FunctionMiddleware(
+                    before_model_hook=hook,
+                    name=f"before_model::{_hook_name(hook)}",
+                ),
+            )
+
+        for hook in after_model_hooks:
+            combined.append(
+                FunctionMiddleware(
+                    after_model_hook=hook,
+                    name=f"after_model::{_hook_name(hook)}",
+                ),
+            )
+
+        for hook in after_tool_hooks:
+            combined.append(
+                FunctionMiddleware(
+                    after_tool_hook=hook,
+                    name=f"after_tool::{_hook_name(hook)}",
+                ),
+            )
+
+        for hook in before_tool_hooks:
+            combined.append(
+                FunctionMiddleware(
+                    before_tool_hook=hook,
+                    name=f"before_tool::{_hook_name(hook)}",
+                ),
+            )
+
+        if custom_llm_generator:
+            combined.append(CustomLLMGeneratorMiddleware(custom_llm_generator))
+
+        return MiddlewareManager(combined)
+
     def _process_xml_calls(
         self,
         hook_input: AfterModelHookInput,
@@ -555,18 +609,14 @@ class Executor:
         current_messages = hook_input.messages.copy()
         force_continue = False  # Default: don't force continue
 
-        # Execute hooks if any are configured (always run hooks, even if no calls)
-        if self.after_model_hook_manager:
+        # Execute middlewares if any are configured (always run even if no calls)
+        if self.middleware_manager:
             try:
-                logger.info(
-                    f"🎣 Executing {len(self.after_model_hook_manager)} after model hooks",
-                )
-                parsed_response, current_messages, force_continue = self.after_model_hook_manager.execute_hooks(
+                parsed_response, current_messages, force_continue = self.middleware_manager.run_after_model(
                     hook_input,
                 )
             except Exception as e:
-                logger.warning(f"⚠️ Hook execution failed: {e}")
-                # Keep original parsed_response if hook fails
+                logger.warning(f"⚠️ After-model middleware execution failed: {e}")
 
         # If no calls found after hooks, check if we should force continue
         if not parsed_response or not parsed_response.has_calls():

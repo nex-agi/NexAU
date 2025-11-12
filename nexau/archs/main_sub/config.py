@@ -61,6 +61,9 @@ class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
     after_model_hooks: list[THook] | None = None
     after_tool_hooks: list[THook] | None = None
     before_model_hooks: list[THook] | None = None
+    before_tool_hooks: list[THook] | None = None
+    middlewares: list[Any] | None = None
+    middlewares: list[THook] | None = None
     error_handler: Callable | None = None
     token_counter: Callable | None = None
     custom_llm_generator: Callable | None = None
@@ -106,6 +109,8 @@ class AgentConfig(
     after_model_hooks: list[Callable] | None = None
     after_tool_hooks: list[Callable] | None = None
     before_model_hooks: list[Callable] | None = None
+    before_tool_hooks: list[Callable] | None = None
+    middlewares: list[Any] | None = None
     sub_agent_factories: dict[str, Callable[[], Any]] = Field(
         default_factory=dict,
         exclude=True,

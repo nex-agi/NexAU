@@ -76,6 +76,7 @@ class TestExecutorInitialization:
         before_hook = Mock()
         after_hook = Mock()
         tool_hook = Mock()
+        before_tool_hook = Mock()
 
         executor = Executor(
             agent_name="test_agent",
@@ -88,10 +89,11 @@ class TestExecutorInitialization:
             before_model_hooks=[before_hook],
             after_model_hooks=[after_hook],
             after_tool_hooks=[tool_hook],
+            before_tool_hooks=[before_tool_hook],
         )
 
-        assert executor.before_model_hook_manager is not None
-        assert executor.after_model_hook_manager is not None
+        assert executor.middleware_manager is not None
+        assert len(executor.middleware_manager.middlewares) == 4
 
     def test_executor_init_with_custom_token_counter(self, mock_llm_config):
         """Test executor initialization with custom token counter."""

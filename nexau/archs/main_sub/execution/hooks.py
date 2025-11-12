@@ -1,5 +1,10 @@
-"""Hook interfaces and utilities for agent execution."""
+"""Hook interfaces, middleware abstractions, and utilities for agent execution."""
 
+from __future__ import annotations
+
+import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -8,6 +13,10 @@ from .parse_structures import ParsedResponse
 
 if TYPE_CHECKING:
     from ..agent_state import AgentState
+    from .executor import AgentStopReason
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -21,7 +30,7 @@ class BeforeModelHookInput:
     - current_iteration: The current iteration
     """
 
-    agent_state: "AgentState"
+    agent_state: AgentState
     max_iterations: int
     current_iteration: int
     messages: list[dict[str, Any]]
@@ -42,731 +51,587 @@ class AfterModelHookInput(BeforeModelHookInput):
 
 
 @dataclass
-class BeforeModelHookResult:
-    """Result returned by before_model_hooks.
-
-    This class encapsulates the modifications that a hook can make:
-    - messages: Modified conversation history, or None if no changes
-
-    If both fields are None, it indicates the hook made no modifications.
-    """
+class HookResult:
+    """Unified result object for all middleware hook phases."""
 
     messages: list[dict[str, Any]] | None = None
+    parsed_response: ParsedResponse | None = None
+    force_continue: bool = False
+    tool_output: Any | None = None
+    tool_input: dict[str, Any] | None = None
 
-    def has_modifications(self) -> bool:
-        """Check if this result contains any modifications."""
+    def has_messages(self) -> bool:
         return self.messages is not None
 
+    def has_parsed_response(self) -> bool:
+        return self.parsed_response is not None
+
+    def has_tool_output(self) -> bool:
+        return self.tool_output is not None
+
+    def has_modifications(self) -> bool:
+        return (
+            self.has_messages()
+            or self.has_parsed_response()
+            or self.force_continue
+            or self.has_tool_output()
+            or self.tool_input is not None
+        )
+
     @classmethod
-    def no_changes(cls) -> "BeforeModelHookResult":
-        """Create a BeforeModelHookResult indicating no modifications."""
-        return cls(messages=None)
+    def no_changes(cls) -> HookResult:
+        return cls()
 
     @classmethod
     def with_modifications(
         cls,
+        *,
         messages: list[dict[str, Any]] | None = None,
-    ) -> "BeforeModelHookResult":
-        """Create a BeforeModelHookResult with specified modifications.
+        parsed_response: ParsedResponse | None = None,
+        force_continue: bool = False,
+        tool_output: Any | None = None,
+        tool_input: dict[str, Any] | None = None,
+    ) -> HookResult:
+        return cls(
+            messages=messages,
+            parsed_response=parsed_response,
+            force_continue=force_continue,
+            tool_output=tool_output,
+            tool_input=tool_input,
+        )
 
-        Args:
-            messages: Modified message history, or None if no changes
 
-        Returns:
-            BeforeModelHookResult with the specified modifications
-        """
+class BeforeModelHookResult(HookResult):
+    """Backward compatible alias for HookResult (before model)."""
+
+    @classmethod
+    def with_modifications(cls, messages: list[dict[str, Any]] | None = None) -> BeforeModelHookResult:  # type: ignore[override]
         return cls(messages=messages)
 
 
-@dataclass
-class AfterModelHookResult:
-    """Result returned by after_model_hooks.
-
-    This class encapsulates the modifications that a hook can make:
-    - parsed_response: Modified ParsedResponse, or None if no changes
-    - messages: Modified conversation history, or None if no changes
-    - force_continue: Force agent to continue even if no tool calls remain (for feedback injection)
-
-    If both fields are None, it indicates the hook made no modifications.
-    """
-
-    parsed_response: ParsedResponse | None = None
-    messages: list[dict[str, Any]] | None = None
-    force_continue: bool = False
-
-    def has_modifications(self) -> bool:
-        """Check if this result contains any modifications."""
-        return self.parsed_response is not None or self.messages is not None or self.force_continue
+class AfterModelHookResult(HookResult):
+    """Backward compatible alias for HookResult (after model)."""
 
     @classmethod
-    def no_changes(cls) -> "AfterModelHookResult":
-        """Create a AfterModelHookResult indicating no modifications."""
-        return cls(parsed_response=None, messages=None, force_continue=False)
-
-    @classmethod
-    def with_modifications(
+    def with_modifications(  # type: ignore[override]
         cls,
         parsed_response: ParsedResponse | None = None,
         messages: list[dict[str, Any]] | None = None,
         force_continue: bool = False,
-    ) -> "AfterModelHookResult":
-        """Create a AfterModelHookResult with specified modifications.
-
-        Args:
-            parsed_response: Modified ParsedResponse, or None if no changes
-            messages: Modified message history, or None if no changes
-            force_continue: Force agent to continue even if no tool calls remain
-
-        Returns:
-            AfterModelHookResult with the specified modifications
-        """
-        return cls(parsed_response=parsed_response, messages=messages, force_continue=force_continue)
-
-
-class BeforeModelHook(Protocol):
-    """Protocol for before_model_hook implementations.
-
-    This hook is called before the LLM response is parsed but before execution.
-    It receives an BeforeModelHookInput containing all the relevant data, allowing
-    for inspection, modification, or additional processing.
-    """
-
-    def __call__(self, hook_input: BeforeModelHookInput) -> BeforeModelHookResult:
-        """Process the LLM response, parsed calls, and conversation history.
-
-        Args:
-            hook_input: BeforeModelHookInput containing:
-                - agent_state: The AgentState containing agent context and global storage
-                - max_iterations: The maximum number of iterations
-                - current_iteration: The current iteration
-                - messages: The current conversation history (list of message dicts)
-
-        Returns:
-            BeforeModelHookResult containing any modifications:
-            - BeforeModelHookResult.messages: Modified message history, or None to use original
-
-            Use the class methods for convenient creation:
-            - BeforeModelHookResult.no_changes(): No modifications
-            - BeforeModelHookResult.with_modifications(messages=...): Any combination of modifications
-        """
-        ...
-
-
-class AfterModelHook(Protocol):
-    """Protocol for after_model_hook implementations.
-
-    This hook is called after the LLM response is parsed but before execution.
-    It receives an AfterModelHookInput containing all the relevant data, allowing
-    for inspection, modification, or additional processing.
-    """
-
-    def __call__(self, hook_input: AfterModelHookInput) -> AfterModelHookResult:
-        """Process the LLM response, parsed calls, and conversation history.
-
-        Args:
-            hook_input: AfterModelHookInput containing:
-                - agent_state: The AgentState containing agent context and global storage
-                - max_iterations: The maximum number of iterations
-                - current_iteration: The current iteration
-                - messages: The current conversation history (list of message dicts)
-                - original_response: The original response from the LLM
-                - parsed_response: The parsed structure containing all tool/agent calls
-
-        Returns:
-            AfterModelHookResult containing any modifications:
-            - AfterModelHookResult.parsed_response: Modified parsed response, or None to use original
-            - AfterModelHookResult.messages: Modified message history, or None to use original
-
-            Use the class methods for convenient creation:
-            - AfterModelHookResult.no_changes(): No modifications
-            - AfterModelHookResult.with_modifications(parsed_response=..., messages=...): Any combination of modifications
-        """
-        ...
+    ) -> AfterModelHookResult:
+        return cls(
+            parsed_response=parsed_response,
+            messages=messages,
+            force_continue=force_continue,
+        )
 
 
 @dataclass
-class AfterToolHookInput:
-    """Input data passed to after_tool_hooks.
+class BeforeToolHookInput:
+    """Input data passed to before_tool hooks."""
 
-    This class encapsulates all the information that tool hooks receive:
-    - agent_state: The AgentState containing agent context and global storage
-    - tool_name: The name of the tool that was executed
-    - tool_input: The parameters passed to the tool
-    - tool_output: The result returned by the tool
-    """
-
-    agent_state: "AgentState"
+    agent_state: AgentState
     tool_name: str
     tool_call_id: str
     tool_input: dict[str, Any]
+
+
+@dataclass
+class AfterToolHookInput(BeforeToolHookInput):
+    """Input data passed to after_tool_hooks."""
+
     tool_output: Any
 
 
 @dataclass
-class AfterToolHookResult:
-    """Result returned by after_tool_hooks.
-
-    This class encapsulates the modifications that a tool hook can make:
-    - tool_output: Modified tool output, or None if no changes
-
-    If tool_output is None, it indicates the hook made no modifications.
-    """
-
-    tool_output: Any = None
-
-    def has_modifications(self) -> bool:
-        """Check if this result contains any modifications."""
-        return self.tool_output is not None
+class AfterToolHookResult(HookResult):
+    """Backward compatible alias for HookResult (after tool)."""
 
     @classmethod
-    def no_changes(cls) -> "AfterToolHookResult":
-        """Create an AfterToolHookResult indicating no modifications."""
-        return cls(tool_output=None)
-
-    @classmethod
-    def with_modifications(cls, tool_output: Any) -> "AfterToolHookResult":
-        """Create an AfterToolHookResult with modified tool output.
-
-        Args:
-            tool_output: Modified tool output
-
-        Returns:
-            AfterToolHookResult with the specified modifications
-        """
+    def with_modifications(cls, tool_output: Any) -> AfterToolHookResult:  # type: ignore[override]
         return cls(tool_output=tool_output)
 
 
+class BeforeModelHook(Protocol):
+    def __call__(self, hook_input: BeforeModelHookInput) -> HookResult: ...
+
+
+class AfterModelHook(Protocol):
+    def __call__(self, hook_input: AfterModelHookInput) -> HookResult: ...
+
+
 class AfterToolHook(Protocol):
-    """Protocol for after_tool_hook implementations.
+    def __call__(self, hook_input: AfterToolHookInput) -> HookResult: ...
 
-    This hook is called after a tool is executed but before its result is processed.
-    It receives an AfterToolHookInput containing the tool execution details, allowing
-    for inspection, modification, or additional processing of tool results.
-    """
 
-    def __call__(self, hook_input: AfterToolHookInput) -> AfterToolHookResult:
-        """Process the tool execution result.
+class BeforeToolHook(Protocol):
+    def __call__(self, hook_input: BeforeToolHookInput) -> HookResult: ...
 
-        Args:
-            hook_input: AfterToolHookInput containing:
-                - agent_state: The AgentState containing agent context and global storage
-                - tool_name: The name of the executed tool
-                - tool_input: The parameters that were passed to the tool
-                - tool_output: The result returned by the tool
 
-        Returns:
-            AfterToolHookResult containing any modifications:
-            - AfterToolHookResult.tool_output: Modified tool output, or None to use original
+@dataclass
+class ModelCallParams:
+    """Context passed to middleware wrapping model calls."""
 
-            Use the class methods for convenient creation:
-            - AfterToolHookResult.no_changes(): No modifications
-            - AfterToolHookResult.with_modifications(tool_output=...): Modified output
-        """
-        ...
+    messages: list[dict[str, Any]]
+    max_tokens: int
+    force_stop_reason: AgentStopReason | None
+    agent_state: AgentState | None
+    tool_call_mode: str
+    tools: list[dict[str, Any]] | None
+    api_params: dict[str, Any]
+    openai_client: Any | None = None
+    llm_config: Any | None = None
+    retry_attempts: int = 5
+
+
+@dataclass
+class ToolCallParams:
+    """Context passed to middleware wrapping tool calls."""
+
+    agent_state: AgentState
+    tool_name: str
+    parameters: dict[str, Any]
+    tool_call_id: str
+    execution_params: dict[str, Any]
+
+
+ModelCallFn = Callable[[ModelCallParams], ModelResponse | None]
+ToolCallFn = Callable[[ToolCallParams], Any]
+
+
+class Middleware:
+    """Extensible middleware abstraction for agent execution pipeline."""
+
+    def before_model(self, hook_input: BeforeModelHookInput) -> HookResult:
+        return HookResult.no_changes()
+
+    def after_model(self, hook_input: AfterModelHookInput) -> HookResult:
+        return HookResult.no_changes()
+
+    def after_tool(self, hook_input: AfterToolHookInput) -> HookResult:
+        return HookResult.no_changes()
+
+    def before_tool(self, hook_input: BeforeToolHookInput) -> HookResult:
+        return HookResult.no_changes()
+
+    def wrap_model_call(self, call_next: ModelCallFn) -> ModelCallFn:
+        return call_next
+
+    def wrap_tool_call(self, call_next: ToolCallFn) -> ToolCallFn:
+        return call_next
+
+
+class FunctionMiddleware(Middleware):
+    """Wraps legacy hook callables into middleware instances."""
+
+    def __init__(
+        self,
+        *,
+        before_model_hook: BeforeModelHook | None = None,
+        after_model_hook: AfterModelHook | None = None,
+        after_tool_hook: AfterToolHook | None = None,
+        before_tool_hook: BeforeToolHook | None = None,
+        name: str | None = None,
+    ) -> None:
+        self.before_model_hook = before_model_hook
+        self.after_model_hook = after_model_hook
+        self.after_tool_hook = after_tool_hook
+        self.before_tool_hook = before_tool_hook
+        self.name = name or "function_middleware"
+
+    def before_model(self, hook_input: BeforeModelHookInput) -> HookResult:
+        if not self.before_model_hook:
+            return HookResult.no_changes()
+        return self.before_model_hook(hook_input)
+
+    def after_model(self, hook_input: AfterModelHookInput) -> HookResult:
+        if not self.after_model_hook:
+            return HookResult.no_changes()
+        return self.after_model_hook(hook_input)
+
+    def after_tool(self, hook_input: AfterToolHookInput) -> HookResult:
+        if not self.after_tool_hook:
+            return HookResult.no_changes()
+        return self.after_tool_hook(hook_input)
+
+    def before_tool(self, hook_input: BeforeToolHookInput) -> HookResult:
+        if not self.before_tool_hook:
+            return HookResult.no_changes()
+        return self.before_tool_hook(hook_input)
+
+    def __repr__(self) -> str:  # pragma: no cover - helper for debugging
+        hooks = []
+        if self.before_model_hook:
+            hooks.append("before_model")
+        if self.after_model_hook:
+            hooks.append("after_model")
+        if self.after_tool_hook:
+            hooks.append("after_tool")
+        if self.before_tool_hook:
+            hooks.append("before_tool")
+        return f"FunctionMiddleware(name={self.name}, hooks={hooks})"
+
+
+class CustomLLMGeneratorMiddleware(Middleware):
+    """Wraps legacy custom_llm_generator functions as middleware."""
+
+    def __init__(self, generator: Callable[..., Any]) -> None:
+        self.generator = generator
+
+    def wrap_model_call(self, call_next: ModelCallFn) -> ModelCallFn:
+        generator = self.generator
+
+        def wrapped(params: ModelCallParams) -> ModelResponse | None:
+            # Fallback to call_next if generator is not callable
+            if callable(generator):
+                backoff = 1
+                for attempt in range(params.retry_attempts):
+                    try:
+                        generator_result = generator(
+                            params.openai_client,
+                            params.llm_config,
+                            params.api_params,
+                            params.force_stop_reason,
+                            params.agent_state,
+                        )
+                        if generator_result is None:
+                            raise ValueError("Custom generator produced no response")
+                        if isinstance(generator_result, ModelResponse):
+                            response = generator_result
+                        else:
+                            response = ModelResponse(content=str(generator_result))
+
+                        stop = params.api_params.get("stop", [])
+                        stops = stop if isinstance(stop, list) else [stop] if stop else []
+                        if stops and response.content:
+                            for s in stops:
+                                response.content = response.content.split(s)[0]
+
+                        return response
+                    except Exception as exc:  # pragma: no cover - error path
+                        logger.error(
+                            "❌ Custom LLM generator failed (attempt %s/%s): %s",
+                            attempt + 1,
+                            params.retry_attempts,
+                            exc,
+                        )
+                        if attempt == params.retry_attempts - 1:
+                            raise
+                        time.sleep(backoff)
+                        backoff *= 2
+            return call_next(params)
+
+        return wrapped
+
+
+class LoggingMiddleware(Middleware):
+    """Middleware that logs after-model and/or after-tool phases."""
+
+    def __init__(
+        self,
+        *,
+        model_logger: str | None = None,
+        tool_logger: str | None = None,
+        message_preview_chars: int = 120,
+        tool_preview_chars: int = 500,
+        log_model_calls: bool = False,
+    ) -> None:
+        self.model_logger = logging.getLogger(model_logger) if model_logger else None
+        self.tool_logger = logging.getLogger(tool_logger) if tool_logger else None
+        self.message_preview_chars = message_preview_chars
+        self.tool_preview_chars = tool_preview_chars
+        self.log_model_calls = log_model_calls
+
+    def after_model(self, hook_input: AfterModelHookInput) -> HookResult:  # type: ignore[override]
+        logger = self.model_logger
+        if not logger:
+            return HookResult.no_changes()
+
+        parsed = hook_input.parsed_response
+        logger.info("🎣 ===== AFTER MODEL HOOK TRIGGERED =====")
+        logger.info("Agent: %s (%s)", hook_input.agent_state.agent_name, hook_input.agent_state.agent_id)
+        logger.info("Response length: %s characters", len(hook_input.original_response))
+
+        if parsed is None:
+            logger.info("No parsed response available")
+        else:
+            logger.info("Summary: %s", parsed.get_call_summary())
+            logger.info("Tool calls: %s", len(parsed.tool_calls))
+            logger.info("Sub-agent calls: %s", len(parsed.sub_agent_calls))
+            logger.info("Batch agent calls: %s", len(parsed.batch_agent_calls))
+            logger.info("Parallel tools: %s", parsed.is_parallel_tools)
+            logger.info("Parallel sub-agents: %s", parsed.is_parallel_sub_agents)
+
+        logger.info("Message history: %s items", len(hook_input.messages))
+        for idx, msg in enumerate(hook_input.messages[-3:]):
+            preview = str(msg.get("content", ""))[: self.message_preview_chars]
+            logger.info("Recent message %s: %s -> %s", idx + 1, msg.get("role"), preview)
+
+        logger.info("🎣 ===== END AFTER MODEL HOOK =====")
+        return HookResult.no_changes()
+
+    def after_tool(self, hook_input: AfterToolHookInput) -> HookResult:  # type: ignore[override]
+        logger = self.tool_logger
+        if not logger:
+            return HookResult.no_changes()
+
+        logger.info("🔧 ===== AFTER TOOL HOOK TRIGGERED =====")
+        logger.info("Agent: %s (%s)", hook_input.agent_state.agent_name, hook_input.agent_state.agent_id)
+        logger.info("Tool: %s", hook_input.tool_name)
+        logger.info("Input: %s", hook_input.tool_input)
+
+        output_preview = str(hook_input.tool_output)
+        if len(output_preview) > self.tool_preview_chars:
+            truncated = output_preview[: self.tool_preview_chars]
+            logger.info("🔧 Tool output (truncated): %s...", truncated)
+        else:
+            logger.info("🔧 Tool output: %s", output_preview)
+        logger.info("🔧 ===== END AFTER TOOL HOOK =====")
+        return HookResult.no_changes()
+
+    def wrap_model_call(self, call_next: ModelCallFn) -> ModelCallFn:  # type: ignore[override]
+        if not self.log_model_calls and not self.model_logger:
+            return call_next
+
+        def wrapped(params: ModelCallParams) -> ModelResponse | None:
+            self._log_model_call(f"Custom LLM Generator called with {len(params.messages)} messages")
+            try:
+                response = call_next(params)
+                if response is None:
+                    self._log_model_call("Custom LLM Generator returned no response")
+                else:
+                    preview = (response.render_text() or response.content or "").strip()
+                    if preview:
+                        preview = preview[: self.message_preview_chars]
+                        self._log_model_call(f"Custom LLM Generator response preview: {preview}")
+                return response
+            except Exception as exc:  # pragma: no cover - logging path
+                self._log_model_call(f"Bypass LLM generator error: {exc}", error=True)
+                raise
+
+        return wrapped
+
+    def _log_model_call(self, message: str, error: bool = False) -> None:
+        logger = self.model_logger
+        if logger:
+            log_fn = logger.error if error else logger.info
+            log_fn(message)
+        else:
+            print(message)
+
+
+class MiddlewareManager:
+    """Coordinates middleware execution across the agent lifecycle."""
+
+    def __init__(self, middlewares: list[Middleware] | None = None) -> None:
+        self.middlewares: list[Middleware] = middlewares or []
+
+    def add(self, middleware: Middleware) -> None:
+        self.middlewares.append(middleware)
+
+    def extend(self, middlewares: list[Middleware]) -> None:
+        self.middlewares.extend(middlewares)
+
+    def __bool__(self) -> bool:
+        return bool(self.middlewares)
+
+    def __len__(self) -> int:
+        return len(self.middlewares)
+
+    def run_before_model(self, hook_input: BeforeModelHookInput) -> list[dict[str, Any]]:
+        current_messages = hook_input.messages
+        for idx, middleware in enumerate(self.middlewares):
+            handler = getattr(middleware, "before_model", None)
+            if handler is None:
+                continue
+            try:
+                hook_input.messages = current_messages
+                result = handler(hook_input)
+                hook_result = self._normalize_result(result)
+                if hook_result.messages is not None:
+                    current_messages = hook_result.messages
+                    logger.info(f"🎣 Middleware {middleware.__class__.__name__} (before_model) modified messages")
+                else:
+                    logger.info(f"🎣 Middleware {middleware.__class__.__name__} (before_model) made no changes")
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning(f"⚠️ Before-model middleware {middleware} failed: {exc}")
+        return current_messages
+
+    def run_after_model(
+        self,
+        hook_input: AfterModelHookInput,
+    ) -> tuple[ParsedResponse | None, list[dict[str, Any]], bool]:
+        current_parsed = hook_input.parsed_response
+        current_messages = hook_input.messages
+        force_continue = False
+        for middleware in reversed(self.middlewares):
+            handler = getattr(middleware, "after_model", None)
+            if handler is None:
+                continue
+            try:
+                hook_input.parsed_response = current_parsed
+                hook_input.messages = current_messages
+                result = handler(hook_input)
+                hook_result = self._normalize_result(result)
+                if hook_result.parsed_response is not None:
+                    current_parsed = hook_result.parsed_response
+                    logger.info(f"🎣 Middleware {middleware.__class__.__name__} (after_model) modified parsed response")
+                if hook_result.messages is not None:
+                    current_messages = hook_result.messages
+                    logger.info(f"🎣 Middleware {middleware.__class__.__name__} (after_model) modified messages")
+                if hook_result.force_continue:
+                    force_continue = True
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning(f"⚠️ After-model middleware {middleware} failed: {exc}")
+        return current_parsed, current_messages, force_continue
+
+    def run_after_tool(self, hook_input: AfterToolHookInput, initial_output: Any) -> Any:
+        current_output = initial_output
+        for middleware in reversed(self.middlewares):
+            handler = getattr(middleware, "after_tool", None)
+            if handler is None:
+                continue
+            try:
+                hook_input.tool_output = current_output
+                result = handler(hook_input)
+                hook_result = self._normalize_result(result)
+                if hook_result.tool_output is not None:
+                    current_output = hook_result.tool_output
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning(f"⚠️ After-tool middleware {middleware} failed: {exc}")
+        return current_output
+
+    def run_before_tool(self, hook_input: BeforeToolHookInput) -> dict[str, Any]:
+        current_input = hook_input.tool_input
+        for middleware in self.middlewares:
+            handler = getattr(middleware, "before_tool", None)
+            if handler is None:
+                continue
+            try:
+                hook_input.tool_input = current_input
+                result = handler(hook_input)
+                hook_result = self._normalize_result(result)
+                if hook_result.tool_input is not None:
+                    current_input = hook_result.tool_input
+                    logger.info(
+                        "🔧 Middleware %s (before_tool) modified tool input",
+                        middleware.__class__.__name__,
+                    )
+            except Exception as exc:  # pragma: no cover
+                logger.warning(f"⚠️ Before-tool middleware {middleware} failed: {exc}")
+        return current_input
+
+    def wrap_model_call(self, call_next: ModelCallFn) -> ModelCallFn:
+        wrapped = call_next
+        for middleware in reversed(self.middlewares):
+            wrapper = getattr(middleware, "wrap_model_call", None)
+            if wrapper:
+                wrapped = wrapper(wrapped)
+        return wrapped
+
+    def wrap_tool_call(self, call_next: ToolCallFn) -> ToolCallFn:
+        wrapped = call_next
+        for middleware in reversed(self.middlewares):
+            wrapper = getattr(middleware, "wrap_tool_call", None)
+            if wrapper:
+                wrapped = wrapper(wrapped)
+        return wrapped
+
+    @staticmethod
+    def _normalize_result(result: HookResult | None) -> HookResult:
+        if result is None:
+            return HookResult.no_changes()
+        if isinstance(result, HookResult):
+            return result
+        raise TypeError(f"Middleware returned unsupported result type: {type(result)}")
+
+
+def _coerce_after_model_result(result: HookResult) -> AfterModelHookResult:
+    if isinstance(result, AfterModelHookResult):
+        return result
+    return AfterModelHookResult(
+        parsed_response=result.parsed_response,
+        messages=result.messages,
+        force_continue=result.force_continue,
+    )
+
+
+def _coerce_after_tool_result(result: HookResult) -> AfterToolHookResult:
+    if isinstance(result, AfterToolHookResult):
+        return result
+    return AfterToolHookResult(
+        tool_output=result.tool_output,
+        tool_input=result.tool_input,
+    )
 
 
 def create_logging_hook(logger_name: str = "after_model_hook") -> AfterModelHook:
-    """Create a simple logging hook for debugging purposes.
+    """Legacy-compatible logging hook backed by LoggingMiddleware."""
 
-    Args:
-        logger_name: Name for the logger
+    middleware = LoggingMiddleware(model_logger=logger_name)
 
-    Returns:
-        A hook that logs the parsed response details and message history
-    """
+    def hook(hook_input: AfterModelHookInput) -> HookResult:
+        return _coerce_after_model_result(middleware.after_model(hook_input))
+
+    return hook
+
+
+def create_remaining_reminder_hook(logger_name: str = "after_model_hook") -> AfterModelHook:
+    """Append a reminder about remaining iterations and log it."""
+
     import logging
 
     logger = logging.getLogger(logger_name)
 
-    def logging_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
-        logger.info("🎣 ===== AFTER MODEL HOOK TRIGGERED =====")
-        logger.info(f"🎣 Agent name: {hook_input.agent_state.agent_name}")
-        logger.info(f"🎣 Agent id: {hook_input.agent_state.agent_id}")
-        logger.info(
-            f"🎣 Response length: {len(hook_input.original_response)} characters",
-        )
+    def hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
+        remaining = hook_input.max_iterations - hook_input.current_iteration
+        logger.info("🎣 Remaining iterations: %s", remaining)
+        updated = hook_input.messages + [
+            {"role": "user", "content": f"Remaining iterations: {remaining}"},
+        ]
+        return AfterModelHookResult.with_modifications(messages=updated)
 
-        if hook_input.parsed_response is not None:
-            logger.info(
-                f"🎣 Response summary: {hook_input.parsed_response.get_call_summary()}",
-            )
-            logger.info(
-                f"🎣 Tool calls: {len(hook_input.parsed_response.tool_calls)}",
-            )
-            logger.info(
-                f"🎣 Sub-agent calls: {len(hook_input.parsed_response.sub_agent_calls)}",
-            )
-            logger.info(
-                f"🎣 Batch agent calls: {len(hook_input.parsed_response.batch_agent_calls)}",
-            )
-            logger.info(
-                f"🎣 Is parallel tools: {hook_input.parsed_response.is_parallel_tools}",
-            )
-            logger.info(
-                f"🎣 Is parallel sub-agents: {hook_input.parsed_response.is_parallel_sub_agents}",
-            )
-
-            # Log details of each call
-            for i, tool_call in enumerate(hook_input.parsed_response.tool_calls):
-                logger.info(
-                    f"🎣 Tool call {i + 1}: {tool_call.tool_name} with {len(tool_call.parameters)} parameters",
-                )
-
-            for i, sub_agent_call in enumerate(
-                hook_input.parsed_response.sub_agent_calls,
-            ):
-                logger.info(
-                    f"🎣 Sub-agent call {i + 1}: {sub_agent_call.agent_name}",
-                )
-
-            for i, batch_call in enumerate(
-                hook_input.parsed_response.batch_agent_calls,
-            ):
-                logger.info(
-                    f"🎣 Batch call {i + 1}: {batch_call.agent_name} on {batch_call.file_path}",
-                )
-        else:
-            logger.info("🎣 No parsed response available")
-
-        logger.info(
-            f"🎣 Message history length: {len(hook_input.messages)} messages",
-        )
-
-        # Log recent message history for context
-        # Show last 3 messages
-        for i, msg in enumerate(hook_input.messages[-3:]):
-            logger.info(
-                f"🎣 Recent message {i + 1}: {msg['role']} -> {msg['content'][:100]}...",
-            )
-
-        logger.info("🎣 ===== END AFTER MODEL HOOK =====")
-
-        # Return no changes
-        return AfterModelHookResult.no_changes()
-
-    return logging_hook
-
-
-def create_remaining_reminder_hook(
-    logger_name: str = "after_model_hook",
-) -> AfterModelHook:
-    """Create a simple logging hook for debugging purposes.
-
-    Args:
-        logger_name: Name for the logger
-
-    Returns:
-        A hook that logs the parsed response details and message history
-    """
-    import logging
-
-    logger = logging.getLogger(logger_name)
-
-    def remaining_reminder_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
-        logger.info(
-            f"🎣 Remaining iterations: {hook_input.max_iterations - hook_input.current_iteration}",
-        )
-        hook_input.messages.append(
-            {
-                "role": "user",
-                "content": f"Remaining iterations: {hook_input.max_iterations - hook_input.current_iteration}",
-            },
-        )
-
-        # Return no changes
-        return AfterModelHookResult.with_modifications(messages=hook_input.messages)
-
-    return remaining_reminder_hook
+    return hook
 
 
 def create_tool_after_approve_hook(tool_name: str) -> AfterModelHook:
-    """Ask for approval before running a tool.
+    """Prompt the operator before running the specified tool."""
 
-    Args:
-        tool_name: The name of the tool to run
-    """
-
-    def tool_after_approve_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
-        if hook_input.parsed_response and hook_input.parsed_response.tool_calls:
-            tool_call_to_remove = []
-            for tool_call in hook_input.parsed_response.tool_calls:
-                if tool_call.tool_name == tool_name:
-                    print(f"🎣 Tool call: {tool_call.tool_name}")
-                    print(f"🎣 Tool call parameters: {tool_call.parameters}")
-                    # CLI option to approve or reject the tool call
-                    while True:
-                        approve = input(
-                            f"Approve running {tool_name}? (y/n): ",
-                        )
-                        if approve not in ["y", "n"]:
-                            print("🎣 Invalid input. Please enter 'y' or 'n'.")
-                            continue
-                        else:
-                            if approve == "n":
-                                tool_call_to_remove.append(tool_call)
-                            break
-
-            if tool_call_to_remove:
-                hook_input.parsed_response.tool_calls = [
-                    call for call in hook_input.parsed_response.tool_calls if call not in tool_call_to_remove
-                ]
-            return AfterModelHookResult.with_modifications(parsed_response=hook_input.parsed_response)
-        return AfterModelHookResult.no_changes()
-
-    return tool_after_approve_hook
-
-
-def create_filter_hook(
-    allowed_tools: set[str] | None = None,
-    allowed_agents: set[str] | None = None,
-) -> AfterModelHook:
-    """Create a hook that filters out disallowed tools or agents.
-
-    Args:
-        allowed_tools: Set of allowed tool names (None allows all)
-        allowed_agents: Set of allowed agent names (None allows all)
-
-    Returns:
-        A hook that filters the parsed response
-    """
-    import logging
-
-    logger = logging.getLogger("filter_hook")
-
-    def filter_hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
-        if hook_input.parsed_response is None:
+    def hook(hook_input: AfterModelHookInput) -> AfterModelHookResult:
+        parsed = hook_input.parsed_response
+        if not parsed or not parsed.tool_calls:
             return AfterModelHookResult.no_changes()
 
-        parsed_response: ParsedResponse = hook_input.parsed_response
-        modified = False
+        blocked_calls = []
+        for call in parsed.tool_calls:
+            if call.tool_name != tool_name:
+                continue
+            print(f"🎣 Tool call: {call.tool_name}")
+            print(f"🎣 Tool call parameters: {call.parameters}")
+            while True:
+                approval = input(f"Approve running {tool_name}? (y/n): ")
+                if approval.lower() not in {"y", "n"}:
+                    print("🎣 Invalid input. Please enter 'y' or 'n'.")
+                    continue
+                if approval.lower() == "n":
+                    blocked_calls.append(call)
+                break
 
-        # Filter tool calls
-        if allowed_tools is not None:
-            original_count = len(parsed_response.tool_calls)
-            parsed_response.tool_calls = [call for call in parsed_response.tool_calls if call.tool_name in allowed_tools]
-            if len(parsed_response.tool_calls) != original_count:
-                filtered_count = original_count - len(parsed_response.tool_calls)
-                logger.warning(
-                    f"🎣 Filtered out {filtered_count} disallowed tool calls",
-                )
-                modified = True
-
-        # Filter sub-agent calls
-        if allowed_agents is not None:
-            original_count = len(parsed_response.sub_agent_calls)
-            parsed_response.sub_agent_calls = [call for call in parsed_response.sub_agent_calls if call.agent_name in allowed_agents]
-            if len(parsed_response.sub_agent_calls) != original_count:
-                filtered_count = original_count - len(parsed_response.sub_agent_calls)
-                logger.warning(
-                    f"🎣 Filtered out {filtered_count} disallowed sub-agent calls",
-                )
-                modified = True
-
-        # Filter batch agent calls
-        if allowed_agents is not None:
-            original_count = len(parsed_response.batch_agent_calls)
-            parsed_response.batch_agent_calls = [call for call in parsed_response.batch_agent_calls if call.agent_name in allowed_agents]
-            if len(parsed_response.batch_agent_calls) != original_count:
-                filtered_count = original_count - len(parsed_response.batch_agent_calls)
-                logger.warning(
-                    f"🎣 Filtered out {filtered_count} disallowed batch agent calls",
-                )
-                modified = True
-
-        # Return modified response if changes were made
-        if modified:
-            return AfterModelHookResult.with_modifications(parsed_response=parsed_response)
-        else:
+        if not blocked_calls:
             return AfterModelHookResult.no_changes()
 
-    return filter_hook
+        parsed.tool_calls = [call for call in parsed.tool_calls if call not in blocked_calls]
+        return AfterModelHookResult.with_modifications(parsed_response=parsed)
+
+    return hook
 
 
 def create_tool_logging_hook(logger_name: str = "after_tool_hook") -> AfterToolHook:
-    """Create a simple logging hook for tool execution debugging.
+    """Legacy-compatible tool logging hook backed by LoggingMiddleware."""
 
-    Args:
-        logger_name: Name for the logger
+    middleware = LoggingMiddleware(tool_logger=logger_name)
 
-    Returns:
-        A hook that logs tool execution details
-    """
-    import logging
+    def hook(hook_input: AfterToolHookInput) -> HookResult:
+        return _coerce_after_tool_result(middleware.after_tool(hook_input))
 
-    logger = logging.getLogger(logger_name)
-
-    def tool_logging_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
-        logger.info("🔧 ===== AFTER TOOL HOOK TRIGGERED =====")
-        logger.info(f"🔧 Agent name: {hook_input.agent_state.agent_name}")
-        logger.info(f"🔧 Agent id: {hook_input.agent_state.agent_id}")
-        logger.info(f"🔧 Tool name: {hook_input.tool_name}")
-        logger.info(f"🔧 Tool input: {hook_input.tool_input}")
-        logger.info(f"🔧 Tool output type: {type(hook_input.tool_output)}")
-
-        # Log tool output (truncated if too long)
-        output_str = str(hook_input.tool_output)
-        if len(output_str) > 500:
-            logger.info(f"🔧 Tool output (truncated): {output_str[:500]}...")
-        else:
-            logger.info(f"🔧 Tool output: {output_str}")
-
-        logger.info("🔧 ===== END AFTER TOOL HOOK =====")
-
-        # Return no changes
-        return AfterToolHookResult.no_changes()
-
-    return tool_logging_hook
-
-
-def create_tool_output_filter_hook(filter_keys: set[str]) -> AfterToolHook:
-    """Create a hook that filters sensitive keys from tool outputs.
-
-    Args:
-        filter_keys: Set of keys to filter from dict outputs
-
-    Returns:
-        A hook that removes specified keys from tool outputs
-    """
-    import logging
-
-    logger = logging.getLogger("tool_filter_hook")
-
-    def tool_filter_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
-        if isinstance(hook_input.tool_output, dict):
-            filtered_output = {k: v for k, v in hook_input.tool_output.items() if k not in filter_keys}
-
-            if len(filtered_output) != len(hook_input.tool_output):
-                filtered_count = len(
-                    hook_input.tool_output,
-                ) - len(filtered_output)
-                logger.info(
-                    f"🔧 Filtered {filtered_count} sensitive keys from {hook_input.tool_name} output",
-                )
-                return AfterToolHookResult.with_modifications(
-                    tool_output=filtered_output,
-                )
-
-        return AfterToolHookResult.no_changes()
-
-    return tool_filter_hook
-
-
-def create_tool_result_transformer_hook(transform_func) -> AfterToolHook:
-    """Create a hook that transforms tool outputs using a custom function.
-
-    Args:
-        transform_func: Function that takes (tool_name, tool_input, tool_output) and returns modified output
-
-    Returns:
-        A hook that applies the transformation function
-    """
-
-    def tool_transformer_hook(hook_input: AfterToolHookInput) -> AfterToolHookResult:
-        try:
-            transformed_output = transform_func(
-                hook_input.agent_state.agent_name,
-                hook_input.agent_state.agent_id,
-                hook_input.tool_name,
-                hook_input.tool_input,
-                hook_input.tool_output,
-            )
-
-            # Only return modifications if the output actually changed
-            if transformed_output != hook_input.tool_output:
-                return AfterToolHookResult.with_modifications(
-                    tool_output=transformed_output,
-                )
-
-        except Exception as e:
-            import logging
-
-            logger = logging.getLogger("tool_transformer_hook")
-            logger.warning(
-                f"⚠️ Tool transformation failed for {hook_input.tool_name}: {e}",
-            )
-
-        return AfterToolHookResult.no_changes()
-
-    return tool_transformer_hook
-
-
-class ToolHookManager:
-    """Manages and executes multiple after tool hooks in sequence."""
-
-    def __init__(self, hooks: list[AfterToolHook] | None = None):
-        """Initialize tool hook manager.
-
-        Args:
-            hooks: List of tool hooks to execute
-        """
-        self.hooks: list[AfterToolHook] = hooks or []
-
-    def add_hook(self, hook: AfterToolHook):
-        """Add a tool hook to the manager.
-
-        Args:
-            hook: Tool hook to add
-        """
-        self.hooks.append(hook)
-
-    def remove_hook(self, hook: AfterToolHook):
-        """Remove a tool hook from the manager.
-
-        Args:
-            hook: Tool hook to remove
-        """
-        if hook in self.hooks:
-            self.hooks.remove(hook)
-
-    def execute_hooks(self, hook_input: AfterToolHookInput) -> Any:
-        """Execute all tool hooks in sequence.
-
-        Args:
-            hook_input: AfterToolHookInput containing tool execution details
-
-        Returns:
-            Final tool output after all hooks have processed it
-        """
-        import logging
-
-        logger = logging.getLogger(__name__)
-
-        current_output = hook_input.tool_output
-
-        for i, hook in enumerate(self.hooks):
-            try:
-                logger.info(f"🔧 Executing tool hook {i + 1}/{len(self.hooks)}")
-
-                # Create input for the hook with current output
-                hook_input.tool_output = current_output
-
-                result = hook(hook_input)
-
-                # Handle AfterToolHookResult
-                if result.has_modifications():
-                    current_output = result.tool_output
-                    logger.info(
-                        f"🔧 Tool hook {i + 1} modified the tool output",
-                    )
-                else:
-                    logger.info(f"🔧 Tool hook {i + 1} made no modifications")
-
-            except Exception as e:
-                logger.warning(f"⚠️ Tool hook {i + 1} failed: {e}")
-                # Continue with other hooks even if one fails
-                continue
-
-        return current_output
-
-    def __bool__(self) -> bool:
-        """Check if there are any tool hooks."""
-        return len(self.hooks) > 0
-
-    def __len__(self) -> int:
-        """Get the number of tool hooks."""
-        return len(self.hooks)
-
-
-class HookManager:
-    """Manages and executes multiple after model hooks in sequence."""
-
-    def __init__(self, hooks: list[AfterModelHook] | None = None):
-        """Initialize hook manager.
-
-        Args:
-            hooks: List of hooks to execute
-        """
-        self.hooks: list[AfterModelHook] = hooks or []
-
-    def add_hook(self, hook: AfterModelHook):
-        """Add a hook to the manager.
-
-        Args:
-            hook: Hook to add
-        """
-        self.hooks.append(hook)
-
-    def remove_hook(self, hook: AfterModelHook):
-        """Remove a hook from the manager.
-
-        Args:
-            hook: Hook to remove
-        """
-        if hook in self.hooks:
-            self.hooks.remove(hook)
-
-    def execute_hooks(self, hook_input: AfterModelHookInput | BeforeModelHookInput):
-        """Execute all hooks in sequence.
-
-        Args:
-            hook_input: AfterModelHookInput or BeforeModelHookInput containing all hook input data
-
-        Returns:
-            For after hooks: (parsed_response, messages, force_continue)
-            For before hooks: messages
-        """
-        import logging
-
-        logger = logging.getLogger(__name__)
-
-        if isinstance(hook_input, AfterModelHookInput):
-            hook_type = "after"
-        else:
-            hook_type = "before"
-
-        if hook_type == "after":
-            current_parsed = hook_input.parsed_response
-        current_messages = hook_input.messages
-        force_continue = False  # Track if any hook requests force_continue
-
-        for i, hook in enumerate(self.hooks):
-            try:
-                logger.info(f"🎣 Executing hook {i + 1}/{len(self.hooks)}")
-
-                # Create input for the hook
-                if hook_type == "after":
-                    hook_input.parsed_response = current_parsed
-                hook_input.messages = current_messages
-
-                result = hook(hook_input)
-
-                # Handle AfterModelHookResult
-                if result.has_modifications():
-                    if hook_type == "after" and result.parsed_response is not None:
-                        current_parsed = result.parsed_response
-                        logger.info(
-                            f"🎣 Hook {i + 1} modified the parsed response",
-                        )
-
-                    if result.messages is not None:
-                        current_messages = result.messages
-                        logger.info(
-                            f"🎣 Hook {i + 1} modified the message history",
-                        )
-
-                    # Check force_continue flag
-                    if hook_type == "after" and result.force_continue:
-                        force_continue = True
-                        logger.info(
-                            f"🎣 Hook {i + 1} requested force_continue (agent will continue even without tool calls)",
-                        )
-                else:
-                    logger.info(f"🎣 Hook {i + 1} made no modifications")
-
-            except Exception as e:
-                logger.warning(f"⚠️ Hook {i + 1} failed: {e}")
-                # Continue with other hooks even if one fails
-                continue
-
-        if hook_type == "after":
-            return current_parsed, current_messages, force_continue
-        else:
-            return current_messages
-
-    def __bool__(self) -> bool:
-        """Check if there are any hooks."""
-        return len(self.hooks) > 0
-
-    def __len__(self) -> int:
-        """Get the number of hooks."""
-        return len(self.hooks)
+    return hook

@@ -39,7 +39,6 @@ llm_config = LLMConfig(
 )
 ```
 
-## Custom LLM Generators
+## Customizing LLM Calls
 
-For advanced use cases, NexAU supports custom LLM generators. These are functions that intercept the request to the LLM, allowing you to add custom logic like logging, caching, parameter modification, or even routing between different providers.
-You can apply a custom generator either programmatically or through YAML configuration. Refer to [Custom LLM Generator](./advanced-guides/custom-llm-generator.md) for details.**
+Advanced behaviors (logging, caching, provider routing) are implemented via middlewares that override `wrap_model_call`. See [Hooks/Middleware](./advanced-guides/hooks.md) for end-to-end examples.
