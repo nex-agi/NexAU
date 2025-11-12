@@ -40,9 +40,9 @@ node dist/cli.js <path-to-agent-yaml>
 Run the fake Claude Code agent:
 
 ```bash
-./dist/cli.js ../examples/fake_claude_code/cc_agent.yaml
+./dist/cli.js ../examples/code_agent/cc_agent.yaml
 # or
-node dist/cli.js ../examples/fake_claude_code/cc_agent.yaml
+node dist/cli.js ../examples/code_agent/cc_agent.yaml
 ```
 
 Run a custom agent:
@@ -54,9 +54,9 @@ Run a custom agent:
 Run from the project root:
 
 ```bash
-cli/dist/cli.js examples/fake_claude_code/cc_agent.yaml
+cli/dist/cli.js examples/code_agent/cc_agent.yaml
 # or
-node cli/dist/cli.js examples/fake_claude_code/cc_agent.yaml
+node cli/dist/cli.js examples/code_agent/cc_agent.yaml
 ```
 
 ## Interface

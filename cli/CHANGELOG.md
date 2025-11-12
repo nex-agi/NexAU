@@ -95,14 +95,14 @@ cli/
 ```bash
 # From cli directory
 npm run build
-./dist/cli.js ../examples/fake_claude_code/cc_agent.yaml
+./dist/cli.js ../examples/code_agent/cc_agent.yaml
 
 # Or use convenience scripts
 npm run test-fake-cc
 ./test-cli.sh
 
 # From project root
-cli/dist/cli.js examples/fake_claude_code/cc_agent.yaml
+cli/dist/cli.js examples/code_agent/cc_agent.yaml
 ```
 
 ### Example Session

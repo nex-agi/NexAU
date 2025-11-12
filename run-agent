@@ -18,7 +18,7 @@ echo -e "${BLUE}NexAU Agent Runner${NC}"
 if [ -z "$1" ]; then
     echo -e "${RED}Error: Please provide a YAML config file path${NC}"
     echo "Usage: $0 <path-to-yaml-config>"
-    echo "Example: $0 examples/fake_claude_code/cc_agent.yaml"
+    echo "Example: $0 examples/code_agent/cc_agent.yaml"
     exit 1
 fi
 
