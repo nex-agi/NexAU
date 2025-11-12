@@ -42,6 +42,7 @@ class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
     )
 
     name: str | None = None
+    description: str | None = None
     agent_id: str | None = None
     system_prompt: str | None = None
     system_prompt_type: Literal["string", "file", "jinja"] = "string"
