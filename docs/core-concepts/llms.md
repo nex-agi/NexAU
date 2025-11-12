@@ -41,4 +41,4 @@ llm_config = LLMConfig(
 
 ## Customizing LLM Calls
 
-Advanced behaviors (logging, caching, provider routing) are implemented via middlewares that override `wrap_model_call`. See [Hooks/Middleware](./advanced-guides/hooks.md) for end-to-end examples.
+Advanced behaviors (logging, caching, provider routing) are implemented via middlewares that override `wrap_model_call(params, call_next)`. See [Hooks/Middleware](./advanced-guides/hooks.md) for end-to-end examples.

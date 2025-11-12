@@ -97,7 +97,6 @@ class AgentConfigSchema(
     before_model_hooks: list[HookDefinition] = Field(default_factory=list)
     before_tool_hooks: list[HookDefinition] = Field(default_factory=list)
     middlewares: list[HookDefinition] = Field(default_factory=list)
-    custom_llm_generator: HookDefinition | None = None
     token_counter: HookDefinition | None = None
 
 
@@ -425,40 +424,6 @@ class AgentBuilder:
         self.agent_params["llm_config"] = LLMConfig(
             **self.config["llm_config"],
         )
-
-        # Handle custom_llm_generator configuration
-        custom_llm_generator = None
-        if "custom_llm_generator" in self.config:
-            llm_generator_config = self.config["custom_llm_generator"]
-            if isinstance(llm_generator_config, str):
-                # Simple import string format
-                custom_llm_generator = import_from_string(llm_generator_config)
-            elif isinstance(llm_generator_config, dict):
-                # Dictionary format with import and optional parameters
-                import_string = llm_generator_config.get("import")
-                if not import_string:
-                    raise ConfigError(
-                        "custom_llm_generator missing 'import' field",
-                    )
-
-                llm_generator_func = import_from_string(import_string)
-
-                # Check if there are parameters to pass
-                params = llm_generator_config.get("params", {})
-                if params:
-                    # Create a wrapper function with the parameters
-                    def configured_llm_generator(openai_client, kwargs):
-                        return llm_generator_func(openai_client, kwargs, **params)
-
-                    custom_llm_generator = configured_llm_generator
-                else:
-                    custom_llm_generator = llm_generator_func
-            else:
-                raise ConfigError(
-                    "custom_llm_generator configuration must be a string or dictionary",
-                )
-
-        self.agent_params["custom_llm_generator"] = custom_llm_generator
 
         # Handle token counter configuration
         token_counter = None

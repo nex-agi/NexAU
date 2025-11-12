@@ -20,7 +20,6 @@ from nexau.archs.main_sub.execution.hooks import (
     BeforeModelHook,
     BeforeModelHookInput,
     BeforeToolHook,
-    CustomLLMGeneratorMiddleware,
     FunctionMiddleware,
     Middleware,
     MiddlewareManager,
@@ -73,7 +72,6 @@ class Executor:
         middlewares: list[Middleware] | None = None,
         serial_tool_name: list[str] | None = None,
         global_storage: Any = None,
-        custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None = None,
         tool_call_mode: str = "openai",
         openai_tools: list[dict[str, Any]] | None = None,
     ):
@@ -99,7 +97,6 @@ class Executor:
             before_tool_hooks: Optional list of hooks called before tool execution
             after_tool_hooks: Optional list of hooks called after tool execution
             middlewares: Optional list of middleware objects applied to all phases
-            custom_llm_generator: Optional custom LLM generator function
             tool_call_mode: Preferred tool call format ('xml', 'openai', or 'anthorpic')
             openai_tools: Structured tool definitions for OpenAI/Anthorpic tool calls
         """
@@ -114,7 +111,6 @@ class Executor:
             after_model_hooks or [],
             after_tool_hooks or [],
             before_tool_hooks or [],
-            custom_llm_generator,
         )
         self.tool_executor = ToolExecutor(
             tool_registry,
@@ -538,7 +534,6 @@ class Executor:
         after_model_hooks: list[AfterModelHook],
         after_tool_hooks: list[AfterToolHook],
         before_tool_hooks: list[BeforeToolHook],
-        custom_llm_generator: Callable[[Any, dict[str, Any]], Any] | None,
     ) -> MiddlewareManager | None:
         combined: list[Middleware] = list(configured_middlewares)
 
@@ -576,9 +571,6 @@ class Executor:
                     name=f"before_tool::{_hook_name(hook)}",
                 ),
             )
-
-        if custom_llm_generator:
-            combined.append(CustomLLMGeneratorMiddleware(custom_llm_generator))
 
         return MiddlewareManager(combined)
 

@@ -8,7 +8,7 @@ NexAU is a general-purpose agent framework inspired by Claude Code's architectur
 - **Agent Architecture**: Create specialized agents with different capabilities.
 - **Built-in Tools**: File operations, web search, bash execution, and more.
 - **LLM Integration**: Support for various LLM providers (OpenAI, Claude, etc.).
-- **Custom LLM Generators**: Customize LLM behavior with custom preprocessing, caching, logging, and provider switching.
+- **Middleware Hooks**: Customize LLM behavior with preprocessing, caching, logging, and provider switching.
 - **YAML Configuration**: Define agents and tools declaratively.
 
 ## Explore the Documentation
@@ -18,7 +18,7 @@ NexAU is a general-purpose agent framework inspired by Claude Code's architectur
 * **Core Concepts**
     * **[🤖 Agents](./core-concepts/agents.md)**: Learn how to create and configure agents.
     * **[🛠️ Tools](./core-concepts/tools.md)**: Use built-in tools and create your own.
-    * **[🧠 LLMs](./core-concepts/llms.md)**: Configure LLM providers and custom generators.
+* **[🧠 LLMs](./core-concepts/llms.md)**: Configure LLM providers and middleware-based extensions.
 
 * **Advanced Guides**
     * **[Skills](./advanced-guides/hooks.md)**: Skills (compatible with Claude Skill format) to dynamically ingest skill context (support both tool and file).

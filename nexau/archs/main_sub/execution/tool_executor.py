@@ -2,7 +2,6 @@
 
 import json
 import logging
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -116,13 +115,12 @@ class ToolExecutor:
                     )
             return tool.execute(**exec_params)
 
-        wrapped_call: Callable[[ToolCallParams], dict[str, Any]] = _execute_tool_call
-        if self.middleware_manager:
-            wrapped_call = self.middleware_manager.wrap_tool_call(wrapped_call)
-
         execution_error = None
         try:
-            result = wrapped_call(call_params)
+            if self.middleware_manager:
+                result = self.middleware_manager.wrap_tool_call(call_params, _execute_tool_call)
+            else:
+                result = _execute_tool_call(call_params)
             logger.info(f"✅ Tool '{tool_name}' executed successfully")
         except Exception as e:
             logger.error(f"❌ Tool '{tool_name}' execution failed: {e}")
