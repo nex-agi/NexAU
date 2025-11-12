@@ -6,7 +6,7 @@ This guide will walk you through installing the NexAU framework and running your
 
 ```bash
 # Clone the repository
-git clone git@github.com:/nexau.git
+git clone git@github.com:nex-agi/nexau.git
 cd nexau
 
 # Install dependencies using uv

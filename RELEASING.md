@@ -41,7 +41,7 @@ git push origin v0.2.0
 
 ### 3. Monitor the Release
 
-1. Go to the [Actions tab](https://github.com//nexau/actions)
+1. Go to the [Actions tab](https://github.com/nex-agi/nexau/actions)
 2. Watch the "CD - Release and Publish" workflow
 3. The workflow will:
    - Run tests
@@ -50,7 +50,7 @@ git push origin v0.2.0
 
 ### 4. Verify the Release
 
-- Check [GitHub Releases](https://github.com//nexau/releases) for the release notes
+- Check [GitHub Releases](https://github.com/nex-agi/nexau/releases) for the release notes
 - Test installation: `pip install nexau==0.2.0`
 
 ## Version Numbering
@@ -82,7 +82,7 @@ git push origin v0.1.1
 
 If you need to remove a release:
 
-1. Delete the GitHub release from the [Releases page](https://github.com//nexau/releases)
+1. Delete the GitHub release from the [Releases page](https://github.com/nex-agi/nexau/releases)
 2. Delete the tag:
    ```bash
    git tag -d v0.2.0
