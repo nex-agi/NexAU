@@ -360,48 +360,51 @@ class Agent:
                     try:
                         from datetime import datetime
 
-                        trace_context = {
-                            "trace_id": self.langfuse_trace_id,
-                        }
-                        if parent_agent_state and parent_agent_state.langfuse_span_id:
-                            trace_context["parent_span_id"] = parent_agent_state.langfuse_span_id
-
-                        with self.langfuse_client.start_as_current_span(
-                            name=f"agent_{self.config.name}",
-                            input=message,
-                            metadata={
+                        span_kwargs = {
+                            "input": message,
+                            "name": f"agent_{self.config.name}",
+                            "metadata": {
                                 "agent_name": self.config.name,
                                 "max_iterations": self.exec_config.max_iterations,
                                 "model": self.config.llm_config.model,
                                 "system_prompt_type": self.config.system_prompt_type,
                                 "timestamp": datetime.now().isoformat(),
                             },
-                            trace_context=trace_context,
-                        ) as current_span:
-                            logger.info(
-                                f"📊 Created Langfuse span for agent: {self.config.name}",
-                            )
+                        }
 
-                            agent_state.langfuse_span_id = current_span.id
-                            response, updated_messages = self.executor.execute(
-                                self.history,
-                                agent_state,
-                                dump_trace_path,
-                            )
-                            self.history = updated_messages
+                        if parent_agent_state and parent_agent_state.langfuse_span:
+                            span = parent_agent_state.langfuse_span.start_span(**span_kwargs)
+                        else:
+                            span = self.langfuse_client.start_span(**span_kwargs)
 
-                            self.langfuse_client.update_current_span(
-                                output=response,
-                                metadata={
-                                    "response_length": len(response),
-                                    "history_length": len(self.history),
-                                    "execution_completed": True,
-                                },
-                            )
+                        # with langfuse_observer(
+                        #     **span_kwargs,
+                        # ) as current_span:
+                        logger.info(
+                            f"📊 Created Langfuse span for agent: {self.config.name}",
+                        )
 
-                            logger.info(
-                                f"📤 Langfuse span completed for agent: {self.config.name}",
-                            )
+                        agent_state.langfuse_span = span
+                        response, updated_messages = self.executor.execute(
+                            self.history,
+                            agent_state,
+                            dump_trace_path,
+                        )
+                        self.history = updated_messages
+
+                        span.update(
+                            output=response,
+                            metadata={
+                                "response_length": len(response),
+                                "history_length": len(self.history),
+                                "execution_completed": True,
+                            },
+                        )
+                        span.end()
+
+                        logger.info(
+                            f"📤 Langfuse span completed for agent: {self.config.name}",
+                        )
 
                         self.langfuse_client.flush()
 

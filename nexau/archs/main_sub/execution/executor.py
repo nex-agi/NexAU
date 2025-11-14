@@ -7,9 +7,12 @@ import uuid
 from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from contextvars import copy_context
 from copy import deepcopy
 from typing import Any
+
+from langfuse import LangfuseSpan
 
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.execution.batch_processor import BatchProcessor
@@ -45,6 +48,15 @@ from nexau.archs.main_sub.tracing.tracer import Tracer
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def maybe_span(span: LangfuseSpan | None, name: str):
+    if span is not None:
+        with span.start_as_current_span(name=name):
+            yield
+    else:
+        yield
 
 
 class Executor:
@@ -288,193 +300,194 @@ class Executor:
                         },
                     )
 
-                before_model_hook_input = BeforeModelHookInput(
-                    agent_state=agent_state,
-                    max_iterations=self.max_iterations,
-                    current_iteration=iteration,
-                    messages=messages,
-                )
-
-                if self.middleware_manager:
-                    try:
-                        messages = self.middleware_manager.run_before_model(
-                            before_model_hook_input,
-                        )
-                    except Exception as e:
-                        logger.warning(f"⚠️ Before-model middleware execution failed: {e}")
-
-                # Call LLM to get response
-                logger.info(
-                    f"🧠 Calling LLM for agent '{self.agent_name}' with {calculated_max_tokens} max tokens...",
-                )
-                model_response = self.llm_caller.call_llm(
-                    messages,
-                    calculated_max_tokens,
-                    force_stop_reason,
-                    agent_state,
-                    tool_call_mode=self.tool_call_mode,
-                    tools=self.structured_tool_payload if self.use_structured_tool_calls else None,
-                )
-                if model_response is None:
-                    break
-
-                assistant_content = model_response.content or ""
-                assistant_log_text = model_response.render_text() or assistant_content
-
-                # Log LLM response to trace if enabled
-                if dump_trace_path:
-                    # Create a mock response object for tracing compatibility
-                    self.tracer.add_llm_response(
-                        iteration + 1,
-                        assistant_log_text,
+                with maybe_span(agent_state.langfuse_span, f"AgentIteration {iteration + 1}"):
+                    before_model_hook_input = BeforeModelHookInput(
+                        agent_state=agent_state,
+                        max_iterations=self.max_iterations,
+                        current_iteration=iteration,
+                        messages=messages,
                     )
 
-                logger.info(
-                    f"💬 LLM Response for agent '{self.agent_name}': {assistant_log_text}",
-                )
-
-                # Store this as the latest response (potential final response)
-                final_response = assistant_content
-
-                # Parse response to check for actions
-                parsed_response = self.response_parser.parse_response(
-                    model_response,
-                )
-
-                # Add the assistant's original response to conversation
-                messages.append(model_response.to_message_dict())
-
-                # Process tool calls and sub-agent calls
-                logger.info(
-                    f"⚙️ Processing tool/sub-agent calls for agent '{self.agent_name}'...",
-                )
-                after_model_hook_input = AfterModelHookInput(
-                    agent_state=agent_state,
-                    max_iterations=self.max_iterations,
-                    current_iteration=iteration,
-                    original_response=assistant_content,
-                    parsed_response=parsed_response,
-                    messages=messages,
-                    model_response=model_response,
-                )
-
-                (
-                    processed_response,
-                    should_stop,
-                    stop_tool_result,
-                    updated_messages,
-                    execution_feedbacks,
-                ) = self._process_xml_calls(
-                    after_model_hook_input,
-                    tracer=self.tracer if dump_trace_path else None,
-                )
-
-                # Update messages with any modifications from hooks
-                messages = updated_messages
-
-                processed_parsed_response = after_model_hook_input.parsed_response
-
-                # Check if a stop tool was executed
-                if should_stop and len(self.queued_messages) == 0:
-                    # Return the stop tool result directly, formatted as JSON if it's not a string
-                    if stop_tool_result is not None:
-                        logger.info(
-                            "🛑 Stop tool detected, returning stop tool result as final response",
-                        )
-                        force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
-                        if isinstance(stop_tool_result, str):
-                            final_response = stop_tool_result
-                            break
-                        else:
-                            import json
-
-                            final_response = json.dumps(
-                                stop_tool_result,
-                                indent=4,
-                                ensure_ascii=False,
+                    if self.middleware_manager:
+                        try:
+                            messages = self.middleware_manager.run_before_model(
+                                before_model_hook_input,
                             )
-                            break
-                    else:
-                        logger.info("🛑 No more tool calls, stop.")
-                        force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
-                        # Fallback to the processed response if no specific result
-                        final_response = processed_response
+                        except Exception as e:
+                            logger.warning(f"⚠️ Before-model middleware execution failed: {e}")
+
+                    # Call LLM to get response
+                    logger.info(
+                        f"🧠 Calling LLM for agent '{self.agent_name}' with {calculated_max_tokens} max tokens...",
+                    )
+                    model_response = self.llm_caller.call_llm(
+                        messages,
+                        calculated_max_tokens,
+                        force_stop_reason,
+                        agent_state,
+                        tool_call_mode=self.tool_call_mode,
+                        tools=self.structured_tool_payload if self.use_structured_tool_calls else None,
+                    )
+                    if model_response is None:
                         break
 
-                # Extract just the tool results from processed_response
-                openai_tool_mode = bool(
-                    processed_parsed_response
-                    and processed_parsed_response.model_response
-                    and processed_parsed_response.model_response.tool_calls
-                )
+                    assistant_content = model_response.content or ""
+                    assistant_log_text = model_response.render_text() or assistant_content
 
-                if openai_tool_mode:
-                    for feedback in execution_feedbacks:
-                        call_obj = feedback.get("call")
-                        call_type = feedback.get("call_type")
-                        content = feedback.get("content") or ""
-
-                        if call_type == "tool":
-                            call_id = getattr(call_obj, "tool_call_id", None)
-                        elif call_type == "sub_agent":
-                            call_id = getattr(call_obj, "tool_call_id", None) or getattr(call_obj, "sub_agent_call_id", None)
-                        else:
-                            call_id = None
-
-                        if not call_id:
-                            continue
-
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": call_id,
-                                "content": content,
-                            },
+                    # Log LLM response to trace if enabled
+                    if dump_trace_path:
+                        # Create a mock response object for tracing compatibility
+                        self.tracer.add_llm_response(
+                            iteration + 1,
+                            assistant_log_text,
                         )
 
-                    tool_results = ""
-                else:
-                    tool_results = processed_response.replace(
-                        assistant_content,
-                        "",
-                        1,
-                    ).strip()
-
-                # Add tool results as user feedback with iteration context
-                remaining_iterations = self.max_iterations - iteration - 1
-                iteration_hint = self._build_iteration_hint(
-                    iteration + 1,
-                    self.max_iterations,
-                    remaining_iterations,
-                )
-
-                if tool_results:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": f"Tool execution results:\n{tool_results}\n\n{iteration_hint}",
-                        },
+                    logger.info(
+                        f"💬 LLM Response for agent '{self.agent_name}': {assistant_log_text}",
                     )
-                else:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": f"{iteration_hint}",
-                        },
+
+                    # Store this as the latest response (potential final response)
+                    final_response = assistant_content
+
+                    # Parse response to check for actions
+                    parsed_response = self.response_parser.parse_response(
+                        model_response,
                     )
-                current_prompt_tokens = self.token_counter.count_tokens(
-                    messages,
-                )
 
-                token_limit_hint = self._build_token_limit_hint(
-                    current_prompt_tokens,
-                    self.max_context_tokens,
-                    available_tokens,
-                    desired_max_tokens,
-                )
-                messages[-1]["content"] += f"\n\n{token_limit_hint}"
+                    # Add the assistant's original response to conversation
+                    messages.append(model_response.to_message_dict())
 
-                iteration += 1
+                    # Process tool calls and sub-agent calls
+                    logger.info(
+                        f"⚙️ Processing tool/sub-agent calls for agent '{self.agent_name}'...",
+                    )
+                    after_model_hook_input = AfterModelHookInput(
+                        agent_state=agent_state,
+                        max_iterations=self.max_iterations,
+                        current_iteration=iteration,
+                        original_response=assistant_content,
+                        parsed_response=parsed_response,
+                        messages=messages,
+                        model_response=model_response,
+                    )
+
+                    (
+                        processed_response,
+                        should_stop,
+                        stop_tool_result,
+                        updated_messages,
+                        execution_feedbacks,
+                    ) = self._process_xml_calls(
+                        after_model_hook_input,
+                        tracer=self.tracer if dump_trace_path else None,
+                    )
+
+                    # Update messages with any modifications from hooks
+                    messages = updated_messages
+
+                    processed_parsed_response = after_model_hook_input.parsed_response
+
+                    # Check if a stop tool was executed
+                    if should_stop and len(self.queued_messages) == 0:
+                        # Return the stop tool result directly, formatted as JSON if it's not a string
+                        if stop_tool_result is not None:
+                            logger.info(
+                                "🛑 Stop tool detected, returning stop tool result as final response",
+                            )
+                            force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
+                            if isinstance(stop_tool_result, str):
+                                final_response = stop_tool_result
+                                break
+                            else:
+                                import json
+
+                                final_response = json.dumps(
+                                    stop_tool_result,
+                                    indent=4,
+                                    ensure_ascii=False,
+                                )
+                                break
+                        else:
+                            logger.info("🛑 No more tool calls, stop.")
+                            force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
+                            # Fallback to the processed response if no specific result
+                            final_response = processed_response
+                            break
+
+                    # Extract just the tool results from processed_response
+                    openai_tool_mode = bool(
+                        processed_parsed_response
+                        and processed_parsed_response.model_response
+                        and processed_parsed_response.model_response.tool_calls
+                    )
+
+                    if openai_tool_mode:
+                        for feedback in execution_feedbacks:
+                            call_obj = feedback.get("call")
+                            call_type = feedback.get("call_type")
+                            content = feedback.get("content") or ""
+
+                            if call_type == "tool":
+                                call_id = getattr(call_obj, "tool_call_id", None)
+                            elif call_type == "sub_agent":
+                                call_id = getattr(call_obj, "tool_call_id", None) or getattr(call_obj, "sub_agent_call_id", None)
+                            else:
+                                call_id = None
+
+                            if not call_id:
+                                continue
+
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": call_id,
+                                    "content": content,
+                                },
+                            )
+
+                        tool_results = ""
+                    else:
+                        tool_results = processed_response.replace(
+                            assistant_content,
+                            "",
+                            1,
+                        ).strip()
+
+                    # Add tool results as user feedback with iteration context
+                    remaining_iterations = self.max_iterations - iteration - 1
+                    iteration_hint = self._build_iteration_hint(
+                        iteration + 1,
+                        self.max_iterations,
+                        remaining_iterations,
+                    )
+
+                    if tool_results:
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": f"Tool execution results:\n{tool_results}\n\n{iteration_hint}",
+                            },
+                        )
+                    else:
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": f"{iteration_hint}",
+                            },
+                        )
+                    current_prompt_tokens = self.token_counter.count_tokens(
+                        messages,
+                    )
+
+                    token_limit_hint = self._build_token_limit_hint(
+                        current_prompt_tokens,
+                        self.max_context_tokens,
+                        available_tokens,
+                        desired_max_tokens,
+                    )
+                    messages[-1]["content"] += f"\n\n{token_limit_hint}"
+
+                    iteration += 1
 
             # Add note if max iterations reached
             if iteration >= self.max_iterations:
