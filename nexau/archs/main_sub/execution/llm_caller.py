@@ -173,6 +173,7 @@ class LLMCaller:
             logger.info(
                 f"🛑 LLM call forced to stop due to {force_stop_reason.name}",
             )
+            return None
 
         backoff = 1
         for i in range(self.retry_attempts):
