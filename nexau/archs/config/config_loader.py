@@ -3,6 +3,7 @@
 import importlib
 import logging
 import os
+import re
 import traceback
 from collections.abc import Callable
 from pathlib import Path
@@ -560,6 +561,17 @@ def load_yaml_with_vars(path):
     # 替换变量
     base_dir = os.path.dirname(os.path.abspath(path))
     config_text = config_text.replace("${this_file_dir}", base_dir)
+
+    # Replace ${env.VAR_NAME} placeholders with environment variables
+    env_pattern = re.compile(r"\$\{env\.([A-Za-z_][A-Za-z0-9_]*)\}")
+
+    def _replace_env(match: re.Match[str]) -> str:
+        env_name = match.group(1)
+        if env_name not in os.environ:
+            raise ConfigError(f"Environment variable '{env_name}' is not set")
+        return os.environ[env_name]
+
+    config_text = env_pattern.sub(_replace_env, config_text)
 
     # 再 load
     return yaml.safe_load(config_text)
