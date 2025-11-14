@@ -275,9 +275,8 @@ class TestAgent:
             with patch("nexau.archs.main_sub.agent.Langfuse") as mock_langfuse_class:
                 mock_langfuse = Mock()
                 mock_span = Mock()
-                mock_span.__enter__ = Mock(return_value=mock_span)
-                mock_span.__exit__ = Mock(return_value=False)
-                mock_langfuse.start_as_current_span.return_value = mock_span
+                mock_langfuse.start_span.return_value = mock_span
+                mock_langfuse.create_trace_id.return_value = "trace-123"
                 mock_langfuse_class.return_value = mock_langfuse
 
                 with patch.dict(
@@ -303,8 +302,15 @@ class TestAgent:
 
                         assert response == "Response with tracing"
                         # Verify Langfuse span was created and updated
-                        mock_langfuse.start_as_current_span.assert_called_once()
-                        mock_langfuse.update_current_span.assert_called_once()
+                        mock_langfuse.start_span.assert_called_once()
+                        span_call = mock_langfuse.start_span.call_args
+                        assert span_call.kwargs["input"] == "Message"
+                        assert span_call.kwargs["name"] == f"agent_{agent_config.name}"
+                        assert span_call.kwargs["metadata"]["agent_name"] == agent_config.name
+
+                        mock_span.update.assert_called_once()
+                        assert mock_span.update.call_args.kwargs["output"] == "Response with tracing"
+                        mock_span.end.assert_called_once()
                         mock_langfuse.flush.assert_called_once()
 
     def test_run_with_langfuse_error(self, agent_config, execution_config, global_storage):
@@ -314,7 +320,8 @@ class TestAgent:
 
             with patch("nexau.archs.main_sub.agent.Langfuse") as mock_langfuse_class:
                 mock_langfuse = Mock()
-                mock_langfuse.start_as_current_span.side_effect = Exception("Langfuse error")
+                mock_langfuse.start_span.side_effect = Exception("Langfuse error")
+                mock_langfuse.create_trace_id.return_value = "trace-123"
                 mock_langfuse_class.return_value = mock_langfuse
 
                 with patch.dict(
@@ -341,6 +348,7 @@ class TestAgent:
 
                         assert response == "Response without tracing"
                         mock_execute.assert_called()
+                        mock_langfuse.flush.assert_not_called()
 
     def test_run_with_error_handler(self, agent_config, execution_config, global_storage):
         """Test agent run with error handler."""
