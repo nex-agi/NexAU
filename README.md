@@ -1,3 +1,8 @@
+<p align="left">
+    <a href="README_CN.md">中文</a> &nbsp ｜ &nbsp English
+</p>
+
+
 # NexAU Framework
 
 A general-purpose agent framework for building intelligent agents with tool capabilities.
@@ -132,22 +137,3 @@ uv run pytest --cov=nexau --cov-report=html --cov-report=term
 ```
 
 The coverage report will be generated in the `htmlcov/` directory. Open `htmlcov/index.html` in your browser to view the detailed coverage report.
-
-### Continuous Integration
-
-All pull requests to the `main` branch will automatically run:
-- **Linting** - Code quality checks using ruff
-- **Format checking** - Code style verification using ruff
-- **Tests** - Full test suite with pytest
-- **Coverage reporting** - Test coverage analysis
-
-The workflow is defined in `.github/workflows/ci.yml`.
-
-### Continuous Deployment
-
-When a version tag (e.g., `v0.3.0`) is pushed to the repository, the CD workflow automatically:
-- Runs the full test suite
-- Builds the package
-- Creates a GitHub release with changelog
-
-See [RELEASING.md](./RELEASING.md) for detailed release instructions.
