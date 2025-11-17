@@ -1,0 +1,139 @@
+<p align="left">
+   中文 &nbsp ｜ &nbsp  <a href="README_CN.md">English</a>
+</p>
+
+
+# NexAU 框架
+
+一个通用智能体框架，用于构建具有工具能力的智能体。
+
+该框架提供模块化的工具系统、灵活的智能体架构，以及与各种LLM提供商的无缝集成。
+
+**➡️ 完整文档请查看 [`docs/`](./docs/index.md) 目录。**
+
+---
+
+## 安装
+
+### 从 GitHub Release 安装（推荐）
+
+**使用 pip：**
+```bash
+# 从最新发布版本安装（需要使用SSH，因为nexau是私有仓库）
+pip install git+ssh://git@github.com/nex-agi/nexau.git@v0.3.0
+
+# 或者访问 https://github.com/nex-agi/nexau/releases/ 下载 whl 文件，然后
+pip install nexau-0.3.0-py3-none-any.whl
+```
+
+**使用 uv：**
+```bash
+# 从最新发布版本安装（需要使用SSH）
+uv pip install git+ssh://git@github.com/nex-agi/nexau.git@v0.3.0
+
+# 或者访问 https://github.com/nex-agi/nexau/releases/ 下载 whl 文件，然后
+uv pip install nexau-0.3.0-py3-none-any.whl
+```
+
+### 从 Main 分支安装最新版本
+
+**使用 pip：**
+```bash
+pip install git+ssh://git@github.com/nex-agi/nexau.git
+```
+
+**使用 uv：**
+```bash
+uv pip install git+ssh://git@github.com/nex-agi/nexau.git
+```
+
+### 从源码安装
+
+```bash
+# 克隆仓库
+git clone git@github.com:nex-agi/nexau.git
+cd nexau
+
+# 使用 uv 安装依赖
+pip install uv
+uv sync
+```
+
+## 快速开始
+
+1.  **设置环境变量**，在 `.env` 文件中：
+    ```.env
+    LLM_MODEL="你的-llm-模型"
+    LLM_BASE_URL="你的-llm-api基础url"
+    LLM_API_KEY="你的-llm-api密钥"
+    SERPER_API_KEY="serper.dev的api密钥"（如果需要使用网络搜索）
+    ```
+
+2.  **运行示例：**
+    ```bash
+    # 确保已安装 python-dotenv (`uv pip install python-dotenv`)
+    dotenv run uv run examples/code_agent/start.py
+
+    输入你的任务：构建一个关于三体问题的算法艺术
+    ```
+
+3. **使用 NexAU CLI 运行**（简化版）
+    
+    **选项 1：使用 run-agent 脚本（推荐）**
+    ```bash
+    # 一行命令运行任何智能体配置
+    ./run-agent examples/code_agent/cc_agent.yaml
+    ```
+    
+    **选项 2：使用 npm 脚本**
+    ```bash
+    # 一次性设置
+    npm run setup-cli
+    
+    # 运行智能体（设置后随时使用）
+    npm run agent examples/code_agent/cc_agent.yaml
+    
+    # 或使用完整命令名
+    npm run run-agent examples/code_agent/cc_agent.yaml
+    ```
+    
+    **选项 3：手动方式（原始方法）**
+    ```bash
+    # 构建 CLI 应用
+    cd cli
+    npm install
+    npm run build
+    cd ../
+    
+    # 使用 CLI 基于 YAML 配置运行智能体
+    dotenv run cli/dist/cli.js examples/code_agent/cc_agent.yaml
+    ```
+    
+
+## 开发
+
+### 运行测试和质量检查
+
+在提交拉取请求之前，您可以运行与 CI 中相同的检查：
+
+```bash
+# 安装依赖（包括开发依赖）
+uv sync
+
+# 运行代码检查
+uv run ruff check .
+
+# 运行格式检查
+uv run ruff format --check .
+
+# 自动修复代码检查问题（可选）
+uv run ruff check --fix .
+
+# 自动格式化代码（可选）
+uv run ruff format .
+
+# 运行测试并生成覆盖率报告
+uv run pytest --cov=nexau --cov-report=html --cov-report=term
+```
+
+覆盖率报告将生成在 `htmlcov/` 目录中。在浏览器中打开 `htmlcov/index.html` 查看详细的覆盖率报告。
