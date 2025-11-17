@@ -66,9 +66,7 @@ description: >-
   parallel:
      - Add relevant untracked files to the staging area.
      - Create the commit with a message ending with:
-     🤖 Generated with [Claude Code](https://claude.ai/code)
-
-     Co-Authored-By: Claude <noreply@anthropic.com>
+     🤖 Generated with [NexAU](https://github.com/nex-agi/nexau)
      - Run git status to make sure the commit succeeded.
   4. If the commit fails due to pre-commit hook changes, retry the commit ONCE
   to include these automated changes. If it fails again, it usually means a
@@ -103,9 +101,7 @@ description: >-
   git commit -m "$(cat <<'EOF'
      Commit message here.
 
-     🤖 Generated with [Claude Code](https://claude.ai/code)
-
-     Co-Authored-By: Claude <noreply@anthropic.com>
+     🤖 Generated with [NexAU](https://github.com/nex-agi/nexau)
      EOF
      )"
   </example>
@@ -157,7 +153,7 @@ description: >-
   [Checklist of TODOs for testing the pull request...]
 
 
-  🤖 Generated with [Claude Code](https://claude.ai/code)
+  🤖 Generated with [NexAU](https://github.com/nex-agi/nexau)
 
   EOF
 

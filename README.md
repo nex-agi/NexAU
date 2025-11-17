@@ -1,6 +1,6 @@
 # NexAU Framework
 
-A general-purpose agent framework inspired by Claude Code's architecture for building intelligent agents with tool capabilities.
+A general-purpose agent framework for building intelligent agents with tool capabilities.
 
 This framework provides a modular tool system, a flexible agent architecture, and seamless integration with various LLM providers.
 
