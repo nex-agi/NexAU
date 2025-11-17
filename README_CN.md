@@ -5,9 +5,9 @@
 
 # NexAU 框架
 
-一个通用智能体框架，用于构建具有工具能力的智能体。
+一个通用 Agent 框架，用于构建具有工具能力的 Agent 。
 
-该框架提供模块化的工具系统、灵活的智能体架构，以及与各种LLM提供商的无缝集成。
+该框架提供模块化的工具系统、灵活的 Agent 架构，以及与各种LLM提供商的无缝集成。
 
 **➡️ 完整文档请查看 [`docs/`](./docs/index.md) 目录。**
 
@@ -67,7 +67,12 @@ uv sync
     LLM_BASE_URL="你的-llm-api基础url"
     LLM_API_KEY="你的-llm-api密钥"
     SERPER_API_KEY="serper.dev的api密钥"（如果需要使用网络搜索）
+
+    LANGFUSE_SECRET_KEY=sk-lf-xxx
+    LANGFUSE_PUBLIC_KEY=pk-lf-xxx
+    LANGFUSE_HOST="https://us.cloud.langfuse.com"
     ```
+    可选：NexAU 使用 Langfuse 来进行轨迹捕捉，通过设置 Langfuse 的环境变量来开启它。
 
 2.  **运行示例：**
     ```bash
@@ -77,37 +82,93 @@ uv sync
     输入你的任务：构建一个关于三体问题的算法艺术
     ```
 
-3. **使用 NexAU CLI 运行**（简化版）
+3.  **想直接用 Python 而不是 YAML？** 下面的代码与 `examples/code_agent/cc_agent.yaml` 定义的 Agent 等价，创建code_agent.py：
+    ```python
+    import logging
+    import os
+    from pathlib import Path
+
+    from nexau import Agent, AgentConfig, LLMConfig, Skill, Tool
+    from nexau.archs.main_sub.execution.hooks import LoggingMiddleware
+
+    from nexau.archs.tool.builtin import (
+        bash_tool,
+        file_edit_tool,
+        file_read_tool,
+        file_write_tool,
+        glob_tool,
+        grep_tool,
+        ls_tool,
+        multiedit_tool,
+        todo_write,
+        web_read,
+        web_search,
+    )
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+
+    base_dir = Path("examples/code_agent")
+
+    # NexAU decouples the definition and implementation (binding) of tools
+    tools = [
+        Tool.from_yaml(base_dir / "tools/WebSearch.tool.yaml", binding=web_search),
+        Tool.from_yaml(base_dir / "tools/WebFetch.tool.yaml", binding=web_read),
+        Tool.from_yaml(base_dir / "tools/TodoWrite.tool.yaml", binding=todo_write),
+        Tool.from_yaml(base_dir / "tools/Grep.tool.yaml", binding=grep_tool),
+        Tool.from_yaml(base_dir / "tools/Glob.tool.yaml", binding=glob_tool),
+        Tool.from_yaml(base_dir / "tools/Read.tool.yaml", binding=file_read_tool),
+        Tool.from_yaml(base_dir / "tools/Write.tool.yaml", binding=file_write_tool),
+        Tool.from_yaml(base_dir / "tools/Edit.tool.yaml", binding=file_edit_tool),
+        Tool.from_yaml(base_dir / "tools/Bash.tool.yaml", binding=bash_tool),
+        Tool.from_yaml(base_dir / "tools/Ls.tool.yaml", binding=ls_tool),
+        Tool.from_yaml(base_dir / "tools/MultiEdit.tool.yaml", binding=multiedit_tool),
+    ]
+
+    skills = [
+        Skill.from_folder(base_dir / "skills/theme-factory"),
+        Skill.from_folder(base_dir / "skills/algorithmic-art"),
+    ]
+
+    agent = Agent(
+        AgentConfig(
+            name="claude_code_agent",
+            max_context_tokens=100000,
+            system_prompt=str(base_dir / "system-workflow.md"),
+            system_prompt_type="jinja",
+            tool_call_mode="openai", # xml, openai or anthorpic
+            llm_config=LLMConfig(
+                temperature=0.7,
+                max_tokens=4096,
+                model=os.getenv("LLM_MODEL"),
+                base_url=os.getenv("LLM_BASE_URL"),
+                api_key=os.getenv("LLM_API_KEY"),
+                api_type="openai_chat_completion", # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
+            ),
+            tools=tools,
+            skills=skills,
+            middlewares=[
+                LoggingMiddleware(
+                    model_logger="claude_code_model_debug",
+                    tool_logger="claude_code_tool_debug",
+                    log_model_calls=True,
+                ),
+            ],
+        ),
+    )
+
+    print(agent.run("Use LS tool to list the files in the current directory", context={"working_directory": os.getcwd()}))
+
+    ```
+    通过 `dotenv run uv run code_agent.py` 来运行 Agent
+
+4. **使用 NexAU CLI 运行**
     
-    **选项 1：使用 run-agent 脚本（推荐）**
+    **使用 run-agent 脚本（推荐）**
     ```bash
-    # 一行命令运行任何智能体配置
+    # 一行命令运行任何 NexAU Agent 的 yaml 配置
     ./run-agent examples/code_agent/cc_agent.yaml
     ```
-    
-    **选项 2：使用 npm 脚本**
-    ```bash
-    # 一次性设置
-    npm run setup-cli
-    
-    # 运行智能体（设置后随时使用）
-    npm run agent examples/code_agent/cc_agent.yaml
-    
-    # 或使用完整命令名
-    npm run run-agent examples/code_agent/cc_agent.yaml
-    ```
-    
-    **选项 3：手动方式（原始方法）**
-    ```bash
-    # 构建 CLI 应用
-    cd cli
-    npm install
-    npm run build
-    cd ../
-    
-    # 使用 CLI 基于 YAML 配置运行智能体
-    dotenv run cli/dist/cli.js examples/code_agent/cc_agent.yaml
-    ```
+    NexAU CLI 支持多轮交互、显示工具调用轨迹和Sub-agent的轨迹，非常适合用来调试 NexAU 的 Agent。
     
 
 ## 开发

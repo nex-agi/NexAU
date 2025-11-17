@@ -69,18 +69,19 @@ class Agent:
         self,
         config: AgentConfig,
         global_storage: GlobalStorage | None = None,
-        exec_config: ExecutionConfig | None = None,
     ):
         """Initialize agent with configuration.
 
         Args:
             config: Agent configuration
             global_storage: Optional global storage instance
-            exec_config: Optional execution configuration
         """
         self.config = config
         self.global_storage = global_storage if global_storage is not None else GlobalStorage()
-        self.exec_config = exec_config if exec_config is not None else ExecutionConfig()
+        # Prefer the tool_call_mode defined on AgentConfig when an ExecutionConfig
+        # is not explicitly provided to keep Python-created agents consistent with
+        # YAML-created ones.
+        self.exec_config = ExecutionConfig.from_agent_config(self.config)
 
         self.tool_call_mode = normalize_tool_call_mode(self.exec_config.tool_call_mode)
         self.use_structured_tool_calls = self.tool_call_mode in STRUCTURED_TOOL_CALL_MODES
@@ -570,16 +571,12 @@ def create_agent(
         middlewares=middlewares,
         error_handler=error_handler,
         token_counter=token_counter,
-    )
-
-    # Create execution configuration
-    exec_config = ExecutionConfig(
         max_iterations=max_iterations,
         max_context_tokens=max_context_tokens,
         max_running_subagents=max_running_subagents,
+        tool_call_mode=tool_call_mode,
         retry_attempts=retry_attempts,
         timeout=timeout,
-        tool_call_mode=tool_call_mode,
     )
 
-    return Agent(agent_config, global_storage, exec_config)
+    return Agent(agent_config, global_storage)
