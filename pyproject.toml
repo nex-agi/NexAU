@@ -1,7 +1,7 @@
 [project]
 name = "nexau"
 version = "0.1.0"
-description = "A general-purpose agent framework inspired by Claude Code's architecture"
+description = "A general-purpose agent framework"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
