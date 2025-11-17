@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /*
  * Copyright (c) Nex-AGI. All rights reserved.
  *
@@ -14,7 +15,6 @@
  * limitations under the License.
  */
 
-#!/usr/bin/env node
 import React from 'react';
 import {render} from 'ink';
 import meow from 'meow';

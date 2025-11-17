@@ -67,7 +67,12 @@ uv sync
     LLM_BASE_URL="your-llm-api-base-url"
     LLM_API_KEY="your-llm-api-key"
     SERPER_API_KEY="api key from serper.dev" (required if you need to use web search)
+
+    LANGFUSE_SECRET_KEY=sk-lf-xxx
+    LANGFUSE_PUBLIC_KEY=pk-lf-xxx
+    LANGFUSE_HOST="https://us.cloud.langfuse.com"
     ```
+    Optional: NexAU uses Langfuse for tracing, setup your Langfuse keys if you want to enable traces.
 
 2.  **Run an example:**
     ```bash
@@ -77,37 +82,93 @@ uv sync
     Enter your task: Build an algorithm art about 3-body problem
     ```
 
-3. **Use NexAU CLI to run** (Simplified)
+3.  **Prefer Python over YAML?** Create the same agent defined in `examples/code_agent/cc_agent.yaml` directly in code, create a new file `code_agent.py`:
+    ```python
+    import logging
+    import os
+    from pathlib import Path
+
+    from nexau import Agent, AgentConfig, LLMConfig, Skill, Tool
+    from nexau.archs.main_sub.execution.hooks import LoggingMiddleware
+
+    from nexau.archs.tool.builtin import (
+        bash_tool,
+        file_edit_tool,
+        file_read_tool,
+        file_write_tool,
+        glob_tool,
+        grep_tool,
+        ls_tool,
+        multiedit_tool,
+        todo_write,
+        web_read,
+        web_search,
+    )
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+
+    base_dir = Path("examples/code_agent")
+
+    # NexAU decouples the definition and implementation (binding) of tools
+    tools = [
+        Tool.from_yaml(base_dir / "tools/WebSearch.tool.yaml", binding=web_search),
+        Tool.from_yaml(base_dir / "tools/WebFetch.tool.yaml", binding=web_read),
+        Tool.from_yaml(base_dir / "tools/TodoWrite.tool.yaml", binding=todo_write),
+        Tool.from_yaml(base_dir / "tools/Grep.tool.yaml", binding=grep_tool),
+        Tool.from_yaml(base_dir / "tools/Glob.tool.yaml", binding=glob_tool),
+        Tool.from_yaml(base_dir / "tools/Read.tool.yaml", binding=file_read_tool),
+        Tool.from_yaml(base_dir / "tools/Write.tool.yaml", binding=file_write_tool),
+        Tool.from_yaml(base_dir / "tools/Edit.tool.yaml", binding=file_edit_tool),
+        Tool.from_yaml(base_dir / "tools/Bash.tool.yaml", binding=bash_tool),
+        Tool.from_yaml(base_dir / "tools/Ls.tool.yaml", binding=ls_tool),
+        Tool.from_yaml(base_dir / "tools/MultiEdit.tool.yaml", binding=multiedit_tool),
+    ]
+
+    skills = [
+        Skill.from_folder(base_dir / "skills/theme-factory"),
+        Skill.from_folder(base_dir / "skills/algorithmic-art"),
+    ]
+
+    agent = Agent(
+        AgentConfig(
+            name="claude_code_agent",
+            max_context_tokens=100000,
+            system_prompt=str(base_dir / "system-workflow.md"),
+            system_prompt_type="jinja",
+            tool_call_mode="openai", # xml, openai or anthorpic
+            llm_config=LLMConfig(
+                temperature=0.7,
+                max_tokens=4096,
+                model=os.getenv("LLM_MODEL"),
+                base_url=os.getenv("LLM_BASE_URL"),
+                api_key=os.getenv("LLM_API_KEY"),
+                api_type="openai_chat_completion", # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
+            ),
+            tools=tools,
+            skills=skills,
+            middlewares=[
+                LoggingMiddleware(
+                    model_logger="claude_code_model_debug",
+                    tool_logger="claude_code_tool_debug",
+                    log_model_calls=True,
+                ),
+            ],
+        ),
+    )
+
+    print(agent.run("Use LS tool to list the files in the current directory", context={"working_directory": os.getcwd()}))
+
+    ```
+    Run it with `dotenv run uv run code_agent.py`
+
+4. **Use NexAU CLI to run**
     
-    **Option 1: Using the run-agent script (Recommended)**
+    **Using the run-agent script (Recommended)**
     ```bash
-    # One-liner to run any agent config
+    # One-liner to run any NexAU agent yaml config
     ./run-agent examples/code_agent/cc_agent.yaml
     ```
-    
-    **Option 2: Using npm scripts**
-    ```bash
-    # One-time setup
-    npm run setup-cli
-    
-    # Run agent (any time after setup)
-    npm run agent examples/code_agent/cc_agent.yaml
-    
-    # Or use the full command name
-    npm run run-agent examples/code_agent/cc_agent.yaml
-    ```
-    
-    **Option 3: Manual approach (Original)**
-    ```bash
-    # Build the cli app
-    cd cli
-    npm install
-    npm run build
-    cd ../
-    
-    # Use cli to run an agent based on a yaml config
-    dotenv run cli/dist/cli.js examples/code_agent/cc_agent.yaml
-    ```
+    NexAU CLI supports multi-round human interaction, tool call traces and sub-agent traces, which makes agent debugging easier.
     
 
 ## Development

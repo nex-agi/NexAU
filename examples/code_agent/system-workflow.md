@@ -256,3 +256,5 @@ $gitStatus
 <env>
 {{env_content}}
 </env>
+
+Current working dir is {{working_directory}}
