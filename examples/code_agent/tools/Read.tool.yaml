@@ -23,8 +23,8 @@ description: >-
 
   - Results are returned using cat -n format, with line numbers starting at 1
 
-  - This tool allows Claude Code to read images (eg PNG, JPG, etc). When reading
-  an image file the contents are presented visually as Claude Code is a
+  - This tool allows agent to read images (eg PNG, JPG, etc). When reading
+  an image file the contents are presented visually as agent is a
   multimodal LLM.
 
   - This tool can read PDF files (.pdf). PDFs are processed page by page,

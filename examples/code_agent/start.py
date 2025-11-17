@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Test the fake Claude Code agent loading from YAML configuration."""
+"""Test the code agent loading from YAML configuration."""
 
 import logging
 import os
@@ -32,19 +32,19 @@ def get_date():
 
 
 def main():
-    """Test the fake Claude Code agent with YAML-based agent configuration."""
-    print("Testing Fake Claude Code Agent (YAML-based)")
+    """Test the code agent with YAML-based agent configuration."""
+    print("Testing Code Agent (YAML-based)")
     print("=" * 60)
 
     try:
         # Load agent from YAML configuration
-        print("Loading Claude Code agent from YAML configuration...")
+        print("Loading Code agent from YAML configuration...")
 
         script_dir = Path(__file__).parent
         claude_code_agent = load_agent_config(str(script_dir / "cc_agent.yaml"))
         print("✓ Agent loaded successfully from YAML")
 
-        print("\nTesting Fake Claude Code...")
+        print("\nTesting Code Agent...")
         user_message = input("Enter your task: ")
         print(f"\nUser: {user_message}")
         print("\nAgent Response:")

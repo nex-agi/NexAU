@@ -2,7 +2,7 @@
 
 ## Overview
 
-NexAU is a general-purpose agent framework inspired by Claude Code's architecture, supporting main agents with specialized sub-agents for efficient task delegation and execution.
+NexAU is a general-purpose agent framework, supporting main agents with specialized sub-agents for efficient task delegation and execution.
 
 ## Quick Start Example
 
@@ -898,4 +898,4 @@ agent = load_agent_config(
 )
 ```
 
-This comprehensive specification provides a complete foundation for building a flexible, extensible agent framework that can be customized for any domain while maintaining the efficient main-sub agent architecture inspired by Claude Code.
+This comprehensive specification provides a complete foundation for building a flexible, extensible agent framework that can be customized for any domain while maintaining the efficient main-sub agent architecture.
