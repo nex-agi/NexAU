@@ -9,7 +9,7 @@ Creating an agent in Python gives you maximum flexibility. This is ideal for dyn
 **Example from `examples/deep_research/quickstart.py`:**
 
 ```python
-#!/usr/bin/env python3
+
 import os
 from datetime import datetime
 from nexau.archs.main_sub import create_agent
@@ -77,7 +77,7 @@ For a more declarative approach, you can define an agent's entire configuration 
 2.  **Load and use the agent in Python:**
 
     ```python
-    #!/usr/bin/env python3
+    
     import os
     from datetime import datetime
     from nexau.archs.config.config_loader import load_agent_config
