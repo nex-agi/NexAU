@@ -15,19 +15,19 @@ This framework provides a modular tool system, a flexible agent architecture, an
 **Using pip:**
 ```bash
 # Install from the latest release tag using SSH (you need to use ssh because nexau is a private repo)
-pip install git+ssh://git@github.com/nex-agi/nexau.git@v0.2.0
+pip install git+ssh://git@github.com/nex-agi/nexau.git@v0.3.0
 
 # or visit https://github.com/nex-agi/nexau/releases/ and download whl, then
-pip install nexau-0.1.0-py3-none-any.whl
+pip install nexau-0.3.0-py3-none-any.whl
 ```
 
 **Using uv:**
 ```bash
 # Install from the latest release tag using SSH
-uv pip install git+ssh://git@github.com/nex-agi/nexau.git@v0.2.0
+uv pip install git+ssh://git@github.com/nex-agi/nexau.git@v0.3.0
 
 # or visit https://github.com/nex-agi/nexau/releases/ and download whl, then
-uv pip install nexau-0.1.0-py3-none-any.whl
+uv pip install nexau-0.3.0-py3-none-any.whl
 ```
 
 ### Install Latest from Main Branch
@@ -145,7 +145,7 @@ The workflow is defined in `.github/workflows/ci.yml`.
 
 ### Continuous Deployment
 
-When a version tag (e.g., `v0.2.0`) is pushed to the repository, the CD workflow automatically:
+When a version tag (e.g., `v0.3.0`) is pushed to the repository, the CD workflow automatically:
 - Runs the full test suite
 - Builds the package
 - Creates a GitHub release with changelog
