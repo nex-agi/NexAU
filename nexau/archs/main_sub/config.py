@@ -14,6 +14,8 @@
 
 """Configuration models for the NexAU agent framework."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,6 +88,8 @@ class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
     max_running_subagents: int = Field(default=5, ge=0)
     max_iterations: int = Field(default=100, ge=1)
     tool_call_mode: str = "openai"
+    retry_attempts: int = Field(default=5, ge=0)
+    timeout: int = Field(default=300, ge=1)
 
 
 @dataclass
@@ -97,11 +101,24 @@ class ExecutionConfig:
     max_running_subagents: int = 5
     retry_attempts: int = 5
     timeout: int = 300
-    tool_call_mode: str = "xml"
+    tool_call_mode: str = "openai"
 
     def __post_init__(self) -> None:
         """Validate execution configuration."""
         self.tool_call_mode = normalize_tool_call_mode(self.tool_call_mode)
+
+    @classmethod
+    def from_agent_config(cls, agent_config: AgentConfig) -> ExecutionConfig:
+        """Create execution configuration derived from an agent configuration."""
+
+        return cls(
+            max_iterations=agent_config.max_iterations,
+            max_context_tokens=agent_config.max_context_tokens,
+            max_running_subagents=agent_config.max_running_subagents,
+            retry_attempts=agent_config.retry_attempts,
+            timeout=agent_config.timeout,
+            tool_call_mode=agent_config.tool_call_mode,
+        )
 
 
 class AgentConfig(

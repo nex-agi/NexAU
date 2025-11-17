@@ -24,6 +24,7 @@ from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent import Agent, create_agent
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.main_sub.config import ExecutionConfig
 
 
 @pytest.fixture(autouse=True)
@@ -43,26 +44,35 @@ class TestAgent:
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = Agent(agent_config, global_storage, execution_config)
+            agent_config.max_iterations = execution_config.max_iterations
+            agent_config.max_context_tokens = execution_config.max_context_tokens
+            agent_config.max_running_subagents = execution_config.max_running_subagents
+            agent_config.retry_attempts = execution_config.retry_attempts
+            agent_config.timeout = execution_config.timeout
+            agent_config.tool_call_mode = execution_config.tool_call_mode
+
+            agent = Agent(agent_config, global_storage)
+
+            expected_exec_config = ExecutionConfig.from_agent_config(agent_config)
 
             assert agent.config == agent_config
             assert agent.global_storage == global_storage
-            assert agent.exec_config == execution_config
+            assert agent.exec_config == expected_exec_config
             assert agent.openai_client is not None
             assert agent.history == []
             assert agent.queued_messages == []
 
-    def test_agent_initialization_no_external_client(self, agent_config, execution_config, global_storage):
+    def test_agent_initialization_no_external_client(self, agent_config, global_storage):
         """Test agent initialization when OpenAI client creation fails."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.side_effect = Exception("API Error")
 
-            agent = Agent(agent_config, global_storage, execution_config)
+            agent = Agent(agent_config, global_storage)
 
             assert agent.openai_client is None
 
     @patch("nexau.archs.main_sub.agent.Langfuse")
-    def test_agent_initialization_with_langfuse(self, mock_langfuse_class, agent_config, execution_config, global_storage):
+    def test_agent_initialization_with_langfuse(self, mock_langfuse_class, agent_config, global_storage):
         """Test agent initialization with Langfuse tracing."""
         mock_langfuse = Mock()
         mock_langfuse_class.return_value = mock_langfuse
@@ -77,12 +87,12 @@ class TestAgent:
             with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
                 mock_openai.OpenAI.return_value = Mock()
 
-                agent = Agent(agent_config, global_storage, execution_config)
+                agent = Agent(agent_config, global_storage)
 
                 assert agent.langfuse_client == mock_langfuse
 
     @patch("nexau.archs.main_sub.agent.Langfuse")
-    def test_agent_initialization_langfuse_missing_env(self, mock_langfuse_class, agent_config, execution_config, global_storage):
+    def test_agent_initialization_langfuse_missing_env(self, mock_langfuse_class, agent_config, global_storage):
         """Test agent initialization when Langfuse env vars are missing."""
         mock_langfuse_class.return_value = Mock()
 
@@ -90,28 +100,28 @@ class TestAgent:
             with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
                 mock_openai.OpenAI.return_value = Mock()
 
-                agent = Agent(agent_config, global_storage, execution_config)
+                agent = Agent(agent_config, global_storage)
 
                 assert agent.langfuse_client is None
 
-    def test_add_tool(self, agent_config, execution_config, global_storage, sample_tool):
+    def test_add_tool(self, agent_config, global_storage, sample_tool):
         """Test adding tools to agent."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = Agent(agent_config, global_storage, execution_config)
+            agent = Agent(agent_config, global_storage)
 
             agent.add_tool(sample_tool)
 
             assert sample_tool.name in agent.tool_registry
             assert sample_tool in agent.config.tools
 
-    def test_add_sub_agent(self, agent_config, execution_config, global_storage):
+    def test_add_sub_agent(self, agent_config, global_storage):
         """Test adding sub-agents to agent."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = Agent(agent_config, global_storage, execution_config)
+            agent = Agent(agent_config, global_storage)
 
             def mock_sub_agent_factory():
                 return create_agent(name="sub_agent", llm_config=LLMConfig())
@@ -120,12 +130,12 @@ class TestAgent:
 
             assert "test_sub" in agent.config.sub_agent_factories
 
-    def test_enqueue_message(self, agent_config, execution_config, global_storage):
+    def test_enqueue_message(self, agent_config, global_storage):
         """Test enqueuing messages."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = Agent(agent_config, global_storage, execution_config)
+            agent = Agent(agent_config, global_storage)
 
             test_message = {"role": "user", "content": "Test message"}
 
@@ -133,19 +143,19 @@ class TestAgent:
 
             assert test_message in agent.executor.queued_messages
 
-    def test_agent_cleanup(self, agent_config, execution_config, global_storage):
+    def test_agent_cleanup(self, agent_config, global_storage):
         """Test agent cleanup."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = Agent(agent_config, global_storage, execution_config)
+            agent = Agent(agent_config, global_storage)
 
             with patch.object(agent.executor, "cleanup") as mock_cleanup:
                 agent.stop()
 
                 mock_cleanup.assert_called_once()
 
-    def test_initialize_mcp_tools_success(self, agent_config, execution_config, global_storage):
+    def test_initialize_mcp_tools_success(self, agent_config, global_storage):
         """Test successful MCP tools initialization."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
@@ -160,14 +170,14 @@ class TestAgent:
                 # Add MCP servers to config
                 agent_config.mcp_servers = [{"name": "test_server", "type": "stdio", "command": "python", "args": ["server.py"]}]
 
-                agent = Agent(agent_config, global_storage, execution_config)
+                agent = Agent(agent_config, global_storage)
 
                 # Verify MCP tools were added
                 assert mock_mcp_tool in agent.config.tools
                 assert "test_mcp_tool" in agent.tool_registry
                 mock_sync_init.assert_called_once_with(agent_config.mcp_servers)
 
-    def test_initialize_mcp_tools_import_error(self, agent_config, execution_config, global_storage):
+    def test_initialize_mcp_tools_import_error(self, agent_config, global_storage):
         """Test MCP tools initialization with import error."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
@@ -177,12 +187,12 @@ class TestAgent:
                 agent_config.mcp_servers = [{"name": "test_server"}]
 
                 # Should not raise, but log error
-                agent = Agent(agent_config, global_storage, execution_config)
+                agent = Agent(agent_config, global_storage)
 
                 # MCP tools should not be added
                 assert len(agent.config.tools) == 0
 
-    def test_initialize_mcp_tools_general_error(self, agent_config, execution_config, global_storage):
+    def test_initialize_mcp_tools_general_error(self, agent_config, global_storage):
         """Test MCP tools initialization with general error."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
@@ -192,17 +202,17 @@ class TestAgent:
                 agent_config.mcp_servers = [{"name": "test_server"}]
 
                 # Should not raise, but log error
-                agent = Agent(agent_config, global_storage, execution_config)
+                agent = Agent(agent_config, global_storage)
 
                 # MCP tools should not be added
                 assert len(agent.config.tools) == 0
 
-    def test_run_basic(self, agent_config, execution_config, global_storage):
+    def test_run_basic(self, agent_config, global_storage):
         """Test basic agent run."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = Agent(agent_config, global_storage, execution_config)
+            agent = Agent(agent_config, global_storage)
 
             # Mock executor.execute
             with patch.object(agent.executor, "execute") as mock_execute:
@@ -223,12 +233,12 @@ class TestAgent:
                 assert agent.history[-1]["content"] == "Test response"
                 mock_execute.assert_called_once()
 
-    def test_run_with_history(self, agent_config, execution_config, global_storage):
+    def test_run_with_history(self, agent_config, global_storage):
         """Test agent run with existing history."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = Agent(agent_config, global_storage, execution_config)
+            agent = Agent(agent_config, global_storage)
 
             existing_history = [{"role": "user", "content": "Previous message"}, {"role": "assistant", "content": "Previous response"}]
 
@@ -251,7 +261,7 @@ class TestAgent:
                 call_args = mock_execute.call_args[0][0]
                 assert any(msg["content"] == "Previous message" for msg in call_args)
 
-    def test_run_with_context_state_config(self, agent_config, execution_config, global_storage):
+    def test_run_with_context_state_config(self, agent_config, global_storage):
         """Test agent run with context, state, and config."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
@@ -261,7 +271,7 @@ class TestAgent:
             agent_config.initial_state = {"initial_state": "value"}
             agent_config.initial_config = {"initial_config": "value"}
 
-            agent = Agent(agent_config, global_storage, execution_config)
+            agent = Agent(agent_config, global_storage)
 
             with patch.object(agent.executor, "execute") as mock_execute:
                 mock_execute.return_value = (
@@ -281,7 +291,7 @@ class TestAgent:
                 # Verify merged context, state, and config were used
                 mock_execute.assert_called_once()
 
-    def test_run_with_langfuse(self, agent_config, execution_config, global_storage):
+    def test_run_with_langfuse(self, agent_config, global_storage):
         """Test agent run with Langfuse tracing."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
@@ -300,7 +310,7 @@ class TestAgent:
                         "LANGFUSE_SECRET_KEY": "test-secret",
                     },
                 ):
-                    agent = Agent(agent_config, global_storage, execution_config)
+                    agent = Agent(agent_config, global_storage)
 
                     with patch.object(agent.executor, "execute") as mock_execute:
                         mock_execute.return_value = (
@@ -327,7 +337,7 @@ class TestAgent:
                         mock_span.end.assert_called_once()
                         mock_langfuse.flush.assert_called_once()
 
-    def test_run_with_langfuse_error(self, agent_config, execution_config, global_storage):
+    def test_run_with_langfuse_error(self, agent_config, global_storage):
         """Test agent run when Langfuse tracing fails."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
@@ -345,7 +355,7 @@ class TestAgent:
                         "LANGFUSE_SECRET_KEY": "test-secret",
                     },
                 ):
-                    agent = Agent(agent_config, global_storage, execution_config)
+                    agent = Agent(agent_config, global_storage)
 
                     with patch.object(agent.executor, "execute") as mock_execute:
                         mock_execute.return_value = (
@@ -364,7 +374,7 @@ class TestAgent:
                         mock_execute.assert_called()
                         mock_langfuse.flush.assert_not_called()
 
-    def test_run_with_error_handler(self, agent_config, execution_config, global_storage):
+    def test_run_with_error_handler(self, agent_config, global_storage):
         """Test agent run with error handler."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
@@ -376,7 +386,7 @@ class TestAgent:
                 return f"Error handled: {str(error)}"
 
             agent_config.error_handler = custom_error_handler
-            agent = Agent(agent_config, global_storage, execution_config)
+            agent = Agent(agent_config, global_storage)
 
             with patch.object(agent.executor, "execute", side_effect=Exception("Test error")):
                 response = agent.run("Message")
@@ -385,23 +395,23 @@ class TestAgent:
                 assert len(error_handler_called) == 1
                 assert agent.history[-1]["role"] == "assistant"
 
-    def test_run_without_error_handler(self, agent_config, execution_config, global_storage):
+    def test_run_without_error_handler(self, agent_config, global_storage):
         """Test agent run without error handler."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = Agent(agent_config, global_storage, execution_config)
+            agent = Agent(agent_config, global_storage)
 
             with patch.object(agent.executor, "execute", side_effect=Exception("Test error")):
                 with pytest.raises(Exception, match="Test error"):
                     agent.run("Message")
 
-    def test_run_with_parent_agent_state(self, agent_config, execution_config, global_storage):
+    def test_run_with_parent_agent_state(self, agent_config, global_storage):
         """Test agent run with parent agent state."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = Agent(agent_config, global_storage, execution_config)
+            agent = Agent(agent_config, global_storage)
 
             parent_state = AgentState(
                 agent_name="parent_agent",
@@ -428,12 +438,12 @@ class TestAgent:
                 agent_state = call_args[1]
                 assert agent_state.parent_agent_state == parent_state
 
-    def test_run_with_dump_trace_path(self, agent_config, execution_config, global_storage):
+    def test_run_with_dump_trace_path(self, agent_config, global_storage):
         """Test agent run with dump trace path."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = Agent(agent_config, global_storage, execution_config)
+            agent = Agent(agent_config, global_storage)
 
             with patch.object(agent.executor, "execute") as mock_execute:
                 mock_execute.return_value = (

@@ -18,6 +18,7 @@ from .file_tools.file_read_tool import file_read_tool
 from .file_tools.file_write_tool import file_write_tool
 from .file_tools.glob_tool import glob_tool
 from .file_tools.grep_tool import grep_tool
+from .ls_tool import ls_tool
 from .mcp_client import (
     MCPClient,
     MCPManager,
@@ -27,6 +28,7 @@ from .mcp_client import (
     initialize_mcp_tools,
     sync_initialize_mcp_tools,
 )
+from .multiedit_tool import multiedit_tool
 from .todo_write import todo_write
 from .web_tool import web_read, web_search
 
@@ -37,6 +39,8 @@ __all__ = [
     "file_write_tool",
     "grep_tool",
     "glob_tool",
+    "ls_tool",
+    "multiedit_tool",
     "web_search",
     "web_read",
     "todo_write",
