@@ -20,7 +20,7 @@ This framework provides a modular tool system, a flexible agent architecture, an
 **Using pip:**
 ```bash
 # Install from the latest release tag using SSH (you need to use ssh because nexau is a private repo)
-pip install git+ssh://git@github.com/nex-agi/nexau.git@v0.3.2
+pip install git+ssh://git@github.com/nex-agi/NexAU.git@v0.3.2
 
 # or visit https://github.com/nex-agi/nexau/releases/ and download whl, then
 pip install nexau-0.3.2-py3-none-any.whl
@@ -29,7 +29,7 @@ pip install nexau-0.3.2-py3-none-any.whl
 **Using uv:**
 ```bash
 # Install from the latest release tag using SSH
-uv pip install git+ssh://git@github.com/nex-agi/nexau.git@v0.3.2
+uv pip install git+ssh://git@github.com/nex-agi/NexAU.git@v0.3.2
 
 # or visit https://github.com/nex-agi/nexau/releases/ and download whl, then
 uv pip install nexau-0.3.2-py3-none-any.whl
@@ -39,20 +39,20 @@ uv pip install nexau-0.3.2-py3-none-any.whl
 
 **Using pip:**
 ```bash
-pip install git+ssh://git@github.com/nex-agi/nexau.git
+pip install git+ssh://git@github.com/nex-agi/NexAU.git
 ```
 
 **Using uv:**
 ```bash
-uv pip install git+ssh://git@github.com/nex-agi/nexau.git
+uv pip install git+ssh://git@github.com/nex-agi/NexAU.git
 ```
 
 ### From Source
 
 ```bash
 # Clone the repository
-git clone git@github.com:nex-agi/nexau.git
-cd nexau
+git clone git@github.com:nex-agi/NexAU.git
+cd NexAU
 
 # Install dependencies using uv
 pip install uv

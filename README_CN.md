@@ -20,18 +20,18 @@
 **使用 pip：**
 ```bash
 # 从最新发布版本安装（需要使用SSH，因为nexau是私有仓库）
-pip install git+ssh://git@github.com/nex-agi/nexau.git@v0.3.2
+pip install git+ssh://git@github.com/nex-agi/NexAU.git@v0.3.2
 
-# 或者访问 https://github.com/nex-agi/nexau/releases/ 下载 whl 文件，然后
+# 或者访问 https://github.com/nex-agi/NexAU/releases/ 下载 whl 文件，然后
 pip install nexau-0.3.2-py3-none-any.whl
 ```
 
 **使用 uv：**
 ```bash
 # 从最新发布版本安装（需要使用SSH）
-uv pip install git+ssh://git@github.com/nex-agi/nexau.git@v0.3.2
+uv pip install git+ssh://git@github.com/nex-agi/NexAU.git@v0.3.2
 
-# 或者访问 https://github.com/nex-agi/nexau/releases/ 下载 whl 文件，然后
+# 或者访问 https://github.com/nex-agi/NexAU/releases/ 下载 whl 文件，然后
 uv pip install nexau-0.3.2-py3-none-any.whl
 ```
 
@@ -39,20 +39,20 @@ uv pip install nexau-0.3.2-py3-none-any.whl
 
 **使用 pip：**
 ```bash
-pip install git+ssh://git@github.com/nex-agi/nexau.git
+pip install git+ssh://git@github.com/nex-agi/NexAU.git
 ```
 
 **使用 uv：**
 ```bash
-uv pip install git+ssh://git@github.com/nex-agi/nexau.git
+uv pip install git+ssh://git@github.com/nex-agi/NexAU.git
 ```
 
 ### 从源码安装
 
 ```bash
 # 克隆仓库
-git clone git@github.com:nex-agi/nexau.git
-cd nexau
+git clone git@github.com:nex-agi/NexAU.git
+cd NexAU
 
 # 使用 uv 安装依赖
 pip install uv
