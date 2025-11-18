@@ -1,13 +1,16 @@
-name: claude_code_agent
+name: nexau_code_agent
 max_context_tokens: 100000
 system_prompt: ./system-workflow.md
 system_prompt_type: jinja
-tool_call_mode: openai
-llm_config:
+tool_call_mode: openai # xml, openai or anthorpic
+llm_config: # Support environment variable replacement in YAML config
+  model: ${env.LLM_MODEL}
+  base_url: ${env.LLM_BASE_URL}
+  api_key: ${env.LLM_API_KEY}
   temperature: 0.7
   max_tokens: 4096
   api_type: openai_chat_completion # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
-tools:
+tools: # Tool definition and implementation (binding) are decoupled
   - name: web_search
     yaml_path: ./tools/WebSearch.tool.yaml
     binding: nexau.archs.tool.builtin.web_tool:web_search
@@ -41,12 +44,12 @@ tools:
   - name: multiedit
     yaml_path: ./tools/MultiEdit.tool.yaml
     binding: nexau.archs.tool.builtin.multiedit_tool:multiedit_tool
-skills:
+skills: # Skills are used to hint the agent to solve specific tasks
   - ./skills/template-skill
   - ./skills/theme-factory
-middlewares:
+middlewares: # Middlewares are used to modify the behavior of the agent.
   - import: nexau.archs.main_sub.execution.hooks:LoggingMiddleware
     params:
-      model_logger: "claude_code_model_debug"
-      tool_logger: "claude_code_tool_debug"
+      model_logger: "nexau_code_model_debug"
+      tool_logger: "nexau_code_tool_debug"
       log_model_calls: true
