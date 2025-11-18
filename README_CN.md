@@ -82,7 +82,7 @@ uv sync
     输入你的任务：构建一个关于三体问题的算法艺术
     ```
 
-3.  **想直接用 Python 而不是 YAML？** 下面的代码与 `examples/code_agent/cc_agent.yaml` 定义的 Agent 等价，创建code_agent.py：
+3.  **想直接用 Python 而不是 YAML？** 下面的代码与 `examples/code_agent/code_agent.yaml` 定义的 Agent 等价，创建code_agent.py：
     ```python
     import logging
     import os
@@ -124,39 +124,40 @@ uv sync
         Tool.from_yaml(base_dir / "tools/MultiEdit.tool.yaml", binding=multiedit_tool),
     ]
 
+    # NexAU supports Skills (compatible with Claude Skills)
     skills = [
         Skill.from_folder(base_dir / "skills/theme-factory"),
         Skill.from_folder(base_dir / "skills/algorithmic-art"),
     ]
 
-    agent = Agent(
-        AgentConfig(
-            name="claude_code_agent",
-            max_context_tokens=100000,
-            system_prompt=str(base_dir / "system-workflow.md"),
-            system_prompt_type="jinja",
-            tool_call_mode="openai", # xml, openai or anthorpic
-            llm_config=LLMConfig(
-                temperature=0.7,
-                max_tokens=4096,
-                model=os.getenv("LLM_MODEL"),
-                base_url=os.getenv("LLM_BASE_URL"),
-                api_key=os.getenv("LLM_API_KEY"),
-                api_type="openai_chat_completion", # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
-            ),
-            tools=tools,
-            skills=skills,
-            middlewares=[
-                LoggingMiddleware(
-                    model_logger="claude_code_model_debug",
-                    tool_logger="claude_code_tool_debug",
-                    log_model_calls=True,
-                ),
-            ],
+    agent_config = AgentConfig(
+        name="nexau_code_agent",
+        max_context_tokens=100000,
+        system_prompt=str(base_dir / "system-workflow.md"),
+        system_prompt_type="jinja",
+        tool_call_mode="openai", # xml, openai or anthorpic
+        llm_config=LLMConfig(
+            temperature=0.7,
+            max_tokens=4096,
+            model=os.getenv("LLM_MODEL"),
+            base_url=os.getenv("LLM_BASE_URL"),
+            api_key=os.getenv("LLM_API_KEY"),
+            api_type="openai_chat_completion", # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
         ),
+        tools=tools,
+        skills=skills,
+        middlewares=[
+            LoggingMiddleware(
+                model_logger="nexau_code_agent",
+                tool_logger="nexau_code_agent",
+                log_model_calls=True,
+            ),
+        ],
     )
 
-    print(agent.run("Use LS tool to list the files in the current directory", context={"working_directory": os.getcwd()}))
+    agent = Agent(config = agent_config)
+
+    print(agent.run("构建一个关于三体问题的算法艺术", context={"working_directory": os.getcwd()}))
 
     ```
     通过 `dotenv run uv run code_agent.py` 来运行 Agent
@@ -166,10 +167,10 @@ uv sync
     **使用 run-agent 脚本（推荐）**
     ```bash
     # 一行命令运行任何 NexAU Agent 的 yaml 配置
-    ./run-agent examples/code_agent/cc_agent.yaml
+    ./run-agent examples/code_agent/code_agent.yaml
     ```
     NexAU CLI 支持多轮交互、显示工具调用轨迹和Sub-agent的轨迹，非常适合用来调试 NexAU 的 Agent。
-    
+    ![NexAU CLI](assets/nexau_cli.jpeg)
 
 ## 开发
 

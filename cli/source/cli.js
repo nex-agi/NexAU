@@ -35,7 +35,7 @@ const cli = meow(
 
 		Examples
 		  $ nexau-cli ./my_agent.yaml
-		  $ nexau-cli ../examples/code_agent/cc_agent.yaml
+		  $ nexau-cli ../examples/code_agent/code_agent.yaml
 	`,
 	{
 		importMeta: import.meta,
