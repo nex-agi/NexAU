@@ -82,7 +82,7 @@ uv sync
     Enter your task: Build an algorithm art about 3-body problem
     ```
 
-3.  **Prefer Python over YAML?** Create the same agent defined in `examples/code_agent/cc_agent.yaml` directly in code, create a new file `code_agent.py`:
+3.  **Prefer Python over YAML?** Create the same agent defined in `examples/code_agent/code_agent.yaml` directly in code, create a new file `code_agent.py`:
     ```python
     import logging
     import os
@@ -124,39 +124,40 @@ uv sync
         Tool.from_yaml(base_dir / "tools/MultiEdit.tool.yaml", binding=multiedit_tool),
     ]
 
+    # NexAU supports Skills (compatible with Claude Skills)
     skills = [
         Skill.from_folder(base_dir / "skills/theme-factory"),
         Skill.from_folder(base_dir / "skills/algorithmic-art"),
     ]
 
-    agent = Agent(
-        AgentConfig(
-            name="claude_code_agent",
-            max_context_tokens=100000,
-            system_prompt=str(base_dir / "system-workflow.md"),
-            system_prompt_type="jinja",
-            tool_call_mode="openai", # xml, openai or anthorpic
-            llm_config=LLMConfig(
-                temperature=0.7,
-                max_tokens=4096,
-                model=os.getenv("LLM_MODEL"),
-                base_url=os.getenv("LLM_BASE_URL"),
-                api_key=os.getenv("LLM_API_KEY"),
-                api_type="openai_chat_completion", # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
-            ),
-            tools=tools,
-            skills=skills,
-            middlewares=[
-                LoggingMiddleware(
-                    model_logger="claude_code_model_debug",
-                    tool_logger="claude_code_tool_debug",
-                    log_model_calls=True,
-                ),
-            ],
+    agent_config = AgentConfig(
+        name="nexau_code_agent",
+        max_context_tokens=100000,
+        system_prompt=str(base_dir / "system-workflow.md"),
+        system_prompt_type="jinja",
+        tool_call_mode="openai", # xml, openai or anthorpic
+        llm_config=LLMConfig(
+            temperature=0.7,
+            max_tokens=4096,
+            model=os.getenv("LLM_MODEL"),
+            base_url=os.getenv("LLM_BASE_URL"),
+            api_key=os.getenv("LLM_API_KEY"),
+            api_type="openai_chat_completion", # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
         ),
+        tools=tools,
+        skills=skills,
+        middlewares=[
+            LoggingMiddleware(
+                model_logger="nexau_code_agent",
+                tool_logger="nexau_code_agent",
+                log_model_calls=True,
+            ),
+        ],
     )
 
-    print(agent.run("Use LS tool to list the files in the current directory", context={"working_directory": os.getcwd()}))
+    agent = Agent(config = agent_config)
+
+    print(agent.run("Build an algorithm art about 3-body problem", context={"working_directory": os.getcwd()}))
 
     ```
     Run it with `dotenv run uv run code_agent.py`
@@ -166,10 +167,10 @@ uv sync
     **Using the run-agent script (Recommended)**
     ```bash
     # One-liner to run any NexAU agent yaml config
-    ./run-agent examples/code_agent/cc_agent.yaml
+    ./run-agent examples/code_agent/code_agent.yaml
     ```
     NexAU CLI supports multi-round human interaction, tool call traces and sub-agent traces, which makes agent debugging easier.
-    
+    ![NexAU CLI](assets/nexau_cli.jpeg)
 
 ## Development
 

@@ -40,7 +40,7 @@ def main():
         print("Loading Code agent from YAML configuration...")
 
         script_dir = Path(__file__).parent
-        claude_code_agent = load_agent_config(str(script_dir / "cc_agent.yaml"))
+        claude_code_agent = load_agent_config(str(script_dir / "code_agent.yaml"))
         print("✓ Agent loaded successfully from YAML")
 
         print("\nTesting Code Agent...")

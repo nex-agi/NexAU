@@ -13,7 +13,7 @@
 		"postbuild": "chmod +x dist/cli.js",
 		"test": "prettier --check . && xo && ava",
 		"start": "npm run build && node dist/cli.js",
-		"test-fake-cc": "npm run build && node dist/cli.js ../examples/code_agent/cc_agent.yaml"
+		"test-fake-cc": "npm run build && node dist/cli.js ../examples/code_agent/code_agent.yaml"
 	},
 	"files": [
 		"dist"
