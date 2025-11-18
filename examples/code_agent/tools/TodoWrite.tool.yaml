@@ -1,3 +1,4 @@
+type: tool
 name: TodoWrite
 description: >-
   Use this tool to create and manage a structured task list for your current

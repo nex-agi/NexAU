@@ -1,3 +1,4 @@
+type: tool
 name: Read
 description: >-
   Reads a file from the local filesystem. You can access any file directly by

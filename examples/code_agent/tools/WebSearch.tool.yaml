@@ -1,3 +1,4 @@
+type: tool
 name: WebSearch
 description: >-
   - Allows Claude to search the web and use the results to inform responses

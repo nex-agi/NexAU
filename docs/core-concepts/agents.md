@@ -55,6 +55,7 @@ For a more declarative approach, you can define an agent's entire configuration 
 
     **File: `agents/my_agent.yaml`**
     ```yaml
+    type: agent
     name: my_research_agent
     max_context_tokens: 100000
     system_prompt: |

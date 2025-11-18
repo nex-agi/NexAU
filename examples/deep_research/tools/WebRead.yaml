@@ -1,3 +1,4 @@
+type: tool
 name: WebRead
 description: >-
   Fetch and read content from a web URL.

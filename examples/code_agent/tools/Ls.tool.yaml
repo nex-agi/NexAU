@@ -1,3 +1,4 @@
+type: tool
 name: LS
 description: >-
   Lists files and directories in a given path. The path parameter must be an

@@ -1,3 +1,4 @@
+type: tool
 name: Glob
 description: >-
   - Fast file pattern matching tool that works with any codebase size

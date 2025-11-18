@@ -1,3 +1,4 @@
+type: tool
 name: Bash
 description: >-
   Executes a given bash command in a persistent shell session with optional
