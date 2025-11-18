@@ -107,6 +107,7 @@ The YAML file defines the tool's name, description, and input schema for the age
 
 **File: `tools/SimpleCalculator.tool.yaml`**
 ```yaml
+type: tool
 name: SimpleCalculator
 description: >-
   A tool to evaluate simple mathematical expressions like "10 + 5*2".

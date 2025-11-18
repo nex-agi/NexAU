@@ -1,3 +1,4 @@
+type: tool
 name: MultiEdit
 description: >-
   This is a tool for making multiple edits to a single file in one operation. It

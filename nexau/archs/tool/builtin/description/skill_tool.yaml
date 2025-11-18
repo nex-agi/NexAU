@@ -1,3 +1,4 @@
+type: tool
 name: LoadSkill
 description: >-
   Load a skill from skill folders. If user task is related to a skill, you can use this tool to load the skill for detailed information about the skill.

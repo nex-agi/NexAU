@@ -1,3 +1,4 @@
+type: tool
 name: Grep
 description: |
   A powerful search tool built on ripgrep

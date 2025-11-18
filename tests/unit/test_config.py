@@ -466,6 +466,42 @@ class TestConfigIntegration:
             assert agent.config.name == "test_agent"
             assert agent.config.llm_config.model == "gpt-4o-mini"
 
+    def test_load_agent_config_with_type_field(self, temp_dir, mock_llm_config):
+        """Agent configs can include an explicit type field."""
+        config = {
+            "type": "agent",
+            "name": "typed_agent",
+            "system_prompt": "Typed agent",
+            "llm_config": {"model": "gpt-4o-mini"},
+            "tools": [],
+        }
+
+        config_path = Path(temp_dir) / "typed_agent.yaml"
+        config_path.write_text(yaml.dump(config))
+
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            agent = load_agent_config(str(config_path))
+
+            assert agent.config.name == "typed_agent"
+            assert agent.config.llm_config.model == "gpt-4o-mini"
+
+    def test_load_agent_config_invalid_type_field(self, temp_dir):
+        """Invalid agent type values should fail validation."""
+        config = {
+            "type": "tool",
+            "name": "bad_type_agent",
+            "llm_config": {"model": "gpt-4o-mini"},
+            "tools": [],
+        }
+
+        config_path = Path(temp_dir) / "bad_type_agent.yaml"
+        config_path.write_text(yaml.dump(config))
+
+        with pytest.raises(ConfigError, match="type"):
+            load_agent_config(str(config_path))
+
     def test_load_agent_config_invalid(self, temp_dir):
         """Test loading invalid agent configuration."""
         config = {
@@ -541,6 +577,25 @@ class TestConfigIntegration:
         assert tool.name == "test_tool"
         assert tool.description == "A test tool"
 
+    def test_load_tool_from_config_with_type_field(self, temp_dir):
+        """Tool YAML files can include a type marker."""
+        tool_config = {
+            "type": "tool",
+            "name": "typed_tool",
+            "description": "Typed tool",
+            "input_schema": {"type": "object"},
+        }
+
+        tool_path = Path(temp_dir) / "typed_tool.yaml"
+        tool_path.write_text(yaml.dump(tool_config))
+
+        config = {"name": "typed_tool", "yaml_path": str(tool_path), "binding": "builtins:print"}
+
+        tool = load_tool_from_config(config, Path(temp_dir))
+
+        assert tool.name == "typed_tool"
+        assert tool.description == "Typed tool"
+
     def test_load_tool_from_config_invalid_yaml(self, temp_dir):
         """Tool YAML missing required fields should raise validation errors."""
         tool_path = Path(temp_dir) / "invalid_tool.yaml"
@@ -548,6 +603,23 @@ class TestConfigIntegration:
             yaml.dump({"description": "missing name"}, f)
 
         config = {"name": "invalid_tool", "yaml_path": str(tool_path), "binding": "builtins:print"}
+
+        with pytest.raises(ValidationError):
+            load_tool_from_config(config, Path(temp_dir))
+
+    def test_tool_yaml_invalid_type(self, temp_dir):
+        """Invalid tool type values should raise validation errors."""
+        tool_config = {
+            "type": "agent",
+            "name": "bad_tool",
+            "description": "Bad type",
+            "input_schema": {"type": "object"},
+        }
+
+        tool_path = Path(temp_dir) / "bad_tool.yaml"
+        tool_path.write_text(yaml.dump(tool_config))
+
+        config = {"name": "bad_tool", "yaml_path": str(tool_path), "binding": "builtins:print"}
 
         with pytest.raises(ValidationError):
             load_tool_from_config(config, Path(temp_dir))

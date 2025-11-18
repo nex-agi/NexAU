@@ -21,7 +21,7 @@ import logging
 import traceback
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import jsonschema
 import yaml
@@ -40,6 +40,7 @@ class ToolYamlSchema(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    type: Literal["tool"] | None = Field(default=None)
     name: str
     description: str
     input_schema: dict[str, Any] = Field(default_factory=dict)

@@ -57,6 +57,7 @@ class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
         populate_by_name=True,
     )
 
+    type: Literal["agent"] | None = Field(default=None)
     name: str | None = None
     description: str | None = None
     agent_id: str | None = None

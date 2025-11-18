@@ -1,3 +1,4 @@
+type: tool
 name: Task
 description: >
   Launch a new agent to handle complex, multi-step tasks autonomously.

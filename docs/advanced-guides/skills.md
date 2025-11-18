@@ -98,6 +98,7 @@ agent = create_agent(
 **Using YAML:**
 
 ```yaml
+type: agent
 name: data_analyst
 llm_config:
   model: gpt-4o-mini
@@ -182,6 +183,7 @@ The agent will automatically:
 **Tool Definition (generate_code.tool.yaml):**
 
 ```yaml
+type: tool
 name: generate_code
 description: Generates code based on specifications
 input_schema:
@@ -199,6 +201,7 @@ input_schema:
 as_skill: true
 skill_description: Code generation skill for multiple programming languages
 ```
+
 ---
 
 ## Combining Both Types
@@ -241,6 +244,7 @@ agent = create_agent(
 **YAML Configuration:**
 
 ```yaml
+type: agent
 name: research_assistant
 llm_config:
   model: gpt-4o-mini
@@ -470,6 +474,7 @@ response = agent.run("Research the latest developments in quantum computing")
 **agent.yaml:**
 
 ```yaml
+type: agent
 name: creative_assistant
 llm_config:
   model: gpt-4o-mini
@@ -503,4 +508,3 @@ tools:
 - **Skill descriptions**: Keep brief for discovery, detailed for documentation
 
 Skills provide a powerful way to organize and discover agent capabilities, making your agents more maintainable and easier to understand.
-

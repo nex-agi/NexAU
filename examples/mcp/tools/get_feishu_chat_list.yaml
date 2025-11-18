@@ -1,3 +1,4 @@
+type: tool
 name: GetFeishuChatList
 description: >-
   获取用户或机器人所在的群列表。支持按创建时间或活跃时间排序，支持分页查询。

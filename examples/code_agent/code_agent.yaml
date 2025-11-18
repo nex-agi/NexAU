@@ -1,3 +1,4 @@
+type: agent
 name: nexau_code_agent
 max_context_tokens: 100000
 system_prompt: ./system-workflow.md

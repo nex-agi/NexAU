@@ -1,3 +1,4 @@
+type: tool
 name: WebFetch
 description: >-
   - Fetches content from a specified URL and processes it using an AI model

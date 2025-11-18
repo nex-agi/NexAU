@@ -1,3 +1,4 @@
+type: tool
 name: Edit
 description: >-
   Performs exact string replacements in files.

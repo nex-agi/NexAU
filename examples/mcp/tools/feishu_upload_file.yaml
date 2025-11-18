@@ -1,3 +1,4 @@
+type: tool
 name: FeishuUploadFile
 description: >-
   Upload a file to feishu.
