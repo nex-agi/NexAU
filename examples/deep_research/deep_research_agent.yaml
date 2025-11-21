@@ -29,11 +29,9 @@ skills:
 sub_agents:
   - name: sub_deep_research_agent
     config_path: subagent.yaml
-after_tool_hooks:
-  - import: nexau.archs.main_sub.execution.hooks:create_tool_logging_hook
+middlewares: # Middlewares are used to modify the behavior of the agent.
+  - import: nexau.archs.main_sub.execution.hooks:LoggingMiddleware
     params:
-      logger_name: "deep_research_tool_debug"
-after_model_hooks:
-  - import: nexau.archs.main_sub.execution.hooks:create_logging_hook
-    params:
-      logger_name: "deep_research_model_debug"
+      model_logger: "nexau_deep_research_model_debug"
+      tool_logger: "nexau_deep_research_tool_debug"
+      log_model_calls: true
