@@ -577,6 +577,24 @@ class TestConfigIntegration:
         assert tool.name == "test_tool"
         assert tool.description == "A test tool"
 
+    def test_load_tool_from_config_overrides_name(self, temp_dir):
+        """Agent config name should override tool YAML name."""
+        tool_config = {
+            "name": "Finish",
+            "description": "A finish tool",
+            "input_schema": {"type": "object"},
+        }
+
+        tool_path = Path(temp_dir) / "finish.yaml"
+        tool_path.write_text(yaml.dump(tool_config))
+
+        config = {"name": "finish", "yaml_path": str(tool_path), "binding": "builtins:print"}
+
+        tool = load_tool_from_config(config, Path(temp_dir))
+
+        assert tool.name == "finish"
+        assert getattr(tool, "source_name", None) == "Finish"
+
     def test_load_tool_from_config_with_type_field(self, temp_dir):
         """Tool YAML files can include a type marker."""
         tool_config = {

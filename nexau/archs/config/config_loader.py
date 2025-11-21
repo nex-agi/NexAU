@@ -712,6 +712,11 @@ def load_tool_from_config(tool_config: dict[str, Any], base_path: Path) -> Tool:
     # Create tool
     tool = Tool.from_yaml(str(yaml_path), binding, as_skill=as_skill)
 
+    # Override tool name with config-provided alias if present
+    if name and tool.name != name:
+        setattr(tool, "source_name", getattr(tool, "source_name", tool.name))
+        tool.name = name
+
     return tool
 
 
