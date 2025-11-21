@@ -63,6 +63,7 @@ class TestLLMConfig:
         assert config.temperature is None
         assert config.max_retries == 3
         assert config.debug is False
+        assert config.stream is False
         assert config.extra_params == {}
         assert config.api_type == "openai_chat_completion"
 
@@ -98,6 +99,7 @@ class TestLLMConfig:
             top_p=0.8,
             frequency_penalty=0.2,
             presence_penalty=0.3,
+            stream=True,
         )
 
         params = config.to_openai_params()
@@ -108,6 +110,7 @@ class TestLLMConfig:
         assert params["top_p"] == 0.8
         assert params["frequency_penalty"] == 0.2
         assert params["presence_penalty"] == 0.3
+        assert params["stream"] is True
 
     def test_additional_drop_params(self):
         """Test that additional_drop_params removes entries from params."""

@@ -35,6 +35,7 @@ class LLMConfig:
         timeout: float | None = None,
         max_retries: int = 3,
         debug: bool = False,
+        stream: bool = False,
         additional_drop_params: Iterable[str] | None = None,
         api_type: str = "openai_chat_completion",
         **kwargs,
@@ -54,6 +55,7 @@ class LLMConfig:
             timeout: Request timeout in seconds
             max_retries: Maximum number of retries
             debug: Enable debug logging of LLM messages
+            stream: Enable streaming responses when supported by backend
             api_type: API type
             **kwargs: Additional model-specific parameters
         """
@@ -68,6 +70,7 @@ class LLMConfig:
         self.timeout = timeout
         self.max_retries = max_retries
         self.debug = debug
+        self.stream = stream
         self.additional_drop_params = tuple(param for param in (additional_drop_params or []) if isinstance(param, str))
         self.api_type = api_type
 
@@ -140,6 +143,8 @@ class LLMConfig:
             params["frequency_penalty"] = self.frequency_penalty
         if self.presence_penalty is not None:
             params["presence_penalty"] = self.presence_penalty
+        if self.stream:
+            params["stream"] = True
 
         # Add extra parameters
         params.update(self.extra_params)
@@ -203,6 +208,7 @@ class LLMConfig:
             timeout=self.timeout,
             max_retries=self.max_retries,
             debug=self.debug,
+            stream=self.stream,
             additional_drop_params=self.additional_drop_params,
             **self.extra_params,
         )

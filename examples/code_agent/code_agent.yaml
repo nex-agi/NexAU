@@ -9,7 +9,7 @@ llm_config: # Support environment variable replacement in YAML config
   base_url: ${env.LLM_BASE_URL}
   api_key: ${env.LLM_API_KEY}
   temperature: 0.7
-  max_tokens: 4096
+  stream: True
   api_type: openai_chat_completion # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
 tools: # Tool definition and implementation (binding) are decoupled
   - name: web_search

@@ -132,6 +132,37 @@ class TestLLMCallerBasicCalls:
         assert response.content == "Hello! How can I help you?"
         mock_openai_client.chat.completions.create.assert_called_once()
 
+    def test_call_llm_chat_completion_strips_response_items(self, mock_openai_client, mock_llm_config, agent_state):
+        """Ensure Responses-specific fields are removed before chat completion calls."""
+
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=mock_llm_config,
+        )
+
+        reasoning_item = {
+            "type": "reasoning",
+            "id": "rs_reasoning_stream",
+            "summary": [{"type": "summary_text", "text": "cached summary"}],
+            "content": [{"type": "text", "text": "chain-of-thought"}],
+        }
+
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Cached reply", "response_items": [reasoning_item]},
+        ]
+
+        mock_openai_client.chat.completions.create.return_value.choices[0].message.tool_calls = []
+
+        response = caller.call_llm(messages, max_tokens=50, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
+
+        assert isinstance(response, ModelResponse)
+
+        sent_messages = mock_openai_client.chat.completions.create.call_args.kwargs["messages"]
+        assert all("response_items" not in msg for msg in sent_messages if isinstance(msg, dict))
+        # Original history should remain intact for future Responses API use
+        assert messages[1]["response_items"][0]["id"] == "rs_reasoning_stream"
+
     def test_call_llm_success_responses_api(self, mock_openai_client, responses_llm_config, agent_state):
         """Test successful call flow when using the Responses API."""
         # Setup mock Responses payload
@@ -215,7 +246,12 @@ class TestLLMCallerBasicCalls:
         caller.call_llm(history, max_tokens=60, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         followup_input = mock_openai_client.responses.create.call_args.kwargs["input"]
-        assert reasoning_item in followup_input
+        expected_reasoning = {
+            "type": "reasoning",
+            "content": [{"type": "text", "text": "Thought step"}],
+            "summary": [{"type": "text", "text": "Summary"}],
+        }
+        assert expected_reasoning in followup_input
 
     def test_call_llm_responses_api_normalizes_tools(self, mock_openai_client, responses_llm_config, agent_state):
         """Ensure tool payloads satisfy Responses API expectations."""

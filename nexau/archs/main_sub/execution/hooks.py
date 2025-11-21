@@ -186,7 +186,7 @@ class ModelCallParams:
     """Context passed to middleware wrapping model calls."""
 
     messages: list[dict[str, Any]]
-    max_tokens: int
+    max_tokens: int | None
     force_stop_reason: AgentStopReason | None
     agent_state: AgentState | None
     tool_call_mode: str
@@ -236,6 +236,11 @@ class Middleware:
         """Default implementation simply forwards to the next handler."""
 
         return call_next(params)
+
+    def stream_chunk(self, chunk: Any, params: ModelCallParams) -> Any:
+        """Inspect or mutate a streaming model chunk before aggregation."""
+
+        return chunk
 
 
 class FunctionMiddleware(Middleware):
@@ -373,6 +378,13 @@ class LoggingMiddleware(Middleware):
             self._log_model_call(f"LLM call wrapper error: {exc}", error=True)
             raise
 
+    def stream_chunk(self, chunk: Any, params: ModelCallParams) -> Any:
+        """Inspect or mutate a streaming model chunk before aggregation."""
+        logger = self.model_logger
+        logger.info("🎣 Streaming: %s", chunk)
+
+        return chunk
+
     def _log_model_call(self, message: str, error: bool = False) -> None:
         logger = self.model_logger
         if logger:
@@ -499,6 +511,32 @@ class MiddlewareManager:
             return wrapper(current_params, next_handler)
 
         return invoke(0, params)
+
+    def stream_chunk(self, chunk: Any, params: ModelCallParams) -> Any:
+        """Run stream chunks through middleware in call order."""
+
+        current_chunk = chunk
+        for middleware in self.middlewares:
+            handler = getattr(middleware, "stream_chunk", None)
+            if handler is None:
+                continue
+            try:
+                result = handler(current_chunk, params)
+                if result is None:
+                    logger.info(
+                        "🎣 Middleware %s (stream_chunk) dropped a chunk",
+                        middleware.__class__.__name__,
+                    )
+                    return None
+                if result is not current_chunk:
+                    logger.info(
+                        "🎣 Middleware %s (stream_chunk) modified a chunk",
+                        middleware.__class__.__name__,
+                    )
+                current_chunk = result
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning(f"⚠️ Streaming middleware {middleware} failed: {exc}")
+        return current_chunk
 
     def wrap_tool_call(self, params: ToolCallParams, call_next: ToolCallFn) -> Any:
         def invoke(index: int, current_params: ToolCallParams) -> Any:

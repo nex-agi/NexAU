@@ -172,6 +172,8 @@ class ModelResponse:
             raise ValueError("message cannot be None")
 
         content = getattr(message, "content", None)
+        if content is None and isinstance(message, dict):
+            content = message.get("content")
         # openai-beta returns list of content parts; join if needed
         if isinstance(content, list):
             # Attempt to join textual content pieces
@@ -440,10 +442,10 @@ class ModelResponse:
     def render_text(self) -> str:
         """Render the response as a human-readable string for logging."""
         parts: list[str] = []
-        if self.has_content():
-            parts.append(self.content.strip())
         if self.reasoning_content:
             parts.append(f"[reasoning]\n{self.reasoning_content}")
+        if self.has_content():
+            parts.append(self.content.strip())
         for call in self.tool_calls:
             try:
                 arg_preview = json.dumps(call.arguments, ensure_ascii=False)

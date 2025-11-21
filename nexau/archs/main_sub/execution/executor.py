@@ -336,9 +336,8 @@ class Executor:
                     )
                     model_response = self.llm_caller.call_llm(
                         messages,
-                        calculated_max_tokens,
-                        force_stop_reason,
-                        agent_state,
+                        force_stop_reason=force_stop_reason,
+                        agent_state=agent_state,
                         tool_call_mode=self.tool_call_mode,
                         tools=self.structured_tool_payload if self.use_structured_tool_calls else None,
                     )
