@@ -15,6 +15,7 @@
 """Configuration loading system for agents and tools."""
 
 import importlib
+import inspect
 import logging
 import os
 import re
@@ -144,33 +145,54 @@ class AgentBuilder:
         """
         if isinstance(hook_config, str):
             # Simple import string format
-            return import_from_string(hook_config)
+            hook_obj = import_from_string(hook_config)
+            return self._instantiate_hook_object(hook_obj, hook_config)
         elif isinstance(hook_config, dict):
             # Dictionary format with import and optional parameters
             import_string = hook_config.get("import")
             if not import_string:
                 raise ConfigError("Hook configuration missing 'import' field")
 
-            hook_func = import_from_string(import_string)
-
-            # Check if there are parameters to pass
-            params = hook_config.get("params", {})
-            if params:
-                # For hooks that are factories (like create_* functions), call them with params
-                if callable(hook_func):
-                    hook_instance = hook_func(**params)
-                    return hook_instance
-                else:
-                    raise ConfigError(
-                        "Hook is not callable and cannot accept parameters",
-                    )
-            else:
-                return hook_func
+            hook_obj = import_from_string(import_string)
+            params = hook_config.get("params") or {}
+            return self._instantiate_hook_object(hook_obj, import_string, params)
         elif callable(hook_config):
             # Direct callable function (e.g., from overrides)
             return hook_config
         else:
             raise ConfigError("Hook must be a string, dictionary, or callable")
+
+    def _instantiate_hook_object(
+        self,
+        hook_obj: Any,
+        import_string: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        """Instantiate hook classes or factory functions with optional params."""
+
+        params = params or {}
+
+        if inspect.isclass(hook_obj):
+            try:
+                return hook_obj(**params)
+            except TypeError as exc:  # pragma: no cover - error path
+                raise ConfigError(
+                    f"Error instantiating hook '{import_string}': {exc}",
+                ) from exc
+
+        if params:
+            if callable(hook_obj):
+                try:
+                    return hook_obj(**params)
+                except TypeError as exc:  # pragma: no cover - error path
+                    raise ConfigError(
+                        f"Error calling hook factory '{import_string}' with params: {exc}",
+                    ) from exc
+            raise ConfigError(
+                f"Hook '{import_string}' is not callable and cannot accept parameters",
+            )
+
+        return hook_obj
 
     def build_core_properties(self) -> "AgentBuilder":
         """Build core agent properties from configuration.
