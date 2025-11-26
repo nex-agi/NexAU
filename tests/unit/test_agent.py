@@ -438,31 +438,6 @@ class TestAgent:
                 agent_state = call_args[1]
                 assert agent_state.parent_agent_state == parent_state
 
-    def test_run_with_dump_trace_path(self, agent_config, global_storage):
-        """Test agent run with dump trace path."""
-        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
-            mock_openai.OpenAI.return_value = Mock()
-
-            agent = Agent(agent_config, global_storage)
-
-            with patch.object(agent.executor, "execute") as mock_execute:
-                mock_execute.return_value = (
-                    "Response",
-                    [
-                        {"role": "system", "content": "System prompt"},
-                        {"role": "user", "content": "Message"},
-                        {"role": "assistant", "content": "Response"},
-                    ],
-                )
-
-                trace_path = "/tmp/test_trace.json"
-                response = agent.run("Message", dump_trace_path=trace_path)
-
-                assert response == "Response"
-                # Verify dump_trace_path was passed to execute
-                call_args = mock_execute.call_args[0]
-                assert call_args[2] == trace_path
-
 
 class TestCreateAgent:
     """Test cases for create_agent factory function."""

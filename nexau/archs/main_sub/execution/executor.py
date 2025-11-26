@@ -57,8 +57,6 @@ from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
     normalize_tool_call_mode,
 )
-from nexau.archs.main_sub.tracing.trace_dumper import TraceDumper
-from nexau.archs.main_sub.tracing.tracer import Tracer
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
 
 logger = logging.getLogger(__name__)
@@ -144,13 +142,12 @@ class Executor:
             langfuse_client,
             middleware_manager=self.middleware_manager,
         )
-        self.tracer = Tracer(agent_name)
+
         self.subagent_manager = SubAgentManager(
             agent_name,
             sub_agent_factories,
             langfuse_client,
             global_storage,
-            self.tracer,
         )
         self.batch_processor = BatchProcessor(
             self.subagent_manager,
@@ -206,24 +203,18 @@ class Executor:
         self,
         history: list[dict[str, Any]],
         agent_state: "AgentState",
-        dump_trace_path: str | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         """Execute agent task with full orchestration.
 
         Args:
             history: Complete conversation history including system prompt and user message
             agent_state: AgentState containing agent context and global storage
-            dump_trace_path: Optional path to dump execution trace
 
         Returns:
             Tuple of (agent_response, updated_messages_history)
         """
         # Reset the stop signal
         self.stop_signal = False
-
-        # Initialize tracing if requested
-        if dump_trace_path:
-            self.tracer.start_tracing(dump_trace_path)
 
         try:
             # Use history directly as the single source of truth
@@ -304,16 +295,6 @@ class Executor:
                     f"🔢 Token usage: prompt={current_prompt_tokens}, max_tokens={calculated_max_tokens}, available={available_tokens}",
                 )
 
-                # Log LLM request to trace if enabled
-                if dump_trace_path:
-                    self.tracer.add_llm_request(
-                        iteration + 1,
-                        {
-                            "messages": messages,
-                            "max_tokens": calculated_max_tokens,
-                        },
-                    )
-
                 with maybe_span(agent_state.langfuse_span, f"AgentIteration {iteration + 1}"):
                     before_model_hook_input = BeforeModelHookInput(
                         agent_state=agent_state,
@@ -346,14 +327,6 @@ class Executor:
 
                     assistant_content = model_response.content or ""
                     assistant_log_text = model_response.render_text() or assistant_content
-
-                    # Log LLM response to trace if enabled
-                    if dump_trace_path:
-                        # Create a mock response object for tracing compatibility
-                        self.tracer.add_llm_response(
-                            iteration + 1,
-                            assistant_log_text,
-                        )
 
                     logger.info(
                         f"💬 LLM Response for agent '{self.agent_name}': {assistant_log_text}",
@@ -392,7 +365,6 @@ class Executor:
                         execution_feedbacks,
                     ) = self._process_xml_calls(
                         after_model_hook_input,
-                        tracer=self.tracer if dump_trace_path else None,
                     )
 
                     # Update messages with any modifications from hooks
@@ -513,20 +485,9 @@ class Executor:
             logger.info(
                 f"🔄 Final response for agent '{self.agent_name}': {final_response}",
             )
-            # Dump trace if enabled
-            if dump_trace_path:
-                trace_data = self.tracer.get_trace_data()
-                if trace_data:
-                    TraceDumper.dump_trace_to_file(
-                        trace_data,
-                        dump_trace_path,
-                        self.agent_name,
-                    )
-
             return final_response, messages
 
         except Exception as e:
-            # Add error to trace if enabled
             force_stop_reason = AgentStopReason.ERROR_OCCURRED
             final_response = f"Error: {str(e)}"
             logger.error(
@@ -538,20 +499,8 @@ class Executor:
             logger.error(
                 f"❌ Error in agent execution: {e}",
             )
-            if dump_trace_path:
-                self.tracer.add_error(e)
-                trace_data = self.tracer.get_trace_data()
-                if trace_data:
-                    TraceDumper.dump_trace_to_file(
-                        trace_data,
-                        dump_trace_path,
-                        self.agent_name,
-                    )
             # Re-raise with more context
             raise RuntimeError(f"Error in agent execution: {e}") from e
-        finally:
-            if dump_trace_path:
-                self.tracer.stop_tracing()
 
     @staticmethod
     def _build_middleware_manager(
@@ -603,14 +552,12 @@ class Executor:
     def _process_xml_calls(
         self,
         hook_input: AfterModelHookInput,
-        tracer: Tracer | None = None,
     ) -> tuple[str, bool, str | None, list[dict[str, Any]], list[dict[str, Any]]]:
         """Process XML tool calls and sub-agent calls using two-phase approach.
 
         Args:
             response: Agent response containing XML calls
             messages: Current conversation history
-            tracer: Optional tracer for logging
 
         Returns:
             Tuple of (processed_response, should_stop, stop_tool_result, updated_messages)
@@ -658,7 +605,6 @@ class Executor:
         processed_response, should_stop, stop_tool_result, execution_feedbacks = self._execute_parsed_calls(
             parsed_response,
             hook_input.agent_state,
-            tracer=tracer,
         )
         return processed_response, should_stop, stop_tool_result, current_messages, execution_feedbacks
 
@@ -666,14 +612,12 @@ class Executor:
         self,
         parsed_response: ParsedResponse,
         agent_state: "AgentState",
-        tracer: Tracer | None = None,
     ) -> tuple[str, bool, str | None]:
         """Execute all parsed calls in parallel.
 
         Args:
             parsed_response: ParsedResponse containing all calls to execute
             agent_state: AgentState containing agent context and global storage
-            tracer: Optional tracer for logging
 
         Returns:
             Tuple of (processed_response, should_stop, stop_tool_result)
@@ -757,7 +701,6 @@ class Executor:
                     self._execute_tool_call_safe,
                     tool_call,
                     agent_state,
-                    tracer,
                 )
                 tool_futures[future] = ("tool", tool_call)
 
@@ -773,7 +716,6 @@ class Executor:
                     self._execute_sub_agent_call_safe,
                     sub_agent_call,
                     context_dict,
-                    tracer,
                     parent_agent_state=agent_state,
                 )
                 sub_agent_futures[future] = ("sub_agent", sub_agent_call)
@@ -940,17 +882,9 @@ class Executor:
         self,
         tool_call: ToolCall,
         agent_state: "AgentState",
-        tracer: Tracer | None = None,
     ) -> tuple[str, str, bool]:
         """Safely execute a tool call."""
         try:
-            # Log tool request to trace if enabled
-            if tracer:
-                tracer.add_tool_request(
-                    tool_call.tool_name,
-                    tool_call.parameters,
-                )
-
             # Convert parameters to correct types and execute
             converted_params = {}
             for param_name, param_value in tool_call.parameters.items():
@@ -963,10 +897,6 @@ class Executor:
             result = self.tool_executor.execute_tool(
                 agent_state, tool_call.tool_name, converted_params, tool_call_id=tool_call.tool_call_id
             )
-
-            # Log tool response to trace if enabled
-            if tracer:
-                tracer.add_tool_response(tool_call.tool_name, result)
 
             return (
                 tool_call.tool_name,
@@ -981,28 +911,16 @@ class Executor:
         self,
         sub_agent_call: SubAgentCall,
         context: dict[str, Any] | None = None,
-        tracer: Tracer | None = None,
         parent_agent_state: AgentState | None = None,
     ) -> tuple[str, str, bool]:
         """Safely execute a sub-agent call."""
         try:
-            # Log sub-agent request to trace if enabled
-            if tracer:
-                tracer.add_subagent_request(
-                    sub_agent_call.agent_name,
-                    sub_agent_call.message,
-                )
-
             result = self.subagent_manager.call_sub_agent(
                 sub_agent_call.agent_name,
                 sub_agent_call.message,
                 context,
                 parent_agent_state=parent_agent_state,
             )
-
-            # Log sub-agent response to trace if enabled
-            if tracer:
-                tracer.add_subagent_response(sub_agent_call.agent_name, result)
 
             return sub_agent_call.agent_name, result, False
 
@@ -1022,18 +940,6 @@ class Executor:
         """Clean up executor resources."""
         logger.info(f"🧹 Cleaning up executor for agent '{self.agent_name}'...")
         self.stop_signal = True
-
-        # Save trace data if available before cleanup
-        if self.tracer.is_tracing():
-            self.tracer.add_shutdown("Executor cleanup")
-            trace_data = self.tracer.get_trace_data()
-            dump_path = self.tracer.get_dump_path()
-            if trace_data and dump_path:
-                TraceDumper.dump_trace_to_file(
-                    trace_data,
-                    dump_path,
-                    self.agent_name,
-                )
 
         # Signal shutdown to prevent new tasks
         self._shutdown_event.set()

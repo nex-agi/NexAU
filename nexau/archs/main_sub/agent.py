@@ -321,7 +321,6 @@ class Agent:
         context: dict | None = None,
         state: dict[str, Any] | None = None,
         config: dict[str, Any] | None = None,
-        dump_trace_path: str | None = None,
         parent_agent_state: AgentState | None = None,
     ) -> str | tuple[str, dict[str, Any]]:
         """Run agent with a message and return response."""
@@ -403,7 +402,6 @@ class Agent:
                         response, updated_messages = self.executor.execute(
                             self.history,
                             agent_state,
-                            dump_trace_path,
                         )
                         self.history = updated_messages
 
@@ -430,14 +428,12 @@ class Agent:
                         response, updated_messages = self.executor.execute(
                             self.history,
                             agent_state,
-                            dump_trace_path,
                         )
                         self.history = updated_messages
                 else:
                     response, updated_messages = self.executor.execute(
                         self.history,
                         agent_state,
-                        dump_trace_path,
                     )
                     self.history = updated_messages
 

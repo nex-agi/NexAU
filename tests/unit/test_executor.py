@@ -411,45 +411,6 @@ class TestExecutorExecution:
 
                 assert "Prompt too long" in response or "Error:" in response
 
-    def test_execute_with_trace_dump(self, mock_llm_config, agent_state, temp_dir):
-        """Test execution with trace dumping enabled."""
-        import os
-
-        executor = Executor(
-            agent_name="test_agent",
-            agent_id="test_id",
-            tool_registry={},
-            sub_agent_factories={},
-            stop_tools=set(),
-            openai_client=Mock(),
-            llm_config=mock_llm_config,
-            max_iterations=1,
-        )
-
-        # Mock the LLM caller to return simple responses
-        with patch.object(executor.llm_caller, "call_llm") as mock_call_llm:
-            mock_call_llm.return_value = ModelResponse(content="Simple response")
-
-            # Mock response parser to return no calls
-            with patch.object(executor.response_parser, "parse_response") as mock_parse:
-                mock_parse.return_value = ParsedResponse(
-                    original_response="Simple response",
-                    tool_calls=[],
-                    sub_agent_calls=[],
-                    batch_agent_calls=[],
-                )
-
-                history = [
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": "Hello"},
-                ]
-
-                trace_path = os.path.join(temp_dir, "trace.json")
-                response, messages = executor.execute(history, agent_state, dump_trace_path=trace_path)
-
-                # Verify tracer was started
-                assert executor.tracer.is_tracing() is False  # Should be stopped after execution
-
     def test_execute_with_exception(self, mock_llm_config, agent_state):
         """Test execution handles exceptions gracefully."""
         executor = Executor(

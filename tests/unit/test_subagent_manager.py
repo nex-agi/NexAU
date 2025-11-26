@@ -61,7 +61,6 @@ class TestSubAgentManager:
         assert manager.sub_agent_factories == sub_agent_factories
         assert manager.langfuse_client is None
         assert manager.global_storage is None
-        assert manager.main_tracer is None
         assert manager.xml_parser is not None
         assert isinstance(manager._shutdown_event, threading.Event)
         assert manager.running_sub_agents == {}
@@ -70,19 +69,16 @@ class TestSubAgentManager:
         """Test SubAgentManager initialization with optional parameters."""
         mock_langfuse = Mock()
         mock_storage = GlobalStorage()
-        mock_tracer = Mock()
 
         manager = SubAgentManager(
             agent_name="test_agent",
             sub_agent_factories=sub_agent_factories,
             langfuse_client=mock_langfuse,
             global_storage=mock_storage,
-            main_tracer=mock_tracer,
         )
 
         assert manager.langfuse_client == mock_langfuse
         assert manager.global_storage == mock_storage
-        assert manager.main_tracer == mock_tracer
 
     def test_call_sub_agent_not_found(self, subagent_manager):
         """Test calling a non-existent sub-agent."""
@@ -108,7 +104,6 @@ class TestSubAgentManager:
         call_args = mock_sub_agent.run.call_args
         assert call_args[0][0] == "test message"
         assert call_args[1]["context"] is None
-        assert call_args[1]["dump_trace_path"] is None
         assert call_args[1]["parent_agent_state"] is None
 
     @patch("nexau.archs.main_sub.agent_context.get_context")
@@ -223,89 +218,6 @@ class TestSubAgentManager:
         assert mock_sub_agent.executor.subagent_manager.global_storage == mock_storage
 
     @patch("nexau.archs.main_sub.agent_context.get_context")
-    def test_call_sub_agent_with_tracer(self, mock_get_context, sub_agent_factories):
-        """Test sub-agent call with main tracer."""
-        mock_tracer = Mock()
-        mock_tracer.is_tracing.return_value = True
-        mock_tracer.get_dump_path.return_value = "/path/to/main/trace"
-        mock_tracer.generate_sub_agent_trace_path.return_value = "/path/to/sub/trace"
-
-        mock_sub_agent = Mock()
-        mock_sub_agent.config.agent_id = "sub_123"
-        mock_sub_agent.run.return_value = "result"
-
-        factories = {"test_sub": Mock(return_value=mock_sub_agent)}
-        manager = SubAgentManager(agent_name="parent", sub_agent_factories=factories, main_tracer=mock_tracer)
-
-        mock_get_context.return_value = None
-        result = manager.call_sub_agent("test_sub", "message")
-
-        assert result == "result"
-        mock_tracer.generate_sub_agent_trace_path.assert_called_once_with("test_sub", "/path/to/main/trace")
-        call_args = mock_sub_agent.run.call_args
-        assert call_args[1]["dump_trace_path"] == "/path/to/sub/trace"
-
-    @patch("nexau.archs.main_sub.agent_context.get_context")
-    def test_call_sub_agent_tracer_not_tracing(self, mock_get_context, sub_agent_factories):
-        """Test sub-agent call when tracer is not tracing."""
-        mock_tracer = Mock()
-        mock_tracer.is_tracing.return_value = False
-
-        mock_sub_agent = Mock()
-        mock_sub_agent.config.agent_id = "sub_123"
-        mock_sub_agent.run.return_value = "result"
-
-        factories = {"test_sub": Mock(return_value=mock_sub_agent)}
-        manager = SubAgentManager(agent_name="parent", sub_agent_factories=factories, main_tracer=mock_tracer)
-
-        mock_get_context.return_value = None
-        result = manager.call_sub_agent("test_sub", "message")
-
-        assert result == "result"
-        mock_tracer.generate_sub_agent_trace_path.assert_not_called()
-
-    @patch("nexau.archs.main_sub.agent_context.get_context")
-    def test_call_sub_agent_tracer_no_dump_path(self, mock_get_context, sub_agent_factories):
-        """Test sub-agent call when tracer has no dump path."""
-        mock_tracer = Mock()
-        mock_tracer.is_tracing.return_value = True
-        mock_tracer.get_dump_path.return_value = None
-
-        mock_sub_agent = Mock()
-        mock_sub_agent.config.agent_id = "sub_123"
-        mock_sub_agent.run.return_value = "result"
-
-        factories = {"test_sub": Mock(return_value=mock_sub_agent)}
-        manager = SubAgentManager(agent_name="parent", sub_agent_factories=factories, main_tracer=mock_tracer)
-
-        mock_get_context.return_value = None
-        result = manager.call_sub_agent("test_sub", "message")
-
-        assert result == "result"
-        mock_tracer.generate_sub_agent_trace_path.assert_not_called()
-
-    @patch("nexau.archs.main_sub.agent_context.get_context")
-    def test_call_sub_agent_tracer_no_generate_method(self, mock_get_context, sub_agent_factories):
-        """Test sub-agent call when tracer doesn't have generate_sub_agent_trace_path."""
-        mock_tracer = Mock()
-        mock_tracer.is_tracing.return_value = True
-        mock_tracer.get_dump_path.return_value = "/path/to/trace"
-        # Don't add generate_sub_agent_trace_path method
-
-        mock_sub_agent = Mock()
-        mock_sub_agent.config.agent_id = "sub_123"
-        mock_sub_agent.run.return_value = "result"
-
-        factories = {"test_sub": Mock(return_value=mock_sub_agent)}
-        manager = SubAgentManager(agent_name="parent", sub_agent_factories=factories, main_tracer=mock_tracer)
-
-        mock_get_context.return_value = None
-        result = manager.call_sub_agent("test_sub", "message")
-
-        assert result == "result"
-        # Should not crash when method doesn't exist
-
-    @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_with_langfuse(self, mock_get_context, sub_agent_factories):
         """Test sub-agent call with Langfuse tracing."""
         mock_langfuse = Mock()
@@ -329,7 +241,6 @@ class TestSubAgentManager:
         mock_sub_agent.run.assert_called_once_with(
             "message",
             context={"key": "value"},
-            dump_trace_path=None,
             parent_agent_state=None,
         )
 
@@ -376,7 +287,6 @@ class TestSubAgentManager:
         mock_sub_agent.run.assert_called_once_with(
             "message",
             context={"key": "value"},
-            dump_trace_path=None,
             parent_agent_state=parent_state,
         )
         assert mock_sub_agent.langfuse_trace_id == "trace-abc"

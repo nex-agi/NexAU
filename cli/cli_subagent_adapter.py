@@ -33,7 +33,6 @@ class CLIEnabledSubAgentManager(SubAgentManager):
         sub_agent_factories: dict[str, Callable[[], Any]],
         langfuse_client=None,
         global_storage=None,
-        main_tracer=None,
         progress_hook=None,
         tool_hook=None,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
@@ -43,7 +42,6 @@ class CLIEnabledSubAgentManager(SubAgentManager):
             sub_agent_factories,
             langfuse_client=langfuse_client,
             global_storage=global_storage,
-            main_tracer=main_tracer,
         )
         self.cli_progress_hook = progress_hook
         self.cli_tool_hook = tool_hook
@@ -62,7 +60,6 @@ class CLIEnabledSubAgentManager(SubAgentManager):
             manager.sub_agent_factories,
             langfuse_client=manager.langfuse_client,
             global_storage=manager.global_storage,
-            main_tracer=manager.main_tracer,
             progress_hook=progress_hook,
             tool_hook=tool_hook,
             event_callback=event_callback,
@@ -182,15 +179,6 @@ class CLIEnabledSubAgentManager(SubAgentManager):
                     sub_agent.executor.subagent_manager.langfuse_client = self.langfuse_client
 
         try:
-            sub_agent_trace_path = None
-            if self.main_tracer and self.main_tracer.is_tracing():
-                main_trace_path = self.main_tracer.get_dump_path()
-                if main_trace_path and hasattr(self.main_tracer, "generate_sub_agent_trace_path"):
-                    sub_agent_trace_path = self.main_tracer.generate_sub_agent_trace_path(
-                        sub_agent_name,
-                        main_trace_path,
-                    )
-
             effective_context = context
             if effective_context is None:
                 current_context = get_context()
@@ -200,7 +188,6 @@ class CLIEnabledSubAgentManager(SubAgentManager):
             result = sub_agent.run(
                 message,
                 context=effective_context,
-                dump_trace_path=sub_agent_trace_path,
                 parent_agent_state=parent_agent_state,
             )
 

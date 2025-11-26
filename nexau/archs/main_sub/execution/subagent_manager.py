@@ -42,7 +42,6 @@ class SubAgentManager:
         sub_agent_factories: dict[str, Callable[[], Any]],
         langfuse_client=None,
         global_storage=None,
-        main_tracer=None,
     ):
         """Initialize sub-agent manager.
 
@@ -51,7 +50,6 @@ class SubAgentManager:
             sub_agent_factories: Dictionary mapping sub-agent names to factory functions
             langfuse_client: Optional Langfuse client for tracing
             global_storage: Optional global storage to share with sub-agents
-            main_tracer: Optional main agent's tracer for generating sub-agent trace paths
         """
         from nexau.archs.main_sub.agent import Agent
 
@@ -59,7 +57,6 @@ class SubAgentManager:
         self.sub_agent_factories = sub_agent_factories
         self.langfuse_client = langfuse_client
         self.global_storage = global_storage
-        self.main_tracer = main_tracer
         self.xml_parser = XMLParser()
         self._shutdown_event = threading.Event()
         self.running_sub_agents: dict[str, Agent] = {}
@@ -141,23 +138,6 @@ class SubAgentManager:
                     sub_agent.executor.subagent_manager.langfuse_client = self.langfuse_client
 
         try:
-            # Generate sub-agent trace path if main agent has tracing enabled
-            sub_agent_trace_path = None
-            # Get the main agent's tracer to generate sub-agent trace path
-            if self.main_tracer and self.main_tracer.is_tracing():
-                main_trace_path = self.main_tracer.get_dump_path()
-                if main_trace_path:
-                    # Use the tracer's method to generate sub-agent trace path
-                    if hasattr(self.main_tracer, "generate_sub_agent_trace_path"):
-                        sub_agent_trace_path = self.main_tracer.generate_sub_agent_trace_path(
-                            sub_agent_name,
-                            main_trace_path,
-                        )
-                        if sub_agent_trace_path:
-                            logger.info(
-                                f"📊 Sub-agent '{sub_agent_name}' will generate trace to: {sub_agent_trace_path}",
-                            )
-
             effective_context = None
             if context:
                 effective_context = context
@@ -171,7 +151,6 @@ class SubAgentManager:
             result = sub_agent.run(
                 message,
                 context=effective_context,
-                dump_trace_path=sub_agent_trace_path,
                 parent_agent_state=parent_agent_state,
             )
 
