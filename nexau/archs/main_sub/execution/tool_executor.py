@@ -208,6 +208,13 @@ class ToolExecutor:
                 "error_type": type(e).__name__,
             }
 
+        if tool_name in self.stop_tools:
+            logger.info(
+                f"🛑 Stop tool '{tool_name}' executed, marking for early termination",
+            )
+            if isinstance(result, dict):
+                result["_is_stop_tool"] = True
+
         if self.middleware_manager and result is not None:
             try:
                 hook_input = AfterToolHookInput(
@@ -224,16 +231,8 @@ class ToolExecutor:
         if execution_error:
             raise execution_error
 
-        # Check if this is a stop tool
-        if tool_name in self.stop_tools:
-            logger.info(
-                f"🛑 Stop tool '{tool_name}' executed, marking for early termination",
-            )
-            if isinstance(result, dict):
-                result["_is_stop_tool"] = True
-            else:
-                # Wrap non-dict results to include the marker
-                result = {"result": result, "_is_stop_tool": True}
+        if tool_name in self.stop_tools and not isinstance(result, dict):
+            result = {"result": result, "_is_stop_tool": True}
 
         if isinstance(result, dict) and result.get("status") == "error" and result.get("_is_stop_tool", False):
             logger.error(
