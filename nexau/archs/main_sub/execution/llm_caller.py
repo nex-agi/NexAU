@@ -497,7 +497,13 @@ def call_llm_with_openai_chat_completion(
 
     response = call_llm(kwargs)
     message = response.choices[0].message
-    return ModelResponse.from_openai_message(message)
+
+    # Extract usage information from response
+    usage = None
+    if hasattr(response, "usage") and response.usage is not None:
+        usage = _to_serializable_dict(response.usage)
+
+    return ModelResponse.from_openai_message(message, usage=usage)
 
 
 def call_llm_with_openai_responses(
@@ -978,6 +984,7 @@ class AnthropicStreamAggregator:
     def __init__(self) -> None:
         self.role: str = "assistant"
         self.model_name: str | None = None
+        self.usage: dict[str, Any] | None = None
         self._active_blocks: dict[int, dict[str, Any]] = {}
         self._completed_blocks: list[dict[str, Any]] = []
 
@@ -992,6 +999,16 @@ class AnthropicStreamAggregator:
                 self.role = role
             if message.get("model"):
                 self.model_name = message["model"]
+            # Extract initial usage information if available
+            usage_data = message.get("usage")
+            if usage_data:
+                self.usage = _to_serializable_dict(usage_data)
+        elif event_type == "message_delta":
+            # Update usage information from delta events
+            delta = _to_serializable_dict(payload.get("delta", {}))
+            usage_data = delta.get("usage") or payload.get("usage")
+            if usage_data:
+                self.usage = _to_serializable_dict(usage_data)
         elif event_type == "content_block_start":
             index = payload.get("index")
             block = _to_serializable_dict(payload.get("content_block", {}))
@@ -1015,6 +1032,8 @@ class AnthropicStreamAggregator:
         }
         if self.model_name:
             message["model"] = self.model_name
+        if self.usage is not None:
+            message["usage"] = self.usage
         return message
 
     def _apply_block_delta(self, payload: dict[str, Any]) -> None:
