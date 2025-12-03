@@ -8,3 +8,6 @@ htmlcov/
 node_modules/
 .coverage
 to_scan.txt
+mypy_reports/
+coverage.xml
+htmlcov/

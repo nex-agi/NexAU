@@ -129,7 +129,7 @@ uv sync
         Skill.from_folder(base_dir / "skills/theme-factory"),
         Skill.from_folder(base_dir / "skills/algorithmic-art"),
     ]
-    
+
     # Tracer allows you to forward execution data for observability.
     tracer = LangfuseTracer(
         public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
@@ -171,7 +171,7 @@ uv sync
     通过 `dotenv run uv run code_agent.py` 来运行 Agent
 
 4. **使用 NexAU CLI 运行**
-    
+
     **使用 run-agent 脚本（推荐）**
     ```bash
     # 一行命令运行任何 NexAU Agent 的 yaml 配置
@@ -182,28 +182,30 @@ uv sync
 
 ## 开发
 
-### 运行测试和质量检查
+### 环境初始化
 
-在提交拉取请求之前，您可以运行与 CI 中相同的检查：
+根目录的 `Makefile` 已经封装了所有 CI 会跑的工作流。克隆仓库后先确保安装好 `uv`，再通过 `install` 目标同步依赖并安装 pre-commit 钩子：
 
 ```bash
-# 安装依赖（包括开发依赖）
-uv sync
-
-# 运行代码检查
-uv run ruff check .
-
-# 运行格式检查
-uv run ruff format --check .
-
-# 自动修复代码检查问题（可选）
-uv run ruff check --fix .
-
-# 自动格式化代码（可选）
-uv run ruff format .
-
-# 运行测试并生成覆盖率报告
-uv run pytest --cov=nexau --cov-report=html --cov-report=term
+pip install uv        # 如果已经安装可跳过
+make install          # 执行 `uv sync` + `uv run pre-commit install`
 ```
 
-覆盖率报告将生成在 `htmlcov/` 目录中。在浏览器中打开 `htmlcov/index.html` 查看详细的覆盖率报告。
+### 日常工作流
+
+下面的命令与 GitHub Actions 中的 lint/type/test 作业完全一致，保证本地与 CI 一致性：
+
+```bash
+make lint            # 运行 ruff lint 套件
+make format          # 运行 ruff 自动格式化
+make format-check    # 以检查模式运行 formatter（CI 同款）
+make typecheck       # 同时运行 mypy 与 pyright
+make mypy-coverage   # 在 mypy_reports/ 下生成 Cobertura + HTML 类型覆盖率
+make test            # 运行 pytest，输出 coverage.xml 与 htmlcov/
+make ci              # 按顺序执行 lint、format-check、typecheck、test
+```
+
+本地可以查看、CI 也会上传到 Codecov 的产物：
+
+- `mypy_reports/type_cobertura/cobertura.xml` 与 `mypy_reports/type_html/index.html`（类型覆盖率）。
+- `coverage.xml` 与 `htmlcov/index.html`（测试覆盖率）。

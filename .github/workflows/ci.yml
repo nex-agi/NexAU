@@ -7,37 +7,106 @@ on:
     branches: [ main, develop ]
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.12']
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Python ${{ matrix.python-version }}
+    - &setup-python
+      name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: ${{ matrix.python-version }}
+        python-version: '3.12'
 
-    - name: Install uv
+    - &install-uv
+      name: Install uv
       run: |
         curl -LsSf https://astral.sh/uv/install.sh | sh
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
-    - name: Install dependencies
+    - &install-deps
+      name: Install dependencies
       run: |
         uv sync
 
-    - name: Run linter
+    - name: Run lint suite
       run: |
-        uv run ruff check .
+        make lint format-check
 
-    - name: Run format check
+  typecheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - *setup-python
+    - *install-uv
+    - *install-deps
+
+    - name: Run mypy (generate type coverage reports)
       run: |
-        uv run ruff format --check .
+        make mypy-coverage
+      continue-on-error: true
+
+    - name: Run pyright (strict, non-blocking)
+      run: |
+        make pyright
+      continue-on-error: true
+
+    - name: Upload type coverage to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        name: type-coverage
+        files: ./mypy_reports/type_cobertura/cobertura.xml
+        flags: typecov
+        verbose: true
+        use_oidc: true
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+    - name: Upload type coverage HTML
+      uses: actions/upload-artifact@v4
+      with:
+        name: type-coverage-html
+        path: mypy_reports/type_html/
+
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - *setup-python
+    - *install-uv
+    - *install-deps
 
     - name: Run tests with coverage
       run: |
-        uv run pytest --cov=nexau --cov-report=xml --cov-report=term
+        make test
+
+    - name: Upload test coverage to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        name: test-coverage
+        files: ./coverage.xml
+        flags: unittests
+        verbose: true
+        use_oidc: true
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+    - name: Upload test coverage HTML
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-coverage-html
+        path: htmlcov/

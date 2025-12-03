@@ -48,11 +48,7 @@ class LangfuseTracer(BaseTracer):
 
     Example:
         ```python
-        tracer = LangfuseTracer(
-            public_key="pk-...",
-            secret_key="sk-...",
-            host="https://cloud.langfuse.com"
-        )
+        tracer = LangfuseTracer(public_key="pk-...", secret_key="sk-...", host="https://cloud.langfuse.com")
 
         with TraceContext(tracer, "my_agent", SpanType.AGENT) as span:
             response = agent.run("Hello")

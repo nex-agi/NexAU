@@ -171,7 +171,7 @@ uv sync
     Run it with `dotenv run uv run code_agent.py`
 
 4. **Use NexAU CLI to run**
-    
+
     **Using the run-agent script (Recommended)**
     ```bash
     # One-liner to run any NexAU agent yaml config
@@ -182,28 +182,30 @@ uv sync
 
 ## Development
 
-### Running Tests and Quality Checks
+### Environment Bootstrap
 
-Before submitting a pull request, you can run the same checks that will run in CI:
+The root `Makefile` wraps every workflow the CI pipeline runs. After cloning the repo, install `uv` (if you haven’t already) and let the `install` target both sync dependencies and install the pre-commit hooks:
 
 ```bash
-# Install dependencies (including dev dependencies)
-uv sync
-
-# Run linter
-uv run ruff check .
-
-# Run format check
-uv run ruff format --check .
-
-# Auto-fix linting issues (optional)
-uv run ruff check --fix .
-
-# Auto-format code (optional)
-uv run ruff format .
-
-# Run tests with coverage
-uv run pytest --cov=nexau --cov-report=html --cov-report=term
+pip install uv        # skip if uv is already available
+make install          # runs `uv sync` + `uv run pre-commit install`
 ```
 
-The coverage report will be generated in the `htmlcov/` directory. Open `htmlcov/index.html` in your browser to view the detailed coverage report.
+### Day-to-day Workflows
+
+All quality gates match the dedicated GitHub Actions jobs (`lint`, `typecheck`, `test`). Use the targets below for local parity:
+
+```bash
+make lint            # ruff lint suite
+make format          # ruff formatter (auto-fix)
+make format-check    # formatter check-only (same as CI)
+make typecheck       # runs mypy + pyright
+make mypy-coverage   # emits Cobertura + HTML reports under mypy_reports/
+make test            # pytest with XML + HTML coverage (coverage.xml + htmlcov/)
+make ci              # runs lint, format-check, typecheck, and test sequentially
+```
+
+Artifacts to inspect locally (and that CI uploads to Codecov):
+
+- `mypy_reports/type_cobertura/cobertura.xml` plus `mypy_reports/type_html/index.html` for type coverage.
+- `coverage.xml` plus `htmlcov/index.html` for runtime test coverage.

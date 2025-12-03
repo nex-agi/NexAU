@@ -1,88 +1,138 @@
 [project]
-name = "nexau"
-version = "0.3.4"
+# Primary runtime dependencies imported by the agent runtime itself.
+dependencies = [
+  "pyyaml>=6.0",
+  "pydantic>=2.7",
+  "jsonschema>=4.0.0",
+  "requests>=2.25.0",
+  "jinja2>=3.0.0",
+  "beautifulsoup4>=4.9.0",
+  "openai>=1.0.0",
+  "httpx>=0.25.0",
+  "mcp>=1.12.3",
+  "lark_oapi>=1.4.0",
+  "sqlmodel>=0.0.18",
+  "pytest>=7.0.0",
+  "pytest-cov>=4.0.0",
+  "streamlit>=1.48.0",
+  "plotly>=6.2.0",
+  "pandas>=2.3.1",
+  "langfuse>=3.2.3",
+  "tiktoken>=0.5.0",
+  "fastmcp",
+  "diskcache>=5.6.3",
+  "anthropic>=0.72.0",
+  "opentelemetry-instrumentation-anthropic>=0.47.5",
+]
 description = "A general-purpose agent framework"
+name = "nexau"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "pyyaml>=6.0",
-    "pydantic>=2.7",
-    "jsonschema>=4.0.0",
-    "requests>=2.25.0",
-    "jinja2>=3.0.0",
-    "beautifulsoup4>=4.9.0",
-    "openai>=1.0.0",
-    "httpx>=0.25.0",
-    "mcp>=1.12.3",
-    "lark_oapi>=1.4.0",
-    "sqlmodel>=0.0.18",
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "streamlit>=1.48.0",
-    "plotly>=6.2.0",
-    "pandas>=2.3.1",
-    "langfuse>=3.2.3",
-    "tiktoken>=0.5.0",
-    "fastmcp",
-    "diskcache>=5.6.3",
-    "anthropic>=0.72.0",
-    "opentelemetry-instrumentation-anthropic>=0.47.5",
-]
+version = "0.3.4"
 
 [project.scripts]
+# Public entry point exposed via `pip install nexau`.
 nexau-cli = "nexau.cli_wrapper:main"
 
-[tool.uv]
-dev-dependencies = [
-    "ruff>=0.8.0",
+[dependency-groups]
+# Local-only tooling deps used in lint/type/test workflows.
+dev = [
+  "ruff>=0.8.0",
+  "mypy>=1.11.0",
+  "lxml>=6.0.2",
+  "pyright==1.1.399",
+  "pre-commit>=3.8.0",
 ]
 
 [build-system]
-requires = ["setuptools>=45", "wheel"]
+# Minimal build backend requirements for hatchling-free packaging.
 build-backend = "setuptools.build_meta"
+requires = ["setuptools>=45", "wheel"]
 
 [tool.setuptools.packages.find]
-where = ["."]
 include = ["nexau*"]
+where = ["."]
 
 [tool.setuptools.package-data]
 nexau = [
-    "archs/main_sub/prompts/*.j2",
-    "cli/dist/*.js",
-    "cli/dist/*.js.map",
+  "archs/main_sub/prompts/*.j2",
+  "cli/dist/*.js",
+  "cli/dist/*.js.map",
 ]
 
 [tool.ruff]
-# Set the target Python version
-target-version = "py312"
+# Keep ruff aligned with formatter + lint outputs used in CI.
+extend-exclude = [
+  "examples/code_agent/skills",
+]
 line-length = 140
-# Exclude directories from linting
-exclude = [
-    "examples/code_agent/skills",
-]
-
-[tool.ruff.lint]
-# Enable common linting rules
-select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "N",   # pep8-naming
-    "UP",  # pyupgrade
-]
-ignore = []
-
-[tool.ruff.lint.per-file-ignores]
-# Ignore import rules in __init__.py files
-"__init__.py" = ["F401"]
-# Ignore star imports in test __init__.py files
-"tests/**/__init__.py" = ["F401", "F403"]
-# Ignore specific rules in test files
-"tests/**/*.py" = ["N802", "N803"]
+output-format = "grouped"
+respect-gitignore = true
+target-version = "py312"
 
 [tool.ruff.format]
-# Use double quotes for strings
-quote-style = "double"
-# Indent with spaces
+docstring-code-format = true
 indent-style = "space"
+quote-style = "double"
+
+[tool.ruff.lint]
+# Enable opinionated but still CI-friendly lint rules.
+ignore = []
+select = [
+  "E",  # pycodestyle errors (indent/spacing)
+  "W",  # pycodestyle warnings
+  "F",  # pyflakes correctness
+  "I",  # import sorting
+  "N",  # pep8-naming
+  "UP", # pyupgrade
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = [
+  "F401", # namespace packages commonly re-export symbols
+]
+"tests/**/__init__.py" = [
+  "F401", # re-export fixtures to simplify imports
+  "F403", # allow star-imports inside test package initializers
+]
+"tests/**/*.py" = [
+  "N802", # fixtures often use CamelCase/mixedCase names
+  "N803", # fixture parameters commonly violate pep8 naming
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["nexau", "tests"]
+
+[tool.mypy]
+# Stricter default type-checking; individual modules fall back below.
+cache_fine_grained = true
+exclude = [
+  ".venv/.*",
+  ".nox/.*",
+  "examples/code_agent/skills/.*",
+]
+implicit_reexport = true
+namespace_packages = true
+no_implicit_optional = true
+pretty = true
+python_version = "3.12"
+show_error_codes = true
+strict_equality = true
+warn_unused_configs = true
+
+[tool.pyright]
+# Pyright mirrors mypy but is stricter; keep in sync with CI step.
+exclude = [
+  "_dev",
+  ".venv",
+  ".nox",
+  ".git",
+  "examples/code_agent/skills",
+]
+include = ["nexau"]
+pythonVersion = "3.12"
+reportImplicitOverride = true
+reportImportCycles = false
+reportOverlappingOverload = false
+reportPrivateUsage = false
+typeCheckingMode = "strict"
