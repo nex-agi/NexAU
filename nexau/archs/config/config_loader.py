@@ -642,8 +642,42 @@ def load_yaml_with_vars(path):
 
     config_text = env_pattern.sub(_replace_env, config_text)
 
-    # 再 load
-    return yaml.safe_load(config_text)
+    # deal variables in the YAML file
+    loaded_config = yaml.safe_load(config_text)
+
+    if not isinstance(loaded_config, dict):
+        return loaded_config
+
+    yaml_variables = loaded_config.get("variables")
+    if yaml_variables is None:
+        return loaded_config
+
+    if not isinstance(yaml_variables, dict):
+        raise ConfigError("'variables' must be a mapping if provided in YAML")
+
+    # Replace ${variables.foo.bar} occurrences directly in the raw text
+    var_pattern = re.compile(
+        r"\$\{variables\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\}",
+    )
+
+    def _resolve_var(match: re.Match[str]) -> str:
+        path = match.group(1).split(".")
+        current: Any = yaml_variables
+        for part in path:
+            if not isinstance(current, dict) or part not in current:
+                raise ConfigError(f"Variable '{match.group(1)}' is not defined in 'variables'")
+            current = current[part]
+        if isinstance(current, (dict, list)):
+            raise ConfigError(
+                f"Variable '{match.group(1)}' resolves to a non-scalar value and cannot be embedded in a string",
+            )
+        return str(current)
+
+    config_text = var_pattern.sub(_resolve_var, config_text)
+    resolved_config = yaml.safe_load(config_text)
+    if isinstance(resolved_config, dict):
+        resolved_config.pop("variables", None)
+    return resolved_config
 
 
 def load_agent_config(

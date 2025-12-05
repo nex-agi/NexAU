@@ -1,6 +1,9 @@
+variables:
+  max_tokens: 100000
+
 type: agent
 name: nexau_code_agent
-max_context_tokens: &max_tokens 100000
+max_context_tokens: ${variables.max_tokens}
 system_prompt: ./system-workflow.md
 system_prompt_type: jinja
 tool_call_mode: openai # xml, openai or anthorpic
@@ -51,7 +54,7 @@ skills: # Skills are used to hint the agent to solve specific tasks
 middlewares: # Middlewares are used to modify the behavior of the agent.
   - import: nexau.archs.main_sub.execution.middleware.context_compaction:ContextCompactionMiddleware
     params:
-      max_context_tokens: *max_tokens
+      max_context_tokens: ${variables.max_tokens}
       auto_compact: true
       threshold: 0.75  # Trigger compaction when token usage reaches 75%
       compaction_strategy: "tool_result_compaction"  # "sliding_window" or "tool_result_compaction"

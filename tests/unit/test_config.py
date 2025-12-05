@@ -70,6 +70,76 @@ llm_config:
         assert result["name"] == "test_agent"
         assert temp_dir in result["system_prompt"]
 
+    def test_load_yaml_with_yaml_variables(self, temp_dir):
+        """YAML variables block should be resolved and removed from final config."""
+        config_content = """
+variables:
+  model_name: gpt-4o
+name: test_agent
+system_prompt: "Agent in ${variables.model_name}"
+llm_config:
+  model: ${variables.model_name}
+tools: []
+"""
+
+        config_file = Path(temp_dir) / "test_config.yaml"
+        config_file.write_text(config_content)
+
+        from nexau.archs.config.config_loader import load_yaml_with_vars
+
+        result = load_yaml_with_vars(str(config_file))
+
+        assert result["system_prompt"] == "Agent in gpt-4o"
+        assert result["llm_config"]["model"] == "gpt-4o"
+        assert "variables" not in result
+
+    def test_variable_errors_for_missing_and_non_string_embeds(self, temp_dir):
+        """Missing vars and non-string embedding should raise ConfigError."""
+        from nexau.archs.config.config_loader import load_yaml_with_vars
+
+        missing_content = """
+variables:
+  foo: bar
+value: ${variables.not_defined}
+"""
+
+        missing_file = Path(temp_dir) / "missing.yaml"
+        missing_file.write_text(missing_content)
+
+        with pytest.raises(ConfigError, match="not_defined"):
+            load_yaml_with_vars(str(missing_file))
+
+        non_string_content = """
+variables:
+  mapping:
+    key: value
+value: "prefix-${variables.mapping}"
+"""
+
+        non_string_file = Path(temp_dir) / "non_string.yaml"
+        non_string_file.write_text(non_string_content)
+
+        with pytest.raises(ConfigError, match="non-scalar value"):
+            load_yaml_with_vars(str(non_string_file))
+
+    def test_load_yaml_with_invalid_variables_block(self, temp_dir):
+        """Non-mapping variables block should raise an error."""
+        config_content = """
+variables: true
+name: test_agent
+llm_config:
+  model: gpt-4o-mini
+tools: []
+"""
+
+        config_file = Path(temp_dir) / "test_config.yaml"
+        config_file.write_text(config_content)
+
+        from nexau.archs.config.config_loader import load_yaml_with_vars
+
+        with pytest.raises(ConfigError, match="must be a mapping"):
+            load_yaml_with_vars(str(config_file))
+
     def test_validate_config_schema_valid(self):
         """Test schema validation with valid configuration."""
         valid_config = {
