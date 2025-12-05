@@ -105,6 +105,7 @@ class Tool:
         disable_parallel: bool = False,
         template_override: str | None = None,
         timeout: int | None = None,
+        extra_kwargs: dict[str, Any] | None = None,
     ):
         """Initialize a tool with schema and implementation."""
         self.name = name
@@ -123,6 +124,14 @@ class Tool:
         self.timeout = timeout
         self.disable_parallel = disable_parallel
         self.use_cache = use_cache
+        reserved_keys = {"agent_state", "global_storage"}
+        extra_kwargs = extra_kwargs or {}
+        conflict_keys = set(extra_kwargs) & reserved_keys
+        if conflict_keys:
+            raise ConfigError(
+                f"Tool '{self.name}' extra_kwargs contains reserved keys that cannot be overridden: {sorted(conflict_keys)}",
+            )
+        self.extra_kwargs = extra_kwargs
 
         # Validate schema
         self._validate_schema()
@@ -133,7 +142,8 @@ class Tool:
         yaml_path: str,
         binding: Callable | str | None,
         as_skill: bool = False,
-        **kwargs: Any,
+        extra_kwargs: dict[str, Any] | None = None,
+        **kwargs,
     ) -> "Tool":
         """Load tool definition from YAML file and bind to implementation."""
         path = Path(yaml_path)
@@ -179,6 +189,7 @@ class Tool:
             disable_parallel=disable_parallel,
             template_override=template_override,
             timeout=timeout,
+            extra_kwargs=extra_kwargs,
             **kwargs,
         )
 
@@ -200,8 +211,10 @@ class Tool:
                 raise ValueError(f"Tool '{self.name}' has no implementation")
 
         # Handle agent_state parameter
-        filtered_params = params.copy()
-        if "agent_state" in params:
+        merged_params = {**self.extra_kwargs, **params}
+
+        filtered_params = merged_params.copy()
+        if "agent_state" in merged_params:
             # Check if the function signature accepts agent_state
             sig = inspect.signature(self.implementation)
             if "agent_state" not in sig.parameters:
@@ -210,7 +223,7 @@ class Tool:
 
                 # For backwards compatibility, check if function accepts global_storage
                 if "global_storage" in sig.parameters:
-                    agent_state = params["agent_state"]
+                    agent_state = merged_params["agent_state"]
                     filtered_params["global_storage"] = agent_state.global_storage
 
         # Validate parameters (excluding agent_state and global_storage for schema validation)

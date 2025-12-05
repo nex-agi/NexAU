@@ -57,6 +57,7 @@ class ToolConfigEntry(BaseModel):
     yaml_path: str
     binding: str | None = None
     as_skill: bool = False
+    extra_kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
 class SubAgentConfigEntry(BaseModel):
@@ -769,16 +770,28 @@ def load_tool_from_config(tool_config: dict[str, Any], base_path: Path) -> Tool:
     yaml_path = tool_config.get("yaml_path")
     binding = tool_config.get("binding", None)
     as_skill = tool_config.get("as_skill", False)
+    extra_kwargs = tool_config.get("extra_kwargs", {})
 
     if not yaml_path:
         raise ConfigError(f"Tool '{name}' missing 'yaml_path' field")
+
+    if extra_kwargs is None:
+        extra_kwargs = {}
+    if not isinstance(extra_kwargs, dict):
+        raise ConfigError(f"Tool '{name}' has invalid 'extra_kwargs'; it must be a mapping")
+    reserved_keys = {"agent_state", "global_storage"}
+    conflict_keys = set(extra_kwargs) & reserved_keys
+    if conflict_keys:
+        raise ConfigError(
+            f"Tool '{name}' extra_kwargs contains reserved keys that cannot be overridden: {sorted(conflict_keys)}",
+        )
 
     # Resolve YAML path
     if not Path(yaml_path).is_absolute():
         yaml_path = base_path / yaml_path
 
     # Create tool
-    tool = Tool.from_yaml(str(yaml_path), binding, as_skill=as_skill)
+    tool = Tool.from_yaml(str(yaml_path), binding, as_skill=as_skill, extra_kwargs=extra_kwargs)
 
     # Override tool name with config-provided alias if present
     if name and tool.name != name:

@@ -33,6 +33,8 @@ from nexau.archs.config.config_loader import (
     validate_config_schema,
 )
 from nexau.archs.llm.llm_config import LLMConfig
+from nexau.archs.tool.tool import ConfigError as ToolConfigError
+from nexau.archs.tool.tool import Tool
 from nexau.archs.tracer.core import BaseTracer
 
 
@@ -448,6 +450,77 @@ Details here.
 
         with pytest.raises(ConfigError, match="Error loading skill"):
             builder.build_skills()
+
+
+class TestToolExtraKwargs:
+    """Behavioral tests for Tool.extra_kwargs and parameter merging."""
+
+    def _base_tool(self, implementation, extra_kwargs=None, input_props=None):
+        schema_props = input_props or {"a": {"type": "number"}, "b": {"type": "number"}, "c": {"type": "number"}}
+        return Tool(
+            name="test_tool",
+            description="test",
+            input_schema={"type": "object", "properties": schema_props, "additionalProperties": False},
+            implementation=implementation,
+            extra_kwargs=extra_kwargs,
+        )
+
+    def test_extra_kwargs_merge_and_override(self):
+        """extra_kwargs are merged and call-time params override preset values."""
+
+        def impl(**kwargs):
+            return kwargs
+
+        tool = self._base_tool(impl, extra_kwargs={"a": 1, "b": 2})
+        result = tool.execute(b=99, c=3)
+
+        assert result["a"] == 1  # from extra_kwargs
+        assert result["b"] == 99  # call-time override
+        assert result["c"] == 3
+
+    def test_extra_kwargs_reserved_keys_rejected(self):
+        """Reserved keys cannot be supplied via extra_kwargs."""
+        with pytest.raises(ToolConfigError, match="reserved keys"):
+            self._base_tool(lambda **_: {}, extra_kwargs={"agent_state": "x"})
+
+    def test_extra_kwargs_unknown_param_reaches_function(self):
+        """Unknown fields bypass schema and surface as TypeError when the function cannot accept them."""
+
+        def impl(a):
+            return {"a": a}
+
+        tool = self._base_tool(impl, extra_kwargs={"x": 1}, input_props={"a": {"type": "number"}})
+        response = tool.execute(a=5)
+
+        assert response["error_type"] == "TypeError"
+        assert "unexpected keyword argument 'x'" in response["error"]
+
+    def test_extra_kwargs_satisfy_required_fields(self):
+        """Required schema fields can be satisfied solely via extra_kwargs."""
+
+        def impl(a, agent_state=None):
+            return {"a": a}
+
+        tool = self._base_tool(impl, extra_kwargs={"a": 7}, input_props={"a": {"type": "number"}})
+        result = tool.execute()
+
+        assert result["a"] == 7
+
+    def test_extra_kwargs_unknown_with_kwargs_accepted(self):
+        """Unknown fields are accepted if the implementation has **kwargs."""
+
+        def impl(a, **kwargs):
+            return {"a": a, "extras": kwargs}
+
+        tool = self._base_tool(
+            impl,
+            extra_kwargs={"x": 1},
+            input_props={"a": {"type": "number"}},
+        )
+        result = tool.execute(a=2)
+
+        assert result["a"] == 2
+        assert result["extras"]["x"] == 1
 
     def test_build_skills_folder_without_skill_md(self, temp_dir):
         """Test building skills from folder without SKILL.md."""

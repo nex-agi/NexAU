@@ -36,6 +36,7 @@ from nexau.archs.main_sub.execution.hooks import (
     MiddlewareManager,
 )
 from nexau.archs.main_sub.execution.tool_executor import ToolExecutor
+from nexau.archs.tool.tool import ConfigError as ToolConfigError
 from nexau.archs.tool.tool import Tool
 
 
@@ -198,6 +199,125 @@ class TestToolExecutorExecution:
 
         assert received_state is agent_state
         assert result["result"] == 10
+
+
+class TestToolExecutorExtraKwargs:
+    """Test how ToolExecutor handles extra_kwargs and unknown params."""
+
+    def test_merge_and_override_extra_kwargs(self, agent_state):
+        """extra_kwargs merge and call-time override should survive executor flow."""
+
+        def impl(a=None, b=None, c=None, agent_state=None):
+            return {"a": a, "b": b, "c": c}
+
+        tool = Tool(
+            name="with_extra",
+            description="test extra kwargs",
+            input_schema={"type": "object", "properties": {"b": {"type": "number"}, "c": {"type": "number"}}},
+            implementation=impl,
+            extra_kwargs={"a": 1, "b": 2},
+        )
+
+        executor = ToolExecutor(tool_registry={"with_extra": tool}, stop_tools=set())
+
+        result = executor.execute_tool(
+            agent_state=agent_state,
+            tool_name="with_extra",
+            parameters={"b": 99, "c": 3},
+            tool_call_id="call_extra",
+        )
+
+        assert result["a"] == 1  # from extra_kwargs
+        assert result["b"] == 99  # overridden by call-time parameter
+        assert result["c"] == 3
+
+    def test_reserved_keys_in_extra_kwargs_fail(self):
+        """Reserved keys should be rejected when constructing the tool."""
+        with pytest.raises(ToolConfigError, match="reserved keys"):
+            Tool(
+                name="bad_extra",
+                description="bad",
+                input_schema={"type": "object", "properties": {}},
+                implementation=lambda **_: {},
+                extra_kwargs={"agent_state": "x"},
+            )
+
+    def test_unknown_field_passes_through_and_errors(self, agent_state):
+        """Unknown field (not in schema) bypasses validation and reaches the function, causing TypeError if not accepted."""
+
+        def impl(a, agent_state=None):
+            return {"a": a}
+
+        tool = Tool(
+            name="unknown_field",
+            description="unknown passthrough",
+            input_schema={"type": "object", "properties": {"a": {"type": "number"}}, "additionalProperties": False},
+            implementation=impl,
+            extra_kwargs={"x": 1},
+        )
+
+        executor = ToolExecutor(tool_registry={"unknown_field": tool}, stop_tools=set())
+
+        result = executor.execute_tool(
+            agent_state=agent_state,
+            tool_name="unknown_field",
+            parameters={"a": 5},
+            tool_call_id="call_unknown",
+        )
+
+        assert result["error_type"] == "TypeError"
+        assert "unexpected keyword argument 'x'" in result["error"]
+
+    def test_extra_kwargs_satisfy_required_fields(self, agent_state):
+        """extra_kwargs alone can satisfy required schema fields."""
+
+        def impl(a=None, agent_state=None):
+            return {"a": a}
+
+        tool = Tool(
+            name="required_from_extra",
+            description="required filled by extra",
+            input_schema={"type": "object", "properties": {"a": {"type": "number"}}, "required": ["a"]},
+            implementation=impl,
+            extra_kwargs={"a": 10},
+        )
+
+        executor = ToolExecutor(tool_registry={"required_from_extra": tool}, stop_tools=set())
+
+        result = executor.execute_tool(
+            agent_state=agent_state,
+            tool_name="required_from_extra",
+            parameters={},
+            tool_call_id="call_required",
+        )
+
+        assert result["a"] == 10
+
+    def test_unknown_field_with_kwargs_accepted(self, agent_state):
+        """Unknown fields should succeed when implementation accepts **kwargs."""
+
+        def impl(a, **kwargs):
+            return {"a": a, "extras": kwargs}
+
+        tool = Tool(
+            name="unknown_ok",
+            description="accept unknown via kwargs",
+            input_schema={"type": "object", "properties": {"a": {"type": "number"}}, "additionalProperties": False},
+            implementation=impl,
+            extra_kwargs={"x": 1},
+        )
+
+        executor = ToolExecutor(tool_registry={"unknown_ok": tool}, stop_tools=set())
+
+        result = executor.execute_tool(
+            agent_state=agent_state,
+            tool_name="unknown_ok",
+            parameters={"a": 5},
+            tool_call_id="call_unknown_ok",
+        )
+
+        assert result["a"] == 5
+        assert result["extras"]["x"] == 1
 
 
 class TestToolExecutorHooks:

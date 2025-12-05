@@ -75,6 +75,11 @@ tools:
 
 You can easily extend an agent's capabilities by creating your own custom tools.
 
+### extra_kwargs (preset parameters)
+- Use `Tool.from_yaml(..., extra_kwargs=...)` or a YAML `extra_kwargs` block to preset fixed arguments (e.g., `base_url`/`api_key`/`model`) so callers can omit them.
+- Call-time arguments with the same name override preset values. Reserved keys `agent_state` and `global_storage` are not allowed in `extra_kwargs`.
+- Extra fields are not blocked by schema validation and are passed to the tool function; if the function signature does not accept them, a `TypeError` will be raised. To reject unknown fields up front, add `additionalProperties: false` in the tool’s `input_schema`.
+
 **Step 1: Define the Tool's Python Function**
 
 Create a standard Python function with type hints. The docstring will be used to inform the agent how the tool works.
@@ -86,7 +91,7 @@ def simple_calculator(expression: str) -> str:
     """
     Evaluates a simple mathematical expression.
     Supports addition (+), subtraction (-), multiplication (*), and division (/).
-    
+
     Args:
         expression: The mathematical expression to evaluate (e.g., "10 + 5*2").
 
