@@ -28,7 +28,7 @@ class SerperSearch:
         self.base_url = "https://google.serper.dev/"
         self.timeout = timeout
         self.max_retries = max_retries
-        self.result_key_for_type: dict = {
+        self.result_key_for_type: dict[str, str] = {
             "news": "news",
             "places": "places",
             "images": "images",
@@ -48,7 +48,7 @@ class SerperSearch:
             "X-API-KEY": self.api_key,
             "Content-Type": "application/json",
         }
-        payload = {"q": query, "num": num_results}
+        payload: dict[str, str | int] = {"q": query, "num": num_results}
 
         for attempt in range(self.max_retries):
             try:

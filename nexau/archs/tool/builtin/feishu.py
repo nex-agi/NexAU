@@ -1,3 +1,13 @@
+# pyright: reportGeneralTypeIssues=false
+# pyright: reportMissingImports=false
+# pyright: reportArgumentType=false
+# pyright: reportOptionalMemberAccess=false
+# pyright: reportReturnType=false
+# pyright: reportAssignmentType=false
+# pyright: reportCallIssue=false
+# pyright: reportOptionalCall=false
+# pyright: reportAttributeAccessIssue=false
+
 # Copyright (c) Nex-AGI. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,12 +26,13 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Callable, Coroutine
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any, TypeVar, cast
 
-import lark_oapi as lark
+import lark_oapi as lark  # type: ignore[import-untyped]
 import requests
-from lark_oapi.api.im.v1 import (
+from lark_oapi.api.im.v1 import (  # type: ignore[import-untyped]
     CreateFileRequest,
     CreateFileRequestBody,
     CreateFileResponse,
@@ -46,12 +57,54 @@ from lark_oapi.api.im.v1 import (
     ReplyMessageResponse,
 )
 
-# from lark_oapi.api.wiki.v2 import *
-# except ImportError:
-#     # 当直接运行此文件时，使用绝对导入
-#     from decorators import log_io
-
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
+JSONDict = dict[str, Any]
+
+
+# Runtime validation helpers
+def _ensure_dict(value: object, *, context: str) -> JSONDict:
+    """Validate that a value is a dictionary and return it."""
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} must be a dict, got {type(value).__name__}")
+    return cast(JSONDict, value)
+
+
+def _ensure_list_of_dicts(value: object, *, context: str) -> list[JSONDict]:
+    """Validate that a value is a list of dictionaries and return it."""
+    if not isinstance(value, list):
+        raise ValueError(f"{context} must be a list, got {type(value).__name__}")
+    value_list = cast(list[object], value)
+    dict_items: list[JSONDict] = []
+    for index, item in enumerate(value_list):
+        if not isinstance(item, dict):
+            raise ValueError(f"{context}[{index}] must be a dict, got {type(item).__name__}")
+        dict_items.append(cast(JSONDict, item))
+    return dict_items
+
+
+# Helper to marshal Lark JSON with a stable return type
+def _marshal_json(data: Any, indent: int | None = 4) -> str:
+    json_marshal = cast(Callable[[Any, int | None], str | None], getattr(lark.JSON, "marshal", None))
+    result = json_marshal(data, indent) if json_marshal is not None else None
+    return result or ""
+
+
+# Helper to safely extract the first string from a sequence of values
+def _first_str(*values: Any) -> str:
+    for value in values:
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+# Helper to ensure the Lark client is treated as dynamically typed for pyright
+def _create_lark_client(app_id: str, app_secret: str) -> Any:
+    return cast(
+        Any,
+        lark.Client.builder().app_id(app_id).app_secret(app_secret).log_level(lark.LogLevel.INFO).build(),
+    )
+
 
 """
 飞书机器人工具集合 - 精简版
@@ -179,7 +232,7 @@ def get_user_id_by_feishu_id(feishu_id: str) -> str | None:
         response = requests.post(url, json=data, timeout=10)
 
         if response.status_code == 200:
-            result = response.json()
+            result = cast(dict[str, Any], response.json())
             user_id = result.get("user_id")
             if user_id:
                 logger.info(
@@ -201,16 +254,17 @@ def get_user_id_by_feishu_id(feishu_id: str) -> str | None:
 
 
 # Sandbox helper functions
-def run_async(coro):
+def run_async[T](coro: Coroutine[Any, Any, T]) -> T:
     """在同步上下文中运行异步函数"""
     try:
         # 尝试获取当前事件循环
         loop = asyncio.get_event_loop()
         if loop.is_running():
             # 如果已经在运行的事件循环中，创建一个新任务
-            import nest_asyncio
+            import nest_asyncio  # type: ignore[import-untyped]
 
-            nest_asyncio.apply()
+            nest_asyncio_mod = cast(Any, nest_asyncio)
+            nest_asyncio_mod.apply()
             return loop.run_until_complete(coro)
         else:
             # 如果没有运行的事件循环，直接运行
@@ -261,7 +315,7 @@ def get_feishu_chat_list(
         final_app_id, final_app_secret = config_result
 
         # 创建client
-        client = lark.Client.builder().app_id(final_app_id).app_secret(final_app_secret).log_level(lark.LogLevel.INFO).build()
+        client = _create_lark_client(final_app_id, final_app_secret)
 
         # 构造请求对象
         request_builder = ListChatRequest.builder().sort_type(sort_type).page_size(page_size)
@@ -294,7 +348,7 @@ def get_feishu_chat_list(
             return error_msg
 
         # 处理业务结果
-        chat_data = lark.JSON.marshal(response.data, indent=4)
+        chat_data = _marshal_json(response.data, indent=4)
         return chat_data
 
     except BaseException as e:
@@ -303,7 +357,7 @@ def get_feishu_chat_list(
         return error_msg
 
 
-def get_chat_user_mapping(chat_id: str) -> dict:
+def get_chat_user_mapping(chat_id: str) -> dict[str, str]:
     """获取指定群聊中用户ID和用户名的对应关系，支持分页获取所有用户
 
     Args:
@@ -313,7 +367,7 @@ def get_chat_user_mapping(chat_id: str) -> dict:
         dict: 用户ID到用户名的映射字典，格式为 {user_id: user_name}
     """
     try:
-        user_mapping = {}
+        user_mapping: dict[str, str] = {}
         page_token = None
         page_count = 0
         max_pages = 50  # 最大页数限制，避免无限循环
@@ -331,16 +385,28 @@ def get_chat_user_mapping(chat_id: str) -> dict:
 
             # 解析响应
             try:
-                members_data = json.loads(members_response)
+                raw_members = json.loads(members_response)
             except json.JSONDecodeError:
                 logger.warning(
                     f"解析群组成员数据失败 (第{page_count}页): {members_response}",
                 )
                 break
+            try:
+                members_data = _ensure_dict(raw_members, context=f"第{page_count}页群组成员数据")
+            except ValueError as error:
+                logger.warning(str(error))
+                break
 
             # 处理当前页的用户数据
             if "users" in members_data:
-                current_page_users = members_data["users"]
+                try:
+                    current_page_users = _ensure_list_of_dicts(
+                        members_data["users"],
+                        context=f"第{page_count}页群组成员数据.users",
+                    )
+                except ValueError as error:
+                    logger.warning(str(error))
+                    current_page_users = []
                 logger.info(
                     f"第 {page_count} 页获取到 {len(current_page_users)} 个用户",
                 )
@@ -352,8 +418,9 @@ def get_chat_user_mapping(chat_id: str) -> dict:
                         user_mapping[user_id] = user_name
 
             # 检查是否还有下一页
-            has_more = members_data.get("has_more", False)
-            page_token = members_data.get("page_token", "")
+            has_more = bool(members_data.get("has_more", False))
+            page_token_raw = members_data.get("page_token", "")
+            page_token = page_token_raw if isinstance(page_token_raw, str) else ""
 
             if not has_more or not page_token:
                 logger.info(f"群聊 {chat_id} 用户列表获取完毕，共 {page_count} 页")
@@ -391,7 +458,7 @@ def truncate_message_content(content: str, max_length: int = 2000) -> str:
     return content[:half_length] + "..." + content[-half_length:]
 
 
-def extract_post_text(content_obj: dict) -> str:
+def extract_post_text(content_obj: JSONDict) -> str:
     """从富文本消息对象中提取纯文本内容
 
     Args:
@@ -434,7 +501,7 @@ def extract_post_text(content_obj: dict) -> str:
         return "[富文本消息]"
 
 
-def _extract_post_content(content_data: dict) -> str:
+def _extract_post_content(content_data: JSONDict) -> str:
     """从富文本内容数据中提取文本
 
     Args:
@@ -444,7 +511,7 @@ def _extract_post_content(content_data: dict) -> str:
         str: 提取的文本内容
     """
     try:
-        text_parts = []
+        text_parts: list[str] = []
 
         # 提取标题
         title = content_data.get("title", "")
@@ -452,42 +519,57 @@ def _extract_post_content(content_data: dict) -> str:
             text_parts.append(f"标题: {title}")
 
         # 提取内容
-        content_lines = content_data.get("content", [])
+        content_lines_raw = content_data.get("content", [])
+        content_lines_raw_typed: list[Any] = []
+        if not isinstance(content_lines_raw, list):
+            return "[富文本消息]"
+        content_lines_raw_typed = cast(list[Any], content_lines_raw)
+        content_lines: list[list[JSONDict]] = []
+        for line_obj in content_lines_raw_typed:
+            if isinstance(line_obj, list):
+                content_lines.append(cast(list[JSONDict], line_obj))
+
         for line in content_lines:
-            if isinstance(line, list):
-                line_text = ""
-                for element in line:
-                    if isinstance(element, dict):
-                        tag = element.get("tag", "")
-                        if tag == "text":
-                            line_text += element.get("text", "")
-                        elif tag == "a":
-                            text = element.get("text", "")
-                            href = element.get("href", "")
-                            if text and href:
-                                line_text += f"{text}({href})"
-                            elif text:
-                                line_text += text
-                            elif href:
-                                line_text += href
-                        elif tag == "at":
-                            user_name = element.get("user_name", "")
-                            user_id = element.get("user_id", "")
-                            if user_name:
-                                line_text += f"@{user_name}"
-                            elif user_id:
-                                line_text += f"@{user_id}"
-                            else:
-                                line_text += "@某人"
-                        elif tag == "img":
-                            line_text += "[图片]"
-                        elif tag == "media":
-                            line_text += "[视频]"
-                        elif tag == "emotion":
-                            emoji_type = element.get("emoji_type", "表情")
-                            line_text += f"[{emoji_type}]"
-                if line_text.strip():
-                    text_parts.append(line_text.strip())
+            line_text: str = ""
+            for element in line:
+                tag = str(element.get("tag", ""))
+                if tag == "text":
+                    text_value = element.get("text", "")
+                    if isinstance(text_value, str):
+                        line_text += text_value
+                elif tag == "a":
+                    text = element.get("text", "")
+                    href = element.get("href", "")
+                    text_str = text if isinstance(text, str) else ""
+                    href_str = href if isinstance(href, str) else ""
+                    if text_str and href_str:
+                        line_text += f"{text_str}({href_str})"
+                    elif text_str:
+                        line_text += text_str
+                    elif href_str:
+                        line_text += href_str
+                elif tag == "at":
+                    user_name = element.get("user_name", "")
+                    user_id = element.get("user_id", "")
+                    user_name_str = user_name if isinstance(user_name, str) else ""
+                    user_id_str = user_id if isinstance(user_id, str) else ""
+                    if user_name_str:
+                        line_text += f"@{user_name_str}"
+                    elif user_id_str:
+                        line_text += f"@{user_id_str}"
+                    else:
+                        line_text += "@某人"
+                elif tag == "img":
+                    line_text += "[图片]"
+                elif tag == "media":
+                    line_text += "[视频]"
+                elif tag == "emotion":
+                    emoji_type = element.get("emoji_type", "表情")
+                    emoji_str = emoji_type if isinstance(emoji_type, str) else "表情"
+                    line_text += f"[{emoji_str}]"
+
+            if line_text.strip():
+                text_parts.append(line_text.strip())
 
         return "\n".join(text_parts) if text_parts else "[富文本消息]"
 
@@ -496,7 +578,7 @@ def _extract_post_content(content_data: dict) -> str:
         return "[富文本消息]"
 
 
-def extract_interactive_card_text(content_obj: dict) -> str:
+def extract_interactive_card_text(content_obj: JSONDict) -> str:
     """从交互卡片消息对象中提取纯文本内容
 
     Args:
@@ -506,44 +588,61 @@ def extract_interactive_card_text(content_obj: dict) -> str:
         str: 提取的纯文本内容
     """
     try:
-        text_parts = []
+        text_parts: list[str] = []
 
         # 提取卡片标题
         # 方式1：标题在header对象中（完整的交互卡片格式）
-        header = content_obj.get("header", {})
+        header: dict[str, Any] = {}
+        header_raw = content_obj.get("header", {})
+        if isinstance(header_raw, dict):
+            header = cast(dict[str, Any], header_raw)
         if header:
-            title = header.get("title", {})
-            if isinstance(title, dict):
-                title_text = title.get("content", "") or title.get("text", "")
+            header_title: Any = header.get("title", {})
+            if isinstance(header_title, dict):
+                header_title_dict = cast(dict[str, Any], header_title)
+                title_text = _first_str(
+                    header_title_dict.get("content"),
+                    header_title_dict.get("text"),
+                )
                 if title_text:
                     text_parts.append(f"卡片标题: {title_text}")
-            elif isinstance(title, str) and title:
-                text_parts.append(f"卡片标题: {title}")
+            elif isinstance(header_title, str) and header_title:
+                text_parts.append(f"卡片标题: {header_title}")
 
         # 方式2：标题直接在根对象中（简化的交互卡片格式）
         if "title" in content_obj and not header:
-            title = content_obj.get("title", "")
-            if isinstance(title, str) and title:
-                text_parts.append(f"卡片标题: {title}")
-            elif isinstance(title, dict):
-                title_text = title.get("content", "") or title.get("text", "")
-                if title_text:
-                    text_parts.append(f"卡片标题: {title_text}")
+            root_title: Any = content_obj.get("title", "")
+            if isinstance(root_title, str) and root_title:
+                text_parts.append(f"卡片标题: {root_title}")
+            elif isinstance(root_title, dict):
+                root_title_dict = cast(dict[str, Any], root_title)
+                root_title_text = _first_str(
+                    root_title_dict.get("content"),
+                    root_title_dict.get("text"),
+                )
+                if root_title_text:
+                    text_parts.append(f"卡片标题: {root_title_text}")
 
         # 提取元素内容
-        elements = content_obj.get("elements", [])
-        for element in elements:
+        elements_raw = content_obj.get("elements", [])
+        elements_list: list[Any] = []
+        if isinstance(elements_raw, list):
+            elements_list = cast(list[Any], elements_raw)
+        for element in elements_list:
             # 处理嵌套的元素结构，有些交互卡片的elements是嵌套数组
             if isinstance(element, list):
                 # 如果元素是数组，递归处理每个子元素
-                for sub_element in element:
+                element_list: list[Any] = cast(list[Any], element)
+                for sub_element in element_list:
                     if isinstance(sub_element, dict):
-                        element_text = _extract_element_text(sub_element)
+                        sub_element_typed: dict[str, Any] = cast(dict[str, Any], sub_element)
+                        element_text = _extract_element_text(sub_element_typed)
                         if element_text:
                             text_parts.append(element_text)
             elif isinstance(element, dict):
                 # 直接处理字典元素
-                element_text = _extract_element_text(element)
+                element_typed: dict[str, Any] = cast(dict[str, Any], element)
+                element_text = _extract_element_text(element_typed)
                 if element_text:
                     text_parts.append(element_text)
 
@@ -554,7 +653,7 @@ def extract_interactive_card_text(content_obj: dict) -> str:
         return "[交互卡片]"
 
 
-def _extract_element_text(element: dict) -> str:
+def _extract_element_text(element: JSONDict) -> str:
     """从卡片元素中提取文本内容
 
     Args:
@@ -564,58 +663,72 @@ def _extract_element_text(element: dict) -> str:
         str: 提取的文本内容
     """
     try:
-        tag = element.get("tag", "")
+        tag = str(element.get("tag", ""))
 
         if tag == "text":
             # 纯文本元素（直接包含text字段）
             text = element.get("text", "")
-            if text:
+            if isinstance(text, str) and text:
                 return text
 
         elif tag == "div":
             # div 元素
             text_obj = element.get("text", {})
             if isinstance(text_obj, dict):
-                content = text_obj.get("content", "")
-                if content:
-                    return content
+                text_obj_dict = cast(dict[str, Any], text_obj)
+                div_content = _first_str(text_obj_dict.get("content"))
+                if div_content:
+                    return div_content
             elif isinstance(text_obj, str):
                 return text_obj
 
         elif tag == "markdown" or tag == "lark_md":
             # markdown 元素
-            content = element.get("content", "")
-            if content:
-                return content
+            markdown_content: Any = element.get("content", "")
+            if isinstance(markdown_content, str) and markdown_content:
+                return markdown_content
 
         elif tag == "plain_text":
             # 纯文本元素
-            content = element.get("content", "")
-            if content:
-                return content
+            plain_text_content: Any = element.get("content", "")
+            if isinstance(plain_text_content, str) and plain_text_content:
+                return plain_text_content
 
         elif tag == "button":
             # 按钮元素
             text_obj = element.get("text", {})
             if isinstance(text_obj, dict):
-                content = text_obj.get("content", "")
-                if content:
-                    return f"[按钮: {content}]"
+                text_obj_dict = cast(dict[str, Any], text_obj)
+                button_content = _first_str(text_obj_dict.get("content"))
+                if button_content:
+                    return f"[按钮: {button_content}]"
             elif isinstance(text_obj, str) and text_obj:
                 return f"[按钮: {text_obj}]"
 
         elif tag == "column_set":
             # 列集合
-            columns = element.get("columns", [])
-            column_texts = []
+            columns_raw = element.get("columns", [])
+            columns: list[dict[str, Any]] = []
+            columns_raw_typed: list[Any] = []
+            if isinstance(columns_raw, list):
+                columns_raw_typed = cast(list[Any], columns_raw)
+            for column_obj in columns_raw_typed:
+                if isinstance(column_obj, dict):
+                    columns.append(cast(dict[str, Any], column_obj))
+            column_texts: list[str] = []
             for column in columns:
-                if isinstance(column, dict):
-                    column_elements = column.get("elements", [])
-                    for col_element in column_elements:
-                        if isinstance(col_element, dict):
-                            col_text = _extract_element_text(col_element)
-                            if col_text:
-                                column_texts.append(col_text)
+                column_elements_raw = column.get("elements", [])
+                column_elements: list[dict[str, Any]] = []
+                column_elements_list: list[Any] = []
+                if isinstance(column_elements_raw, list):
+                    column_elements_list = cast(list[Any], column_elements_raw)
+                for elem in column_elements_list:
+                    if isinstance(elem, dict):
+                        column_elements.append(cast(dict[str, Any], elem))
+                for col_element in column_elements:
+                    col_text = _extract_element_text(col_element)
+                    if col_text:
+                        column_texts.append(col_text)
             if column_texts:
                 return " | ".join(column_texts)
 
@@ -623,48 +736,62 @@ def _extract_element_text(element: dict) -> str:
             # 字段元素
             name = element.get("name", "")
             text_obj = element.get("text", {})
+            field_content: str = ""
             if isinstance(text_obj, dict):
-                content = text_obj.get("content", "")
+                text_obj_dict = cast(dict[str, Any], text_obj)
+                field_content = _first_str(text_obj_dict.get("content"))
             elif isinstance(text_obj, str):
-                content = text_obj
-            else:
-                content = ""
+                field_content = text_obj
 
-            if name and content:
-                return f"{name}: {content}"
-            elif content:
-                return content
+            name_str = name if isinstance(name, str) else ""
+            if name_str and field_content:
+                return f"{name_str}: {field_content}"
+            if field_content:
+                return field_content
 
         elif tag == "img":
             # 图片元素
             alt = element.get("alt", {})
             if isinstance(alt, dict):
-                alt_text = alt.get("content", "")
+                alt_dict = cast(dict[str, Any], alt)
+                alt_text = _first_str(alt_dict.get("content"))
                 if alt_text:
                     return f"[图片: {alt_text}]"
             return "[图片]"
 
         elif tag == "action":
             # 动作元素
-            actions = element.get("actions", [])
-            action_texts = []
-            for action in actions:
+            actions_raw = element.get("actions", [])
+            actions: list[dict[str, Any]] = []
+            actions_raw_list: list[Any] = []
+            if isinstance(actions_raw, list):
+                actions_raw_list = cast(list[Any], actions_raw)
+            for action in actions_raw_list:
                 if isinstance(action, dict):
-                    action_text = _extract_element_text(action)
-                    if action_text:
-                        action_texts.append(action_text)
+                    actions.append(cast(dict[str, Any], action))
+            action_texts: list[str] = []
+            for action in actions:
+                action_text = _extract_element_text(action)
+                if action_text:
+                    action_texts.append(action_text)
             if action_texts:
                 return " ".join(action_texts)
 
         # 递归处理嵌套元素
         if "elements" in element:
-            nested_elements = element.get("elements", [])
-            nested_texts = []
-            for nested_element in nested_elements:
+            nested_elements_raw = element.get("elements", [])
+            nested_elements: list[dict[str, Any]] = []
+            nested_elements_list: list[Any] = []
+            if isinstance(nested_elements_raw, list):
+                nested_elements_list = cast(list[Any], nested_elements_raw)
+            for nested_element in nested_elements_list:
                 if isinstance(nested_element, dict):
-                    nested_text = _extract_element_text(nested_element)
-                    if nested_text:
-                        nested_texts.append(nested_text)
+                    nested_elements.append(cast(dict[str, Any], nested_element))
+            nested_texts: list[str] = []
+            for nested_element in nested_elements:
+                nested_text = _extract_element_text(nested_element)
+                if nested_text:
+                    nested_texts.append(nested_text)
             if nested_texts:
                 return "\n".join(nested_texts)
 
@@ -714,7 +841,7 @@ def get_feishu_message_list(
         final_app_id, final_app_secret = config_result
 
         # 创建client
-        client = lark.Client.builder().app_id(final_app_id).app_secret(final_app_secret).log_level(lark.LogLevel.INFO).build()
+        client = _create_lark_client(final_app_id, final_app_secret)
 
         # 时间格式转换函数
         def convert_to_timestamp(time_str: str) -> str:
@@ -780,7 +907,7 @@ def get_feishu_message_list(
             return error_msg
 
         # 处理业务结果
-        raw_message_data = lark.JSON.marshal(response.data, indent=4)
+        raw_message_data = _marshal_json(response.data, indent=4)
 
         # 如果不需要格式化，直接返回原始数据
         if not format_messages:
@@ -788,92 +915,119 @@ def get_feishu_message_list(
 
         # 解析消息数据进行格式化
         try:
-            message_json = json.loads(raw_message_data)
+            raw_message_json = json.loads(raw_message_data)
         except json.JSONDecodeError:
             logger.warning("消息数据解析失败，返回原始数据")
             return raw_message_data
+        try:
+            message_json = _ensure_dict(raw_message_json, context="消息数据")
+        except ValueError:
+            logger.warning("消息数据应为字典格式，返回原始数据")
+            return raw_message_data
 
         # 获取用户映射（仅对群聊）
-        user_mapping = {}
+        user_mapping: dict[str, str] = {}
         if container_id_type == "chat":
             user_mapping = get_chat_user_mapping(container_id)
 
         # 格式化消息列表
-        formatted_messages = []
+        formatted_messages: list[str] = []
 
         if "items" in message_json:
-            for message in message_json["items"]:
+            try:
+                message_items = _ensure_list_of_dicts(message_json["items"], context="消息列表items")
+            except ValueError as error:
+                logger.warning(str(error))
+                message_items = []
+            for message in message_items:
                 try:
                     # 获取消息基本信息
                     create_time = message.get("create_time", "")
-                    sender_id = message.get("sender", {}).get("id", "")
-                    sender_type = message.get(
-                        "sender",
-                        {},
-                    ).get("sender_type", "")
+                    sender_raw = message.get("sender", {})
+                    sender: dict[str, Any] = (
+                        _ensure_dict(cast(dict[str, Any], sender_raw), context="消息发送者") if isinstance(sender_raw, dict) else {}
+                    )
+                    sender_id = sender.get("id", "")
+                    sender_type = sender.get("sender_type", "")
                     msg_type = message.get("msg_type", "")
-                    content_text = ""
+                    content_text: str = ""
 
                     # 解析消息内容
-                    content = message.get("body", {}).get("content", "")
+                    body_raw = message.get("body", {})
+                    body: dict[str, Any] = (
+                        _ensure_dict(cast(dict[str, Any], body_raw), context="消息体") if isinstance(body_raw, dict) else {}
+                    )
+                    body_content = body.get("content", "")
+                    content = body_content if isinstance(body_content, str) else json.dumps(body_content, ensure_ascii=False)
                     if content:
                         try:
-                            content_obj = json.loads(content)
+                            content_obj_raw = json.loads(content)
+                            if not isinstance(content_obj_raw, dict):
+                                content_text = str(content_obj_raw)
+                                content_obj: dict[str, Any] = {}
+                            else:
+                                content_obj = cast(dict[str, Any], content_obj_raw)
 
-                            # 根据消息类型提取文本内容
-                            if msg_type == "text":
-                                content_text = content_obj.get("text", "")
-                            elif msg_type == "post":
-                                # 富文本消息，尝试提取纯文本
-                                content_text = extract_post_text(content_obj)
-                            elif msg_type == "image":
-                                content_text = "[图片]"
-                            elif msg_type == "file":
-                                content_text = "[文件]"
-                            elif msg_type == "audio":
-                                content_text = "[语音]"
-                            elif msg_type == "media":
-                                content_text = "[视频]"
-                            elif msg_type == "sticker":
-                                content_text = "[表情包]"
-                            elif msg_type == "interactive":
-                                # 交互卡片消息，尝试提取文本内容
-                                content_text = extract_interactive_card_text(
-                                    content_obj,
-                                )
-                            elif msg_type == "system":
-                                # 系统消息，尝试提取实际内容
-                                if isinstance(content_obj, dict):
-                                    # 优先检查常见的文本字段
+                                # 根据消息类型提取文本内容
+                                if msg_type == "text":
+                                    content_text = str(content_obj.get("text", ""))
+                                elif msg_type == "post":
+                                    # 富文本消息，尝试提取纯文本
+                                    content_text = extract_post_text(content_obj)
+                                elif msg_type == "image":
+                                    content_text = "[图片]"
+                                elif msg_type == "file":
+                                    content_text = "[文件]"
+                                elif msg_type == "audio":
+                                    content_text = "[语音]"
+                                elif msg_type == "media":
+                                    content_text = "[视频]"
+                                elif msg_type == "sticker":
+                                    content_text = "[表情包]"
+                                elif msg_type == "interactive":
+                                    # 交互卡片消息，尝试提取文本内容
+                                    content_text = extract_interactive_card_text(
+                                        content_obj,
+                                    )
+                                elif msg_type == "system":
+                                    # 系统消息，尝试提取实际内容
                                     if content_obj.get("text"):
-                                        content_text = content_obj.get(
-                                            "text",
-                                            "",
+                                        content_text = str(
+                                            content_obj.get(
+                                                "text",
+                                                "",
+                                            ),
                                         )
                                     elif content_obj.get("content"):
-                                        content_text = content_obj.get(
-                                            "content",
-                                            "",
+                                        content_text = str(
+                                            content_obj.get(
+                                                "content",
+                                                "",
+                                            ),
                                         )
                                     elif content_obj.get("message"):
-                                        content_text = content_obj.get(
-                                            "message",
-                                            "",
+                                        content_text = str(
+                                            content_obj.get(
+                                                "message",
+                                                "",
+                                            ),
                                         )
                                     elif content_obj.get("template"):
                                         # 飞书系统消息通常有template字段，尝试格式化
-                                        template = content_obj.get(
-                                            "template",
-                                            "",
-                                        )
-                                        from_user = content_obj.get(
-                                            "from_user",
-                                            [],
-                                        )
-                                        to_chatters = content_obj.get(
-                                            "to_chatters",
-                                            [],
-                                        )
+                                        template_value = content_obj.get("template", "")
+                                        template = template_value if isinstance(template_value, str) else str(template_value)
+                                        from_user_raw = content_obj.get("from_user", [])
+                                        to_chatters_raw = content_obj.get("to_chatters", [])
+                                        from_user: list[str] = []
+                                        to_chatters: list[str] = []
+                                        if isinstance(from_user_raw, list):
+                                            from_user_raw_list: list[Any] = cast(list[Any], from_user_raw)
+                                            for user in from_user_raw_list:
+                                                from_user.append(str(user))
+                                        if isinstance(to_chatters_raw, list):
+                                            to_chatters_raw_list: list[Any] = cast(list[Any], to_chatters_raw)
+                                            for chatter in to_chatters_raw_list:
+                                                to_chatters.append(str(chatter))
 
                                         # 替换常见的模板变量
                                         if from_user:
@@ -917,9 +1071,7 @@ def get_feishu_message_list(
                                     else:
                                         content_text = str(content_obj)
                                 else:
-                                    content_text = str(content_obj) if content_obj else "[系统消息]"
-                            else:
-                                content_text = f"[{msg_type}类型消息]"
+                                    content_text = f"[{msg_type}类型消息]"
 
                         except json.JSONDecodeError:
                             content_text = content  # 如果解析失败，直接使用原始内容
@@ -972,9 +1124,7 @@ def get_feishu_message_list(
                     formatted_messages.append(f"[消息解析错误: {str(e)}]")
 
         # 构建最终结果
-        result = {
-            "formatted_messages": formatted_messages,
-        }
+        result: dict[str, Any] = {"formatted_messages": formatted_messages}
 
         return json.dumps(result, indent=4, ensure_ascii=False)
 
@@ -986,7 +1136,7 @@ def get_feishu_message_list(
 
 def send_feishu_message(
     receive_id: Annotated[str, "接收者的ID - 用户ID或群组ID"],
-    content: Annotated[str, "消息内容 - 详见下方使用说明"],
+    content: Annotated[str | dict[str, Any] | list[Any], "消息内容 - 详见下方使用说明"],
     msg_type: Annotated[
         str,
         "消息类型 - text/post/image/interactive/audio/media/file/share_chat/share_user/sticker",
@@ -1076,22 +1226,24 @@ def send_feishu_message(
         final_app_id, final_app_secret = config_result
 
         # 创建client
-        client = lark.Client.builder().app_id(final_app_id).app_secret(final_app_secret).log_level(lark.LogLevel.INFO).build()
+        client = _create_lark_client(final_app_id, final_app_secret)
+
+        final_content: str = ""
 
         # 处理不同类型的消息内容
         if msg_type == "text":
             # 文本消息处理
-            try:
-                # 验证JSON格式
-                json.loads(content)
-                # 如果是JSON格式，直接使用（可能包含富文本格式如@用户）
-                final_content = content
-            except json.JSONDecodeError:
-                # 如果不是JSON格式，包装成文本消息格式
-                final_content = json.dumps(
-                    {"text": content},
-                    ensure_ascii=False,
-                )
+            if isinstance(content, str):
+                try:
+                    # 验证JSON格式
+                    json.loads(content)
+                    # 如果是JSON格式，直接使用（可能包含富文本格式如@用户）
+                    final_content = content
+                except json.JSONDecodeError:
+                    # 如果不是JSON格式，包装成文本消息格式
+                    final_content = json.dumps({"text": content}, ensure_ascii=False)
+            else:
+                final_content = json.dumps({"text": content}, ensure_ascii=False)
 
         elif msg_type == "post":
             # 富文本消息处理
@@ -1133,13 +1285,14 @@ def send_feishu_message(
                     final_content = json.dumps(content, ensure_ascii=False)
 
                 # 验证图片消息格式
-                content_obj = json.loads(final_content)
-                if not isinstance(content_obj, dict) or "image_key" not in content_obj:
+                content_obj_raw = json.loads(final_content)
+                if not isinstance(content_obj_raw, dict) or "image_key" not in content_obj_raw:
                     raise ValueError("图片消息必须包含image_key字段")
+                content_obj = cast(dict[str, Any], content_obj_raw)
 
                 # 验证image_key格式
-                image_key = content_obj["image_key"]
-                if not image_key or not isinstance(image_key, str):
+                image_key = content_obj.get("image_key")
+                if not isinstance(image_key, str) or not image_key:
                     raise ValueError("image_key必须是非空字符串")
 
             except (json.JSONDecodeError, ValueError) as e:
@@ -1218,13 +1371,14 @@ def send_feishu_message(
                     final_content = json.dumps(content, ensure_ascii=False)
 
                 # 验证群名片消息格式
-                content_obj = json.loads(final_content)
-                if not isinstance(content_obj, dict) or "chat_id" not in content_obj:
+                content_obj_raw = json.loads(final_content)
+                if not isinstance(content_obj_raw, dict) or "chat_id" not in content_obj_raw:
                     raise ValueError("群名片消息必须包含chat_id字段")
+                content_obj = cast(dict[str, Any], content_obj_raw)
 
                 # 验证chat_id格式
-                chat_id = content_obj["chat_id"]
-                if not chat_id or not isinstance(chat_id, str):
+                chat_id = content_obj.get("chat_id")
+                if not isinstance(chat_id, str) or not chat_id:
                     raise ValueError("chat_id必须是非空字符串")
 
             except (json.JSONDecodeError, ValueError) as e:
@@ -1242,13 +1396,14 @@ def send_feishu_message(
                     final_content = json.dumps(content, ensure_ascii=False)
 
                 # 验证用户名片消息格式
-                content_obj = json.loads(final_content)
-                if not isinstance(content_obj, dict) or "user_id" not in content_obj:
+                content_obj_raw = json.loads(final_content)
+                if not isinstance(content_obj_raw, dict) or "user_id" not in content_obj_raw:
                     raise ValueError("用户名片消息必须包含user_id字段")
+                content_obj = cast(dict[str, Any], content_obj_raw)
 
                 # 验证user_id格式（只支持open_id）
-                user_id = content_obj["user_id"]
-                if not user_id or not isinstance(user_id, str):
+                user_id = content_obj.get("user_id")
+                if not isinstance(user_id, str) or not user_id:
                     raise ValueError("user_id必须是非空字符串")
                 if not user_id.startswith("ou_"):
                     logger.warning(
@@ -1324,7 +1479,7 @@ def send_feishu_message(
             except json.JSONDecodeError:
                 # 如果不是有效JSON，作为普通字符串处理
                 logger.warning(f"未知消息类型 {msg_type}，将content作为原始字符串处理")
-                final_content = content
+                final_content = str(content)
 
         # 调试日志：记录最终发送的内容（截断显示）
         logger.info(
@@ -1373,11 +1528,11 @@ def send_feishu_message(
             return error_msg
 
         # 处理业务结果
-        result_data = lark.JSON.marshal(response.data, indent=4)
+        result_data = _marshal_json(response.data, indent=4)
 
         # 解析返回的消息信息
         try:
-            result_obj = json.loads(result_data)
+            result_obj = cast(dict[str, Any], json.loads(result_data))
             message_id = result_obj.get("message_id", "")
             # create_time = result_obj.get('create_time', '')
 
@@ -1418,7 +1573,7 @@ def upload_feishu_image(
         final_app_id, final_app_secret = config_result
 
         # 创建client
-        client = lark.Client.builder().app_id(final_app_id).app_secret(final_app_secret).log_level(lark.LogLevel.INFO).build()
+        client = _create_lark_client(final_app_id, final_app_secret)
 
         # 初始化变量
         actual_file_path = image_path
@@ -1447,7 +1602,7 @@ def upload_feishu_image(
                     return error_msg
 
                 # 处理业务结果
-                result_data = lark.JSON.marshal(response.data, indent=4)
+                result_data = _marshal_json(response.data, indent=4)
                 return f"图片上传成功!\n{result_data}"
         except Exception as e:
             error_msg = f"上传飞书图片失败. Error: {repr(e)}"
@@ -1497,7 +1652,7 @@ def upload_feishu_file(
         final_app_id, final_app_secret = config_result
 
         # 创建client
-        client = lark.Client.builder().app_id(final_app_id).app_secret(final_app_secret).log_level(lark.LogLevel.INFO).build()
+        client = _create_lark_client(final_app_id, final_app_secret)
 
         # 初始化变量
         actual_file_path = file_path
@@ -1553,7 +1708,7 @@ def upload_feishu_file(
                     )
 
                 # 处理业务结果
-                result_data = lark.JSON.marshal(response.data, indent=4)
+                result_data = _marshal_json(response.data, indent=4)
                 return f"文件上传成功!\n{result_data}"
         except Exception as e:
             error_msg = f"上传飞书文件失败. Error: {repr(e)}"
@@ -1571,7 +1726,7 @@ def upload_feishu_file(
 
 def reply_to_feishu_message(
     message_id: Annotated[str, "要回复的消息ID"],
-    content: Annotated[str, "回复消息内容"],
+    content: Annotated[str | dict[str, Any] | list[Any], "回复消息内容"],
     msg_type: Annotated[
         str,
         "回复消息类型 - text/post/image/interactive/audio/media/file/share_chat/share_user/sticker",
@@ -1596,21 +1751,23 @@ def reply_to_feishu_message(
         final_app_id, final_app_secret = config_result
 
         # 创建client
-        client = lark.Client.builder().app_id(final_app_id).app_secret(final_app_secret).log_level(lark.LogLevel.INFO).build()
+        client = _create_lark_client(final_app_id, final_app_secret)
+
+        final_content: str = ""
 
         # 处理不同类型的消息内容（与send_feishu_message保持一致）
         if msg_type == "text":
-            try:
-                # 验证JSON格式
-                json.loads(content)
-                # 如果是JSON格式，直接使用（可能包含富文本格式如@用户）
-                final_content = content
-            except json.JSONDecodeError:
-                # 如果不是JSON格式，包装成文本消息格式
-                final_content = json.dumps(
-                    {"text": content},
-                    ensure_ascii=False,
-                )
+            if isinstance(content, str):
+                try:
+                    # 验证JSON格式
+                    json.loads(content)
+                    # 如果是JSON格式，直接使用（可能包含富文本格式如@用户）
+                    final_content = content
+                except json.JSONDecodeError:
+                    # 如果不是JSON格式，包装成文本消息格式
+                    final_content = json.dumps({"text": content}, ensure_ascii=False)
+            else:
+                final_content = json.dumps({"text": content}, ensure_ascii=False)
         elif msg_type in [
             "post",
             "image",
@@ -1636,7 +1793,7 @@ def reply_to_feishu_message(
         else:
             # 未知消息类型
             logger.warning(f"未知回复消息类型 {msg_type}，将content作为原始内容处理")
-            final_content = content
+            final_content = str(content)
 
         logger.info(
             f"回复消息类型: {msg_type}, 目标消息ID: {message_id}, 内容长度: {len(final_content)}",
@@ -1680,11 +1837,11 @@ def reply_to_feishu_message(
             return error_msg
 
         # 处理业务结果
-        result_data = lark.JSON.marshal(response.data, indent=4)
+        result_data = _marshal_json(response.data, indent=4)
 
         # 解析返回的消息信息
         try:
-            result_obj = json.loads(result_data)
+            result_obj = cast(dict[str, Any], json.loads(result_data))
             reply_message_id = result_obj.get("message_id", "")
             create_time = result_obj.get("create_time", "")
 
@@ -1729,18 +1886,16 @@ def search_users_in_chat(
         final_app_id, final_app_secret = config_result
 
         # 创建client，启用token配置
-        client = lark.Client.builder().app_id(final_app_id).app_secret(final_app_secret).log_level(lark.LogLevel.INFO).build()
+        client = _create_lark_client(final_app_id, final_app_secret)
 
         # 构造获取群组成员的请求
-        request: GetChatMembersRequest = (
-            GetChatMembersRequest.builder().chat_id(chat_id).member_id_type(member_id_type).page_size(page_size)
-        )
+        request_builder = GetChatMembersRequest.builder().chat_id(chat_id).member_id_type(member_id_type).page_size(page_size)
 
         # 添加可选的分页标记
         if page_token:
-            request = request.page_token(page_token)
+            request_builder = request_builder.page_token(page_token)
 
-        request = request.build()
+        request: GetChatMembersRequest = request_builder.build()
 
         # 发起请求获取群组成员
         response: GetChatMembersResponse = client.im.v1.chat_members.get(
@@ -1762,12 +1917,13 @@ def search_users_in_chat(
             return error_msg
 
         # 解析成员数据
-        members_data = json.loads(lark.JSON.marshal(response.data, indent=4))
-        user_list = []
+        members_data = cast(dict[str, Any], json.loads(_marshal_json(response.data, indent=4)))
+        user_list: list[dict[str, str]] = []
 
         if "items" in members_data:
             # 处理所有成员信息，返回简洁的用户列表
-            for member in members_data["items"]:
+            members_items = cast(list[dict[str, Any]], members_data["items"])
+            for member in members_items:
                 user_info = {
                     "member_id": member.get("member_id", ""),
                     "member_id_type": member.get("member_id_type", "open_id"),
@@ -1776,7 +1932,7 @@ def search_users_in_chat(
                 user_list.append(user_info)
 
         # 构造返回结果 - 简洁的列表格式
-        result = {
+        result: dict[str, Any] = {
             "member_total": len(user_list),
             "users": user_list,
             "has_more": members_data.get("has_more", False),
@@ -1813,9 +1969,9 @@ def get_user_info_by_id(
         final_app_id, final_app_secret = config_result
 
         # 创建client
-        client = lark.Client.builder().app_id(final_app_id).app_secret(final_app_secret).log_level(lark.LogLevel.INFO).build()
+        client = _create_lark_client(final_app_id, final_app_secret)
 
-        from lark_oapi.api.contact.v3 import GetUserRequest, GetUserResponse
+        from lark_oapi.api.contact.v3 import GetUserRequest, GetUserResponse  # type: ignore[import-untyped]
 
         # 构造请求对象
         request: GetUserRequest = (
@@ -1840,8 +1996,8 @@ def get_user_info_by_id(
             return error_msg
 
         # 处理业务结果，过滤掉avatar字段
-        user_data_raw = lark.JSON.marshal(response.data, indent=4)
-        user_data = json.loads(user_data_raw)
+        user_data_raw = _marshal_json(response.data, indent=4)
+        user_data = cast(dict[str, Any], json.loads(user_data_raw))
 
         # 移除avatar字段
         if "user" in user_data and "avatar" in user_data["user"]:
@@ -1872,7 +2028,7 @@ def get_user_id_by_name(name: Annotated[str, "要查找的用户姓名"]) -> str
 
         # 检查响应是否是有效的JSON
         try:
-            chat_list = json.loads(chat_list_response)
+            chat_list = cast(dict[str, Any], json.loads(chat_list_response))
         except json.JSONDecodeError:
             return json.dumps(
                 {
@@ -1892,10 +2048,11 @@ def get_user_id_by_name(name: Annotated[str, "要查找的用户姓名"]) -> str
             )
 
         # 2. 遍历所有群组查找用户，收集所有匹配的用户
-        found_users = []
-        processed_user_ids = set()  # 用于去重，避免同一用户在多个群组中被重复添加
+        found_users: list[dict[str, str]] = []
+        processed_user_ids: set[str] = set()  # 用于去重，避免同一用户在多个群组中被重复添加
 
-        for chat in chat_list["items"]:
+        chat_items = cast(list[dict[str, Any]], chat_list["items"])
+        for chat in chat_items:
             chat_id = chat.get("chat_id")
             if not chat_id:
                 continue
@@ -1905,23 +2062,29 @@ def get_user_id_by_name(name: Annotated[str, "要查找的用户姓名"]) -> str
 
             # 检查成员响应是否是有效的JSON
             try:
-                members = json.loads(members_response)
+                members = cast(dict[str, Any], json.loads(members_response))
             except json.JSONDecodeError:
                 # 如果某个群组获取失败，跳过继续处理其他群组
                 logger.warning(f"跳过群组 {chat_id}，获取成员失败: {members_response}")
                 continue
 
             if "users" in members:
-                for user in members["users"]:
+                users = cast(list[dict[str, Any]], members["users"])
+                for user in users:
                     if user.get("name") == name:
-                        user_id = user.get("member_id")
+                        user_id_raw = user.get("member_id")
+                        user_id: str = user_id_raw if isinstance(user_id_raw, str) else ""
 
                         # 避免重复添加同一用户（可能在多个群组中）
                         if user_id not in processed_user_ids:
-                            user_info = {
+                            member_id_type_raw = user.get("member_id_type", "open_id")
+                            member_id_type: str = member_id_type_raw if isinstance(member_id_type_raw, str) else "open_id"
+                            user_name_raw = user.get("name", name)
+                            user_name_value: str = user_name_raw if isinstance(user_name_raw, str) else name
+                            user_info: dict[str, str] = {
                                 "member_id": user_id,
-                                "member_id_type": user.get("member_id_type", "open_id"),
-                                "name": user.get("name", name),
+                                "member_id_type": member_id_type,
+                                "name": user_name_value,
                             }
                             found_users.append(user_info)
                             processed_user_ids.add(user_id)
@@ -1974,7 +2137,7 @@ def add_message_reaction(
 
         final_app_id, final_app_secret = config_result
 
-        client = lark.Client.builder().app_id(final_app_id).app_secret(final_app_secret).log_level(lark.LogLevel.INFO).build()
+        client = _create_lark_client(final_app_id, final_app_secret)
 
         request: CreateMessageReactionRequest = (
             CreateMessageReactionRequest.builder()

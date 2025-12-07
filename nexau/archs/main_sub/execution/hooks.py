@@ -285,7 +285,7 @@ class FunctionMiddleware(Middleware):
         return self.before_tool_hook(hook_input)
 
     def __repr__(self) -> str:  # pragma: no cover - helper for debugging
-        hooks = []
+        hooks: list[str] = []
         if self.before_model_hook:
             hooks.append("before_model")
         if self.after_model_hook:
@@ -434,7 +434,7 @@ class MiddlewareManager:
 
     def run_before_model(self, hook_input: BeforeModelHookInput) -> list[dict[str, Any]]:
         current_messages = hook_input.messages
-        for idx, middleware in enumerate(self.middlewares):
+        for _, middleware in enumerate(self.middlewares):
             handler = getattr(middleware, "before_model", None)
             if handler is None:
                 continue
@@ -579,6 +579,4 @@ class MiddlewareManager:
     def _normalize_result(result: HookResult | None) -> HookResult:
         if result is None:
             return HookResult.no_changes()
-        if isinstance(result, HookResult):
-            return result
-        raise TypeError(f"Middleware returned unsupported result type: {type(result)}")
+        return result

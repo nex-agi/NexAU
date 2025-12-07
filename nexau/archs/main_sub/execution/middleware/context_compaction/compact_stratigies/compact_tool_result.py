@@ -50,7 +50,7 @@ class ToolResultCompaction:
         """Compact messages by compressing old tool results."""
         logger.info(f"[ToolResultCompaction] Starting compaction on {len(messages)} messages")
 
-        result = []
+        result: list[dict[str, Any]] = []
         start_idx = 0
 
         # Keep system message if present

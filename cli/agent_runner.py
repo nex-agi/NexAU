@@ -266,6 +266,11 @@ def main():
                     f"Empty or invalid configuration file: {config_path}",
                 )
 
+            if not isinstance(raw_config, dict):
+                raise ConfigError(
+                    f"Invalid configuration type in {config_path}; expected mapping",
+                )
+
             normalized_config = normalize_agent_config_dict(raw_config)
 
             existing_model_hooks = list(normalized_config.get("after_model_hooks", []))

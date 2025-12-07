@@ -20,11 +20,12 @@ import threading
 import uuid
 from collections import defaultdict
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import copy_context
 from copy import deepcopy
-from typing import Any
+from typing import Any, cast
 
+from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.execution.batch_processor import BatchProcessor
 from nexau.archs.main_sub.execution.hooks import (
@@ -70,7 +71,7 @@ class Executor:
         sub_agent_factories: dict[str, Callable[[], Any]],
         stop_tools: set[str],
         openai_client: Any,
-        llm_config: Any,
+        llm_config: LLMConfig,
         max_iterations: int = 100,
         max_context_tokens: int = 128000,
         max_running_subagents: int = 5,
@@ -200,6 +201,8 @@ class Executor:
         """
         # Reset the stop signal
         self.stop_signal = False
+
+        force_stop_reason = AgentStopReason.SUCCESS
 
         try:
             # Use history directly as the single source of truth
@@ -364,18 +367,8 @@ class Executor:
                             "🛑 Stop tool detected, returning stop tool result as final response",
                         )
                         force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
-                        if isinstance(stop_tool_result, str):
-                            final_response = stop_tool_result
-                            break
-                        else:
-                            import json
-
-                            final_response = json.dumps(
-                                stop_tool_result,
-                                indent=4,
-                                ensure_ascii=False,
-                            )
-                            break
+                        final_response = stop_tool_result
+                        break
                     else:
                         logger.info("🛑 No more tool calls, stop.")
                         force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
@@ -682,7 +675,7 @@ class Executor:
 
         try:
             # Submit tool execution tasks
-            tool_futures = {}
+            tool_futures: dict[Future[tuple[str, str, bool]], tuple[str, ToolCall]] = {}
             for tool_call in parsed_response.tool_calls:
                 task_ctx = copy_context()
                 future = tool_executor.submit(
@@ -697,7 +690,7 @@ class Executor:
                     future.result()
 
             # Submit sub-agent execution tasks
-            sub_agent_futures = {}
+            sub_agent_futures: dict[Future[tuple[str, str, bool]], tuple[str, SubAgentCall]] = {}
             for sub_agent_call in parsed_response.sub_agent_calls:
                 task_ctx = copy_context()
                 future = subagent_executor.submit(
@@ -710,10 +703,13 @@ class Executor:
                 sub_agent_futures[future] = ("sub_agent", sub_agent_call)
 
             # Combine all futures
-            all_futures = {**tool_futures, **sub_agent_futures}
+            all_futures: dict[
+                Future[tuple[str, str, bool]],
+                tuple[str, ToolCall | SubAgentCall],
+            ] = {**tool_futures, **sub_agent_futures}
 
             # Collect results as they complete
-            tool_results = []
+            tool_results: list[str] = []
             execution_feedbacks: list[dict[str, Any]] = []
             stop_tool_detected = False
             stop_tool_result = None
@@ -722,7 +718,51 @@ class Executor:
                 call_type, call_obj = all_futures[future]
                 try:
                     result_data = future.result()
-                    if call_type == "tool":
+                    if call_type == "sub_agent" and isinstance(call_obj, SubAgentCall):
+                        agent_name, result, is_error = result_data
+                        result_str = result
+                        execution_feedbacks.append(
+                            {
+                                "call_type": "sub_agent",
+                                "call": call_obj,
+                                "content": result_str,
+                                "is_error": is_error,
+                            },
+                        )
+                        if is_error:
+                            logger.error(
+                                f"❌ Sub-agent '{agent_name}' error: {result}",
+                            )
+                            should_append_xml = not getattr(call_obj, "tool_call_id", None)
+                            if should_append_xml:
+                                tool_results.append(
+                                    f"""
+<tool_result>
+<tool_name>{agent_name}_sub_agent</tool_name>
+<error>{result}</error>
+</tool_result>
+""",
+                                )
+                        else:
+                            logger.info(
+                                f"📤 Sub-agent '{agent_name}' result: {result}",
+                            )
+                            should_append_xml = not getattr(call_obj, "tool_call_id", None)
+                            if should_append_xml:
+                                tool_results.append(
+                                    f"""
+<tool_result>
+<tool_name>{agent_name}_sub_agent</tool_name>
+<result>{result}</result>
+</tool_result>
+""",
+                                )
+                    elif not isinstance(call_obj, ToolCall):
+                        logger.error(
+                            f"❌ Unexpected call object type: {type(call_obj)} (call_type={call_type})",
+                        )
+                        continue
+                    elif call_type == "tool":
                         tool_name, result, is_error = result_data
                         execution_feedbacks.append(
                             {
@@ -763,76 +803,42 @@ class Executor:
                             # Check if this tool result indicates a stop tool was executed
                             try:
                                 parsed_result = json.loads(result)
-                                if isinstance(
-                                    parsed_result,
-                                    dict,
-                                ) and parsed_result.get("_is_stop_tool"):
-                                    stop_tool_detected = True
-                                    actual_result = {k: v for k, v in parsed_result.items() if k != "_is_stop_tool"}
-                                    if "result" in actual_result and len(actual_result) == 1:
-                                        stop_tool_result = json.dumps(
-                                            actual_result["result"],
-                                            ensure_ascii=False,
-                                            indent=4,
-                                        )
-                                    else:
-                                        stop_tool_result = (
-                                            json.dumps(
-                                                actual_result,
+                                if isinstance(parsed_result, dict):
+                                    parsed_result_dict = cast(dict[str, Any], parsed_result)
+                                    if parsed_result_dict.get("_is_stop_tool"):
+                                        stop_tool_detected = True
+                                        actual_result: dict[str, Any] = {
+                                            key: value for key, value in parsed_result_dict.items() if key != "_is_stop_tool"
+                                        }
+                                        if "result" in actual_result and len(actual_result) == 1:
+                                            stop_tool_result = json.dumps(
+                                                actual_result["result"],
                                                 ensure_ascii=False,
                                                 indent=4,
                                             )
-                                            if actual_result
-                                            else json.dumps(
-                                                parsed_result,
-                                                ensure_ascii=False,
-                                                indent=4,
+                                        else:
+                                            stop_tool_result = (
+                                                json.dumps(
+                                                    actual_result,
+                                                    ensure_ascii=False,
+                                                    indent=4,
+                                                )
+                                                if actual_result
+                                                else json.dumps(
+                                                    parsed_result,
+                                                    ensure_ascii=False,
+                                                    indent=4,
+                                                )
                                             )
+                                        logger.info(
+                                            f"🛑 Stop tool '{tool_name}' result detected, will terminate after processing",
                                         )
-                                    logger.info(
-                                        f"🛑 Stop tool '{tool_name}' result detected, will terminate after processing",
-                                    )
                             except (json.JSONDecodeError, TypeError):
                                 pass
-                    elif call_type == "sub_agent":
-                        agent_name, result, is_error = result_data
-                        result_str = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
-                        execution_feedbacks.append(
-                            {
-                                "call_type": "sub_agent",
-                                "call": call_obj,
-                                "content": result_str,
-                                "is_error": is_error,
-                            },
+                    else:
+                        logger.error(
+                            f"❌ Unexpected call type '{call_type}' for object {type(call_obj)}",
                         )
-                        if is_error:
-                            logger.error(
-                                f"❌ Sub-agent '{agent_name}' error: {result}",
-                            )
-                            should_append_xml = not getattr(call_obj, "tool_call_id", None)
-                            if should_append_xml:
-                                tool_results.append(
-                                    f"""
-<tool_result>
-<tool_name>{agent_name}_sub_agent</tool_name>
-<error>{result}</error>
-</tool_result>
-""",
-                                )
-                        else:
-                            logger.info(
-                                f"📤 Sub-agent '{agent_name}' result: {result}",
-                            )
-                            should_append_xml = not getattr(call_obj, "tool_call_id", None)
-                            if should_append_xml:
-                                tool_results.append(
-                                    f"""
-<tool_result>
-<tool_name>{agent_name}_sub_agent</tool_name>
-<result>{result}</result>
-</tool_result>
-""",
-                                )
                 except Exception as e:
                     logger.error(
                         f"❌ Unexpected error processing {call_type}: {e}",
@@ -875,9 +881,9 @@ class Executor:
         """Safely execute a tool call."""
         try:
             # Convert parameters to correct types and execute
-            converted_params = {}
+            converted_params: dict[str, Any] = {}
             for param_name, param_value in tool_call.parameters.items():
-                converted_params[param_name] = self.tool_executor._convert_parameter_type(
+                converted_params[param_name] = self.tool_executor.convert_parameter_type(
                     tool_call.tool_name,
                     param_name,
                     param_value,
@@ -922,7 +928,7 @@ class Executor:
 
     def _execute_batch_call(self, batch_call: BatchAgentCall) -> str:
         """Execute a batch agent call."""
-        return self.batch_processor._process_batch_data(
+        return self.batch_processor.process_batch_data(
             batch_call.agent_name,
             batch_call.file_path,
             batch_call.data_format,

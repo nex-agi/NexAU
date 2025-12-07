@@ -71,7 +71,7 @@ def _get_file_info(path: str) -> dict[str, Any]:
         stat_info = os.stat(path)
         path_obj = Path(path)
 
-        info = {
+        info: dict[str, Any] = {
             "name": path_obj.name,
             "path": str(path_obj.absolute()),
             "is_file": path_obj.is_file(),
@@ -213,7 +213,7 @@ def ls_tool(
         duration_ms = int((time.time() - start_time) * 1000)
 
         # Prepare result
-        result = {
+        result: dict[str, Any] = {
             "status": "success",
             "path": path,
             "total_items": len(items),
@@ -251,7 +251,7 @@ def ls_tool(
             # Calculate how many items to keep to stay under limit
             items_to_keep = len(items)
             while items_to_keep >= 0:
-                truncated_result = dict(result)
+                truncated_result: dict[str, Any] = dict(result)
                 truncated_result["items"] = items[:items_to_keep]
                 truncated_result["total_items"] = items_to_keep
                 truncated_result["truncated_output"] = True
@@ -262,7 +262,7 @@ def ls_tool(
                     return serialized
                 items_to_keep -= 1
 
-            minimal_result = {
+            minimal_result: dict[str, Any] = {
                 "status": "success",
                 "path": path,
                 "total_items": len(items),

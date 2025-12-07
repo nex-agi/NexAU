@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, cast
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -31,10 +31,10 @@ from ..tracer.composite import CompositeTracer
 from ..tracer.core import BaseTracer
 from .tool_call_modes import normalize_tool_call_mode
 
-TTool = TypeVar("TTool")
-TSkill = TypeVar("TSkill")
-TSubAgent = TypeVar("TSubAgent")
-THook = TypeVar("THook")
+TTool = TypeVar("TTool", bound=object)
+TSkill = TypeVar("TSkill", bound=object)
+TSubAgent = TypeVar("TSubAgent", bound=object)
+THook = TypeVar("THook", bound=object)
 
 
 class HookImportConfig(BaseModel):
@@ -48,6 +48,22 @@ class HookImportConfig(BaseModel):
 
 HookCallable = Callable[..., Any]
 HookDefinition = HookCallable | HookImportConfig | str
+
+
+def _empty_dict_list() -> list[dict[str, Any]]:
+    return []
+
+
+def _empty_tracer_list() -> list[BaseTracer]:
+    return []
+
+
+def _empty_tool_list() -> list[Tool]:
+    return []
+
+
+def _empty_skill_list() -> list[Skill]:
+    return []
 
 
 class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
@@ -65,9 +81,9 @@ class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
     agent_id: str | None = None
     system_prompt: str | None = None
     system_prompt_type: Literal["string", "file", "jinja"] = "string"
-    tools: list[TTool] = Field(default_factory=list)
+    tools: list[Any] = Field(default_factory=list)
     sub_agents: list[TSubAgent] | None = None
-    skills: list[TSkill] = Field(default_factory=list)
+    skills: list[Any] = Field(default_factory=list)
     llm_config: Any | None = None
     stop_tools: set[str] | None = Field(default_factory=set)
     initial_state: dict[str, Any] | None = None
@@ -83,7 +99,7 @@ class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
     before_model_hooks: list[THook] | None = None
     before_tool_hooks: list[THook] | None = None
     middlewares: list[THook] | None = None
-    error_handler: Callable | None = None
+    error_handler: Callable[..., Any] | None = None
     token_counter: HookDefinition | None = None
     global_storage: dict[str, Any] = Field(default_factory=dict)
     max_context_tokens: int = Field(default=128000, ge=1)
@@ -136,46 +152,67 @@ class AgentConfig(
 
     model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True)
 
+    tools: list[Tool] = Field(default_factory=_empty_tool_list)
+    skills: list[Skill] = Field(default_factory=_empty_skill_list)
     sub_agents: list[tuple[str, Callable[[], Any]]] | None = None
-    llm_config: LLMConfig | dict[str, Any] | None = None
-    mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
-    after_model_hooks: list[Callable] | None = None
-    after_tool_hooks: list[Callable] | None = None
-    before_model_hooks: list[Callable] | None = None
-    before_tool_hooks: list[Callable] | None = None
+    llm_config: LLMConfig | None = None
+    mcp_servers: list[dict[str, Any]] = Field(default_factory=_empty_dict_list)
+    after_model_hooks: list[Callable[..., Any]] | None = None
+    after_tool_hooks: list[Callable[..., Any]] | None = None
+    before_model_hooks: list[Callable[..., Any]] | None = None
+    before_tool_hooks: list[Callable[..., Any]] | None = None
     middlewares: list[Any] | None = None
-    tracers: list[BaseTracer] = Field(default_factory=list)
+    tracers: list[BaseTracer] = Field(default_factory=_empty_tracer_list)
     resolved_tracer: BaseTracer | None = Field(default=None, exclude=True)
     sub_agent_factories: dict[str, Callable[[], Any]] = Field(
         default_factory=dict,
         exclude=True,
     )
-    token_counter: HookCallable | None = None
+    token_counter: HookDefinition | None = None
 
     @field_validator("llm_config", mode="before")
     @classmethod
-    def _validate_llm_config(cls, value):
+    def _validate_llm_config(
+        cls,
+        value: object,
+    ) -> LLMConfig | dict[str, Any] | None:
         if value is None:
             return value
-        if isinstance(value, (LLMConfig, dict)):
+        if isinstance(value, LLMConfig):
             return value
+        if isinstance(value, dict):
+            return cast(dict[str, Any], value)
         raise ValueError(
             f"Invalid llm_config type: {type(value)}",
         )
 
     @field_validator("mcp_servers", mode="before")
     @classmethod
-    def _ensure_mcp_servers(cls, value):
+    def _ensure_mcp_servers(
+        cls,
+        value: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
         if value is None:
             return []
         return value
 
     @field_validator("tracers")
     @classmethod
-    def _ensure_tracers(cls, value):
+    def _ensure_tracers(
+        cls,
+        value: object,
+    ) -> list[BaseTracer]:
         if value is None:
             return []
-        return value
+        if not isinstance(value, list):
+            raise ValueError("Tracers must be provided as a list")
+        value_list = cast(list[Any], value)
+        typed_tracers: list[BaseTracer] = []
+        for tracer in value_list:
+            if not isinstance(tracer, BaseTracer):
+                raise ValueError("All tracers must inherit from BaseTracer")
+            typed_tracers.append(tracer)
+        return typed_tracers
 
     @model_validator(mode="after")
     def _finalize(self):  # type: ignore[override]
@@ -205,21 +242,13 @@ class AgentConfig(
 
         # Handle LLM configuration
         if self.llm_config is None:
-            raise ValueError("llm_config is required")
-        if isinstance(self.llm_config, dict):
-            self.llm_config = LLMConfig(**self.llm_config)
-        elif not isinstance(self.llm_config, LLMConfig):
-            raise ValueError(
-                f"Invalid llm_config type: {type(self.llm_config)}",
-            )
+            self.llm_config = LLMConfig()
 
         # Ensure name is set
         if not self.name:
             self.name = f"agent_{id(self)}"
 
         # Resolve tracer composition
-        if any(not isinstance(tracer, BaseTracer) for tracer in self.tracers):
-            raise ValueError("All tracers must inherit from BaseTracer")
         if len(self.tracers) == 1:
             self.resolved_tracer = self.tracers[0]
         elif len(self.tracers) > 1:

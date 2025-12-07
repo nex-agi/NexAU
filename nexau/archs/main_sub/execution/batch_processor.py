@@ -19,19 +19,28 @@ import logging
 import os
 import re
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import copy_context
-from typing import Any, cast
+from typing import Any, NotRequired, TypedDict, cast
 
 from ..utils.xml_utils import XMLParser
+from .subagent_manager import SubAgentManager
 
 logger = logging.getLogger(__name__)
+
+
+class BatchResult(TypedDict):
+    line: int
+    status: str
+    result: NotRequired[str]
+    error: NotRequired[str]
+    data: NotRequired[dict[str, Any]]
 
 
 class BatchProcessor:
     """Handles batch processing of data through sub-agents."""
 
-    def __init__(self, subagent_manager, max_workers: int = 5):
+    def __init__(self, subagent_manager: SubAgentManager, max_workers: int = 5):
         """Initialize batch processor.
 
         Args:
@@ -96,17 +105,22 @@ class BatchProcessor:
                 return "Batch processing completed: 0 items processed (file was created but empty)"
 
             # Execute batch processing
-            return self._process_batch_data(
-                agent_name,
-                file_path,
-                data_format,
-                message_template,
-            )
+            return self.process_batch_data(agent_name, file_path, data_format, message_template)
 
         except ET.ParseError as e:
             raise ValueError(f"Invalid XML format: {e}")
         except Exception as e:
             raise ValueError(f"Batch processing error: {e}")
+
+    def process_batch_data(
+        self,
+        agent_name: str,
+        file_path: str,
+        data_format: str,
+        message_template: str,
+    ) -> str:
+        """Public wrapper around internal batch processing."""
+        return self._process_batch_data(agent_name, file_path, data_format, message_template)
 
     def _process_batch_data(
         self,
@@ -132,7 +146,7 @@ class BatchProcessor:
             )
 
         # Read and validate JSONL file
-        batch_data = []
+        batch_data: list[tuple[int, dict[str, Any]]] = []
         try:
             with open(file_path, encoding="utf-8") as f:
                 for line_num, line in enumerate(f, 1):
@@ -146,7 +160,8 @@ class BatchProcessor:
                                 f"Line {line_num}: Expected JSON object, got {type(data).__name__}",
                             )
                             continue
-                        batch_data.append((line_num, data))
+                        data_dict: dict[str, Any] = cast(dict[str, Any], data)
+                        batch_data.append((line_num, data_dict))
                     except json.JSONDecodeError as e:
                         logger.error(f"Line {line_num}: Invalid JSON - {e}")
                         continue
@@ -158,7 +173,7 @@ class BatchProcessor:
 
         # Validate message template uses valid keys
         template_keys = self._extract_template_keys(message_template)
-        sample_data = batch_data[0][1]
+        sample_data: dict[str, Any] = batch_data[0][1]
         invalid_keys = [key for key in template_keys if key not in sample_data]
         if invalid_keys:
             raise ValueError(
@@ -166,10 +181,10 @@ class BatchProcessor:
             )
 
         # Execute batch processing in parallel
-        results = []
+        results: list[BatchResult] = []
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             # Submit all batch items for parallel execution
-            futures = {}
+            futures: dict[Future[str], tuple[int, dict[str, Any]]] = {}
             for line_num, data in batch_data:
                 # Render message template with data
                 try:
@@ -201,7 +216,7 @@ class BatchProcessor:
             for future in as_completed(futures):
                 line_num, data = futures[future]
                 try:
-                    result = future.result()
+                    result: str = future.result()
                     results.append(
                         {
                             "line": line_num,
@@ -221,7 +236,11 @@ class BatchProcessor:
                     )
 
         # Sort results by line number
-        results.sort(key=lambda x: cast(int, x["line"]))
+
+        def _line_key(item: BatchResult) -> int:
+            return item["line"]
+
+        results.sort(key=_line_key)
 
         # Generate summary
         total_items = len(results)
@@ -237,7 +256,7 @@ class BatchProcessor:
         remaining_count = max(0, len(results) - 3)
 
         # Include limited detailed results
-        detailed_results = {
+        detailed_results: dict[str, Any] = {
             "summary": summary,
             "total_items": total_items,
             "successful_items": successful_items,

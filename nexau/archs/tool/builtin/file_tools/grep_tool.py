@@ -17,6 +17,7 @@ import logging
 import os
 import subprocess
 import time
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,7 @@ def _sort_files_by_modification_time(
     Returns:
         Sorted list of absolute filenames
     """
-    files_with_mtime = []
+    files_with_mtime: list[tuple[str, float]] = []
 
     for filename in filenames:
         try:
@@ -183,7 +184,11 @@ def _sort_files_by_modification_time(
             files_with_mtime.append((abs_path, 0))
 
     # Sort by modification time (newest first), then by filename
-    files_with_mtime.sort(key=lambda x: (-x[1], x[0]))
+
+    def _mtime_sort_key(item: tuple[str, float]) -> tuple[float, str]:
+        return (-item[1], item[0])
+
+    files_with_mtime.sort(key=_mtime_sort_key)
 
     return [filepath for filepath, _ in files_with_mtime]
 
@@ -193,7 +198,7 @@ def grep_tool(
     path: str | None = None,
     glob: str | None = None,
     output_mode: str = "files_with_matches",
-    **kwargs,
+    **kwargs: Any,
 ) -> str:
     """
     Fast content search tool that works with any codebase size using ripgrep.
@@ -309,7 +314,7 @@ def grep_tool(
 
         # Run ripgrep search
         try:
-            results, search_duration_ms = _run_ripgrep(
+            results, _search_duration_ms = _run_ripgrep(
                 pattern=pattern,
                 search_path=search_dir,
                 glob_pattern=glob,
@@ -370,7 +375,7 @@ def grep_tool(
 
         # Prepare result based on output mode
         if output_mode == "content":
-            result = {
+            result: dict[str, Any] = {
                 "content": final_results,
                 "num_lines": len(final_results),
                 "duration_ms": total_duration_ms,
@@ -429,6 +434,7 @@ def grep_tool(
         # Apply length limit to JSON output
         result_json = json.dumps(result, indent=2, ensure_ascii=False)
         if len(result_json) > 10000:
+            truncated_result: dict[str, Any]
             # For different output modes, truncate appropriately
             if output_mode == "files_with_matches":
                 # Truncate filenames list
@@ -510,7 +516,7 @@ def grep_tool(
                     items_to_keep -= 1
 
             # If even minimal result is too long, return basic summary
-            minimal_result = {
+            minimal_result: dict[str, Any] = {
                 "truncated_output": True,
                 "total_matches": len(final_results),
                 "message": f"Output too long: found {len(final_results)} matches (details truncated)",
@@ -555,7 +561,7 @@ class GrepSearchTool:
         path: str | None = None,
         include_pattern: str | None = None,
         max_results: int | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """
         Perform a grep search and return structured results.
 

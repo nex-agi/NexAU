@@ -15,11 +15,15 @@
 """Public API for the config package with lazy imports to avoid cycles."""
 
 from importlib import import_module
+from typing import TYPE_CHECKING, Any
 
 __all__ = ["load_agent_config", "ConfigError"]
 
+if TYPE_CHECKING:
+    from .config_loader import ConfigError, load_agent_config
 
-def __getattr__(name):
+
+def __getattr__(name: str) -> Any:
     if name in __all__:
         module = import_module("nexau.archs.config.config_loader")
         return getattr(module, name)

@@ -17,6 +17,7 @@
 import threading
 from collections.abc import Callable
 from contextlib import contextmanager
+from types import TracebackType
 from typing import Any
 
 
@@ -26,13 +27,13 @@ class AgentContext:
     def __init__(self, context: dict[str, Any] | None = None):
         """Initialize agent context with context."""
         self.context = context or {}
-        self._original_context = None
+        self._original_context: dict[str, Any] | None = None
 
         # Track if context has been modified (for prompt refresh)
         self._context_modified = False
-        self._modification_callbacks: list[Callable] = []
+        self._modification_callbacks: list[Callable[[], None]] = []
 
-    def __enter__(self):
+    def __enter__(self) -> "AgentContext":
         """Enter the context and set the thread-local context."""
         global _current_context
         self._original_context = _current_context.context.copy() if _current_context else {}
@@ -41,7 +42,12 @@ class AgentContext:
         _current_context = self
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Exit the context and restore previous context."""
         global _current_context
         if self._original_context is not None:
@@ -53,7 +59,7 @@ class AgentContext:
         else:
             _current_context = None
 
-    def update_context(self, updates: dict[str, Any]):
+    def update_context(self, updates: dict[str, Any]) -> None:
         """Update context with new values."""
         self.context.update(updates)
         self._mark_modified()
@@ -62,12 +68,12 @@ class AgentContext:
         """Get a specific context value."""
         return self.context.get(key, default)
 
-    def set_context_value(self, key: str, value: Any):
+    def set_context_value(self, key: str, value: Any) -> None:
         """Set a specific context value."""
         self.context[key] = value
         self._mark_modified()
 
-    def _mark_modified(self):
+    def _mark_modified(self) -> None:
         """Mark the context as modified and trigger callbacks."""
         self._context_modified = True
         for callback in self._modification_callbacks:
@@ -76,11 +82,11 @@ class AgentContext:
             except Exception:
                 pass  # Ignore callback errors
 
-    def add_modification_callback(self, callback):
+    def add_modification_callback(self, callback: Callable[[], None]) -> None:
         """Add a callback that gets triggered when context is modified."""
         self._modification_callbacks.append(callback)
 
-    def remove_modification_callback(self, callback):
+    def remove_modification_callback(self, callback: Callable[[], None]) -> None:
         """Remove a modification callback."""
         if callback in self._modification_callbacks:
             self._modification_callbacks.remove(callback)
@@ -89,7 +95,7 @@ class AgentContext:
         """Check if context has been modified."""
         return self._context_modified
 
-    def reset_modification_flag(self):
+    def reset_modification_flag(self) -> None:
         """Reset the modification flag."""
         self._context_modified = False
 
@@ -143,12 +149,12 @@ class GlobalStorage:
     """Thread-safe storage shared across agents in the same agent hierarchy."""
 
     def __init__(self):
-        self._storage = {}
-        self._locks = {}
+        self._storage: dict[str, Any] = {}
+        self._locks: dict[str, threading.RLock] = {}
         self._storage_lock = threading.RLock()
         self._locks_lock = threading.RLock()
 
-    def set(self, key: str, value: Any):
+    def set(self, key: str, value: Any) -> None:
         """Set a value in global storage."""
         # Use key-specific lock if it exists, otherwise use global lock
         key_lock = self._locks.get(key)
@@ -170,7 +176,7 @@ class GlobalStorage:
             with self._storage_lock:
                 return self._storage.get(key, default)
 
-    def update(self, updates: dict[str, Any]):
+    def update(self, updates: dict[str, Any]) -> None:
         """Update multiple values in global storage."""
         # Check if any keys have specific locks
         keys_with_locks = [k for k in updates.keys() if k in self._locks]
@@ -201,12 +207,12 @@ class GlobalStorage:
                     return True
                 return False
 
-    def keys(self):
+    def keys(self) -> list[str]:
         """Get all keys in global storage."""
         with self._storage_lock:
             return list(self._storage.keys())
 
-    def items(self):
+    def items(self) -> list[tuple[str, Any]]:
         """Get all items in global storage."""
         with self._storage_lock:
             return list(self._storage.items())

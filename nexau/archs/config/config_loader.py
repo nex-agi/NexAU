@@ -22,11 +22,11 @@ import re
 import traceback
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import dotenv
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..llm import LLMConfig
 from ..main_sub import Agent, create_agent
@@ -36,6 +36,9 @@ from ..main_sub.prompt_builder import PromptBuilder
 from ..main_sub.skill import Skill
 from ..tool import Tool
 from ..tracer.core import BaseTracer
+
+YamlValue = dict[str, Any] | list[Any] | str | int | float | bool | None
+HookConfig = str | dict[str, Any] | Callable[..., Any]
 
 logger = logging.getLogger(__name__)
 
@@ -102,21 +105,42 @@ class MCPSseServer(MCPServerBaseModel):
 MCPServerConfig = MCPStdIOServer | MCPHttpServer | MCPSseServer
 
 
+def _empty_mcp_server_list() -> list[MCPServerConfig]:
+    return []
+
+
+def _empty_hook_list() -> list[HookDefinition]:
+    return []
+
+
+def _require_dict(value: object, *, context: str) -> dict[str, Any]:
+    """Ensure a value is a dictionary and return it typed."""
+    if not isinstance(value, dict):
+        raise ConfigError(f"{context} must be a dictionary")
+    return cast(dict[str, Any], value)
+
+
 class AgentConfigSchema(
     AgentConfigBase[ToolConfigEntry, str, SubAgentConfigEntry, HookDefinition],
 ):
     """Top-level schema for agent YAML files."""
 
-    llm_config: dict[str, Any]
-    mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
+    llm_config: dict[str, Any] | None = None
+    mcp_servers: list[MCPServerConfig] = Field(default_factory=_empty_mcp_server_list)
     global_storage: dict[str, Any] = Field(default_factory=dict)
-    after_model_hooks: list[HookDefinition] = Field(default_factory=list)
-    after_tool_hooks: list[HookDefinition] = Field(default_factory=list)
-    before_model_hooks: list[HookDefinition] = Field(default_factory=list)
-    before_tool_hooks: list[HookDefinition] = Field(default_factory=list)
-    middlewares: list[HookDefinition] = Field(default_factory=list)
+    after_model_hooks: list[HookDefinition] | None = None
+    after_tool_hooks: list[HookDefinition] | None = None
+    before_model_hooks: list[HookDefinition] | None = None
+    before_tool_hooks: list[HookDefinition] | None = None
+    middlewares: list[HookDefinition] | None = None
     token_counter: HookDefinition | None = None
-    tracers: list[HookDefinition] = Field(default_factory=list)
+    tracers: list[HookDefinition] = Field(default_factory=_empty_hook_list)
+
+    @model_validator(mode="after")
+    def _require_llm_config(self) -> "AgentConfigSchema":  # type: ignore[override]
+        if self.llm_config is None:
+            raise ValueError("llm_config is required in agent configuration")
+        return self
 
 
 class AgentBuilder:
@@ -136,7 +160,7 @@ class AgentBuilder:
 
     def _import_and_instantiate(
         self,
-        hook_config: str | dict[str, Any],
+        hook_config: HookConfig,
     ) -> Any:
         """Import and instantiate a hook from configuration.
 
@@ -152,12 +176,21 @@ class AgentBuilder:
             return self._instantiate_hook_object(hook_obj, hook_config)
         elif isinstance(hook_config, dict):
             # Dictionary format with import and optional parameters
-            import_string = hook_config.get("import")
-            if not import_string:
+            hook_config_dict: dict[str, Any] = cast(dict[str, Any], hook_config)
+            import_string_value: str | None = hook_config_dict.get("import") if isinstance(hook_config_dict.get("import"), str) else None
+            if not import_string_value:
                 raise ConfigError("Hook configuration missing 'import' field")
 
+            import_string: str = import_string_value
+
             hook_obj = import_from_string(import_string)
-            params = hook_config.get("params") or {}
+            params_raw = hook_config_dict.get("params")
+            if params_raw is None:
+                params: dict[str, Any] = {}
+            elif isinstance(params_raw, dict):
+                params = cast(dict[str, Any], params_raw)
+            else:
+                raise ConfigError("Hook configuration 'params' must be a mapping when provided")
             return self._instantiate_hook_object(hook_obj, import_string, params)
         elif callable(hook_config):
             # Direct callable function (e.g., from overrides)
@@ -173,20 +206,20 @@ class AgentBuilder:
     ) -> Any:
         """Instantiate hook classes or factory functions with optional params."""
 
-        params = params or {}
+        params_dict: dict[str, Any] = params or {}
 
         if inspect.isclass(hook_obj):
             try:
-                return hook_obj(**params)
+                return hook_obj(**params_dict)
             except TypeError as exc:  # pragma: no cover - error path
                 raise ConfigError(
                     f"Error instantiating hook '{import_string}': {exc}",
                 ) from exc
 
-        if params:
+        if params_dict:
             if callable(hook_obj):
                 try:
-                    return hook_obj(**params)
+                    return hook_obj(**params_dict)
                 except TypeError as exc:  # pragma: no cover - error path
                     raise ConfigError(
                         f"Error calling hook factory '{import_string}' with params: {exc}",
@@ -231,30 +264,33 @@ class AgentBuilder:
         Returns:
             Self for method chaining
         """
-        mcp_servers = self.config.get("mcp_servers", [])
+        mcp_servers_raw = self.config.get("mcp_servers", [])
 
-        if not isinstance(mcp_servers, list):
+        if not isinstance(mcp_servers_raw, list):
             raise ConfigError("'mcp_servers' must be a list")
 
+        mcp_servers_list: list[Any] = cast(list[Any], mcp_servers_raw)
+
         # Validate each MCP server configuration
-        for i, server_config in enumerate(mcp_servers):
-            if not isinstance(server_config, dict):
-                raise ConfigError(
-                    f"MCP server configuration {i} must be a dictionary",
-                )
+        typed_servers: list[dict[str, Any]] = []
+        for i, server_config in enumerate(mcp_servers_list):
+            server_config_typed = _require_dict(
+                server_config,
+                context=f"MCP server configuration {i}",
+            )
 
             # Validate required fields
-            if "name" not in server_config:
+            if "name" not in server_config_typed:
                 raise ConfigError(
                     f"MCP server configuration {i} missing 'name' field",
                 )
 
-            if "type" not in server_config:
+            if "type" not in server_config_typed:
                 raise ConfigError(
                     f"MCP server configuration {i} missing 'type' field",
                 )
 
-            server_type = server_config["type"]
+            server_type = str(server_config_typed["type"])
             if server_type not in ["stdio", "http", "sse"]:
                 raise ConfigError(
                     f"MCP server configuration {i} has invalid type '{server_type}'. Must be one of: stdio, http, sse",
@@ -262,17 +298,19 @@ class AgentBuilder:
 
             # Validate type-specific requirements
             if server_type == "stdio":
-                if "command" not in server_config:
+                if "command" not in server_config_typed:
                     raise ConfigError(
                         f"MCP server configuration {i} of type 'stdio' missing 'command' field",
                     )
             elif server_type in ["http", "sse"]:
-                if "url" not in server_config:
+                if "url" not in server_config_typed:
                     raise ConfigError(
                         f"MCP server configuration {i} of type '{server_type}' missing 'url' field",
                     )
 
-        self.agent_params["mcp_servers"] = mcp_servers
+            typed_servers.append(server_config_typed)
+
+        self.agent_params["mcp_servers"] = typed_servers
         return self
 
     def build_hooks(self) -> "AgentBuilder":
@@ -281,7 +319,7 @@ class AgentBuilder:
         Returns:
             Self for method chaining
         """
-        middlewares = None
+        middlewares: list[Callable[..., Any]] | None = None
         if "middlewares" in self.config:
             middleware_configs = self.config["middlewares"]
             middlewares = []
@@ -289,9 +327,13 @@ class AgentBuilder:
             if not isinstance(middleware_configs, list):
                 raise ConfigError("'middlewares' must be a list")
 
-            for i, middleware_config in enumerate(middleware_configs):
+            middleware_config_list = cast(list[HookConfig], middleware_configs)
+
+            for i, middleware_config in enumerate(middleware_config_list):
+                if not isinstance(middleware_config, (str, dict)) and not callable(middleware_config):
+                    raise ConfigError(f"Middleware {i} must be a string, dict, or callable")
                 try:
-                    middleware = self._import_and_instantiate(middleware_config)
+                    middleware = self._import_and_instantiate(cast(HookConfig, middleware_config))
                     middlewares.append(middleware)
                 except Exception as e:
                     raise ConfigError(f"Error loading middleware {i}: {e}")
@@ -299,7 +341,7 @@ class AgentBuilder:
         self.agent_params["middlewares"] = middlewares
 
         # Handle after_model_hooks configuration
-        after_model_hooks = None
+        after_model_hooks: list[Callable[..., Any]] | None = None
         if "after_model_hooks" in self.config:
             hooks_config = self.config["after_model_hooks"]
             after_model_hooks = []
@@ -307,9 +349,13 @@ class AgentBuilder:
             if not isinstance(hooks_config, list):
                 raise ConfigError("'after_model_hooks' must be a list")
 
-            for i, hook_config in enumerate(hooks_config):
+            hooks_config_list = cast(list[HookConfig], hooks_config)
+
+            for i, hook_config in enumerate(hooks_config_list):
+                if not isinstance(hook_config, (str, dict)) and not callable(hook_config):
+                    raise ConfigError(f"after_model_hooks entry {i} must be a string, dict, or callable")
                 try:
-                    hook_func = self._import_and_instantiate(hook_config)
+                    hook_func = self._import_and_instantiate(cast(HookConfig, hook_config))
                     after_model_hooks.append(hook_func)
                 except Exception as e:
                     raise ConfigError(f"Error loading hook {i}: {e}")
@@ -317,7 +363,7 @@ class AgentBuilder:
         self.agent_params["after_model_hooks"] = after_model_hooks
 
         # Handle after_tool_hooks configuration
-        after_tool_hooks = None
+        after_tool_hooks: list[Callable[..., Any]] | None = None
         if "after_tool_hooks" in self.config:
             hooks_config = self.config["after_tool_hooks"]
             after_tool_hooks = []
@@ -325,9 +371,13 @@ class AgentBuilder:
             if not isinstance(hooks_config, list):
                 raise ConfigError("'after_tool_hooks' must be a list")
 
-            for i, hook_config in enumerate(hooks_config):
+            hooks_config_list = cast(list[HookConfig], hooks_config)
+
+            for i, hook_config in enumerate(hooks_config_list):
+                if not isinstance(hook_config, (str, dict)) and not callable(hook_config):
+                    raise ConfigError(f"after_tool_hooks entry {i} must be a string, dict, or callable")
                 try:
-                    hook_func = self._import_and_instantiate(hook_config)
+                    hook_func = self._import_and_instantiate(cast(HookConfig, hook_config))
                     after_tool_hooks.append(hook_func)
                 except Exception as e:
                     raise ConfigError(f"Error loading tool hook {i}: {e}")
@@ -335,7 +385,7 @@ class AgentBuilder:
         self.agent_params["after_tool_hooks"] = after_tool_hooks
 
         # Handle before_model_hooks configuration
-        before_model_hooks = None
+        before_model_hooks: list[Callable[..., Any]] | None = None
         if "before_model_hooks" in self.config:
             hooks_config = self.config["before_model_hooks"]
             before_model_hooks = []
@@ -343,9 +393,13 @@ class AgentBuilder:
             if not isinstance(hooks_config, list):
                 raise ConfigError("'before_model_hooks' must be a list")
 
-            for i, hook_config in enumerate(hooks_config):
+            hooks_config_list = cast(list[HookConfig], hooks_config)
+
+            for i, hook_config in enumerate(hooks_config_list):
+                if not isinstance(hook_config, (str, dict)) and not callable(hook_config):
+                    raise ConfigError(f"before_model_hooks entry {i} must be a string, dict, or callable")
                 try:
-                    hook_func = self._import_and_instantiate(hook_config)
+                    hook_func = self._import_and_instantiate(cast(HookConfig, hook_config))
                     before_model_hooks.append(hook_func)
                 except Exception as e:
                     raise ConfigError(f"Error loading before model hook {i}: {e}")
@@ -353,7 +407,7 @@ class AgentBuilder:
         self.agent_params["before_model_hooks"] = before_model_hooks
 
         # Handle before_tool_hooks configuration
-        before_tool_hooks = None
+        before_tool_hooks: list[Callable[..., Any]] | None = None
         if "before_tool_hooks" in self.config:
             hooks_config = self.config["before_tool_hooks"]
             before_tool_hooks = []
@@ -361,9 +415,13 @@ class AgentBuilder:
             if not isinstance(hooks_config, list):
                 raise ConfigError("'before_tool_hooks' must be a list")
 
-            for i, hook_config in enumerate(hooks_config):
+            hooks_config_list = cast(list[HookConfig], hooks_config)
+
+            for i, hook_config in enumerate(hooks_config_list):
+                if not isinstance(hook_config, (str, dict)) and not callable(hook_config):
+                    raise ConfigError(f"before_tool_hooks entry {i} must be a string, dict, or callable")
                 try:
-                    hook_func = self._import_and_instantiate(hook_config)
+                    hook_func = self._import_and_instantiate(cast(HookConfig, hook_config))
                     before_tool_hooks.append(hook_func)
                 except Exception as e:
                     raise ConfigError(f"Error loading before tool hook {i}: {e}")
@@ -381,18 +439,22 @@ class AgentBuilder:
         if not isinstance(tracer_configs, list):
             raise ConfigError("'tracers' must be a list")
 
+        tracer_config_list = cast(list[BaseTracer | HookConfig], tracer_configs)
+
         resolved_tracers: list[BaseTracer] = []
-        for entry in tracer_configs:
+        for entry in tracer_config_list:
             if entry is None:
                 raise ConfigError("Tracer entries cannot be null")
 
             if isinstance(entry, BaseTracer):
                 tracer = entry
-            else:
+            elif isinstance(entry, (str, dict)) or callable(entry):
                 try:
-                    tracer = self._import_and_instantiate(entry)
+                    tracer = self._import_and_instantiate(cast(HookConfig, entry))
                 except Exception as e:
                     raise ConfigError(f"Error loading tracer: {e}")
+            else:
+                raise ConfigError(f"Tracer entry must be BaseTracer, string, dict, or callable, got {type(entry)}")
 
             if not isinstance(tracer, BaseTracer):
                 raise ConfigError(
@@ -409,7 +471,7 @@ class AgentBuilder:
         Returns:
             Self for method chaining
         """
-        tools = []
+        tools: list[Tool] = []
         tool_configs = self.config.get("tools", [])
         for tool_config in tool_configs:
             try:
@@ -429,7 +491,7 @@ class AgentBuilder:
         Returns:
             Self for method chaining
         """
-        skills = []
+        skills: list[Skill] = []
 
         # build skills from skill folders
         skill_configs = self.config.get("skills", [])
@@ -446,7 +508,7 @@ class AgentBuilder:
 
         # add skill tool to tools
         prompt_builder = PromptBuilder()
-        skill_detail_template = prompt_builder._load_prompt_template("tools_template_for_skill_detail")
+        skill_detail_template = prompt_builder.load_prompt_template("tools_template_for_skill_detail")
         jinja_template = prompt_builder.jinja_env.from_string(skill_detail_template)
         for tool in self.agent_params.get("tools", []):
             if tool.as_skill:
@@ -462,7 +524,7 @@ class AgentBuilder:
         Returns:
             Self for method chaining
         """
-        sub_agents = []
+        sub_agents: list[tuple[str, Callable[[], Agent]]] = []
         sub_agent_configs = self.config.get("sub_agents", [])
         for sub_config in sub_agent_configs:
             try:
@@ -504,22 +566,31 @@ class AgentBuilder:
                 # Import string format: "module.path:function_name"
                 token_counter = import_from_string(token_counter_config)
             elif isinstance(token_counter_config, dict):
+                token_counter_config_dict = cast(dict[str, Any], token_counter_config)
                 # Dictionary format with import and optional parameters
-                import_string = token_counter_config.get("import")
-                if not import_string:
+                import_string_value: str | None = (
+                    token_counter_config_dict.get("import") if isinstance(token_counter_config_dict.get("import"), str) else None
+                )
+                if not import_string_value:
                     raise ConfigError(
                         "Token counter configuration missing 'import' field",
                     )
+                import_string = import_string_value
 
                 # Import the function/class
                 token_counter_func = import_from_string(import_string)
 
                 # Check if there are parameters to pass
-                params = token_counter_config.get("params", {})
-                if params:
+                params_raw: dict[str, Any] | None = (
+                    token_counter_config_dict.get("params", {}) if isinstance(token_counter_config_dict.get("params", {}), dict) else None
+                )
+                if params_raw is None:
+                    raise ConfigError("Token counter params must be a mapping when provided")
+                params_dict = params_raw
+                if params_dict:
                     # Create a wrapper function with the parameters
-                    def configured_token_counter(messages):
-                        return token_counter_func(messages, **params)
+                    def configured_token_counter(messages: list[dict[str, Any]]) -> int:
+                        return int(token_counter_func(messages, **params_dict))
 
                     token_counter = configured_token_counter
                 else:
@@ -613,18 +684,23 @@ def apply_agent_name_overrides(
     if main_agent_name and main_agent_name in overrides:
         agent_overrides = overrides[main_agent_name]
         if isinstance(agent_overrides, dict):
-            for key, value in agent_overrides.items():
-                if isinstance(value, dict):
-                    config[key].update(value)
+            agent_overrides_dict = cast(dict[str, Any], agent_overrides)
+            for key, value in agent_overrides_dict.items():
+                key_str = str(key)
+                if isinstance(value, dict) and isinstance(config.get(key_str), dict):
+                    existing_section = cast(dict[str, Any], config.get(key_str, {}))
+                    value_dict = cast(dict[str, Any], value)
+                    existing_section.update(value_dict)
+                    config[key_str] = existing_section
                 else:
-                    config[key] = value
+                    config[key_str] = value
 
     # TODO(hanzhenhua): can sub_agents config be override?
 
     return config
 
 
-def load_yaml_with_vars(path):
+def load_yaml_with_vars(path: str | os.PathLike[str]) -> YamlValue:
     with open(path, encoding="utf-8") as f:
         config_text = f.read()
 
@@ -644,7 +720,7 @@ def load_yaml_with_vars(path):
     config_text = env_pattern.sub(_replace_env, config_text)
 
     # deal variables in the YAML file
-    loaded_config = yaml.safe_load(config_text)
+    loaded_config: YamlValue = yaml.safe_load(config_text)
 
     if not isinstance(loaded_config, dict):
         return loaded_config
@@ -655,6 +731,7 @@ def load_yaml_with_vars(path):
 
     if not isinstance(yaml_variables, dict):
         raise ConfigError("'variables' must be a mapping if provided in YAML")
+    yaml_variables = cast(dict[str, Any], yaml_variables)
 
     # Replace ${variables.foo.bar} occurrences directly in the raw text
     var_pattern = re.compile(
@@ -663,7 +740,7 @@ def load_yaml_with_vars(path):
 
     def _resolve_var(match: re.Match[str]) -> str:
         path = match.group(1).split(".")
-        current: Any = yaml_variables
+        current: YamlValue = yaml_variables
         for part in path:
             if not isinstance(current, dict) or part not in current:
                 raise ConfigError(f"Variable '{match.group(1)}' is not defined in 'variables'")
@@ -675,7 +752,7 @@ def load_yaml_with_vars(path):
         return str(current)
 
     config_text = var_pattern.sub(_resolve_var, config_text)
-    resolved_config = yaml.safe_load(config_text)
+    resolved_config: YamlValue = yaml.safe_load(config_text)
     if isinstance(resolved_config, dict):
         resolved_config.pop("variables", None)
     return resolved_config
@@ -707,6 +784,10 @@ def load_agent_config(
         # Load YAML configuration
         config = load_yaml_with_vars(path)
 
+        if not isinstance(config, dict):
+            raise ConfigError(
+                f"Empty or invalid configuration file: {config_path}",
+            )
         if not config:
             raise ConfigError(
                 f"Empty or invalid configuration file: {config_path}",
@@ -770,15 +851,14 @@ def load_tool_from_config(tool_config: dict[str, Any], base_path: Path) -> Tool:
     yaml_path = tool_config.get("yaml_path")
     binding = tool_config.get("binding", None)
     as_skill = tool_config.get("as_skill", False)
-    extra_kwargs = tool_config.get("extra_kwargs", {})
+    extra_kwargs_raw: object | None = tool_config.get("extra_kwargs", {})
 
     if not yaml_path:
         raise ConfigError(f"Tool '{name}' missing 'yaml_path' field")
 
-    if extra_kwargs is None:
-        extra_kwargs = {}
-    if not isinstance(extra_kwargs, dict):
-        raise ConfigError(f"Tool '{name}' has invalid 'extra_kwargs'; it must be a mapping")
+    if extra_kwargs_raw is None:
+        extra_kwargs_raw = {}
+    extra_kwargs = _require_dict(extra_kwargs_raw, context=f"Tool '{name}' extra_kwargs")
     reserved_keys = {"agent_state", "global_storage"}
     conflict_keys = set(extra_kwargs) & reserved_keys
     if conflict_keys:
@@ -916,7 +996,7 @@ def normalize_agent_config_dict(config: dict[str, Any]) -> dict[str, Any]:
 def _format_validation_error(exc: ValidationError) -> str:
     """Return a compact, readable validation error summary."""
 
-    formatted_errors = []
+    formatted_errors: list[str] = []
     for error in exc.errors():
         location = "->".join(str(segment) for segment in error.get("loc", [])) or "root"
         formatted_errors.append(f"{location}: {error.get('msg')}")
@@ -933,7 +1013,7 @@ def _prevalidate_agent_file(path: Path) -> None:
         raise ConfigError(f"Sub-agent configuration file not found: {resolved}")
 
     config = load_yaml_with_vars(resolved)
-    if not config:
+    if not isinstance(config, dict) or not config:
         raise ConfigError(f"Empty or invalid configuration file: {resolved}")
 
     normalize_agent_config_dict(config)

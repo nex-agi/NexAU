@@ -14,13 +14,18 @@
 
 """System prompt handling for different prompt types."""
 
+from __future__ import annotations
+
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Union
 
 from jinja2 import BaseLoader, Environment, Template
 
 if TYPE_CHECKING:
     from nexau.archs.main_sub.agent import Agent
+    from nexau.archs.main_sub.config import AgentConfig
+
+AgentContextSource = Union["Agent", "AgentConfig"]
 
 
 class PromptHandler:
@@ -164,32 +169,31 @@ class PromptHandler:
 
         return datetime.now().isoformat()
 
-    def get_default_context(self, agent: "Agent") -> dict[str, Any]:
+    def get_default_context(self, agent: AgentContextSource) -> dict[str, Any]:
         """Get default context for template rendering."""
-        context = {
+        context: dict[str, Any] = {
             "agent_name": getattr(agent, "name", "Unknown Agent"),
             "timestamp": self._get_timestamp(),
         }
 
-        # Add agent-specific context if available
-        if hasattr(agent, "config"):
-            context.update(
-                {
-                    "agent_id": getattr(agent.config, "agent_id", None),
-                    "system_prompt_type": getattr(
-                        agent.config,
-                        "system_prompt_type",
-                        "string",
-                    ),
-                },
-            )
+        config_source = getattr(agent, "config", None) or agent
+        context.update(
+            {
+                "agent_id": getattr(config_source, "agent_id", None),
+                "system_prompt_type": getattr(
+                    config_source,
+                    "system_prompt_type",
+                    "string",
+                ),
+            },
+        )
 
         return context
 
     def create_dynamic_prompt(
         self,
         base_template: str,
-        agent: "Agent",
+        agent: AgentContextSource,
         additional_context: dict[str, Any] | None = None,
         template_type: str = "string",
     ) -> str:

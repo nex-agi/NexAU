@@ -21,6 +21,11 @@ from enum import Enum
 from typing import Any
 
 
+def _empty_str_any_dict() -> dict[str, Any]:
+    """Return a fresh dict for span data to keep types known."""
+    return {}
+
+
 class SpanType(str, Enum):
     """Types of spans that can be traced."""
 
@@ -54,11 +59,11 @@ class Span:
     parent_id: str | None = None
     start_time: float = field(default_factory=lambda: datetime.now().timestamp())
     end_time: float | None = None
-    inputs: dict[str, Any] = field(default_factory=dict)
-    outputs: dict[str, Any] = field(default_factory=dict)
-    attributes: dict[str, Any] = field(default_factory=dict)
+    inputs: dict[str, Any] = field(default_factory=_empty_str_any_dict)
+    outputs: dict[str, Any] = field(default_factory=_empty_str_any_dict)
+    attributes: dict[str, Any] = field(default_factory=_empty_str_any_dict)
     error: str | None = None
-    vendor_obj: Any = None
+    vendor_obj: dict[int, Any] | object | None = None
 
     def duration_ms(self) -> float | None:
         """Calculate span duration in milliseconds."""

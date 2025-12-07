@@ -28,6 +28,13 @@ from nexau.archs.tracer.composite import CompositeTracer
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
 
 
+def make_llm_config(**overrides):
+    """Helper to create consistent LLMConfig instances for tests."""
+    params = {"model": "gpt-4o-mini"}
+    params.update(overrides)
+    return LLMConfig(**params)
+
+
 class DummyTracer(BaseTracer):
     """Minimal tracer implementation for tests."""
 
@@ -88,7 +95,7 @@ class TestAgentConfigSkills:
         """Test AgentConfig initialization with skills."""
         skill = Skill(name="test-skill", description="Test skill description", detail="Skill details", folder="/path/to/skill")
 
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, skills=[skill])
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), skills=[skill])
 
         assert len(config.skills) == 1
         assert config.skills[0].name == "test-skill"
@@ -99,7 +106,7 @@ class TestAgentConfigSkills:
         """Test AgentConfig with multiple skills."""
         skills = [Skill(name=f"skill-{i}", description=f"Skill {i}", detail=f"Detail {i}", folder=f"/path/{i}") for i in range(3)]
 
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, skills=skills)
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), skills=skills)
 
         assert len(config.skills) == 3
         # Should have added skill_tool
@@ -117,7 +124,7 @@ class TestAgentConfigSkills:
             skill_description="This tool can be used as a skill",
         )
 
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, tools=[tool])
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), tools=[tool])
 
         # Should have added skill_tool because there's a tool with as_skill=True
         skill_tools = [t for t in config.tools if t.name == "LoadSkill"]
@@ -139,7 +146,7 @@ class TestAgentConfigSkills:
             for i in range(3)
         ]
 
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, tools=tools)
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), tools=tools)
 
         # Should have added skill_tool once
         skill_tools = [t for t in config.tools if t.name == "LoadSkill"]
@@ -160,7 +167,7 @@ class TestAgentConfigSkills:
             skill_description="Tool skill description",
         )
 
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, skills=[skill], tools=[tool])
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), skills=[skill], tools=[tool])
 
         assert len(config.skills) == 1
         # Should have skill_tool and the original tool
@@ -174,7 +181,7 @@ class TestAgentConfigSkills:
             name="regular_tool", description="A regular tool", input_schema={"type": "object"}, implementation=lambda: None, as_skill=False
         )
 
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, tools=[tool])
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), tools=[tool])
 
         # Should NOT have added skill_tool
         skill_tools = [t for t in config.tools if t.name == "LoadSkill"]
@@ -182,7 +189,7 @@ class TestAgentConfigSkills:
 
     def test_agent_config_empty_tools_and_skills(self):
         """Test AgentConfig with empty tools and skills."""
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, tools=[], skills=[])
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), tools=[], skills=[])
 
         # Should NOT have added skill_tool
         assert len(config.tools) == 0
@@ -194,7 +201,7 @@ class TestAgentConfigTracing:
 
     def test_agent_config_single_tracer(self):
         tracer = DummyTracer()
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, tracers=[tracer])
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), tracers=[tracer])
 
         assert config.tracers == [tracer]
         assert config.resolved_tracer is tracer
@@ -203,14 +210,14 @@ class TestAgentConfigTracing:
         tracer1 = DummyTracer()
         tracer2 = DummyTracer()
 
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, tracers=[tracer1, tracer2])
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), tracers=[tracer1, tracer2])
 
         assert isinstance(config.resolved_tracer, CompositeTracer)
         assert config.resolved_tracer.tracers == [tracer1, tracer2]
 
     def test_agent_config_rejects_invalid_tracer_entries(self):
         with pytest.raises(ValueError):
-            AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, tracers=["not-a-tracer"])
+            AgentConfig(name="test_agent", llm_config=make_llm_config(), tracers=["not-a-tracer"])
 
 
 class TestGenerateSkillDescription:
@@ -223,7 +230,7 @@ class TestGenerateSkillDescription:
             Skill(name="skill-2", description="Second skill", detail="Detail 2", folder="/path/2"),
         ]
 
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, skills=skills)
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), skills=skills)
 
         description = config._generate_skill_description()
 
@@ -259,7 +266,7 @@ class TestGenerateSkillDescription:
             ),
         ]
 
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, tools=tools)
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), tools=tools)
 
         description = config._generate_skill_description()
 
@@ -281,7 +288,7 @@ class TestGenerateSkillDescription:
             skill_description="Tool skill description",
         )
 
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, skills=[skill], tools=[tool])
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), skills=[skill], tools=[tool])
 
         description = config._generate_skill_description()
 
@@ -301,7 +308,7 @@ class TestGenerateSkillDescription:
         )
 
         with pytest.raises(ValueError, match="Tool bad_tool has no skill description"):
-            AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, tools=[tool])
+            AgentConfig(name="test_agent", llm_config=make_llm_config(), tools=[tool])
 
     def test_generate_skill_description_empty_skill_description(self):
         """Test that tool with empty skill_description raises error."""
@@ -315,13 +322,13 @@ class TestGenerateSkillDescription:
         )
 
         with pytest.raises(ValueError, match="Tool bad_tool has no skill description"):
-            AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, tools=[tool])
+            AgentConfig(name="test_agent", llm_config=make_llm_config(), tools=[tool])
 
     def test_skill_tool_description_includes_generated_description(self):
         """Test that the skill_tool has the generated description appended."""
         skill = Skill(name="test-skill", description="Test skill", detail="Details", folder="/path")
 
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, skills=[skill])
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), skills=[skill])
 
         # Find the skill_tool
         skill_tools = [t for t in config.tools if t.name == "LoadSkill"]
@@ -347,7 +354,7 @@ class TestAgentConfigPostInit:
 
         sub_agents = [("agent1", factory1), ("agent2", factory2)]
 
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, sub_agents=sub_agents)
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), sub_agents=sub_agents)
 
         assert hasattr(config, "sub_agent_factories")
         assert isinstance(config.sub_agent_factories, dict)
@@ -358,7 +365,7 @@ class TestAgentConfigPostInit:
 
     def test_post_init_no_sub_agents(self):
         """Test that sub_agent_factories is empty dict when no sub_agents."""
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"})
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config())
 
         assert hasattr(config, "sub_agent_factories")
         assert config.sub_agent_factories == {}
@@ -367,7 +374,7 @@ class TestAgentConfigPostInit:
         """Test that stop_tools list is converted to set."""
         config = AgentConfig(
             name="test_agent",
-            llm_config={"model": "gpt-4o-mini"},
+            llm_config=make_llm_config(),
             stop_tools=["tool1", "tool2", "tool1"],  # List with duplicate
         )
 
@@ -378,14 +385,14 @@ class TestAgentConfigPostInit:
 
     def test_post_init_stop_tools_none(self):
         """Test that None stop_tools becomes empty set."""
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini"}, stop_tools=None)
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), stop_tools=None)
 
         assert isinstance(config.stop_tools, set)
         assert len(config.stop_tools) == 0
 
     def test_post_init_llm_config_dict_conversion(self):
-        """Test that dict llm_config is converted to LLMConfig."""
-        config = AgentConfig(name="test_agent", llm_config={"model": "gpt-4o-mini", "temperature": 0.5})
+        """Test that LLMConfig overrides are preserved."""
+        config = AgentConfig(name="test_agent", llm_config=make_llm_config(temperature=0.5))
 
         assert isinstance(config.llm_config, LLMConfig)
         assert config.llm_config.model == "gpt-4o-mini"
@@ -401,9 +408,10 @@ class TestAgentConfigPostInit:
         assert config.llm_config == llm_config
 
     def test_post_init_llm_config_none(self):
-        """Test that None llm_config raises error."""
-        with pytest.raises(ValueError, match="llm_config is required"):
-            AgentConfig(name="test_agent", llm_config=None)
+        """Test that a default LLMConfig is created when none is provided."""
+        config = AgentConfig(name="test_agent", llm_config=None)
+
+        assert isinstance(config.llm_config, LLMConfig)
 
     def test_post_init_llm_config_invalid_type(self):
         """Test that invalid llm_config type raises error."""
@@ -415,14 +423,14 @@ class TestAgentConfigPostInit:
 
     def test_post_init_name_generation(self):
         """Test that name is generated if not provided."""
-        config = AgentConfig(name=None, llm_config={"model": "gpt-4o-mini"})
+        config = AgentConfig(name=None, llm_config=make_llm_config())
 
         assert config.name is not None
         assert config.name.startswith("agent_")
 
     def test_post_init_name_preserved(self):
         """Test that provided name is preserved."""
-        config = AgentConfig(name="my_agent", llm_config={"model": "gpt-4o-mini"})
+        config = AgentConfig(name="my_agent", llm_config=make_llm_config())
 
         assert config.name == "my_agent"
 
@@ -453,7 +461,7 @@ class TestAgentConfigIntegration:
 
         # Create agent config
         config = AgentConfig(
-            name="multi_skill_agent", llm_config={"model": "gpt-4o-mini"}, skills=[skill1, skill2], tools=[tool_skill, regular_tool]
+            name="multi_skill_agent", llm_config=make_llm_config(), skills=[skill1, skill2], tools=[tool_skill, regular_tool]
         )
 
         # Verify skills are registered

@@ -17,9 +17,12 @@
 import json
 import logging
 import time
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, cast
 
 import openai
+from openai import Stream
+from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.tracer.context import TraceContext, get_current_span
@@ -40,7 +43,7 @@ class LLMCaller:
     def __init__(
         self,
         openai_client: Any,
-        llm_config: Any,
+        llm_config: LLMConfig,
         retry_attempts: int = 5,
         middleware_manager: MiddlewareManager | None = None,
         global_storage: Any = None,
@@ -132,7 +135,7 @@ class LLMCaller:
         # Drop any params the config marks as incompatible
         dropper = getattr(self.llm_config, "apply_param_drops", None)
         if callable(dropper):
-            api_params = dropper(api_params)
+            api_params = cast(dict[str, Any], dropper(api_params))
 
         # Debug logging for LLM messages
         if self.llm_config.debug:
@@ -167,7 +170,7 @@ class LLMCaller:
         if response_payload is None:
             return None
 
-        model_response = response_payload if isinstance(response_payload, ModelResponse) else ModelResponse(content=response_payload)
+        model_response = response_payload
 
         if model_response.content:
             from ..utils.xml_utils import XMLUtils
@@ -323,11 +326,12 @@ def _strip_responses_api_artifacts(messages: list[Any]) -> list[Any]:
     sanitized: list[Any] = []
 
     for message in messages or []:
-        if not isinstance(message, dict):
+        if not isinstance(message, Mapping):
             sanitized.append(message)
             continue
 
-        cleaned = dict(message)
+        message_mapping = cast(Mapping[str, Any], message)
+        cleaned: dict[str, Any] = dict(message_mapping)
         cleaned.pop("response_items", None)
         cleaned.pop("reasoning", None)
         sanitized.append(cleaned)
@@ -355,7 +359,7 @@ def call_llm_with_anthropic_chat_completion(
         system_messages, user_messages = openai_to_anthropic_message(messages)
         # set cache control ttl
         if user_messages and user_messages[-1].get("content"):
-            content = user_messages[-1]["content"]
+            content = cast(list[dict[str, Any]] | str | None, user_messages[-1].get("content"))
             if isinstance(content, list) and content:
                 content[0]["cache_control"] = {
                     "type": "ephemeral",
@@ -367,7 +371,7 @@ def call_llm_with_anthropic_chat_completion(
         new_kwargs.pop("anthropic_cache_control_ttl", None)
 
         # Build the exact kwargs for tracing
-        api_kwargs = {"system": system_messages, "messages": user_messages, **new_kwargs}
+        api_kwargs: dict[str, Any] = {"system": system_messages, "messages": user_messages, **new_kwargs}
 
         if should_trace and tracer is not None:
             trace_ctx = TraceContext(tracer, "Anthropic messages.create", SpanType.LLM, inputs=api_kwargs)
@@ -386,19 +390,19 @@ def call_llm_with_anthropic_chat_completion(
     def llm_stream_call(messages: list[dict[str, Any]]) -> tuple[dict[str, Any], str | None]:
         system_messages, user_messages = openai_to_anthropic_message(messages)
         if user_messages and user_messages[-1].get("content"):
-            content = user_messages[-1]["content"]
+            content = cast(list[dict[str, Any]] | str | None, user_messages[-1].get("content"))
             if isinstance(content, list) and content:
                 content[0]["cache_control"] = {
                     "type": "ephemeral",
                     "ttl": kwargs.get("anthropic_cache_control_ttl", "5m"),
                 }
 
-        new_kwargs = kwargs.copy()
+        new_kwargs: dict[str, Any] = kwargs.copy()
         new_kwargs.pop("messages", None)
         new_kwargs.pop("anthropic_cache_control_ttl", None)
 
         # Build the exact kwargs for tracing
-        api_kwargs = {"system": system_messages, "messages": user_messages, **new_kwargs}
+        api_kwargs: dict[str, Any] = {"system": system_messages, "messages": user_messages, **new_kwargs}
 
         aggregator = AnthropicStreamAggregator()
 
@@ -449,20 +453,23 @@ def call_llm_with_openai_chat_completion(
 
     if stream_requested:
 
-        def call_llm_stream(payload: dict[str, Any]) -> tuple[dict[str, Any], Any | None, str | None]:
+        def call_llm_stream(payload: dict[str, Any]) -> tuple[dict[str, Any], ChatCompletionChunk | None, str | None]:
             payload = payload.copy()
-            payload["stream"] = True
-            payload["stream_options"] = {
-                "include_usage": True,
-            }
+            payload.pop("stream", None)
+            stream_options = {"include_usage": True}
+            payload["stream_options"] = stream_options
             aggregator = OpenAIChatStreamAggregator()
-            last_chunk: Any | None = None
+            last_chunk: ChatCompletionChunk | None = None
 
             if should_trace and tracer is not None:
                 trace_ctx = TraceContext(tracer, "OpenAI chat.completions.create (stream)", SpanType.LLM, inputs=payload)
                 with trace_ctx:
-                    with client.chat.completions.create(**payload) as stream:
-                        for chunk in stream:
+                    stream_ctx: Stream[ChatCompletionChunk] = client.chat.completions.create(
+                        stream=True,
+                        **payload,
+                    )
+                    with stream_ctx:
+                        for chunk in stream_ctx:
                             last_chunk = chunk
                             processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
                             if processed_chunk is None:
@@ -472,40 +479,58 @@ def call_llm_with_openai_chat_completion(
                     trace_ctx.set_outputs(message_payload)
                     return message_payload, last_chunk, aggregator.model_name
             else:
-                with client.chat.completions.create(**payload) as stream:
-                    for chunk in stream:
+                stream_ctx = client.chat.completions.create(
+                    stream=True,
+                    **payload,
+                )
+                with stream_ctx:
+                    for chunk in stream_ctx:
                         last_chunk = chunk
                         processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
                         if processed_chunk is None:
                             continue
                         aggregator.consume(processed_chunk)
-                message_payload = aggregator.finalize()
-                return message_payload, last_chunk, aggregator.model_name
+                message_payload_untraced = aggregator.finalize()
+                return message_payload_untraced, last_chunk, aggregator.model_name
 
         message, _, _ = call_llm_stream(kwargs)
 
         return ModelResponse.from_openai_message(message)
 
-    def call_llm(api_kwargs: dict[str, Any]):
+    def _ensure_chat_completion(payload: object) -> ChatCompletion:
+        if isinstance(payload, ChatCompletion):
+            return payload
+
+        # Allow duck-typed mocks in unit tests while still guarding against
+        # obviously invalid payloads.
+        if hasattr(payload, "choices"):
+            return cast(ChatCompletion, payload)
+
+        raise TypeError("Unexpected OpenAI response type")
+
+    def _invoke_chat_completion(api_kwargs: dict[str, Any]) -> ChatCompletion:
+        unvalidated_result: object = cast(object, client.chat.completions.create(**api_kwargs))
+        return _ensure_chat_completion(unvalidated_result)
+
+    def call_llm(api_kwargs: dict[str, Any]) -> ChatCompletion:
         if should_trace and tracer is not None:
             trace_ctx = TraceContext(tracer, "OpenAI chat.completions.create", SpanType.LLM, inputs=api_kwargs)
             with trace_ctx:
-                response = client.chat.completions.create(**api_kwargs)
-                trace_ctx.set_outputs(_to_serializable_dict(response))
-                return response
-        else:
-            response = client.chat.completions.create(**api_kwargs)
-            return response
+                chat_response = _invoke_chat_completion(api_kwargs)
+                trace_ctx.set_outputs(_to_serializable_dict(chat_response))
+                return chat_response
 
-    response = call_llm(kwargs)
-    message = response.choices[0].message
+        return _invoke_chat_completion(api_kwargs)
+
+    response_payload: ChatCompletion = call_llm(kwargs)
+    response_message: Any = response_payload.choices[0].message
 
     # Extract usage information from response
     usage = None
-    if hasattr(response, "usage") and response.usage is not None:
-        usage = _to_serializable_dict(response.usage)
+    if hasattr(response_payload, "usage") and response_payload.usage is not None:
+        usage = _to_serializable_dict(response_payload.usage)
 
-    return ModelResponse.from_openai_message(message, usage=usage)
+    return ModelResponse.from_openai_message(response_message, usage=usage)
 
 
 def call_llm_with_openai_responses(
@@ -550,7 +575,7 @@ def call_llm_with_openai_responses(
     # Check if tracing is active (there's a current span and we have a tracer)
     should_trace = tracer is not None and get_current_span() is not None
 
-    def call_llm(api_payload: dict[str, Any]):
+    def call_llm(api_payload: dict[str, Any]) -> Any:
         if should_trace and tracer is not None:
             trace_ctx = TraceContext(tracer, "OpenAI responses.create", SpanType.LLM, inputs=api_payload)
             with trace_ctx:
@@ -599,9 +624,6 @@ def _prepare_responses_api_input(messages: list[dict[str, Any]]) -> tuple[list[d
     instructions: list[str] = []
 
     for message in messages:
-        if not isinstance(message, dict):
-            continue
-
         # If the message already carries raw response items, reuse them directly
         response_items = message.get("response_items")
         if response_items:
@@ -648,23 +670,41 @@ def _prepare_responses_api_input(messages: list[dict[str, Any]]) -> tuple[list[d
         prepared.append(message_item)
 
         # Reconstruct tool calls if present on assistant messages
-        tool_calls = message.get("tool_calls", [])
-        for tool_call in tool_calls or []:
-            function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
-            prepared.append(
-                {
-                    "type": "function_call",
-                    "call_id": tool_call.get("id"),
-                    "name": function.get("name"),
-                    "arguments": function.get("arguments"),
-                },
-            )
+        tool_calls_payload_raw = message.get("tool_calls")
+        if isinstance(tool_calls_payload_raw, list):
+            tool_calls_payload_list: list[Any] = cast(list[Any], tool_calls_payload_raw)
+            for tc in tool_calls_payload_list:
+                if not isinstance(tc, Mapping):
+                    continue
+                typed_tool_call: Mapping[str, Any] = cast(Mapping[str, Any], tc)
+                tool_call_dict: dict[str, Any] = {}
+                for key_any, value_any in typed_tool_call.items():
+                    key: str = str(key_any)
+                    value: Any = value_any
+                    tool_call_dict[key] = value
+
+                assert tool_call_dict.get("function") is not None, "Tool call dict must contain a function"
+                assert isinstance(tool_call_dict.get("function"), dict), "Function must be a dict"
+                function = cast(dict[str, Any], tool_call_dict.get("function"))
+                assert function.get("name") is not None, "Function must contain a name"
+                assert function.get("arguments") is not None, "Function must contain arguments"
+                assert isinstance(function.get("name"), str), "Name must be a string"
+                assert isinstance(function.get("arguments"), dict), "Arguments must be a dict"
+
+                prepared.append(
+                    {
+                        "type": "function_call",
+                        "call_id": tool_call_dict.get("id"),
+                        "name": function.get("name"),
+                        "arguments": function.get("arguments"),
+                    },
+                )
 
         # Include stored reasoning items if available
         reasoning_items = message.get("reasoning")
         if reasoning_items:
             if isinstance(reasoning_items, list):
-                prepared.extend(_sanitize_response_items_for_input(reasoning_items))
+                prepared.extend(_sanitize_response_items_for_input(cast(list[Any], reasoning_items)))
 
     joined_instructions = "\n\n".join(part.strip() for part in instructions if part.strip()) or None
     return prepared, joined_instructions
@@ -676,15 +716,16 @@ def _normalize_responses_api_tools(tools: list[Any]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
 
     for tool in tools:
-        if not isinstance(tool, dict):
+        if not isinstance(tool, Mapping):
             normalized.append(tool)
             continue
 
-        tool_dict = dict(tool)
+        tool_mapping = cast(Mapping[str, Any], tool)
+        tool_dict: dict[str, Any] = dict(tool_mapping)
         tool_type = tool_dict.get("type")
 
         if tool_type == "function":
-            function_spec = tool_dict.get("function")
+            function_spec = cast(dict[str, Any] | None, tool_dict.get("function"))
 
             if isinstance(function_spec, dict):
                 name = function_spec.get("name")
@@ -717,8 +758,9 @@ def _sanitize_response_items_for_input(items: list[Any], *, drop_ephemeral_ids: 
     sanitized: list[dict[str, Any]] = []
 
     for item in items:
-        if isinstance(item, dict):
-            item_copy = dict(item)
+        if isinstance(item, Mapping):
+            item_mapping = cast(Mapping[str, Any], item)
+            item_copy: dict[str, Any] = dict(item_mapping)
             item_copy.pop("status", None)
             if drop_ephemeral_ids:
                 item_copy.pop("id", None)
@@ -748,19 +790,22 @@ def _coerce_tool_output_text(output: Any) -> str:
     if isinstance(output, list):
         # Responses API rejects nested output_text objects; join textual parts instead
         parts: list[str] = []
-        for item in output:
+        output_list: list[Any] = cast(list[Any], output)
+        for item in output_list:
             if isinstance(item, dict):
-                text_value = item.get("text") or item.get("content")
-                if text_value:
-                    parts.append(str(text_value))
+                item_dict = cast(dict[str, Any], item)
+                list_text_value: Any = item_dict.get("text") or item_dict.get("content")
+                if list_text_value is not None:
+                    parts.append(str(list_text_value))
             else:
                 parts.append(str(item))
         return "\n".join(parts)
 
     if isinstance(output, dict):
-        text_value = output.get("text") or output.get("content")
-        if text_value:
-            return str(text_value)
+        output_dict = cast(dict[str, Any], output)
+        dict_text_value: Any = output_dict.get("text") or output_dict.get("content")
+        if dict_text_value is not None:
+            return str(dict_text_value)
         return json.dumps(output, ensure_ascii=False)
 
     return str(output)
@@ -773,10 +818,12 @@ def _ensure_reasoning_summary(reasoning_item: dict[str, Any]) -> list[dict[str, 
     sanitized: list[dict[str, Any]] = []
 
     if isinstance(summary_entries, list):
-        for entry in summary_entries:
+        summary_entries_list: list[Any] = cast(list[Any], summary_entries)
+        for entry in summary_entries_list:
             if isinstance(entry, dict):
-                summary_type = entry.get("type") or "summary_text"
-                text = entry.get("text")
+                entry_dict = cast(dict[str, Any], entry)
+                summary_type: str = cast(str, entry_dict.get("type") or "summary_text")
+                text = entry_dict.get("text")
                 sanitized.append({"type": summary_type, "text": str(text or "")})
             elif entry is not None:
                 sanitized.append({"type": "summary_text", "text": str(entry)})
@@ -799,22 +846,26 @@ def _collapse_message_content_to_text(content: Any) -> str:
 
     if isinstance(content, list):
         parts: list[str] = []
-        for item in content:
+        content_list: list[Any] = cast(list[Any], content)
+        for item in content_list:
             if isinstance(item, dict):
-                text_value = item.get("text") or item.get("content")
-                if text_value:
-                    parts.append(str(text_value))
+                item_dict = cast(dict[str, Any], item)
+                list_text_value: Any = item_dict.get("text") or item_dict.get("content")
+                if list_text_value is not None:
+                    parts.append(str(list_text_value))
             elif item:
                 parts.append(str(item))
         return "\n".join(part for part in parts if part)
 
     if isinstance(content, dict):
-        text_value = content.get("text")
-        if text_value:
-            return str(text_value)
-        nested = content.get("content")
+        content_dict = cast(dict[str, Any], content)
+        dict_text_value: Any = content_dict.get("text")
+        if dict_text_value is not None:
+            return str(dict_text_value)
+        nested = content_dict.get("content")
         if nested:
             return _collapse_message_content_to_text(nested)
+        return json.dumps(content_dict)
 
     return str(content)
 
@@ -834,8 +885,9 @@ def _process_stream_chunk(
 def _safe_get(item: Any, key: str, default: Any = None) -> Any:
     """Generic attribute/dict getter."""
 
-    if isinstance(item, dict):
-        return item.get(key, default)
+    if isinstance(item, Mapping):
+        mapping_item = cast(Mapping[str, Any], item)
+        return mapping_item.get(key, default)
     return getattr(item, key, default)
 
 
@@ -843,12 +895,12 @@ def _to_serializable_dict(payload: Any) -> dict[str, Any]:
     """Convert SDK models into plain dictionaries."""
 
     if isinstance(payload, dict):
-        return payload
+        return cast(dict[str, Any], payload)
 
     model_dump = getattr(payload, "model_dump", None)
     if callable(model_dump):
         try:
-            return model_dump()
+            return cast(dict[str, Any], model_dump())
         except Exception:  # pragma: no cover - defensive
             pass
 
@@ -887,10 +939,10 @@ class OpenAIChatStreamAggregator:
         if usage_payload is not None:
             self.usage = _to_serializable_dict(usage_payload)
 
-        choices = payload.get("choices") or []
+        choices: list[Any] = payload.get("choices") or []
         for choice in choices:
-            choice_dict = _to_serializable_dict(choice)
-            delta = _to_serializable_dict(choice_dict.get("delta", {}))
+            choice_dict: dict[str, Any] = _to_serializable_dict(choice)
+            delta: dict[str, Any] = _to_serializable_dict(choice_dict.get("delta", {}))
 
             role = delta.get("role")
             if role:
@@ -900,7 +952,8 @@ class OpenAIChatStreamAggregator:
             if isinstance(content_delta, str):
                 self._content_parts.append(content_delta)
             elif isinstance(content_delta, list):
-                for entry in content_delta:
+                content_delta_list: list[Any] = cast(list[Any], content_delta)
+                for entry in content_delta_list:
                     entry_text = _safe_get(entry, "text")
                     if entry_text:
                         self._content_parts.append(str(entry_text))
@@ -909,14 +962,15 @@ class OpenAIChatStreamAggregator:
             if isinstance(reasoning, str):
                 self._reasoning_parts.append(reasoning)
             elif isinstance(reasoning, list):
-                for entry in reasoning:
+                reasoning_list: list[Any] = cast(list[Any], reasoning)
+                for entry in reasoning_list:
                     text = _safe_get(entry, "text")
                     if text:
                         self._reasoning_parts.append(str(text))
 
-            tool_calls = delta.get("tool_calls") or []
+            tool_calls: list[Any] = delta.get("tool_calls") or []
             for tool_delta in tool_calls:
-                tool_dict = _to_serializable_dict(tool_delta)
+                tool_dict: dict[str, Any] = _to_serializable_dict(tool_delta)
                 index = int(tool_dict.get("index", 0))
                 builder = self._tool_calls.setdefault(
                     index,
@@ -931,7 +985,7 @@ class OpenAIChatStreamAggregator:
                 if tool_dict.get("type"):
                     builder["type"] = tool_dict["type"]
 
-                function_delta = _to_serializable_dict(tool_dict.get("function", {}))
+                function_delta: dict[str, Any] = _to_serializable_dict(tool_dict.get("function", {}))
                 if function_delta.get("name"):
                     builder.setdefault("function", {})["name"] = function_delta["name"]
                 arguments = function_delta.get("arguments")
@@ -952,7 +1006,7 @@ class OpenAIChatStreamAggregator:
             ordered_calls: list[dict[str, Any]] = []
             for index in sorted(self._tool_calls):
                 call = self._tool_calls[index]
-                function_payload = call.get("function") or {}
+                function_payload: dict[str, Any] = cast(dict[str, Any], call.get("function") or {})
                 arguments = function_payload.get("arguments") or ""
                 if not isinstance(arguments, str):
                     arguments = json.dumps(arguments, ensure_ascii=False)
@@ -1090,8 +1144,6 @@ class ResponseMessageBuilder:
         self._parts[index] = part
 
     def append_text(self, index: int, delta_text: str) -> None:
-        if not isinstance(delta_text, str):
-            delta_text = str(delta_text)
         part = self._parts.setdefault(index, {"type": "output_text", "text": ""})
         part["type"] = part.get("type") or "output_text"
         part["text"] = (part.get("text") or "") + delta_text
@@ -1130,15 +1182,11 @@ class ResponseToolCallBuilder:
     def append_arguments(self, delta: str) -> None:
         if not delta:
             return
-        if not isinstance(delta, str):
-            delta = str(delta)
         self.arguments = f"{self.arguments}{delta}"
 
     def set_arguments(self, arguments: str) -> None:
         if not arguments:
             return
-        if not isinstance(arguments, str):
-            arguments = str(arguments)
         self.arguments = arguments
 
     def to_output_item(self) -> dict[str, Any]:
@@ -1162,7 +1210,7 @@ class ReasoningSummaryBuilder:
         summary: list[dict[str, Any]] | None = None,
     ) -> None:
         self.item_id = item_id
-        self.content = list(content or [])
+        self.content: list[dict[str, Any]] = list(content or [])
         self._summary_parts: dict[int, dict[str, Any]] = {}
         self._summary_order: list[int] = []
         self._seed_initial_summary(summary)
@@ -1170,9 +1218,18 @@ class ReasoningSummaryBuilder:
     def update_from_item(self, item: dict[str, Any]) -> None:
         content = item.get("content")
         if isinstance(content, list):
-            self.content = list(content)
+            content_dicts: list[dict[str, Any]] = []
+            content_list: list[Mapping[str, Any]] = cast(list[Mapping[str, Any]], content)
+            for content_part in content_list:
+                content_dicts.append(dict(content_part))
+            self.content = content_dicts
         summary = item.get("summary")
-        self._seed_initial_summary(summary)
+        if isinstance(summary, list):
+            summary_parts: list[dict[str, Any]] = []
+            summary_list: list[Mapping[str, Any]] = cast(list[Mapping[str, Any]], summary)
+            for summary_part in summary_list:
+                summary_parts.append(dict(summary_part))
+            self._seed_initial_summary(summary_parts)
 
     def _seed_initial_summary(self, summary: list[dict[str, Any]] | None) -> None:
         if not summary or self._summary_parts:
@@ -1184,8 +1241,6 @@ class ReasoningSummaryBuilder:
                 self._summary_order.append(idx)
 
     def append_summary_delta(self, index: int, delta_text: str) -> None:
-        if not isinstance(delta_text, str):
-            delta_text = str(delta_text)
         entry = self._summary_parts.setdefault(index, {"type": "summary_text", "text": ""})
         entry["text"] = f"{entry.get('text', '')}{delta_text}"
         if index not in self._summary_order:
@@ -1291,8 +1346,8 @@ class OpenAIResponsesStreamAggregator:
         item_type = item.get("type")
         if item_type == "message":
             message_builder = self._message_builders.setdefault(item_id, ResponseMessageBuilder(item_id, item.get("role", "assistant")))
-            content = item.get("content") or []
-            for idx, part in enumerate(content):
+            content_list: list[Any] = item.get("content") or []
+            for idx, part in enumerate(content_list):
                 message_builder.add_part(idx, _to_serializable_dict(part))
         elif item_type == "function_call":
             tool_builder = self._tool_builders.setdefault(item_id, ResponseToolCallBuilder(item_id))

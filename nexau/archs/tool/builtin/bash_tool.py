@@ -18,7 +18,13 @@ import logging
 import os
 import subprocess
 import time
-from typing import TYPE_CHECKING, Any, Optional
+from typing import (
+    TYPE_CHECKING,
+    Literal,
+    NotRequired,
+    Optional,
+    TypedDict,
+)
 
 if TYPE_CHECKING:
     from ...main_sub.agent_state import AgentState
@@ -31,12 +37,29 @@ DEFAULT_TIMEOUT = 120000  # 2 minutes in milliseconds
 MAX_TIMEOUT = 600000  # 10 minutes in milliseconds
 
 
+class BashResult(TypedDict):
+    status: Literal["success", "error", "timeout"]
+    duration_ms: int
+    command: str
+    exit_code: NotRequired[int | None]
+    working_directory: NotRequired[str]
+    description: NotRequired[str]
+    stdout: NotRequired[str]
+    stdout_truncated: NotRequired[bool]
+    stdout_original_length: NotRequired[int]
+    stderr: NotRequired[str]
+    stderr_truncated: NotRequired[bool]
+    stderr_original_length: NotRequired[int]
+    error: NotRequired[str]
+    error_type: NotRequired[str]
+
+
 def bash_tool(
     command: str,
     timeout: int | None = None,
     description: str | None = None,
     agent_state: Optional["AgentState"] = None,
-) -> dict[str, Any]:
+) -> BashResult:
     """
     Execute a bash command in a persistent shell session with proper handling and security measures.
 
@@ -74,6 +97,7 @@ def bash_tool(
         return {
             "status": "error",
             "error": "Command cannot be empty",
+            "command": command,
             "duration_ms": int((time.time() - start_time) * 1000),
         }
 
@@ -136,7 +160,7 @@ def bash_tool(
         duration_ms = int((time.time() - start_time) * 1000)
 
         # Prepare output
-        result = {
+        result: BashResult = {
             "status": "success" if process.returncode == 0 else "error",
             "command": command,
             "exit_code": process.returncode,
@@ -229,7 +253,7 @@ class BashTool:
         timeout: int | None = None,
         description: str | None = None,
         cwd: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> BashResult:
         """
         Execute a bash command with enhanced features.
 
@@ -266,7 +290,7 @@ class BashTool:
         self,
         commands: list[str],
         timeout: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[BashResult]:
         """
         Execute multiple commands in sequence.
 
@@ -277,7 +301,7 @@ class BashTool:
         Returns:
             List of execution results
         """
-        results = []
+        results: list[BashResult] = []
         for command in commands:
             result = self.execute(command, timeout)
             results.append(result)
@@ -304,7 +328,7 @@ def main():
         print("✅ 命令执行成功")
         print(f"⏱️  执行时间: {result['duration_ms']}ms")
         print(f"📤 输出: {result.get('stdout', '').strip()}")
-        print(f"🚪 退出码: {result['exit_code']}")
+        print(f"🚪 退出码: {result.get('exit_code')}")
     except Exception as e:
         print(f"❌ 测试失败: {e}")
 
@@ -317,7 +341,7 @@ def main():
         )
         if result["status"] != "success":
             print("✅ 正确处理了错误命令")
-            print(f"🚪 退出码: {result['exit_code']}")
+            print(f"🚪 退出码: {result.get('exit_code')}")
             print(f"⚠️  错误输出: {result.get('stderr', '').strip()}")
         else:
             print("⚠️  意外成功了")
@@ -346,7 +370,7 @@ def main():
         result = bash_tool("rm -rf /", description="Dangerous command test")
         if result["status"] == "error" and "dangerous" in result.get("error", "").lower():
             print("✅ 正确阻止了危险命令")
-            print(f"⚠️  错误信息: {result['error']}")
+            print(f"⚠️  错误信息: {result.get('error', '')}")
         else:
             print("⚠️  安全检查可能有问题")
     except Exception as e:

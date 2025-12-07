@@ -19,13 +19,17 @@ import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Any
+from types import TracebackType
+from typing import Annotated, Any, cast
 
 import pandas as pd
 import yaml
+
+PD_ANY = cast(Any, pd)
 
 LLM_FRIENDLY_MAX_DEPTH = int(os.getenv("LLM_FRIENDLY_MAX_DEPTH", 5))
 LLM_FRIENDLY_MAX_SIZE_IN_BYTES = int(
@@ -46,7 +50,7 @@ LLM_FRIENDLY_MAX_SAMPLE_ROWS = int(os.getenv("LLM_FRIENDLY_MAX_SAMPLE_ROWS", 10)
 
 
 class ContentWithCustomLength:
-    def __init__(self, content: str | list, custom_length: int):
+    def __init__(self, content: str | list[Any], custom_length: int):
         self.content = content
         self.custom_length = custom_length
 
@@ -75,7 +79,7 @@ class DataFrameFormatter:
             Dictionary with DataFrame info and sample data
         """
         # Get basic info
-        info = {
+        info: dict[str, Any] = {
             "shape": list(df.shape),
             "columns": list(df.columns),
             "dtypes": {},
@@ -167,18 +171,18 @@ class FileFormatHandler:
     @staticmethod
     def read_csv(path: str) -> pd.DataFrame:
         """Read CSV files"""
-        return pd.read_csv(path)
+        return cast(pd.DataFrame, PD_ANY.read_csv(path))
 
     @staticmethod
     def read_tsv(path: str) -> pd.DataFrame:
         """Read TSV (Tab-Separated Values) files"""
-        return pd.read_csv(path, sep="\t")
+        return cast(pd.DataFrame, PD_ANY.read_csv(path, sep="\t"))
 
     @staticmethod
     def read_excel(path: str) -> pd.DataFrame:
         """Read Excel files (.xlsx, .xls)"""
         try:
-            df = pd.read_excel(path)
+            df = cast(pd.DataFrame, PD_ANY.read_excel(path))
             return df
         except Exception as e:
             raise Exception(f"Failed to read Excel file: {str(e)}")
@@ -186,7 +190,7 @@ class FileFormatHandler:
     @staticmethod
     def read_parquet(path: str) -> pd.DataFrame:
         """Read Parquet files"""
-        return pd.read_parquet(path)
+        return cast(pd.DataFrame, PD_ANY.read_parquet(path))
 
     @staticmethod
     def read_yaml(path: str) -> Any:
@@ -202,7 +206,7 @@ class FileFormatHandler:
         return FileFormatHandler._xml_to_dict(root)
 
     @staticmethod
-    def _xml_to_dict(element) -> dict[str, Any]:
+    def _xml_to_dict(element: ET.Element) -> dict[str, Any]:
         """Convert XML element to dictionary"""
         result: dict[str, Any] = {}
 
@@ -371,9 +375,7 @@ class DataNormalizer:
                     return f"{obj[:LLM_FRIENDLY_MAX_STRING_LENGTH]}...{length - LLM_FRIENDLY_MAX_STRING_LENGTH} more characters"
                 else:
                     return obj
-            if hasattr(obj, "__class__"):
-                return f"[{obj.__class__.__name__}]"
-            return "[Object]"
+            return f"[{type(obj).__name__}]"
 
         # Circular reference detection
         obj_id = id(obj)
@@ -398,16 +400,19 @@ class DataNormalizer:
                 return obj.isoformat()
 
             if isinstance(obj, re.Pattern):
-                return f"/{obj.pattern}/{obj.flags}"
+                pattern = str(cast(Any, obj).pattern)
+                flags = obj.flags
+                return f"/{pattern}/{flags}"
 
             if isinstance(obj, Decimal):
                 return str(obj)
 
             # Handle objects with toJSON-like methods
-            if hasattr(obj, "to_dict"):
+            to_dict_fn = getattr(obj, "to_dict", None)
+            if callable(to_dict_fn):
                 try:
                     return DataNormalizer.normalize(
-                        obj.to_dict(),
+                        to_dict_fn(),
                         max_depth,
                         current_depth,
                         visited,
@@ -432,7 +437,7 @@ class DataNormalizer:
                     max_depth,
                 )
 
-                for i, key in enumerate(keys[:max_props]):
+                for _, key in enumerate(keys[:max_props]):
                     try:
                         object_result[key] = DataNormalizer.normalize(
                             obj_dict[key],
@@ -450,8 +455,7 @@ class DataNormalizer:
 
             # Handle lists
             if isinstance(obj, (list, tuple, set)):
-                original_type = obj.__class__
-                sequence_items = list(obj)
+                sequence_items: list[Any] = list(cast(Iterable[Any], obj))
                 sequence_length = len(sequence_items)
                 normalized_items: list[Any] = []
                 max_items = LLM_FRIENDLY_MAX_ARRAY_LENGTH
@@ -469,9 +473,11 @@ class DataNormalizer:
                 if sequence_length > max_items:
                     normalized_items.append(f"... {sequence_length - max_items} more items")
 
-                sequence_result = original_type(normalized_items)
-
-                return sequence_result
+                if isinstance(obj, tuple):
+                    return tuple(normalized_items)
+                if isinstance(obj, set):
+                    return set(normalized_items)
+                return normalized_items
 
             # Handle strings
             if isinstance(obj, str):
@@ -483,14 +489,15 @@ class DataNormalizer:
 
             # Handle dictionaries
             if isinstance(obj, dict):
-                dict_result: dict[str, Any] = {}
-                keys = list(obj.keys())
+                dict_result: dict[Any, Any] = {}
+                dict_obj = cast(dict[Any, Any], obj)
+                dict_keys_list: list[Any] = list(dict_obj.keys())
                 max_props = LLM_FRIENDLY_MAX_DICT_KEYS
 
-                for i, key in enumerate(keys[:max_props]):
+                for _, key in enumerate(dict_keys_list[:max_props]):
                     try:
                         dict_result[key] = DataNormalizer.normalize(
-                            obj[key],
+                            dict_obj[key],
                             max_depth,
                             current_depth + 1,
                             visited,
@@ -498,13 +505,13 @@ class DataNormalizer:
                     except Exception:
                         dict_result[key] = "[Error accessing property]"
 
-                if len(keys) > max_props:
-                    dict_result["..."] = f"{len(keys) - max_props} more properties"
+                if len(dict_keys_list) > max_props:
+                    dict_result["..."] = f"{len(dict_keys_list) - max_props} more properties"
 
                 return dict_result
 
             # Fallback for other types
-            return f"[{obj.__class__.__name__}]"
+            return f"[{type(obj).__name__}]"
 
         finally:
             visited.discard(obj_id)
@@ -561,14 +568,16 @@ class DataNormalizer:
 
         try:
             if isinstance(obj, (list, tuple, set)):
+                iterable_obj = cast(Iterable[Any], obj)
                 length = 2  # []
-                for item in obj:
+                for item in iterable_obj:
                     length += DataNormalizer._estimate_json_length(item, visited) + 1  # comma
                 return length
 
             if isinstance(obj, dict):
+                mapping_obj = cast(Mapping[Any, Any], obj)
                 length = 2  # {}
-                for key, value in obj.items():
+                for key, value in mapping_obj.items():
                     length += len(str(key)) + 3  # "key":
                     length += (
                         DataNormalizer._estimate_json_length(
@@ -606,7 +615,7 @@ class DataNormalizer:
         return "\n".join(lines[:max_lines]) + f"\n... {len(lines) - max_lines} more lines"
 
     @staticmethod
-    def _format_traceback(tb) -> str:
+    def _format_traceback(tb: TracebackType | None) -> str:
         """
         Format traceback object to string.
 
@@ -617,6 +626,9 @@ class DataNormalizer:
             Formatted traceback string
         """
         import traceback
+
+        if tb is None:
+            return ""
 
         return "".join(traceback.format_tb(tb))
 
@@ -660,13 +672,21 @@ def read_file(
 
         # 如果读取的文件是纯文本，就额外多展示一些
         # 相反，如果是结构里面的字符串，截更短（因为结构里面有很多字符串）
-        if isinstance(content, str) or (isinstance(content, ContentWithCustomLength) and isinstance(content.content, str)):
+        text_payload: str | None = None
+        length = 0
+        if isinstance(content, str):
+            text_payload = content
             length = len(content)
-            content = getattr(content, "content", content)
+        elif isinstance(content, ContentWithCustomLength) and isinstance(content.content, str):
+            text_payload = content.content
+            length = len(content)
+
+        if text_payload is not None:
             max_length = LLM_FRIENDLY_MAX_STRING_LENGTH * LLM_FRIENDLY_MAX_ARRAY_LENGTH
             if length > max_length:
-                content = f"{content[:max_length]}...{length - max_length} more characters"
-            return content
+                truncated = text_payload[:max_length]
+                return f"{truncated}...{length - max_length} more characters"
+            return text_payload
 
         # Process content based on type
         if isinstance(content, pd.DataFrame):
@@ -694,7 +714,11 @@ def read_file(
 # Example usage
 if __name__ == "__main__1":
     # Test with various data types
-    test_data = {
+
+    def _double(value: int) -> int:
+        return value * 2
+
+    test_data: dict[str, Any] = {
         "string": "Hello World",
         "number": 42,
         "float": 3.14,
@@ -703,7 +727,7 @@ if __name__ == "__main__1":
         "list": [1, 2, 3, {"nested": "value"}],
         "dict": {"key": "value", "nested": {"deep": "data"}},
         "datetime": datetime.now(),
-        "function": lambda x: x * 2,
+        "function": _double,
         "many_dicts": [{"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6, "g": 7}] * 1000,
     }
 

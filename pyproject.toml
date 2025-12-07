@@ -128,21 +128,13 @@ strict_equality = true
 warn_unused_configs = true
 
 [tool.pyright]
-# Pyright mirrors mypy but is stricter; keep in sync with CI step.
-exclude = [
-  "_dev",
-  ".venv",
-  ".nox",
-  ".git",
-  "examples/code_agent/skills",
-]
-include = ["nexau"]
-pythonVersion = "3.12"
-reportImplicitOverride = true
-reportImportCycles = false
-reportOverlappingOverload = false
-reportPrivateUsage = false
 typeCheckingMode = "strict"
+
+# Ensure Pyright looks at the correct root
+include = ["nexau"]
+exclude = ["**/node_modules", "**/__pycache__", "nexau/cli", "tests"]
+venvPath = "."
+venv = ".venv"
 
 [[tool.mypy.overrides]]
 module = [

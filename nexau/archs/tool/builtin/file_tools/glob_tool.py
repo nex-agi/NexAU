@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import time
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -83,16 +84,17 @@ def glob_tool(
             indent=2,
         )
 
+    original_cwd = os.getcwd()
+
     try:
         # Change to the search directory to perform glob search
-        original_cwd = os.getcwd()
         os.chdir(search_dir)
 
         # Perform glob search
         matches = python_glob.glob(pattern, recursive=True)
 
         # Convert to absolute paths and filter out directories
-        files = []
+        files: list[str] = []
         for match in matches:
             abs_path = os.path.abspath(match)
             if os.path.isfile(abs_path):
@@ -110,7 +112,7 @@ def glob_tool(
         duration_ms = int((time.time() - start_time) * 1000)
 
         # Prepare result
-        result = {
+        result: dict[str, Any] = {
             "num_files": len(files),
             "filenames": files,
             "duration_ms": duration_ms,
@@ -137,7 +139,7 @@ def glob_tool(
             # Calculate how many files to keep to stay under limit
             files_to_keep = len(files)
             while files_to_keep > 0:
-                truncated_result = result.copy()
+                truncated_result: dict[str, Any] = result.copy()
                 truncated_result["filenames"] = files[:files_to_keep]
                 truncated_result["num_files"] = files_to_keep
                 truncated_result["truncated_output"] = True
@@ -159,7 +161,7 @@ def glob_tool(
                 files_to_keep -= 1
 
             # If even 0 files is too long, return minimal result
-            minimal_result = {
+            minimal_result: dict[str, Any] = {
                 "truncated_output": True,
                 "total_files": len(files),
                 "message": f"Output too long: found {len(files)} files (details truncated)",

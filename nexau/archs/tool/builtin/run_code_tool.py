@@ -14,13 +14,17 @@
 
 """Jupyter notebook execution tool implementation with Python and Bash kernel support."""
 
+# pyright: reportMissingImports=false
+
+from __future__ import annotations
+
 import json
 import logging
 import os
 import re
 import time
 from queue import Empty
-from typing import Any, Literal
+from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast
 
 try:
     from jupyter_client.kernelspec import KernelSpecManager
@@ -29,6 +33,96 @@ except ImportError:
     raise ImportError("jupyter_client is required. Install with: pip install jupyter_client")
 
 from nexau.archs.main_sub.agent_state import AgentState
+
+
+class KernelClientProtocol(Protocol):
+    def start_channels(self) -> None: ...
+
+    def wait_for_ready(self, timeout: float | None = ...) -> None: ...
+
+    def execute(
+        self,
+        code: str,
+        *,
+        silent: bool,
+        store_history: bool,
+        user_expressions: dict[str, Any],
+        allow_stdin: bool,
+        stop_on_error: bool,
+    ) -> str: ...
+
+    def get_iopub_msg(self, timeout: float | None = ...) -> dict[str, Any]: ...
+
+    def stop_channels(self) -> None: ...
+
+
+class KernelManagerProtocol(Protocol):
+    kernel_spec_manager: Any
+    cwd: str | None
+
+    def is_alive(self) -> bool: ...
+
+    def shutdown_kernel(self, now: bool = ...) -> None: ...
+
+    def start_kernel(self, env: dict[str, str] | None = ...) -> None: ...
+
+    def client(self) -> KernelClientProtocol: ...
+
+    def restart_kernel(self, now: bool = ...) -> None: ...
+
+
+class StreamOutput(TypedDict):
+    type: Literal["stream"]
+    name: str
+    text: str
+
+
+class ExecuteResultOutput(TypedDict):
+    type: Literal["execute_result"]
+    text: NotRequired[str]
+
+
+class DisplayDataOutput(TypedDict):
+    type: Literal["display_data"]
+    text: NotRequired[str]
+
+
+class ErrorOutput(TypedDict):
+    type: Literal["error"]
+    ename: str
+    evalue: str
+    traceback: list[str]
+    error_summary: NotRequired[str]
+
+
+class UnknownOutput(TypedDict):
+    type: Literal["unknown"]
+    msg_type: str
+    content: dict[str, Any]
+
+
+OutputMessage = StreamOutput | ExecuteResultOutput | DisplayDataOutput | ErrorOutput | UnknownOutput
+
+
+ExecutionStatus = Literal["success", "error", "timeout"]
+
+
+class ExecutionResult(TypedDict, total=False):
+    status: ExecutionStatus
+    kernel_type: Literal["python", "bash"]
+    duration_ms: int
+    description: str
+    working_directory: str
+    outputs: list[OutputMessage]
+    outputs_truncated: bool
+    outputs_original_length: int
+    error_type: str
+    error_value: str
+    traceback: list[str]
+    error_summary: str
+    kernels_cleaned: bool
+    error: str
+
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +146,7 @@ def _strip_ansi_colors(text: str) -> str:
     return ANSI_COLOR_PATTERN.sub("", text)
 
 
-def _get_kernel_managers(agent_state: "AgentState") -> dict[str, KernelManager]:
+def _get_kernel_managers(agent_state: AgentState) -> dict[str, KernelManagerProtocol]:
     """
     Get kernel managers from agent_state global storage.
 
@@ -62,7 +156,7 @@ def _get_kernel_managers(agent_state: "AgentState") -> dict[str, KernelManager]:
     Returns:
         Dictionary of kernel managers
     """
-    kernel_managers = agent_state.get_global_value(KERNEL_MANAGERS_KEY, None)
+    kernel_managers = cast(dict[str, KernelManagerProtocol] | None, agent_state.get_global_value(KERNEL_MANAGERS_KEY, None))
     if kernel_managers is None:
         kernel_managers = {}
         agent_state.set_global_value(KERNEL_MANAGERS_KEY, kernel_managers)
@@ -71,8 +165,11 @@ def _get_kernel_managers(agent_state: "AgentState") -> dict[str, KernelManager]:
 
 
 def _get_or_create_kernel(
-    kernel_type: str, workspace: str | None, agent_state: "AgentState", extra_env: dict[str, str] | None = None
-) -> KernelManager:
+    kernel_type: str,
+    workspace: str | None,
+    agent_state: AgentState,
+    extra_env: dict[str, str] | None = None,
+) -> KernelManagerProtocol:
     """
     Get existing kernel or create a new one with environment variables.
 
@@ -101,7 +198,7 @@ def _get_or_create_kernel(
 
     # Create new kernel with environment variables
     logger.info(f"Creating new {kernel_type} kernel: {kernel_id}")
-    km = KernelManager(kernel_name=kernel_name)
+    km = cast(KernelManagerProtocol, KernelManager(kernel_name=kernel_name))
 
     # Set working directory if provided
     if workspace:
@@ -150,7 +247,7 @@ def _get_or_create_kernel(
     return km
 
 
-def _cleanup_kernels(agent_state: "AgentState", kernel_type: str | None = None):
+def _cleanup_kernels(agent_state: AgentState, kernel_type: str | None = None):
     """
     Cleanup kernels managed by this agent.
 
@@ -179,7 +276,7 @@ def _cleanup_kernels(agent_state: "AgentState", kernel_type: str | None = None):
     agent_state.set_global_value(KERNEL_MANAGERS_KEY, kernel_managers)
 
 
-def _process_output_message(msg: dict[str, Any], kernel_type: str) -> dict[str, Any] | None:
+def _process_output_message(msg: dict[str, Any], kernel_type: str) -> OutputMessage | None:
     """
     Process a Jupyter output message into a standardized format.
 
@@ -197,33 +294,32 @@ def _process_output_message(msg: dict[str, Any], kernel_type: str) -> dict[str, 
         text = content.get("text", "")
         # Strip ANSI color codes
         text = _strip_ansi_colors(text)
-        return {"type": "stream", "name": content.get("name", "stdout"), "text": text}
+        stream_output: StreamOutput = {"type": "stream", "name": content.get("name", "stdout"), "text": text}
+        return stream_output
 
     elif msg_type == "execute_result":
-        result = {"type": "execute_result"}
+        execute_result: ExecuteResultOutput = {"type": "execute_result"}
 
         # For bash kernel, extract text output if present and strip colors
         if kernel_type == "bash" and "text/plain" in content.get("data", {}):
-            result["text"] = _strip_ansi_colors(content.get("data", {})["text/plain"])
+            execute_result["text"] = _strip_ansi_colors(content.get("data", {})["text/plain"])
 
-        return result
+        return execute_result
 
     elif msg_type == "display_data":
-        result = {
-            "type": "display_data",
-        }
+        display_result: DisplayDataOutput = {"type": "display_data"}
         # Strip colors from text/plain if present
         if "text/plain" in content.get("data", {}):
-            result["text"] = _strip_ansi_colors(content.get("data", {})["text/plain"])
+            display_result["text"] = _strip_ansi_colors(content.get("data", {})["text/plain"])
 
-        return result
+        return display_result
 
     elif msg_type == "error":
         # Strip colors from traceback
         traceback = content.get("traceback", [])
         clean_traceback = [_strip_ansi_colors(line) for line in traceback]
 
-        error_result = {
+        error_result: ErrorOutput = {
             "type": "error",
             "ename": content.get("ename", "Unknown"),
             "evalue": _strip_ansi_colors(content.get("evalue", "")),
@@ -247,10 +343,11 @@ def _process_output_message(msg: dict[str, Any], kernel_type: str) -> dict[str, 
 
     else:
         # Unknown message type
-        return {"type": "unknown", "msg_type": msg_type, "content": content}
+        unknown_output: UnknownOutput = {"type": "unknown", "msg_type": msg_type, "content": content}
+        return unknown_output
 
 
-def _aggregate_outputs(raw_outputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _aggregate_outputs(raw_outputs: list[OutputMessage]) -> list[OutputMessage]:
     """
     Aggregate consecutive stream outputs with the same name to reduce fragmentation.
 
@@ -263,13 +360,10 @@ def _aggregate_outputs(raw_outputs: list[dict[str, Any]]) -> list[dict[str, Any]
     if not raw_outputs:
         return []
 
-    aggregated: list[dict[str, Any]] = []
-    current_stream: dict[str, Any] | None = None
+    aggregated: list[OutputMessage] = []
+    current_stream: StreamOutput | None = None
 
     for output in raw_outputs:
-        if output is None:
-            continue
-
         if output["type"] == "stream":
             stream_name = output["name"]
             stream_text = output["text"]
@@ -304,7 +398,7 @@ def run_code_tool(
     reset_kernel: bool = False,
     shutdown_after: bool = False,
     agent_state: AgentState | None = None,
-) -> dict[str, Any]:
+) -> ExecutionResult:
     """
     Execute code in a Jupyter notebook kernel (Python or Bash) with proper handling and output capture.
 
@@ -415,9 +509,9 @@ def run_code_tool(
         )
 
         # Collect outputs
-        raw_outputs: list[dict[str, Any]] = []
-        status = "success"
-        error_info: dict[str, Any] | None = None
+        raw_outputs: list[OutputMessage] = []
+        status: ExecutionStatus = "success"
+        error_info: ErrorOutput | None = None
 
         # Wait for execution to complete
         deadline = time.time() + timeout_seconds
@@ -473,7 +567,11 @@ def run_code_tool(
         outputs = _aggregate_outputs(raw_outputs)
 
         # Prepare result
-        result = {"status": status, "kernel_type": kernel_type, "duration_ms": duration_ms}
+        result: ExecutionResult = {
+            "status": cast(ExecutionStatus, status),
+            "kernel_type": kernel_type,
+            "duration_ms": duration_ms,
+        }
 
         # Add description if provided
         if description:

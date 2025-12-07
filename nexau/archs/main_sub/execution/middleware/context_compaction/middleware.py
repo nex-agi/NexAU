@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ...hooks import AfterModelHookInput, HookResult, Middleware
 from .config import CompactionConfig
@@ -137,7 +137,7 @@ class ContextCompactionMiddleware(Middleware):
 
         # Check if the last assistant message has tool calls
         # If not, skip compaction to preserve the conversation state
-        last_assistant_msg = None
+        last_assistant_msg: dict[str, Any] | None = None
         for msg in reversed(messages):
             if msg.get("role") == "assistant":
                 last_assistant_msg = msg
@@ -152,10 +152,11 @@ class ContextCompactionMiddleware(Middleware):
                 has_tool_calls = True
 
             # Content list format: check for tool_use type
-            content = last_assistant_msg.get("content", "")
+            content = last_assistant_msg.get("content")
             if isinstance(content, list):
-                for item in content:
-                    if isinstance(item, dict) and item.get("type") == "tool_use":
+                content_list = cast(list[dict[str, Any]], content)
+                for item in content_list:
+                    if item.get("type") == "tool_use":
                         has_tool_calls = True
                         break
 

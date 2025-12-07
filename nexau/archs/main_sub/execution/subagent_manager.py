@@ -22,6 +22,8 @@ from typing import Any
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.utils.xml_utils import XMLParser
 
+from ..agent_context import GlobalStorage
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,7 +34,7 @@ class SubAgentManager:
         self,
         agent_name: str,
         sub_agent_factories: dict[str, Callable[..., Any]],
-        global_storage=None,
+        global_storage: GlobalStorage | None = None,
     ):
         """Initialize sub-agent manager.
 
@@ -142,7 +144,7 @@ class SubAgentManager:
             logger.error(f"❌ Sub-agent '{sub_agent_name}' failed: {e}")
             raise
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         """Signal shutdown to prevent new sub-agent tasks."""
         self._shutdown_event.set()
         for sub_agent_id, sub_agent in self.running_sub_agents.items():
@@ -153,7 +155,7 @@ class SubAgentManager:
                     f"❌ Error shutting down sub-agent {sub_agent_id}: {e}",
                 )
 
-    def add_sub_agent(self, name: str, agent_factory: Callable[[], Any]):
+    def add_sub_agent(self, name: str, agent_factory: Callable[[], Any]) -> None:
         """Add a sub-agent factory for delegation.
 
         Args:

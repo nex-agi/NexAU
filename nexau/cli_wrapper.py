@@ -68,10 +68,10 @@ def find_node_cli():
 
         # Get the package directory
         package_dir = resources.files("nexau")
-        # Try to access the CLI file
-        cli_path = package_dir / "cli" / "dist" / "cli.js"
-        if cli_path.exists():
-            return cli_path
+        cli_resource = package_dir.joinpath("cli", "dist", "cli.js")
+        if cli_resource.is_file():
+            with resources.as_file(cli_resource) as cli_path:
+                return cli_path
     except Exception:
         # Other error, skip
         pass

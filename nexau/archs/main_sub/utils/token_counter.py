@@ -16,19 +16,18 @@
 
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Final
 
 logger = logging.getLogger(__name__)
 
-tiktoken: Any
+_tiktoken: Any
 try:
     import tiktoken as _tiktoken
-
-    TIKTOKEN_AVAILABLE = True
-    tiktoken = _tiktoken
 except ImportError:
-    TIKTOKEN_AVAILABLE = False
-    tiktoken = None
+    _tiktoken = None
+
+tiktoken: Any | None = _tiktoken
+TIKTOKEN_AVAILABLE: Final[bool] = _tiktoken is not None
 
 
 class TokenCounter:
@@ -58,6 +57,8 @@ class TokenCounter:
 
     def _create_tiktoken_counter(self) -> Callable[[list[dict[str, Any]]], int]:
         """Create tiktoken-based counter."""
+        if tiktoken is None:
+            raise RuntimeError("tiktoken is not available")
         try:
             encoding = tiktoken.encoding_for_model(self.model)
 

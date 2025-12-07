@@ -37,6 +37,7 @@ from nexau.archs.main_sub.tool_call_modes import (
 )
 from nexau.archs.main_sub.utils.cleanup_manager import cleanup_manager
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
+from nexau.archs.tool import Tool
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
 
@@ -114,27 +115,17 @@ class Agent:
 
     def _initialize_openai_client(self) -> Any:
         """Initialize OpenAI client from LLM config."""
-        if openai is None:
-            logger.warning("⚠️ OpenAI package not available")
-            return None
-
         # Guard clause
-        if isinstance(self.config.llm_config, dict):
-            llm_config = LLMConfig(**self.config.llm_config)
-        elif isinstance(self.config.llm_config, LLMConfig):
-            llm_config = self.config.llm_config
-        else:
-            llm_config = LLMConfig()
+        llm_config = self.config.llm_config or LLMConfig()
 
         try:
             if llm_config.api_type == "anthropic_chat_completion":
                 client_kwargs = llm_config.to_client_kwargs()
                 return anthropic.Anthropic(**client_kwargs)
-            elif llm_config.api_type in ["openai_responses", "openai_chat_completion"]:
+            if llm_config.api_type in ["openai_responses", "openai_chat_completion"]:
                 client_kwargs = llm_config.to_client_kwargs()
                 return openai.OpenAI(**client_kwargs)
-            else:
-                raise ValueError(f"Invalid API type: {llm_config.api_type}")
+            raise ValueError(f"Invalid API type: {llm_config.api_type}")
         except Exception as e:
             logger.error(f"❌ Failed to initialize OpenAI client: {e}")
             return None
@@ -165,7 +156,8 @@ class Agent:
         tools_spec: list[dict[str, Any]] = []
 
         for tool in self.config.tools:
-            parameters = copy.deepcopy(tool.input_schema or {})
+            parameters: dict[str, Any] = copy.deepcopy(tool.input_schema or {})
+
             if not parameters:
                 parameters = {"type": "object", "properties": {}}
             elif "type" not in parameters:
@@ -208,20 +200,13 @@ class Agent:
 
         return tools_spec
 
-    def _build_tool_call_payload(self) -> list[dict[str, Any]]:
-        """Build structured tool definitions for the active tool_call_mode."""
-        if self.tool_call_mode == "openai":
-            return self._build_openai_tool_specs()
-        if self.tool_call_mode == "anthropic":
-            return self._build_anthropic_tool_specs()
-        return []
-
     def _build_anthropic_tool_specs(self) -> list[dict[str, Any]]:
         """Convert tools and sub-agents into anthropic tool definitions."""
         tools_spec: list[dict[str, Any]] = []
 
         for tool in self.config.tools:
-            input_schema = copy.deepcopy(tool.input_schema or {})
+            input_schema: dict[str, Any] = copy.deepcopy(tool.input_schema or {})
+
             if not input_schema:
                 input_schema = {"type": "object", "properties": {}}
             elif "type" not in input_schema:
@@ -258,6 +243,14 @@ class Agent:
 
         return tools_spec
 
+    def _build_tool_call_payload(self) -> list[dict[str, Any]]:
+        """Build structured tool definitions for the active tool_call_mode."""
+        if self.tool_call_mode == "openai":
+            return self._build_openai_tool_specs()
+        if self.tool_call_mode == "anthropic":
+            return self._build_anthropic_tool_specs()
+        return []
+
     def _initialize_execution_components(self) -> None:
         """Initialize execution components."""
         token_counter = self._resolve_token_counter()
@@ -270,7 +263,7 @@ class Agent:
             sub_agent_factories=self.config.sub_agent_factories,
             stop_tools=self.config.stop_tools or set(),
             openai_client=self.openai_client,
-            llm_config=self.config.llm_config,
+            llm_config=self.config.llm_config or LLMConfig(),
             max_iterations=self.exec_config.max_iterations,
             max_context_tokens=self.exec_config.max_context_tokens,
             max_running_subagents=self.exec_config.max_running_subagents,
@@ -302,8 +295,8 @@ class Agent:
     def run(
         self,
         message: str,
-        history: list[dict] | None = None,
-        context: dict | None = None,
+        history: list[dict[str, Any]] | None = None,
+        context: dict[str, Any] | None = None,
         state: dict[str, Any] | None = None,
         config: dict[str, Any] | None = None,
         parent_agent_state: AgentState | None = None,
@@ -395,7 +388,7 @@ class Agent:
             "message": message,
             "agent_id": self._agent_id,
         }
-        attributes = {
+        attributes: dict[str, Any] = {
             "agent_name": self._agent_name,
             "model": getattr(self.config.llm_config, "model", None),
         }
@@ -466,7 +459,7 @@ class Agent:
                 )
                 raise
 
-    def add_tool(self, tool) -> None:
+    def add_tool(self, tool: Tool) -> None:
         """Add a tool to the agent."""
         self.config.tools.append(tool)
         self.tool_registry[tool.name] = tool
@@ -501,7 +494,7 @@ class Agent:
 def create_agent(
     name: str | None = None,
     agent_id: str | None = None,
-    tools: list | None = None,
+    tools: list[Tool] | None = None,
     sub_agents: list[tuple[str, Callable[[], "Agent"]]] | None = None,
     skills: list[Skill] | None = None,
     system_prompt: str | None = None,
@@ -510,7 +503,7 @@ def create_agent(
     max_iterations: int = 100,
     max_context_tokens: int = 128000,
     max_running_subagents: int = 5,
-    error_handler: Callable | None = None,
+    error_handler: Callable[..., Any] | None = None,
     retry_attempts: int = 5,
     timeout: int = 300,
     # Token counting parameters
@@ -524,16 +517,16 @@ def create_agent(
     # Stop tools parameters
     stop_tools: list[str] | set[str] | None = None,
     # Hook parameters
-    after_model_hooks: list[Callable] | None = None,
-    after_tool_hooks: list[Callable] | None = None,
-    before_model_hooks: list[Callable] | None = None,
-    before_tool_hooks: list[Callable] | None = None,
-    middlewares: list[Callable] | None = None,
+    after_model_hooks: list[Callable[..., Any]] | None = None,
+    after_tool_hooks: list[Callable[..., Any]] | None = None,
+    before_model_hooks: list[Callable[..., Any]] | None = None,
+    before_tool_hooks: list[Callable[..., Any]] | None = None,
+    middlewares: list[Callable[..., Any]] | None = None,
     # Global storage parameter
     global_storage: GlobalStorage | None = None,
     tool_call_mode: str = "xml",
     tracers: list[BaseTracer] | None = None,
-    **llm_kwargs,
+    **llm_kwargs: Any,
 ) -> Agent:
     """Create a new agent with specified configuration."""
     # Handle llm_config creation with backward compatibility

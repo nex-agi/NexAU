@@ -16,10 +16,11 @@
 
 import asyncio
 import logging
+from asyncio.subprocess import Process
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.types import Tool as MCPToolType
@@ -30,6 +31,15 @@ if TYPE_CHECKING:
     import httpx
 
 logger = logging.getLogger(__name__)
+JSONDict = dict[str, Any]
+
+
+class _HTTPSessionParams(TypedDict):
+    """Stored parameters needed to recreate an HTTP MCP session."""
+
+    config: "MCPServerConfig"
+    headers: dict[str, str]
+    timeout: float
 
 
 STREAMABLE_HTTP_ACCEPT = "application/jsonl+json, application/json"
@@ -53,14 +63,18 @@ class HTTPMCPSession:
         self._session_id: str | None = None
         self._initialized = False
         self._transport: str | None = None
-        self._pending_requests: dict[str, asyncio.Future] = {}
+        self._pending_requests: dict[str, asyncio.Future[JSONDict]] = {}
         self._sse_client: httpx.AsyncClient | None = None
         self._sse_stream_cm: AbstractAsyncContextManager[httpx.Response] | None = None
         self._sse_stream: httpx.Response | None = None
-        self._sse_listener_task: asyncio.Task | None = None
+        self._sse_listener_task: asyncio.Task[None] | None = None
         self._sse_endpoint_url: str | None = None
         self._sse_endpoint_headers: dict[str, str] = {}
         self._sse_endpoint_ready: asyncio.Event | None = None
+
+    async def initialize(self) -> None:
+        """Public initializer for MCP sessions."""
+        await self._initialize_session()
 
     def _get_next_id(self) -> int:
         """Get the next request ID."""
@@ -378,9 +392,6 @@ class HTTPMCPSession:
 
         try:
             async for raw_line in self._sse_stream.aiter_lines():
-                if raw_line is None:
-                    continue
-
                 line = raw_line.rstrip("\r")
 
                 if line == "":
@@ -429,13 +440,15 @@ class HTTPMCPSession:
 
             if payload_text:
                 try:
-                    payload = json.loads(payload_text)
+                    payload: Any = json.loads(payload_text)
                 except json.JSONDecodeError:
                     endpoint = payload_text
                 else:
                     if isinstance(payload, dict):
-                        endpoint = payload.get("endpoint") or payload.get("url")
-                        headers_payload = payload.get("headers")
+                        payload_dict: dict[str, Any] = cast(dict[str, Any], payload)
+                        endpoint_candidate: Any = payload_dict.get("endpoint") or payload_dict.get("url")
+                        endpoint = str(endpoint_candidate) if endpoint_candidate is not None else None
+                        headers_payload = cast(dict[str, Any] | None, payload_dict.get("headers"))
                     elif isinstance(payload, str):
                         endpoint = payload
 
@@ -458,15 +471,16 @@ class HTTPMCPSession:
             return
 
         try:
-            message = json.loads(payload_text)
+            message_obj: Any = json.loads(payload_text)
         except json.JSONDecodeError:
             logger.debug("Failed to parse SSE data as JSON: %s", payload_text[:200])
             return
 
-        if not isinstance(message, dict):
+        if not isinstance(message_obj, dict):
             return
 
-        request_id = message.get("id")
+        message = cast(dict[str, Any], message_obj)
+        request_id = cast(str | int | None, message.get("id"))
         if request_id is not None:
             key = str(request_id)
             future = self._pending_requests.pop(key, None)
@@ -503,7 +517,7 @@ class HTTPMCPSession:
             request_headers.setdefault("mcp-session-id", self._session_id)
 
         request_id = payload.get("id")
-        future: asyncio.Future | None = None
+        future: asyncio.Future[JSONDict] | None = None
         key: str | None = None
 
         if expect_response:
@@ -563,11 +577,11 @@ class HTTPMCPSession:
 
         # Create a simple object structure that matches what MCPTool expects
         class SimpleToolList:
-            def __init__(self, tools_data):
+            def __init__(self, tools_data: Sequence[dict[str, Any]]) -> None:
                 self.tools = [SimpleTool(tool_data) for tool_data in tools_data]
 
         class SimpleTool:
-            def __init__(self, tool_data):
+            def __init__(self, tool_data: dict[str, Any]) -> None:
                 self.name = tool_data["name"]
                 self.description = tool_data.get("description", "")
                 self.inputSchema = tool_data.get("inputSchema", {})
@@ -582,7 +596,7 @@ class HTTPMCPSession:
         if not self._initialized:
             await self._initialize_session()
 
-        params = {
+        params: JSONDict = {
             "name": tool_name,
             "arguments": arguments,
         }
@@ -594,7 +608,7 @@ class HTTPMCPSession:
 
         # Create a simple result object that matches what MCPTool expects
         class SimpleResult:
-            def __init__(self, result_data):
+            def __init__(self, result_data: dict[str, Any]) -> None:
                 self.content = result_data.get("content", [])
 
         return SimpleResult(response.get("result", {}))
@@ -633,7 +647,7 @@ class MCPTool(Tool):
         self.client_session = client_session
         self.server_config = server_config  # Store config for recreating sessions
         self._session_type = type(client_session).__name__
-        self._session_params: dict[str, Any] | MCPServerConfig | None = None
+        self._session_params: _HTTPSessionParams | MCPServerConfig | None = None
         self._sync_executor: Callable[..., dict[str, Any]] = self._execute_sync
 
         # Store session parameters for thread-safe recreation
@@ -641,7 +655,7 @@ class MCPTool(Tool):
             self._session_params = {
                 "config": client_session.config,
                 "headers": client_session.headers,
-                "timeout": client_session.timeout,
+                "timeout": float(client_session.timeout),
             }
         elif server_config is not None:
             # For stdio sessions, store the server config for recreation
@@ -666,11 +680,11 @@ class MCPTool(Tool):
             self._session_params,
             dict,
         ):
-            config = self._session_params["config"]
-            headers = self._session_params["headers"]
-            timeout = self._session_params["timeout"]
-            if isinstance(config, MCPServerConfig) and isinstance(headers, dict) and isinstance(timeout, (int, float)):
-                return HTTPMCPSession(config, headers, timeout)
+            params: _HTTPSessionParams = self._session_params
+            config = params["config"]
+            headers = params["headers"]
+            timeout = params["timeout"]
+            return HTTPMCPSession(config, headers, timeout)
 
         # For stdio sessions, we need to create a new DirectMCPSession
         elif self._session_type == "DirectMCPSession" and isinstance(
@@ -688,14 +702,19 @@ class MCPTool(Tool):
 
                 # Use the DirectMCPSession class definition from the original code
                 class DirectMCPSession:
-                    def __init__(self, command, args, env):
+                    def __init__(
+                        self,
+                        command: str,
+                        args: list[str],
+                        env: dict[str, str],
+                    ) -> None:
                         self.command = command
                         self.args = args
                         self.env = env
-                        self.process = None
+                        self.process: Process | None = None
                         self._request_id = 0
 
-                    async def initialize(self):
+                    async def initialize(self) -> "DirectMCPSession":
                         import subprocess
 
                         self.process = await asyncio.create_subprocess_exec(
@@ -715,16 +734,16 @@ class MCPTool(Tool):
                         await self._initialize_connection()
                         return self
 
-                    def _get_next_id(self):
+                    def _get_next_id(self) -> int:
                         self._request_id += 1
                         return self._request_id
 
-                    async def _initialize_connection(self):
+                    async def _initialize_connection(self) -> None:
                         """Initialize the MCP connection with proper handshake."""
                         import json
 
                         # Send initialize request
-                        init_request = {
+                        init_request: JSONDict = {
                             "jsonrpc": "2.0",
                             "id": self._get_next_id(),
                             "method": "initialize",
@@ -745,14 +764,19 @@ class MCPTool(Tool):
 
                         # Send the initialize request
                         init_str = json.dumps(init_request) + "\n"
-                        self.process.stdin.write(init_str.encode())
-                        await self.process.stdin.drain()
+                        process = self.process
+                        if process is None or process.stdin is None or process.stdout is None:
+                            raise RuntimeError("Process streams not initialized")
+                        stdin = process.stdin
+                        stdout = process.stdout
+                        stdin.write(init_str.encode())
+                        await stdin.drain()
 
                         # Read the initialize response
                         while True:
                             try:
                                 response_line = await asyncio.wait_for(
-                                    self.process.stdout.readline(),
+                                    stdout.readline(),
                                     timeout=60,
                                 )
                                 response = json.loads(
@@ -772,27 +796,31 @@ class MCPTool(Tool):
                             )
 
                         # Send initialized notification
-                        initialized_notification = {
+                        initialized_notification: JSONDict = {
                             "jsonrpc": "2.0",
                             "method": "notifications/initialized",
                             "params": {},
                         }
 
                         notif_str = json.dumps(initialized_notification) + "\n"
-                        self.process.stdin.write(notif_str.encode())
-                        await self.process.stdin.drain()
+                        stdin.write(notif_str.encode())
+                        await stdin.drain()
 
                         # Test with tools/list to verify connection
                         await self._make_request("tools/list")
 
-                    async def _make_request(self, method, params=None):
+                    async def _make_request(
+                        self,
+                        method: str,
+                        params: dict[str, Any] | None = None,
+                    ) -> dict[str, Any]:
                         if not self.process or not self.process.stdin or not self.process.stdout:
                             raise RuntimeError("Process not initialized")
 
                         import json
 
                         request_id = self._get_next_id()
-                        request = {
+                        request: JSONDict = {
                             "jsonrpc": "2.0",
                             "id": request_id,
                             "method": method,
@@ -838,7 +866,11 @@ class MCPTool(Tool):
                             f"No matching response received for request ID {request_id} after {max_attempts} attempts",
                         )
 
-                    async def call_tool(self, name, arguments):
+                    async def call_tool(
+                        self,
+                        name: str,
+                        arguments: dict[str, Any],
+                    ) -> Any:
                         try:
                             response = await self._make_request(
                                 "tools/call",
@@ -850,7 +882,7 @@ class MCPTool(Tool):
                             result_data = response.get("result", {})
 
                             class ToolCallResult:
-                                def __init__(self, data):
+                                def __init__(self, data: dict[str, Any]) -> None:
                                     self.content = data.get("content", [])
 
                             return ToolCallResult(result_data)
@@ -873,7 +905,7 @@ class MCPTool(Tool):
         # This is a fallback - ideally all MCP sessions should be recreatable
         return self.client_session
 
-    def _execute_sync(self, **kwargs) -> dict[str, Any]:
+    def _execute_sync(self, **kwargs: Any) -> dict[str, Any]:
         """Execute the MCP tool synchronously."""
         # Always create a new event loop to avoid "Future attached to a different loop" errors
         # This is necessary when running in multi-threaded environments like ThreadPoolExecutor
@@ -894,17 +926,21 @@ class MCPTool(Tool):
                 # No existing loop, that's fine
                 pass
 
-    def execute(self, **kwargs) -> dict[str, Any]:
+    def execute(self, **kwargs: Any) -> dict[str, Any]:
         """Execute the MCP tool synchronously (for backward compatibility)."""
         # Filter out agent_state and global_storage parameters as they're not needed for MCP tools
         # and cause JSON serialization errors
         filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ("agent_state", "global_storage")}
+
+        def _sort_key(item: tuple[str, Any]) -> str:
+            return item[0]
+
         filtered_kwargs = dict(
-            sorted(filtered_kwargs.items(), key=lambda x: x[0]),
+            sorted(filtered_kwargs.items(), key=_sort_key),
         )
         return self._sync_executor(**filtered_kwargs)
 
-    async def _execute_async(self, **kwargs) -> dict[str, Any]:
+    async def _execute_async(self, **kwargs: Any) -> dict[str, Any]:
         """Execute the MCP tool asynchronously."""
         try:
             # Create a thread-local session to avoid event loop conflicts
@@ -912,19 +948,29 @@ class MCPTool(Tool):
             result = await session.call_tool(self.name, kwargs)
 
             if hasattr(result, "content"):
-                if isinstance(result.content, list):
+                result_content = getattr(result, "content")
+                if isinstance(result_content, list):
                     # Handle list of content items
-                    content_items = []
-                    for item in result.content:
+                    content_items: list[str] = []
+                    for item in cast(list[Any], result_content):
                         if hasattr(item, "text"):
-                            content_items.append(item.text)
-                        elif isinstance(item, dict) and "text" in item:
-                            content_items.append(item["text"])
+                            text_value = getattr(item, "text")
+                            content_items.append(str(text_value))
+                            continue
+
+                        if isinstance(item, dict):
+                            item_dict = cast(dict[str, Any], item)
+                            if "text" in item_dict:
+                                content_items.append(str(item_dict["text"]))
+                                continue
+                            content_items.append(str(item_dict))
+                            continue
+
                         else:
                             content_items.append(str(item))
                     return {"result": "\n".join(content_items)}
                 else:
-                    return {"result": str(result.content)}
+                    return {"result": str(result_content)}
             else:
                 return {"result": str(result)}
 
@@ -986,14 +1032,19 @@ class MCPClient:
 
                 # Create a direct subprocess-based MCP session
                 class DirectMCPSession:
-                    def __init__(self, command, args, env):
+                    def __init__(
+                        self,
+                        command: str,
+                        args: list[str],
+                        env: dict[str, str],
+                    ) -> None:
                         self.command = command
                         self.args = args
                         self.env = env
-                        self.process = None
+                        self.process: Process | None = None
                         self._request_id = 0
 
-                    async def initialize(self):
+                    async def initialize(self) -> "DirectMCPSession":
                         import subprocess
 
                         self.process = await asyncio.create_subprocess_exec(
@@ -1013,16 +1064,16 @@ class MCPClient:
                         await self._initialize_connection()
                         return self
 
-                    def _get_next_id(self):
+                    def _get_next_id(self) -> int:
                         self._request_id += 1
                         return self._request_id
 
-                    async def _initialize_connection(self):
+                    async def _initialize_connection(self) -> None:
                         """Initialize the MCP connection with proper handshake."""
                         import json
 
                         # Send initialize request
-                        init_request = {
+                        init_request: JSONDict = {
                             "jsonrpc": "2.0",
                             "id": self._get_next_id(),
                             "method": "initialize",
@@ -1043,14 +1094,19 @@ class MCPClient:
 
                         # Send the initialize request
                         init_str = json.dumps(init_request) + "\n"
-                        self.process.stdin.write(init_str.encode())
-                        await self.process.stdin.drain()
+                        process = self.process
+                        if process is None or process.stdin is None or process.stdout is None:
+                            raise RuntimeError("Process streams not initialized")
+                        stdin = process.stdin
+                        stdout = process.stdout
+                        stdin.write(init_str.encode())
+                        await stdin.drain()
 
                         # Read the initialize response
                         while True:
                             try:
                                 response_line = await asyncio.wait_for(
-                                    self.process.stdout.readline(),
+                                    stdout.readline(),
                                     timeout=60,
                                 )
                                 response = json.loads(
@@ -1070,26 +1126,30 @@ class MCPClient:
                             )
 
                         # Send initialized notification
-                        initialized_notification = {
+                        initialized_notification: JSONDict = {
                             "jsonrpc": "2.0",
                             "method": "notifications/initialized",
                             "params": {},
                         }
 
                         notif_str = json.dumps(initialized_notification) + "\n"
-                        self.process.stdin.write(notif_str.encode())
-                        await self.process.stdin.drain()
+                        stdin.write(notif_str.encode())
+                        await stdin.drain()
 
                         # Test with tools/list to verify connection
                         await self._make_request("tools/list")
 
-                    async def _make_request(self, method, params=None):
+                    async def _make_request(
+                        self,
+                        method: str,
+                        params: dict[str, Any] | None = None,
+                    ) -> dict[str, Any]:
                         if not self.process or not self.process.stdin or not self.process.stdout:
                             raise RuntimeError("Process not initialized")
 
                         import json
 
-                        request = {
+                        request: JSONDict = {
                             "jsonrpc": "2.0",
                             "id": self._get_next_id(),
                             "method": method,
@@ -1110,7 +1170,7 @@ class MCPClient:
 
                         return response
 
-                    async def list_tools(self):
+                    async def list_tools(self) -> Any:
                         response = await self._make_request("tools/list")
                         tools_data = response.get(
                             "result",
@@ -1119,18 +1179,22 @@ class MCPClient:
 
                         # Create tool objects
                         class SimpleTool:
-                            def __init__(self, data):
+                            def __init__(self, data: dict[str, Any]) -> None:
                                 self.name = data["name"]
                                 self.description = data.get("description", "")
                                 self.inputSchema = data.get("inputSchema", {})
 
                         class ToolResult:
-                            def __init__(self, tools):
+                            def __init__(self, tools: Sequence[dict[str, Any]]) -> None:
                                 self.tools = [SimpleTool(tool) for tool in tools]
 
                         return ToolResult(tools_data)
 
-                    async def call_tool(self, name, arguments):
+                    async def call_tool(
+                        self,
+                        name: str,
+                        arguments: dict[str, Any],
+                    ) -> Any:
                         response = await self._make_request(
                             "tools/call",
                             {
@@ -1141,7 +1205,7 @@ class MCPClient:
                         result_data = response.get("result", {})
 
                         class ToolCallResult:
-                            def __init__(self, data):
+                            def __init__(self, data: dict[str, Any]) -> None:
                                 self.content = data.get("content", [])
 
                         return ToolCallResult(result_data)
@@ -1190,7 +1254,7 @@ class MCPClient:
                     )
 
                     # Test basic connectivity by trying to initialize
-                    await test_session._initialize_session()
+                    await test_session.initialize()
                     logger.info(
                         f"Successfully tested HTTP MCP server connection: {server_name}",
                     )
@@ -1255,7 +1319,7 @@ class MCPClient:
             tools_result = await session.list_tools()
 
             # Convert MCP tools to NexAU tools
-            discovered_tools = []
+            discovered_tools: list[MCPTool] = []
             server_config = self.servers.get(server_name)
 
             for mcp_tool in tools_result.tools:
@@ -1359,7 +1423,7 @@ class MCPManager:
 
     async def initialize_servers(self) -> dict[str, list[MCPTool]]:
         """Initialize all configured servers and discover their tools."""
-        all_tools = {}
+        all_tools: dict[str, list[MCPTool]] = {}
 
         for server_name in self.client.servers.keys():
             if await self.client.connect_to_server(server_name):

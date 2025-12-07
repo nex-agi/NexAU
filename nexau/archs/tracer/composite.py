@@ -11,16 +11,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Composite tracer for sending data to multiple backends simultaneously."""
+
+from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import Any, TypeGuard
 
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
 
 logger = logging.getLogger(__name__)
+
+
+VendorObjMap = dict[int, Any]
+
+
+def _is_vendor_map(obj: object | None) -> TypeGuard[VendorObjMap]:
+    return isinstance(obj, dict)
 
 
 class CompositeTracer(BaseTracer):
@@ -75,6 +83,7 @@ class CompositeTracer(BaseTracer):
         span_id = str(uuid.uuid4())
 
         # Create a unified span that holds vendor-specific objects
+        vendor_obj_map: VendorObjMap = {}
         unified_span = Span(
             id=span_id,
             name=name,
@@ -82,7 +91,7 @@ class CompositeTracer(BaseTracer):
             parent_id=parent_span.id if parent_span else None,
             inputs=inputs or {},
             attributes=attributes or {},
-            vendor_obj={},  # Dictionary mapping tracer index to vendor object
+            vendor_obj=vendor_obj_map,  # Dictionary mapping tracer index to vendor object
         )
 
         # Start span in each underlying tracer
@@ -90,8 +99,9 @@ class CompositeTracer(BaseTracer):
             try:
                 # Get the corresponding vendor parent object if it exists
                 vendor_parent = None
-                if parent_span and isinstance(parent_span.vendor_obj, dict):
-                    vendor_parent_obj = parent_span.vendor_obj.get(idx)
+                if parent_span and _is_vendor_map(parent_span.vendor_obj):
+                    parent_vendor_map = parent_span.vendor_obj
+                    vendor_parent_obj = parent_vendor_map.get(idx)
                     if vendor_parent_obj is not None:
                         # Create a wrapper span with just the vendor object
                         vendor_parent = Span(
@@ -111,8 +121,10 @@ class CompositeTracer(BaseTracer):
                 )
 
                 # Store the vendor-specific span object
-                if isinstance(unified_span.vendor_obj, dict):
-                    unified_span.vendor_obj[idx] = internal_span.vendor_obj if internal_span else None
+                if _is_vendor_map(unified_span.vendor_obj):
+                    vendor_obj_dict = unified_span.vendor_obj
+                    vendor_value: dict[int, Any] | object | None = internal_span.vendor_obj if internal_span else None
+                    vendor_obj_dict[idx] = vendor_value
 
             except Exception as e:
                 logger.warning(f"Failed to start span in tracer {idx}: {e}")
@@ -134,11 +146,13 @@ class CompositeTracer(BaseTracer):
             error: Optional exception if operation failed
             attributes: Optional additional attributes
         """
-        if not isinstance(span.vendor_obj, dict):
+        if not _is_vendor_map(span.vendor_obj):
             return
 
+        vendor_obj_dict = span.vendor_obj
+
         for idx, tracer in enumerate(self.tracers):
-            vendor_handle = span.vendor_obj.get(idx)
+            vendor_handle = vendor_obj_dict.get(idx)
             if vendor_handle is None:
                 continue
 

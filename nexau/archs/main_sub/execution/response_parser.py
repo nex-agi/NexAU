@@ -56,7 +56,7 @@ class ResponseParser:
         if model_response and model_response.tool_calls:
             logger.info("🔧 Found structured OpenAI tool calls, normalizing")
             for call in model_response.tool_calls:
-                parameters = call.arguments if isinstance(call.arguments, dict) else {"raw_arguments": call.arguments}
+                parameters: dict[str, Any] = call.arguments
 
                 normalized_tool_call = ToolCall(
                     tool_name=call.name,
@@ -186,7 +186,7 @@ class ResponseParser:
 
             tool_name = (tool_name_elem.text or "").strip()
 
-            parameters = {}
+            parameters: dict[str, Any] = {}
             params_elem = root.find("parameter")
             if params_elem is not None:
                 for param in params_elem:

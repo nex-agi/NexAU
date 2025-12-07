@@ -21,18 +21,45 @@ import logging
 import traceback
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, TypeVar, cast
 
 import jsonschema
 import yaml
-from diskcache import Cache
+from diskcache import Cache  # type: ignore[import-untyped]
+from jsonschema.validators import validator_for
 from pydantic import BaseModel, ConfigDict, Field
 
 from nexau.archs.main_sub.agent_state import AgentState
 
 logger = logging.getLogger(__name__)
 
-cache = Cache("./.tool_cache")
+
+class _CacheProtocol(Protocol):
+    def get(
+        self,
+        key: str,
+        default: Any | None = None,
+        *,
+        read: bool = False,
+        expire_time: bool = False,
+        tag: bool = False,
+        retry: bool = False,
+    ) -> Any | None: ...
+
+    def set(
+        self,
+        key: str,
+        value: Any,
+        *,
+        expire: Any | None = None,
+        read: bool = False,
+        tag: Any | None = None,
+        retry: bool = False,
+    ) -> bool: ...
+
+
+cache: _CacheProtocol = Cache("./.tool_cache")
+F = TypeVar("F", bound=Callable[..., Any])
 
 
 class ToolYamlSchema(BaseModel):
@@ -52,36 +79,36 @@ class ToolYamlSchema(BaseModel):
     builtin: str | None = None
 
 
-def cache_result(func):
+def cache_result(func: F) -> F:  # noqa: UP047
     @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        if hasattr(func, "__self__"):
-            self = func.__self__
-            method = f"{self.__class__.__name__}."
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        bound_self = getattr(func, "__self__", None)
+        if bound_self is not None:
+            method = f"{bound_self.__class__.__name__}."
         else:
             method = ""
         method += func.__name__
 
-        args = [arg for arg in args if not isinstance(arg, AgentState)]
+        filtered_args = tuple(arg for arg in args if not isinstance(arg, AgentState))
 
-        kwargs = {k: v for k, v in kwargs.items() if not isinstance(v, AgentState)}
+        filtered_kwargs = {k: v for k, v in kwargs.items() if not isinstance(v, AgentState)}
 
         key = json.dumps(
-            {"method": method, "args": args, "kwargs": kwargs},
+            {"method": method, "args": filtered_args, "kwargs": filtered_kwargs},
             sort_keys=True,
             default=str,
             ensure_ascii=False,
         )
 
-        result = cache.get(key)
-        if result is None:
-            # 只有缓存中没有时才执行函数
-            result = func(*args, **kwargs)
+        cached_result: Any | None = cache.get(key)
+        if cached_result is None:
+            result: Any = func(*args, **kwargs)
             cache.set(key, result)
+            return result
 
-        return result
+        return cached_result
 
-    return wrapper
+    return cast(F, wrapper)
 
 
 class ConfigError(Exception):
@@ -97,8 +124,8 @@ class Tool:
         self,
         name: str,
         description: str,
-        input_schema: dict,
-        implementation: Callable | str | None,
+        input_schema: dict[str, Any],
+        implementation: Callable[..., Any] | str | None,
         skill_description: str | None = None,
         as_skill: bool = False,
         use_cache: bool = False,
@@ -140,10 +167,10 @@ class Tool:
     def from_yaml(
         cls,
         yaml_path: str,
-        binding: Callable | str | None,
+        binding: Callable[..., Any] | str | None,
         as_skill: bool = False,
         extra_kwargs: dict[str, Any] | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> "Tool":
         """Load tool definition from YAML file and bind to implementation."""
         path = Path(yaml_path)
@@ -193,7 +220,7 @@ class Tool:
             **kwargs,
         )
 
-    def execute(self, **params) -> dict:
+    def execute(self, **params: Any) -> dict[str, Any]:
         """Execute the tool with given parameters."""
 
         if self.implementation is None:
@@ -235,13 +262,20 @@ class Tool:
 
         try:
             # Execute the implementation
-            result = self.implementation(**filtered_params)
+            impl = self.implementation
+            if impl is None:
+                raise ValueError(f"Tool '{self.name}' has no implementation")
+
+            raw_result: Any = impl(**filtered_params)
 
             # Ensure result is a dictionary
-            if not isinstance(result, dict):
-                result = {"result": result}
+            final_result: dict[str, Any]
+            if isinstance(raw_result, dict):
+                final_result = cast(dict[str, Any], raw_result)
+            else:
+                final_result = {"result": raw_result}
 
-            return result
+            return final_result
 
         except Exception as e:
             # Return error information
@@ -252,7 +286,7 @@ class Tool:
                 "tool_name": self.name,
             }
 
-    def validate_params(self, params: dict) -> bool:
+    def validate_params(self, params: dict[str, Any]) -> bool:
         """Validate parameters against schema.
 
         Only validates parameters that are defined in the schema.
@@ -276,19 +310,17 @@ class Tool:
         """Validate that the input schema is valid JSON Schema."""
         try:
             # Check if it's a valid JSON Schema
-            jsonschema.validators.validator_for(
-                self.input_schema,
-            ).check_schema(self.input_schema)
+            validator_for(self.input_schema).check_schema(self.input_schema)
         except jsonschema.SchemaError as e:
             raise ValueError(
                 f"Invalid JSON Schema for tool '{self.name}': {e}",
             )
 
-    def get_schema(self) -> dict:
+    def get_schema(self) -> dict[str, Any]:
         """Get the tool's input schema."""
         return self.input_schema.copy()
 
-    def get_info(self) -> dict:
+    def get_info(self) -> dict[str, Any]:
         """Get tool information."""
         return {
             "name": self.name,

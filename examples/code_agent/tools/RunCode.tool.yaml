@@ -1,0 +1,315 @@
+name: RunCode
+disable_parallel: true
+description: >-
+  Executes code blocks in a persistent Jupyter kernel session (Python or Bash) with
+  proper output capture and state management, similar to working in a Jupyter notebook.
+
+
+  This tool supports two kernel types:
+    - **Python** (default): For data analysis, machine learning, and general programming
+    - **Bash**: For system operations, file management, and shell scripting
+
+
+  Before executing code, please follow these guidelines:
+
+
+  1. Kernel Selection:
+     - Use kernel_type='python' for Python code (default)
+     - Use kernel_type='bash' for Bash/shell commands
+     - Each kernel type maintains its own separate state
+     - Cannot share variables between Python and Bash kernels
+
+  2. State Management:
+     - The kernel maintains state between executions (variables, imports, environment, etc.)
+     - Use reset_kernel=true to start fresh when needed
+     - All previous state persists unless kernel is reset
+     - Python example: If you define `x = 5` in one call, `x` is available in the next call
+     - Bash example: If you `cd /tmp` in one call, you're still in /tmp in the next call
+
+  3. Code Block Preparation:
+     - Write complete, executable code blocks for the selected kernel
+     - For Python: Include all necessary imports at the beginning
+     - For Bash: Use proper shell syntax and commands
+     - Use echo/print to display results
+     - For visualizations in Python, ALWAYS save plots to files
+
+
+  # Python Kernel Usage
+
+  When using kernel_type='python' (default):
+
+    Example code block:
+    ```python
+    import pandas as pd
+    import numpy as np
+
+    # Create data
+    data = np.random.randn(100, 3)
+    df = pd.DataFrame(data, columns=['A', 'B', 'C'])
+
+    # Display results
+    print(df.describe())
+    print(f"Shape: {df.shape}")
+    print(f"Correlation matrix:\n{df.corr()}")
+    ```
+
+    For data files:
+    ```python
+    import os
+    if os.path.exists('data.csv'):
+        df = pd.read_csv('data.csv')
+        print(f"Loaded {len(df)} rows from data.csv")
+    else:
+        print("File data.csv not found")
+    ```
+
+    For visualizations - ALWAYS save to files:
+    ```python
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    x = np.linspace(0, 10, 100)
+    y = np.sin(x)
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(x, y)
+    plt.title('Sine Wave Analysis')
+    plt.xlabel('X axis')
+    plt.ylabel('Y axis')
+    plt.grid(True)
+
+    # ALWAYS save the plot
+    plt.savefig('sine_wave_plot.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    print("Plot saved as 'sine_wave_plot.png'")
+    ```
+
+    Install Python packages:
+    ```python
+    import subprocess
+    subprocess.check_call(['pip', 'install', 'package_name'])
+    ```
+
+
+  # Bash Kernel Usage
+
+  When using kernel_type='bash':
+
+    Example code block:
+    ```bash
+    # System information
+    echo "Current directory: $(pwd)"
+    echo "User: $(whoami)"
+    echo "Date: $(date)"
+
+    # List files
+    ls -la
+
+    # Check disk usage
+    df -h
+    ```
+
+    File operations:
+    ```bash
+    # Create directory structure
+    mkdir -p project/{src,tests,docs}
+
+    # Create and write to file
+    cat > config.json << 'EOF'
+    {
+      "name": "my_project",
+      "version": "1.0.0"
+    }
+    EOF
+
+    echo "Created config.json"
+
+    # Process files
+    find . -name "*.txt" -type f | wc -l
+    echo "Number of text files: $(find . -name '*.txt' -type f | wc -l)"
+    ```
+
+    Data processing with bash:
+    ```bash
+    # Process CSV with awk
+    echo "Processing data.csv..."
+    awk -F',' '{sum+=$2} END {print "Sum:", sum}' data.csv
+
+    # Use jq for JSON
+    cat data.json | jq '.items[] | select(.status=="active")'
+
+    # Generate report
+    {
+        echo "Report generated on $(date)"
+        echo "========================"
+        echo "Total files: $(ls -1 | wc -l)"
+        echo "Disk usage: $(du -sh . | cut -f1)"
+    } > report.txt
+
+    echo "Report saved to report.txt"
+    ```
+
+    Environment and variables:
+    ```bash
+    # Set environment variables (persist in session)
+    export PROJECT_DIR="/home/user/project"
+    export DEBUG_MODE="true"
+
+    # Use variables
+    echo "Project directory: $PROJECT_DIR"
+
+    # Create functions (persist in session)
+    function check_file() {
+        if [ -f "$1" ]; then
+            echo "File $1 exists ($(stat -f%z "$1" 2>/dev/null || stat -c%s "$1") bytes)"
+        else
+            echo "File $1 does not exist"
+        fi
+    }
+
+    check_file "data.csv"
+    ```
+
+    Install system packages (if permissions allow):
+    ```bash
+    # Check if command exists
+    command -v jq >/dev/null 2>&1 || echo "jq is not installed"
+
+    # Install with package manager (requires permissions)
+    # apt-get update && apt-get install -y package_name  # Debian/Ubuntu
+    # yum install -y package_name                         # RHEL/CentOS
+    # brew install package_name                           # macOS
+    ```
+
+
+  # Mixed Workflow Example
+
+  You can combine both kernels for complex tasks:
+
+    Step 1 - Use Bash to prepare files:
+    ```bash
+    # kernel_type='bash'
+    echo "Downloading data..."
+    curl -o data.csv "https://example.com/data.csv"
+    echo "Downloaded $(wc -l < data.csv) lines"
+
+    # Quick preview
+    head -5 data.csv
+    ```
+
+    Step 2 - Use Python to analyze:
+    ```python
+    # kernel_type='python'
+    import pandas as pd
+    import matplotlib.pyplot as plt
+
+    df = pd.read_csv('data.csv')
+    print(f"Loaded {len(df)} rows")
+    print(df.describe())
+
+    # Create visualization
+    plt.figure(figsize=(10, 6))
+    df.plot(kind='hist')
+    plt.savefig('analysis.png')
+    plt.close()
+    print("Analysis saved to analysis.png")
+    ```
+
+    Step 3 - Use Bash to organize results:
+    ```bash
+    # kernel_type='bash'
+    mkdir -p results/$(date +%Y%m%d)
+    mv *.png *.csv results/$(date +%Y%m%d)/
+
+    echo "Results organized in results/$(date +%Y%m%d)/"
+    ls -la results/$(date +%Y%m%d)/
+    ```
+
+
+  # Important Usage Notes
+
+  General:
+    - The code_block argument is required and should contain complete code
+    - kernel_type defaults to 'python' if not specified
+    - Optional timeout in milliseconds (up to 600000ms / 10 minutes). Default is 120000ms
+    - Provide a clear, concise description of what the code does in 5-10 words
+    - Each kernel type maintains separate state (Python state vs Bash environment)
+    - Use reset_kernel=true to clear all state for the current kernel type
+    - Use shutdown_after=true on your final execution to clean up resources
+    - Output exceeding 30000 characters will be truncated
+
+  Python-specific:
+    - ALWAYS save plots to files - never rely on plt.show()
+    - For data results, save to CSV or JSON files
+    - Handle large datasets carefully to avoid memory issues
+    - Interactive widgets (ipywidgets) are not supported
+
+  Bash-specific:
+    - Current directory persists between executions
+    - Environment variables persist in the session
+    - Avoid interactive commands (vim, less, etc.)
+    - Use absolute paths when file location is critical
+    - Quote file paths with spaces: "/path with spaces/file.txt"
+    - Background processes (&) may not work as expected
+
+
+  # Common Issues and Solutions
+
+  1. File not found errors:
+     - Python: Use os.path.exists() to check first
+     - Bash: Use [ -f filename ] or [ -d dirname ] to check
+
+  2. Memory issues:
+     - Python: Del large variables and use gc.collect()
+     - Bash: Use head/tail for large files instead of cat
+
+  3. Timeout issues:
+     - Break long operations into smaller chunks
+     - Increase timeout parameter for known long operations
+     - Use reset_kernel=true if kernel becomes unresponsive
+
+
+input_schema:
+  type: object
+  properties:
+    code_block:
+      type: string
+      description: The code block to execute (Python or Bash depending on kernel_type)
+    kernel_type:
+      type: string
+      enum: ['python', 'bash']
+      description: Type of kernel to use for execution
+      default: 'python'
+    timeout:
+      type: number
+      description: Optional timeout in milliseconds (max 600000)
+      default: 120000
+    description:
+      type: string
+      description: |2-
+        Clear, concise description of what this code does in 5-10 words. Examples:
+        Python:
+          Input: df = pd.read_csv('data.csv')
+          Output: Load data from CSV file
+
+          Input: plt.savefig('plot.png')
+          Output: Save plot to PNG file
+
+        Bash:
+          Input: ls -la | grep ".txt"
+          Output: List all text files
+
+          Input: curl -o data.json "https://api.example.com"
+          Output: Download JSON from API
+    reset_kernel:
+      type: boolean
+      description: Whether to restart the kernel before execution (clears all state)
+      default: false
+    shutdown_after:
+      type: boolean
+      description: Whether to shutdown all kernels after execution (cleanup resources)
+      default: false
+  required:
+    - code_block
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

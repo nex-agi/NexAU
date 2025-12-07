@@ -15,14 +15,30 @@
 """TodoWrite tool implementation for task management in agent context."""
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional, TypedDict
 
 if TYPE_CHECKING:
     from ...main_sub.agent_state import AgentState
 
 
+class TodoInput(TypedDict, total=False):
+    content: str
+    status: Literal["pending", "in_progress", "completed"]
+    priority: Literal["high", "medium", "low"]
+    id: str
+
+
+class TodoItem(TypedDict):
+    content: str
+    status: Literal["pending", "in_progress", "completed"]
+    priority: Literal["high", "medium", "low"]
+    id: str
+    created_at: str
+    updated_at: str
+
+
 def todo_write(
-    todos: list[dict[str, str]],
+    todos: list[TodoInput],
     agent_state: Optional["AgentState"] = None,
 ) -> dict[str, Any]:
     """
@@ -50,15 +66,8 @@ def todo_write(
             }
 
         # Validate todo items
-        validated_todos = []
+        validated_todos: list[TodoItem] = []
         for i, todo in enumerate(todos):
-            # Validate required fields
-            if not isinstance(todo, dict):
-                return {
-                    "status": "error",
-                    "error": f"Todo item {i} must be a dictionary",
-                }
-
             if "content" not in todo or not todo["content"]:
                 return {
                     "status": "error",
@@ -87,7 +96,7 @@ def todo_write(
                     "error": f"Todo item {i} has invalid priority '{priority}'. Must be 'high', 'medium', or 'low'",
                 }
 
-            validated_todo = {
+            validated_todo: TodoItem = {
                 "content": todo["content"],
                 "status": status,
                 "priority": priority,
@@ -98,7 +107,7 @@ def todo_write(
             validated_todos.append(validated_todo)
 
         # Check for duplicate IDs
-        todo_ids = [todo["id"] for todo in validated_todos]
+        todo_ids: list[str] = [todo["id"] for todo in validated_todos]
         if len(todo_ids) != len(set(todo_ids)):
             return {
                 "status": "error",

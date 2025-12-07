@@ -38,7 +38,7 @@ class LLMConfig:
         stream: bool = False,
         additional_drop_params: Iterable[str] | None = None,
         api_type: str = "openai_chat_completion",
-        **kwargs,
+        **kwargs: Any,
     ):
         """
         Initialize LLM configuration.
@@ -71,7 +71,8 @@ class LLMConfig:
         self.max_retries = max_retries
         self.debug = debug
         self.stream = stream
-        self.additional_drop_params = tuple(param for param in (additional_drop_params or []) if isinstance(param, str))
+        params_iterable = additional_drop_params or []
+        self.additional_drop_params = tuple(params_iterable)
         self.api_type = api_type
 
         # Store additional parameters
@@ -189,7 +190,7 @@ class LLMConfig:
         else:
             self.extra_params[key] = value
 
-    def update(self, **kwargs) -> None:
+    def update(self, **kwargs: Any) -> None:
         """Update configuration with new parameters."""
         for key, value in kwargs.items():
             self.set_param(key, value)

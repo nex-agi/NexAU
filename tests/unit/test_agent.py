@@ -357,7 +357,7 @@ class TestCreateAgent:
 
             agent = create_agent(
                 name="test_agent",
-                llm_config={"model": "gpt-4o-mini"},
+                llm_config=LLMConfig(model="gpt-4o-mini"),
             )
 
             assert agent.config.name == "test_agent"
@@ -372,7 +372,7 @@ class TestCreateAgent:
 
             agent = create_agent(
                 name="test_agent",
-                llm_config={"model": "gpt-4o-mini", "temperature": 0.5},
+                llm_config=LLMConfig(model="gpt-4o-mini", temperature=0.5),
             )
 
             assert agent.config.llm_config.model == "gpt-4o-mini"
@@ -385,7 +385,7 @@ class TestCreateAgent:
 
             agent = create_agent(
                 name="test_agent",
-                model="gpt-4o-mini",
+                llm_config=LLMConfig(model="gpt-4o-mini", temperature=0.3, max_tokens=2000),
                 temperature=0.3,
                 max_tokens=2000,
             )
@@ -406,7 +406,7 @@ class TestCreateAgent:
 
             agent = create_agent(
                 name="test_agent",
-                llm_config={"model": "gpt-4o-mini"},
+                llm_config=LLMConfig(model="gpt-4o-mini"),
                 tools=[sample_tool],
             )
 
@@ -424,7 +424,7 @@ class TestCreateAgent:
 
                 agent = create_agent(
                     name="test_agent",
-                    llm_config={"model": "gpt-4o-mini"},
+                    llm_config=LLMConfig(model="gpt-4o-mini"),
                     mcp_servers=mcp_servers,
                 )
 
@@ -442,7 +442,7 @@ class TestCreateAgent:
 
             agent = create_agent(
                 name="test_agent",
-                llm_config={"model": "gpt-4o-mini"},
+                llm_config=LLMConfig(model="gpt-4o-mini"),
                 after_model_hooks=[mock_hook],
                 before_model_hooks=[mock_hook],
                 after_tool_hooks=[mock_hook],

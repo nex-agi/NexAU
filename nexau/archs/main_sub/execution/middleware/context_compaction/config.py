@@ -43,7 +43,7 @@ class CompactionConfig(BaseModel):
         """Validate strategy dependencies and resolve file paths."""
         # Ensure sliding window has required LLM creds
         if self.compaction_strategy == "sliding_window":
-            missing = []
+            missing: list[str] = []
             if not self.summary_model:
                 missing.append("summary_model")
             if not self.summary_base_url:

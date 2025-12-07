@@ -17,7 +17,7 @@
 import logging
 import os
 import time
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +34,27 @@ class EditOperation:
         return f"EditOperation(old='{self.old_string[:50]}...', new='{self.new_string[:50]}...', replace_all={self.replace_all})"
 
 
+class EditPayload(TypedDict, total=False):
+    old_string: str
+    new_string: str
+    replace_all: NotRequired[bool]
+
+
+class FileEditPayload(TypedDict):
+    file_path: str
+    edits: list[EditPayload]
+
+
+class AppliedEditDetail(TypedDict):
+    edit_index: int
+    replacements_made: int
+    old_string_length: int
+    new_string_length: int
+
+
 def multiedit_tool(
     file_path: str,
-    edits: list[dict[str, Any]],
+    edits: list[EditPayload],
 ) -> dict[str, Any]:
     """
     Make multiple edits to a single file in one operation.
@@ -76,16 +94,8 @@ def multiedit_tool(
         }
 
     # Validate and parse edit operations
-    edit_operations = []
+    edit_operations: list[EditOperation] = []
     for i, edit in enumerate(edits):
-        if not isinstance(edit, dict):
-            return {
-                "status": "error",
-                "error": f"Edit {i} must be a dictionary",
-                "file_path": file_path,
-                "duration_ms": int((time.time() - start_time) * 1000),
-            }
-
         if "old_string" not in edit:
             return {
                 "status": "error",
@@ -102,9 +112,9 @@ def multiedit_tool(
                 "duration_ms": int((time.time() - start_time) * 1000),
             }
 
-        old_string = edit["old_string"]
-        new_string = edit["new_string"]
-        replace_all = edit.get("replace_all", False)
+        old_string: str = edit["old_string"]
+        new_string: str = edit["new_string"]
+        replace_all: bool = bool(edit.get("replace_all", False))
 
         # Validate strings are different
         if old_string == new_string:
@@ -125,6 +135,7 @@ def multiedit_tool(
 
     # Handle file creation case (first edit has empty old_string)
     is_new_file = False
+    initial_content: str = ""
     if edit_operations[0].old_string == "":
         if os.path.exists(file_path):
             return {
@@ -167,14 +178,14 @@ def multiedit_tool(
         # Read original content or start with initial content for new files
         if is_new_file:
             original_content = ""
-            current_content = initial_content
+            current_content: str = initial_content
         else:
             with open(file_path, encoding="utf-8") as f:
                 original_content = f.read()
             current_content = original_content
 
         # Apply edits in sequence
-        applied_edits: list[dict[str, Any]] = []
+        applied_edits: list[AppliedEditDetail] = []
         for i, edit_op in enumerate(edit_operations):
             if edit_op.old_string not in current_content:
                 return {
@@ -189,11 +200,11 @@ def multiedit_tool(
 
             # Perform the replacement
             if edit_op.replace_all:
-                new_content = current_content.replace(
+                new_content: str = current_content.replace(
                     edit_op.old_string,
                     edit_op.new_string,
                 )
-                replacements_made = current_content.count(edit_op.old_string)
+                replacements_made: int = current_content.count(edit_op.old_string)
             else:
                 new_content = current_content.replace(
                     edit_op.old_string,
@@ -226,7 +237,7 @@ def multiedit_tool(
         total_replacements = sum(edit["replacements_made"] for edit in applied_edits)
         content_size_change = len(current_content) - len(original_content)
 
-        result = {
+        result: dict[str, Any] = {
             "status": "success",
             "file_path": file_path,
             "is_new_file": is_new_file,
@@ -296,7 +307,7 @@ class MultiEditTool:
     def edit_file(
         self,
         file_path: str,
-        edits: list[dict[str, Any]],
+        edits: list[EditPayload],
     ) -> dict[str, Any]:
         """
         Edit a file with advanced options.
@@ -311,7 +322,7 @@ class MultiEditTool:
         """
 
         # Create backup if enabled
-        backup_path = None
+        backup_path: str | None = None
         if self.create_backup and os.path.exists(file_path):
             backup_path = self._create_backup(file_path)
 
@@ -350,7 +361,7 @@ class MultiEditTool:
 
     def batch_edit_files(
         self,
-        file_edits: list[dict[str, Any]],
+        file_edits: list[FileEditPayload],
         stop_on_error: bool = True,
     ) -> list[dict[str, Any]]:
         """
@@ -363,7 +374,7 @@ class MultiEditTool:
         Returns:
             List of results for each file
         """
-        results = []
+        results: list[dict[str, Any]] = []
 
         for file_edit in file_edits:
             file_path = file_edit.get("file_path")
@@ -401,7 +412,7 @@ Final line here."""
     # Test 1: Create a new file
     print("\n📋 测试 1: 创建新文件")
     try:
-        edits = [
+        edits: list[EditPayload] = [
             {"old_string": "", "new_string": test_content},
         ]
         result = multiedit_tool(test_file_path, edits)
@@ -420,7 +431,7 @@ Final line here."""
     # Test 2: Multiple edits on existing file
     print("\n📋 测试 2: 多重编辑")
     try:
-        edits = [
+        edits: list[EditPayload] = [
             {"old_string": "Hello World!", "new_string": "Hello MultiEdit!"},
             {"old_string": "line 2", "new_string": "second line"},
             {"old_string": "This is", "new_string": "Here is", "replace_all": True},
@@ -448,7 +459,7 @@ Final line here."""
     # Test 3: Edit with non-existent old_string (should fail)
     print("\n📋 测试 3: 无效编辑（不存在的字符串）")
     try:
-        edits = [
+        edits: list[EditPayload] = [
             {
                 "old_string": "This string does not exist",
                 "new_string": "replacement",
@@ -469,7 +480,7 @@ Final line here."""
     print("\n📋 测试 4: 类实现（带备份）")
     try:
         multiedit_instance = MultiEditTool(create_backup=True)
-        edits = [
+        edits: list[EditPayload] = [
             {"old_string": "MultiEdit", "new_string": "AdvancedEdit"},
         ]
         result = multiedit_instance.edit_file(test_file_path, edits)
@@ -487,7 +498,7 @@ Final line here."""
     # Test 5: Relative path (should fail)
     print("\n📋 测试 5: 相对路径测试")
     try:
-        edits = [
+        edits: list[EditPayload] = [
             {"old_string": "test", "new_string": "replacement"},
         ]
         result = multiedit_tool("./test.txt", edits)

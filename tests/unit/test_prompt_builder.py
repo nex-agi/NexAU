@@ -221,7 +221,7 @@ class TestGetBaseSystemPrompt:
         builder = PromptBuilder()
 
         with patch.object(builder, "_get_default_system_prompt", return_value="Default prompt"):
-            result = builder._get_base_system_prompt(mock_config)
+            result = builder._get_base_system_prompt(mock_config, {})
 
         assert result == "Default prompt"
 
@@ -231,7 +231,7 @@ class TestGetBaseSystemPrompt:
         builder = PromptBuilder()
 
         with patch.object(builder.prompt_handler, "create_dynamic_prompt", return_value="Processed prompt"):
-            result = builder._get_base_system_prompt(mock_config)
+            result = builder._get_base_system_prompt(mock_config, {})
 
         assert result == "Processed prompt"
 
@@ -255,7 +255,7 @@ class TestGetBaseSystemPrompt:
 
         with patch.object(builder.prompt_handler, "create_dynamic_prompt", side_effect=Exception("Test error")):
             with pytest.raises(ValueError, match="Error processing system prompt"):
-                builder._get_base_system_prompt(mock_config)
+                builder._get_base_system_prompt(mock_config, {})
 
 
 class TestGetDefaultSystemPrompt:
@@ -279,7 +279,7 @@ class TestGetDefaultSystemPrompt:
         with patch.object(builder, "_load_prompt_template", return_value=None):
             result = builder._get_default_system_prompt("TestAgent")
 
-        assert result is None
+        assert result == "You are a helpful assistant."
 
     def test_get_default_system_prompt_rendering_error(self):
         """Test error during template rendering."""
@@ -307,7 +307,7 @@ class TestBuildCapabilitiesDocs:
         builder = PromptBuilder()
 
         with patch.object(builder, "_build_tools_documentation", return_value="Tools doc"):
-            result = builder._build_capabilities_docs([mock_tool], None, None)
+            result = builder._build_capabilities_docs([mock_tool], {}, None)
 
         assert "Tools doc" in result
 
@@ -317,7 +317,7 @@ class TestBuildCapabilitiesDocs:
         sub_agent_factories = {"researcher": Mock()}
 
         with patch.object(builder, "_build_subagents_documentation", return_value="SubAgents doc"):
-            result = builder._build_capabilities_docs([], sub_agent_factories, None)
+            result = builder._build_capabilities_docs([], sub_agent_factories, {})
 
         assert "SubAgents doc" in result
 
@@ -328,7 +328,7 @@ class TestBuildCapabilitiesDocs:
 
         with patch.object(builder, "_build_tools_documentation", return_value="Tools doc"):
             with patch.object(builder, "_build_subagents_documentation", return_value="SubAgents doc"):
-                result = builder._build_capabilities_docs([mock_tool], sub_agent_factories, None)
+                result = builder._build_capabilities_docs([mock_tool], sub_agent_factories, {})
 
         assert "Tools doc" in result
         assert "SubAgents doc" in result
@@ -337,7 +337,7 @@ class TestBuildCapabilitiesDocs:
         """Test building capabilities docs with no tools or sub-agents."""
         builder = PromptBuilder()
 
-        result = builder._build_capabilities_docs([], None, None)
+        result = builder._build_capabilities_docs([], {}, {})
 
         assert result == ""
 
@@ -369,7 +369,7 @@ class TestBuildToolsDocumentation:
 
         template_content = "{% for tool in tools %}{{ tool.name }}{% endfor %}"
         with patch.object(builder, "_load_prompt_template", return_value=template_content):
-            result = builder._build_tools_documentation([mock_tool], None)
+            result = builder._build_tools_documentation([mock_tool], {})
 
         assert "test_tool" in result
 
@@ -384,7 +384,7 @@ class TestBuildToolsDocumentation:
 
         template_content = "{% for tool in tools %}{{ tool.template_override }}{% endfor %}"
         with patch.object(builder, "_load_prompt_template", return_value=template_content):
-            result = builder._build_tools_documentation([tool], None)
+            result = builder._build_tools_documentation([tool], {})
 
         assert "Custom template override" in result
 
@@ -405,7 +405,7 @@ class TestBuildToolsDocumentation:
 
         with patch.object(builder, "_load_prompt_template", return_value=""):
             with pytest.raises(ValueError, match="Error building tools documentation"):
-                builder._build_tools_documentation([mock_tool], None)
+                builder._build_tools_documentation([mock_tool], {})
 
     def test_build_tools_documentation_error(self, mock_tool):
         """Test error handling in tools documentation."""
@@ -413,7 +413,7 @@ class TestBuildToolsDocumentation:
 
         with patch.object(builder, "_load_prompt_template", side_effect=Exception("Test error")):
             with pytest.raises(ValueError, match="Error building tools documentation"):
-                builder._build_tools_documentation([mock_tool], None)
+                builder._build_tools_documentation([mock_tool], {})
 
 
 class TestBuildSubagentsDocumentation:
@@ -612,30 +612,30 @@ class TestBuildTemplateContext:
             ),
         )
 
-    def test_build_template_context_no_runtime(self, mock_config):
+    def test_build_template_context_no_runtime(self):
         """Test building template context without runtime context."""
         builder = PromptBuilder()
 
-        result = builder._build_template_context(mock_config, None)
+        result = builder._build_template_context({})
 
         assert result == {}
 
-    def test_build_template_context_with_runtime(self, mock_config):
+    def test_build_template_context_with_runtime(self):
         """Test building template context with runtime context."""
         builder = PromptBuilder()
         runtime_context = {"key1": "value1", "key2": "value2"}
 
-        result = builder._build_template_context(mock_config, runtime_context)
+        result = builder._build_template_context(runtime_context)
 
         assert result == runtime_context
         assert result["key1"] == "value1"
         assert result["key2"] == "value2"
 
-    def test_build_template_context_empty_runtime(self, mock_config):
+    def test_build_template_context_empty_runtime(self):
         """Test building template context with empty runtime context."""
         builder = PromptBuilder()
 
-        result = builder._build_template_context(mock_config, {})
+        result = builder._build_template_context({})
 
         assert result == {}
 

@@ -120,7 +120,7 @@ class SlidingWindowCompaction:
         """Compact messages by keeping recent iterations."""
         logger.info(f"[SlidingWindowCompaction] Starting compaction on {len(messages)} messages")
 
-        result = []
+        result: list[dict[str, Any]] = []
         start_idx = 0
 
         # Keep system message if present
@@ -143,7 +143,7 @@ class SlidingWindowCompaction:
         if iterations_to_compress:
             # Generate summary for compressed iterations
             # Include system message if present
-            all_compressed_messages = []
+            all_compressed_messages: list[dict[str, Any]] = []
             if self.keep_system and messages and messages[0].get("role") == "system":
                 all_compressed_messages.append(messages[0])
 

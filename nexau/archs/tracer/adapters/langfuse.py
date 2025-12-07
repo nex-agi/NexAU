@@ -17,8 +17,9 @@
 import json
 import logging
 import uuid
+from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol, cast
 
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
 
@@ -30,6 +31,20 @@ try:
 except ImportError:
     Langfuse = None  # type: ignore
     pass
+
+
+class _LangfuseSpanLike(Protocol):
+    """Minimal interface for Langfuse span/generation objects."""
+
+    metadata: dict[str, Any] | None
+
+    def start_span(self, **kwargs: Any) -> Any: ...
+
+    def start_observation(self, **kwargs: Any) -> Any: ...
+
+    def update(self, **kwargs: Any) -> Any: ...
+
+    def end(self) -> Any: ...
 
 
 class LangfuseTracer(BaseTracer):
@@ -182,21 +197,21 @@ class LangfuseTracer(BaseTracer):
 
             elif span_type == SpanType.LLM:
                 # LLM call: Create a Generation
-                parent_obj = parent_span.vendor_obj
+                parent_obj = cast(_LangfuseSpanLike, parent_span.vendor_obj)
                 generation = parent_obj.start_observation(**langfuse_params, as_type="generation")
                 span.vendor_obj = generation
                 if self.debug:
                     logger.debug(f"Created Langfuse generation: {name}")
             elif span_type == SpanType.TOOL:
                 # Tool call: Create a Span
-                parent_obj = parent_span.vendor_obj
+                parent_obj = cast(_LangfuseSpanLike, parent_span.vendor_obj)
                 langfuse_span = parent_obj.start_span(**langfuse_params)
                 span.vendor_obj = langfuse_span
                 if self.debug:
                     logger.debug(f"Created Langfuse span: {name}")
             else:
                 # Other types: Create a Span
-                parent_obj = parent_span.vendor_obj
+                parent_obj = cast(_LangfuseSpanLike, parent_span.vendor_obj)
                 langfuse_span = parent_obj.start_span(**langfuse_params)
                 span.vendor_obj = langfuse_span
                 if self.debug:
@@ -234,7 +249,7 @@ class LangfuseTracer(BaseTracer):
             return
 
         try:
-            langfuse_span = span.vendor_obj
+            langfuse_span = cast(_LangfuseSpanLike, span.vendor_obj)
 
             # Prepare update parameters
             update_params: dict[str, Any] = {}
@@ -308,12 +323,14 @@ class LangfuseTracer(BaseTracer):
         if isinstance(data, (str, int, float, bool)):
             return data
 
-        if isinstance(data, dict):
-            # Recursively serialize dict values
-            return {k: LangfuseTracer._serialize_for_langfuse(v) for k, v in data.items()}
+        if isinstance(data, Mapping):
+            # Recursively serialize mapping values with typed keys
+            mapping_data = cast(Mapping[str, Any], data)
+            return {str(k): LangfuseTracer._serialize_for_langfuse(v) for k, v in mapping_data.items()}
 
         if isinstance(data, (list, tuple)):
-            return [LangfuseTracer._serialize_for_langfuse(item) for item in data]
+            sequence_data = cast(Sequence[Any], data)
+            return [LangfuseTracer._serialize_for_langfuse(item) for item in sequence_data]
 
         # For other types, convert to JSON string
         try:

@@ -25,11 +25,13 @@ Based on the TypeScript FileEditTool implementation.
 """
 
 import difflib
+import importlib
 import json
 import logging
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 from .file_state import (
     clear_file_timestamps,
@@ -54,15 +56,14 @@ def detect_file_encoding(file_path: str) -> str:
         Detected encoding name
     """
     try:
-        import chardet
-
+        chardet = importlib.import_module("chardet")
         with open(file_path, "rb") as f:
             raw_data = f.read()
             result = chardet.detect(raw_data)
             encoding = result["encoding"]
             if encoding and result["confidence"] > 0.7:
                 return encoding
-    except ImportError:
+    except ModuleNotFoundError:
         # chardet not available, use fallback
         pass
     except Exception as e:
@@ -158,7 +159,7 @@ def apply_edit(
     file_path: str,
     old_string: str,
     new_string: str,
-) -> tuple[str, list[dict]]:
+) -> tuple[str, list[dict[str, Any]]]:
     """
     Apply edit operation and generate diff information.
 
@@ -276,7 +277,7 @@ def add_line_numbers(content: str, start_line: int = 1) -> str:
         Content with line numbers
     """
     lines = content.split("\n")
-    numbered_lines = []
+    numbered_lines: list[str] = []
 
     for i, line in enumerate(lines):
         line_num = start_line + i
@@ -552,7 +553,7 @@ def file_edit_tool(
             # Calculate number of lines in the updated content
             num_lines = len(updated_content.split("\n")) if updated_content else 0
 
-            result = {
+            result: dict[str, Any] = {
                 "success": True,
                 "message": message,
                 "file_path": file_path,

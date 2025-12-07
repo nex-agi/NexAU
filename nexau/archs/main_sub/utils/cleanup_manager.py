@@ -20,6 +20,8 @@ import os
 import signal
 import threading
 import weakref
+from types import FrameType
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +45,12 @@ class CleanupManager:
             return
 
         # Global registry to track all active agents for cleanup
-        self._active_agents: set = weakref.WeakSet()
+        self._active_agents: weakref.WeakSet[Any] = weakref.WeakSet()
         self._cleanup_registered = False
         self._cleanup_lock = threading.Lock()
         self._initialized = True
 
-    def register_agent(self, agent) -> None:
+    def register_agent(self, agent: Any) -> None:
         """Register an agent for cleanup tracking."""
         self._active_agents.add(agent)
         self._register_cleanup_handlers()
@@ -92,7 +94,7 @@ class CleanupManager:
 
         logger.info("✅ Agent cleanup completed")
 
-    def _signal_handler(self, signum, frame):
+    def _signal_handler(self, signum: int, frame: FrameType | None) -> None:
         """Handle termination signals by cleaning up agents."""
         logger.info(f"🚨 Received signal {signum}, initiating cleanup...")
         self._cleanup_all_agents()

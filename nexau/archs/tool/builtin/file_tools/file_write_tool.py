@@ -13,10 +13,12 @@
 # limitations under the License.
 
 import difflib
+import importlib
 import json
 import logging
 import os
 import time
+from typing import Any
 
 from .file_state import update_file_timestamp, validate_file_read_state
 
@@ -32,13 +34,14 @@ MAX_LINES_TO_RENDER_FOR_ASSISTANT = 16000
 def _detect_file_encoding(file_path: str) -> str:
     """检测文件编码"""
     try:
-        import chardet
-
+        chardet = importlib.import_module("chardet")
         with open(file_path, "rb") as f:
             raw_data = f.read(10000)  # 读取前10KB用于检测
             result = chardet.detect(raw_data)
             return result.get("encoding", "utf-8") or "utf-8"
-    except (ImportError, Exception):
+    except ModuleNotFoundError:
+        return "utf-8"
+    except Exception:
         # 如果chardet不可用或检测失败，默认使用utf-8
         return "utf-8"
 
@@ -252,7 +255,7 @@ def file_write_tool(
         num_lines = len(content_lines)
 
         # 准备结果
-        result = {
+        result: dict[str, Any] = {
             "success": True,
             "operation_type": operation_type,
             "file_path": file_path,
@@ -347,7 +350,7 @@ class FileWriteTool:
         content: str,
         encoding: str | None = None,
         line_ending: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """
         写入文件并返回结构化结果。
 
@@ -427,9 +430,7 @@ def main():
     test_file = "//users/chenlu//src/tools/file_tools/test_file_write.txt"
     test_content = "Hello, World!\nThis is a test file.\nLine 3"
 
-    result = file_write_tool.invoke(
-        {"file_path": test_file, "content": test_content},
-    )
+    result = file_write_tool(file_path=test_file, content=test_content)
     print("创建文件测试:")
     print(result)
     print()
@@ -439,9 +440,7 @@ def main():
     # breakpoint()
     # 测试更新文件
     updated_content = "Hello, World!\nThis is an updated test file.\nLine 3\nNew line 4"
-    result = file_write_tool.invoke(
-        {"file_path": test_file, "content": updated_content},
-    )
+    result = file_write_tool(file_path=test_file, content=updated_content)
     print("更新文件测试:")
     print(result)
     # breakpoint()

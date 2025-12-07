@@ -26,12 +26,14 @@ Based on the TypeScript FileReadTool implementation.
 """
 
 import base64
+import importlib
 import json
 import logging
 import mimetypes
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 from .file_state import update_file_timestamp
 
@@ -136,15 +138,14 @@ def detect_file_encoding(file_path: str) -> str:
         Detected encoding name
     """
     try:
-        import chardet
-
+        chardet = importlib.import_module("chardet")
         with open(file_path, "rb") as f:
             raw_data = f.read(10000)  # Read first 10KB for detection
             result = chardet.detect(raw_data)
             encoding = result["encoding"]
             if encoding and result["confidence"] > 0.7:
                 return encoding
-    except ImportError:
+    except ModuleNotFoundError:
         # chardet not available, use fallback
         pass
     except Exception as e:
@@ -299,7 +300,7 @@ def read_text_content(
         lines_read = len(lines)
 
         # Truncate long lines
-        truncated_lines = []
+        truncated_lines: list[str] = []
         for line in lines:
             if len(line) > MAX_LINE_LENGTH:
                 truncated_lines.append(line[:MAX_LINE_LENGTH] + "...\n")
@@ -331,7 +332,7 @@ def read_text_content(
             )
 
 
-def read_image_file(file_path: str) -> dict:
+def read_image_file(file_path: str) -> dict[str, Any]:
     """
     Read and encode image file to base64.
 
@@ -469,7 +470,7 @@ def add_line_numbers(content: str, start_line: int = 1) -> str:
     max_line_num = start_line + len(lines) - 1
     width = len(str(max_line_num))
 
-    numbered_lines = []
+    numbered_lines: list[str] = []
     for i, line in enumerate(lines):
         line_num = start_line + i
         numbered_lines.append(f"{line_num:>{width}}: {line}")
@@ -712,12 +713,10 @@ def file_read_tool(
 
 # Usage example (for testing)
 def main():
-    result = file_read_tool.invoke(
-        {
-            "file_path": ("//users/chenlu//src/tools/file_tools/test.json"),
-            "offset": 20,
-            "limit": 50,
-        },
+    result = file_read_tool(
+        file_path="//users/chenlu//src/tools/file_tools/test.json",
+        offset=20,
+        limit=50,
     )
     print(result)
 

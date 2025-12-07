@@ -167,7 +167,7 @@ class XMLParser:
         # Strategy 1.5: Handle JSON content and URLs within XML parameters (legacy fallback)
         try:
 
-            def handle_json_param_content(match):
+            def handle_json_param_content(match: re.Match[str]) -> str:
                 param_name = match.group(1)
                 param_content = match.group(2).strip()
 
@@ -228,11 +228,11 @@ class XMLParser:
         """Wrap all parameter element content in CDATA to treat as plain text."""
 
         # Find all <parameter>...</parameter> blocks
-        def wrap_parameter_block(match):
+        def wrap_parameter_block(match: re.Match[str]) -> str:
             parameter_content = match.group(1)
 
             # Within each parameter block, find individual parameter elements
-            def wrap_individual_param(param_match):
+            def wrap_individual_param(param_match: re.Match[str]) -> str:
                 param_name = param_match.group(1)
                 param_content = param_match.group(2)
 
