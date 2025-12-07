@@ -16,6 +16,7 @@
 
 import json
 import logging
+import traceback
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -152,6 +153,7 @@ class ToolExecutor:
                 trace_ctx.set_outputs({"result": result})
                 return result
             except Exception as e:
+                traceback.print_exc()
                 logger.error(f"❌ Tool '{tool_name}' execution failed: {e}")
                 trace_ctx.set_outputs({"result": {"status": "error", "error": str(e), "error_type": type(e).__name__}})
                 raise

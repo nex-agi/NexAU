@@ -20,16 +20,15 @@ import os
 import re
 import time
 from queue import Empty
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 try:
-    from jupyter_client import KernelManager
     from jupyter_client.kernelspec import KernelSpecManager
+    from jupyter_client.manager import KernelManager
 except ImportError:
     raise ImportError("jupyter_client is required. Install with: pip install jupyter_client")
 
-if TYPE_CHECKING:
-    from ...main_sub.agent_state import AgentState
+from nexau.archs.main_sub.agent_state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +303,7 @@ def run_code_tool(
     description: str | None = None,
     reset_kernel: bool = False,
     shutdown_after: bool = False,
-    agent_state: "AgentState" | None = None,
+    agent_state: AgentState | None = None,
 ) -> dict[str, Any]:
     """
     Execute code in a Jupyter notebook kernel (Python or Bash) with proper handling and output capture.

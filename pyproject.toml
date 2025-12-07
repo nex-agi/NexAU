@@ -23,6 +23,8 @@ dependencies = [
   "diskcache>=5.6.3",
   "anthropic>=0.72.0",
   "opentelemetry-instrumentation-anthropic>=0.47.5",
+  "jupyter-client>=8.6.3",
+  "ipykernel>=7.1.0",
 ]
 description = "A general-purpose agent framework"
 name = "nexau"

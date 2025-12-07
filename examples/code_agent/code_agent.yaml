@@ -48,6 +48,9 @@ tools: # Tool definition and implementation (binding) are decoupled
   - name: multiedit
     yaml_path: ./tools/MultiEdit.tool.yaml
     binding: nexau.archs.tool.builtin.multiedit_tool:multiedit_tool
+  - name: run_code
+    yaml_path: ./tools/RunCode.tool.yaml
+    binding: nexau.archs.tool.builtin.run_code_tool:run_code_tool
 skills: # Skills are used to hint the agent to solve specific tasks
   - ./skills/template-skill
   - ./skills/theme-factory
