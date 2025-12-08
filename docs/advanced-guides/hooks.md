@@ -6,6 +6,8 @@ NexAU no longer exposes separate `before_model_hooks`, `after_model_hooks`, or `
 
 A middleware can implement any of these optional methods:
 
+- `before_agent(hook_input)` – run once before the first LLM call to tweak the initial history or seed run-scoped state.
+- `after_agent(hook_input)` – run once after execution (success, stop-tool, or error) to finalize the returned response.
 - `before_model(hook_input)` – inspect/modify the message list before the LLM call.
 - `after_model(hook_input)` – inspect/modify parsed responses and conversation state after the LLM call.
 - `before_tool(hook_input)` – adjust tool inputs (or cancel calls) right before execution.
@@ -15,8 +17,8 @@ A middleware can implement any of these optional methods:
 
 Execution order is deterministic:
 
-- `before_model` / `before_tool`: first → last
-- `after_model` / `after_tool`: last → first
+- `before_agent` / `before_model` / `before_tool`: first → last
+- `after_agent` / `after_model` / `after_tool`: last → first
 - `wrap_*`: nested, so the first middleware wraps everything else (outermost wins)
 
 ### Minimal Example
@@ -46,6 +48,7 @@ A middleware returns a `HookResult` describing any modifications. Common pattern
 - **Parsed response** – supply `parsed_response=...` to add/remove tool calls, toggle parallelism flags, or set `force_continue=True` to keep iterating without new calls.
 - **Tool input** – via `before_tool`, return `tool_input=...` to tweak parameters (add defaults, redact secrets) before the tool runs.
 - **Tool output** – supply `tool_output=...` to redact/reshape a tool result before it flows back into the conversation.
+- **Agent response** – via `after_agent`, return `agent_response="..."` to wrap, redact, or append metadata to the final assistant reply.
 - **Agent state** – `hook_input.agent_state` is mutable; you can stash counters, feature flags, or tracing IDs for later iterations.
 
 Returning a `HookResult` makes the intent explicit and lets later middlewares build on your changes without guessing what mutated in-place.

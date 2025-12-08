@@ -33,6 +33,24 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class BeforeAgentHookInput:
+    """Input passed to before_agent hooks prior to the run loop."""
+
+    agent_state: AgentState
+    messages: list[dict[str, Any]]
+
+
+@dataclass
+class AfterAgentHookInput:
+    """Input passed to after_agent hooks once execution finishes."""
+
+    agent_state: AgentState
+    messages: list[dict[str, Any]]
+    agent_response: str
+    stop_reason: AgentStopReason | None = None
+
+
+@dataclass
 class BeforeModelHookInput:
     """Input data passed to before_model_hooks.
 
@@ -75,6 +93,7 @@ class HookResult:
     force_continue: bool = False
     tool_output: Any | None = None
     tool_input: dict[str, Any] | None = None
+    agent_response: str | None = None
 
     def has_messages(self) -> bool:
         return self.messages is not None
@@ -85,6 +104,9 @@ class HookResult:
     def has_tool_output(self) -> bool:
         return self.tool_output is not None
 
+    def has_agent_response(self) -> bool:
+        return self.agent_response is not None
+
     def has_modifications(self) -> bool:
         return (
             self.has_messages()
@@ -92,6 +114,7 @@ class HookResult:
             or self.force_continue
             or self.has_tool_output()
             or self.tool_input is not None
+            or self.has_agent_response()
         )
 
     @classmethod
@@ -107,6 +130,7 @@ class HookResult:
         force_continue: bool = False,
         tool_output: Any | None = None,
         tool_input: dict[str, Any] | None = None,
+        agent_response: str | None = None,
     ) -> HookResultT:
         return cls(
             messages=messages,
@@ -114,6 +138,7 @@ class HookResult:
             force_continue=force_continue,
             tool_output=tool_output,
             tool_input=tool_input,
+            agent_response=agent_response,
         )
 
 
@@ -217,6 +242,12 @@ ToolCallFn = Callable[[ToolCallParams], Any]
 
 class Middleware:
     """Extensible middleware abstraction for agent execution pipeline."""
+
+    def before_agent(self, hook_input: BeforeAgentHookInput) -> HookResult:
+        return HookResult.no_changes()
+
+    def after_agent(self, hook_input: AfterAgentHookInput) -> HookResult:
+        return HookResult.no_changes()
 
     def before_model(self, hook_input: BeforeModelHookInput) -> HookResult:
         return HookResult.no_changes()
@@ -431,6 +462,52 @@ class MiddlewareManager:
 
     def __len__(self) -> int:
         return len(self.middlewares)
+
+    def run_before_agent(self, hook_input: BeforeAgentHookInput) -> list[dict[str, Any]]:
+        for middleware in self.middlewares:
+            handler = middleware.before_agent
+            try:
+                result = handler(hook_input)
+                hook_result = self._normalize_result(result)
+                if hook_result.messages is not None:
+                    hook_input.messages = hook_result.messages
+                    logger.info(
+                        "🎣 Middleware %s (before_agent) modified messages",
+                        middleware.__class__.__name__,
+                    )
+                else:
+                    logger.info(
+                        "🎣 Middleware %s (before_agent) made no changes",
+                        middleware.__class__.__name__,
+                    )
+            except Exception as exc:
+                logger.warning(f"⚠️ Before-agent middleware {middleware} failed: {exc}")
+        return hook_input.messages
+
+    def run_after_agent(
+        self,
+        hook_input: AfterAgentHookInput,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        for middleware in reversed(self.middlewares):
+            handler = middleware.after_agent
+            try:
+                result = handler(hook_input)
+                hook_result = self._normalize_result(result)
+                if hook_result.agent_response is not None:
+                    hook_input.agent_response = hook_result.agent_response
+                    logger.info(
+                        "🎣 Middleware %s (after_agent) modified agent response",
+                        middleware.__class__.__name__,
+                    )
+                if hook_result.messages is not None:
+                    hook_input.messages = hook_result.messages
+                    logger.info(
+                        "🎣 Middleware %s (after_agent) modified messages",
+                        middleware.__class__.__name__,
+                    )
+            except Exception as exc:
+                logger.warning(f"⚠️ After-agent middleware {middleware} failed: {exc}")
+        return hook_input.agent_response, hook_input.messages
 
     def run_before_model(self, hook_input: BeforeModelHookInput) -> list[dict[str, Any]]:
         current_messages = hook_input.messages

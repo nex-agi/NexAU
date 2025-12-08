@@ -14,15 +14,19 @@
 
 """Comprehensive tests for the hooks module."""
 
+import logging
+
 import pytest
 
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.execution.hooks import (
+    AfterAgentHookInput,
     AfterModelHookInput,
     AfterModelHookResult,
     AfterToolHookInput,
     AfterToolHookResult,
+    BeforeAgentHookInput,
     BeforeModelHookInput,
     BeforeModelHookResult,
     BeforeToolHookInput,
@@ -41,6 +45,7 @@ from nexau.archs.main_sub.execution.parse_structures import (
     SubAgentCall,
     ToolCall,
 )
+from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 
 
 @pytest.fixture
@@ -96,6 +101,17 @@ def parsed_response():
     )
 
 
+class TestBeforeAgentHookInput:
+    """Tests for BeforeAgentHookInput dataclass."""
+
+    def test_initialization(self, agent_state, messages):
+        """Before-agent hook input captures agent state and messages."""
+        hook_input = BeforeAgentHookInput(agent_state=agent_state, messages=messages)
+
+        assert hook_input.agent_state == agent_state
+        assert hook_input.messages == messages
+
+
 class TestBeforeModelHookInput:
     """Tests for BeforeModelHookInput dataclass."""
 
@@ -147,6 +163,34 @@ class TestAfterModelHookInput:
         )
 
         assert hook_input.parsed_response is None
+
+
+class TestAfterAgentHookInput:
+    """Tests for AfterAgentHookInput dataclass."""
+
+    def test_initialization(self, agent_state, messages):
+        """After-agent hook input captures response metadata."""
+        hook_input = AfterAgentHookInput(
+            agent_state=agent_state,
+            messages=messages,
+            agent_response="done",
+            stop_reason=AgentStopReason.SUCCESS,
+        )
+
+        assert hook_input.agent_state == agent_state
+        assert hook_input.messages == messages
+        assert hook_input.agent_response == "done"
+        assert hook_input.stop_reason == AgentStopReason.SUCCESS
+
+    def test_stop_reason_optional(self, agent_state, messages):
+        """Stop reason defaults to None when omitted."""
+        hook_input = AfterAgentHookInput(
+            agent_state=agent_state,
+            messages=messages,
+            agent_response="done",
+        )
+
+        assert hook_input.stop_reason is None
 
 
 class TestBeforeModelHookResult:
@@ -328,6 +372,22 @@ class TestAfterToolHookResult:
         """Test with_modifications class method."""
         result = AfterToolHookResult.with_modifications(tool_output="modified")
         assert result.tool_output == "modified"
+        assert result.has_modifications() is True
+
+
+class TestHookResult:
+    """Generic HookResult behaviors."""
+
+    def test_agent_response_counts_as_modification(self):
+        """Setting agent_response toggles has_modifications."""
+        result = HookResult(agent_response="done")
+        assert result.has_agent_response() is True
+        assert result.has_modifications() is True
+
+    def test_with_modifications_agent_response(self):
+        """with_modifications can update the agent response."""
+        result = HookResult.with_modifications(agent_response="final")
+        assert result.agent_response == "final"
         assert result.has_modifications() is True
 
 
@@ -561,6 +621,92 @@ class TestMiddlewareManager:
         assert isinstance(result, ModelResponse)
         captured = capsys.readouterr().out
         assert "LLM call invoked with 1 messages" in captured
+
+    def test_logging_middleware_after_model_with_parsed_response(self, agent_state, messages, parsed_response, caplog):
+        """after_model logs parsed-response details when a logger is configured."""
+
+        logger_name = "tests.logging.middleware.parsed"
+        middleware = LoggingMiddleware(model_logger=logger_name, message_preview_chars=20)
+        caplog.set_level(logging.INFO, logger=logger_name)
+
+        hook_input = AfterModelHookInput(
+            agent_state=agent_state,
+            max_iterations=5,
+            current_iteration=1,
+            messages=messages,
+            original_response="response body",
+            parsed_response=parsed_response,
+        )
+
+        middleware.after_model(hook_input)
+
+        joined = "\n".join(record.getMessage() for record in caplog.records if record.name == logger_name)
+        assert "AFTER MODEL HOOK TRIGGERED" in joined
+        assert "Tool calls:" in joined
+        assert "Recent message" in joined
+
+    def test_logging_middleware_after_model_without_parsed_response(self, agent_state, messages, caplog):
+        """after_model handles None parsed_response gracefully."""
+
+        logger_name = "tests.logging.middleware.empty"
+        middleware = LoggingMiddleware(model_logger=logger_name)
+        caplog.set_level(logging.INFO, logger=logger_name)
+
+        hook_input = AfterModelHookInput(
+            agent_state=agent_state,
+            max_iterations=3,
+            current_iteration=0,
+            messages=messages,
+            original_response="text",
+            parsed_response=None,
+        )
+
+        middleware.after_model(hook_input)
+
+        joined = "\n".join(record.getMessage() for record in caplog.records if record.name == logger_name)
+        assert "No parsed response available" in joined
+
+    def test_logging_middleware_after_tool_logs_full_output(self, agent_state, caplog):
+        """after_tool logs details when a logger is configured."""
+
+        logger_name = "tests.logging.middleware.tool"
+        middleware = LoggingMiddleware(tool_logger=logger_name)
+        caplog.set_level(logging.INFO, logger=logger_name)
+
+        hook_input = AfterToolHookInput(
+            agent_state=agent_state,
+            tool_name="calc",
+            tool_call_id="call_1",
+            tool_input={"a": 1},
+            tool_output="result text",
+        )
+
+        middleware.after_tool(hook_input)
+
+        joined = "\n".join(record.getMessage() for record in caplog.records if record.name == logger_name)
+        assert "AFTER TOOL HOOK TRIGGERED" in joined
+        assert "Tool: calc" in joined
+        assert "Tool output: result text" in joined
+
+    def test_logging_middleware_after_tool_truncates_output(self, agent_state, caplog):
+        """after_tool truncates long outputs when preview limit is exceeded."""
+
+        logger_name = "tests.logging.middleware.tool.truncate"
+        middleware = LoggingMiddleware(tool_logger=logger_name, tool_preview_chars=5)
+        caplog.set_level(logging.INFO, logger=logger_name)
+
+        hook_input = AfterToolHookInput(
+            agent_state=agent_state,
+            tool_name="calc",
+            tool_call_id="call_1",
+            tool_input={},
+            tool_output="123456789",
+        )
+
+        middleware.after_tool(hook_input)
+
+        joined = "\n".join(record.getMessage() for record in caplog.records if record.name == logger_name)
+        assert "truncated" in joined
 
 
 class TestHookProtocols:

@@ -53,23 +53,21 @@ jobs:
     - name: Run mypy (generate type coverage reports)
       run: |
         make mypy-coverage
-      continue-on-error: true
 
     - name: Run pyright (strict, non-blocking)
       run: |
         make pyright
-      continue-on-error: true
 
-    - name: Upload type coverage to Codecov
-      uses: codecov/codecov-action@v5
-      with:
-        name: type-coverage
-        files: ./mypy_reports/type_cobertura/cobertura.xml
-        flags: typecov
-        verbose: true
-        use_oidc: true
-      env:
-        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    # - name: Upload type coverage to Codecov
+    #   uses: codecov/codecov-action@v5
+    #   with:
+    #     name: type-coverage
+    #     files: ./mypy_reports/type_cobertura/cobertura.xml
+    #     flags: typecov
+    #     verbose: true
+    #     use_oidc: true
+    #   env:
+    #     CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
     - name: Upload type coverage HTML
       uses: actions/upload-artifact@v4

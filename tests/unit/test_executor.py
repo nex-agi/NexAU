@@ -30,6 +30,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from nexau.archs.main_sub.execution.executor import Executor
+from nexau.archs.main_sub.execution.hooks import HookResult, Middleware
 from nexau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
 from nexau.archs.main_sub.execution.parse_structures import (
     BatchAgentCall,
@@ -211,6 +212,101 @@ class TestExecutorExecution:
 
                 # On next iteration it should stop
                 assert "Stop signal received" in response or "Response before stop" in response
+
+    def test_stop_signal_runs_after_agent_hooks(self, mock_llm_config, agent_state):
+        """Stop-signal early exit should still trigger after-agent hooks."""
+
+        class StopSignalMiddleware(Middleware):
+            executor: Executor
+
+            def __init__(self):
+                self.after_agent_called = False
+
+            def before_agent(self, hook_input):  # type: ignore[override]
+                assert self.executor is not None
+                self.executor.stop_signal = True
+                return HookResult.no_changes()
+
+            def after_agent(self, hook_input):  # type: ignore[override]
+                self.after_agent_called = True
+                return HookResult.with_modifications(agent_response=f"{hook_input.agent_response}::hooked")
+
+        middleware = StopSignalMiddleware()
+        executor = Executor(
+            agent_name="test_agent",
+            agent_id="test_id",
+            tool_registry={},
+            sub_agent_factories={},
+            stop_tools=set(),
+            openai_client=Mock(),
+            llm_config=mock_llm_config,
+            middlewares=[middleware],
+        )
+        middleware.executor = executor
+
+        history = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        with patch.object(executor.llm_caller, "call_llm") as mock_call_llm:
+            response, _ = executor.execute(history, agent_state)
+
+        mock_call_llm.assert_not_called()
+        assert middleware.after_agent_called is True
+        assert response == "Stop signal received.::hooked"
+
+    def test_before_and_after_agent_middlewares(self, mock_llm_config, agent_state):
+        """Lifecycle middlewares can modify initial messages and final response."""
+
+        class LifecycleMiddleware(Middleware):
+            def __init__(self) -> None:
+                self.before_agent_called = 0
+                self.after_agent_called = 0
+
+            def before_agent(self, hook_input):  # type: ignore[override]
+                self.before_agent_called += 1
+                updated = hook_input.messages + [{"role": "system", "content": "prep note"}]
+                return HookResult.with_modifications(messages=updated)
+
+            def after_agent(self, hook_input):  # type: ignore[override]
+                self.after_agent_called += 1
+                return HookResult.with_modifications(agent_response=f"{hook_input.agent_response}::final")
+
+        lifecycle_middleware = LifecycleMiddleware()
+        executor = Executor(
+            agent_name="test_agent",
+            agent_id="test_id",
+            tool_registry={},
+            sub_agent_factories={},
+            stop_tools=set(),
+            openai_client=Mock(),
+            llm_config=mock_llm_config,
+            max_iterations=1,
+            middlewares=[lifecycle_middleware],
+        )
+
+        history = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        with patch.object(executor.llm_caller, "call_llm") as mock_call_llm:
+            mock_call_llm.return_value = ModelResponse(content="Simple response")
+            with patch.object(executor.response_parser, "parse_response") as mock_parse:
+                mock_parse.return_value = ParsedResponse(
+                    original_response="Simple response",
+                    tool_calls=[],
+                    sub_agent_calls=[],
+                    batch_agent_calls=[],
+                )
+
+                response, messages = executor.execute(history, agent_state)
+
+        assert lifecycle_middleware.before_agent_called == 1
+        assert lifecycle_middleware.after_agent_called == 1
+        assert response == "Simple response::final"
+        assert any(msg.get("content") == "prep note" for msg in messages)
 
     def test_execute_openai_tool_messages(self, mock_llm_config, agent_state):
         """Test that OpenAI tool results are appended as tool messages."""

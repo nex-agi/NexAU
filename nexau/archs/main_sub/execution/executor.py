@@ -29,9 +29,11 @@ from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.execution.batch_processor import BatchProcessor
 from nexau.archs.main_sub.execution.hooks import (
+    AfterAgentHookInput,
     AfterModelHook,
     AfterModelHookInput,
     AfterToolHook,
+    BeforeAgentHookInput,
     BeforeModelHook,
     BeforeModelHookInput,
     BeforeToolHook,
@@ -201,12 +203,25 @@ class Executor:
         """
         # Reset the stop signal
         self.stop_signal = False
+        messages: list[dict[str, Any]] = []
 
         force_stop_reason = AgentStopReason.SUCCESS
 
         try:
             # Use history directly as the single source of truth
             messages = history.copy()
+
+            if self.middleware_manager:
+                before_agent_hook_input = BeforeAgentHookInput(
+                    agent_state=agent_state,
+                    messages=messages,
+                )
+                try:
+                    messages = self.middleware_manager.run_before_agent(
+                        before_agent_hook_input,
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ Before-agent middleware execution failed: {e}")
 
             # Loop until no more tool calls or sub-agent calls are made
             iteration = 0
@@ -228,7 +243,14 @@ class Executor:
                     logger.info(
                         "❗️ Stop signal received, stopping execution",
                     )
-                    return "Stop signal received.", messages
+                    stop_response = "Stop signal received."
+                    stop_response, messages = self._apply_after_agent_hooks(
+                        agent_state=agent_state,
+                        messages=messages,
+                        final_response=stop_response,
+                        stop_reason=None,
+                    )
+                    return stop_response, messages
 
                 # Process any queued messages
                 if self.queued_messages:
@@ -456,6 +478,13 @@ class Executor:
                 force_stop_reason = AgentStopReason.MAX_ITERATIONS_REACHED
                 final_response += "\\n\\n[Note: Maximum iteration limit reached]"
 
+            final_response, messages = self._apply_after_agent_hooks(
+                agent_state=agent_state,
+                messages=messages,
+                final_response=final_response,
+                stop_reason=force_stop_reason,
+            )
+
             logger.info(
                 f"🔄 Force stop reason: {force_stop_reason.name}",
             )
@@ -467,6 +496,14 @@ class Executor:
         except Exception as e:
             force_stop_reason = AgentStopReason.ERROR_OCCURRED
             final_response = f"Error: {str(e)}"
+
+            final_response, messages = self._apply_after_agent_hooks(
+                agent_state=agent_state,
+                messages=messages,
+                final_response=final_response,
+                stop_reason=force_stop_reason,
+            )
+
             logger.error(
                 f"🔄 Force stop reason: {force_stop_reason.name}",
             )
@@ -478,6 +515,31 @@ class Executor:
             )
             # Re-raise with more context
             raise RuntimeError(f"Error in agent execution: {e}") from e
+
+    def _apply_after_agent_hooks(
+        self,
+        *,
+        agent_state: "AgentState",
+        messages: list[dict[str, Any]],
+        final_response: str,
+        stop_reason: AgentStopReason | None,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Run after-agent middleware hooks and return possibly updated values."""
+
+        if not self.middleware_manager:
+            return final_response, messages
+
+        after_agent_hook_input = AfterAgentHookInput(
+            agent_state=agent_state,
+            messages=messages,
+            agent_response=final_response,
+            stop_reason=stop_reason,
+        )
+        try:
+            return self.middleware_manager.run_after_agent(after_agent_hook_input)
+        except Exception as exc:
+            logger.warning(f"⚠️ After-agent middleware execution failed: {exc}")
+            return final_response, messages
 
     @staticmethod
     def _build_middleware_manager(
