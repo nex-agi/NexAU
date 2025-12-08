@@ -63,6 +63,7 @@ where = ["."]
 [tool.setuptools.package-data]
 nexau = [
   "archs/main_sub/prompts/*.j2",
+  "archs/tool/builtin/description/*.yaml",
   "cli/dist/*.js",
   "cli/dist/*.js.map",
 ]
