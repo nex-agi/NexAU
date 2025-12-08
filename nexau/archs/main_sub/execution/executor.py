@@ -203,6 +203,8 @@ class Executor:
         """
         # Reset the stop signal
         self.stop_signal = False
+        self._shutdown_event.clear()
+
         messages: list[dict[str, Any]] = []
 
         force_stop_reason = AgentStopReason.SUCCESS
