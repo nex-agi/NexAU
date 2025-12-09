@@ -42,7 +42,7 @@ class _HTTPSessionParams(TypedDict):
     timeout: float
 
 
-STREAMABLE_HTTP_ACCEPT = "application/jsonl+json, application/json"
+STREAMABLE_HTTP_ACCEPT = "application/json, text/event-stream"
 SSE_ACCEPT = "text/event-stream"
 DEFAULT_CONTENT_TYPE = "application/json"
 
