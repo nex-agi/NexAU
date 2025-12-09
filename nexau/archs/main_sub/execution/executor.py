@@ -24,11 +24,11 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import copy_context
 from copy import deepcopy
 from typing import Any, cast
-from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
+
 from anthropic.types import ToolParam
+from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 
 from nexau.archs.llm.llm_config import LLMConfig
-from nexau.archs.tool.tool import Tool
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.execution.batch_processor import BatchProcessor
 from nexau.archs.main_sub.execution.hooks import (
@@ -61,6 +61,7 @@ from nexau.archs.main_sub.tool_call_modes import (
     normalize_tool_call_mode,
 )
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
+from nexau.archs.tool.tool import Tool
 
 logger = logging.getLogger(__name__)
 

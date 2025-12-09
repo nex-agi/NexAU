@@ -25,8 +25,8 @@ from nexau.archs.main_sub.agent import Agent, create_agent
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import AgentConfig, ExecutionConfig
-from nexau.archs.tracer.core import BaseTracer
 from nexau.archs.tool import Tool
+from nexau.archs.tracer.core import BaseTracer
 
 
 class TestAgent:

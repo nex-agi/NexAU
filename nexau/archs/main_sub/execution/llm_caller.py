@@ -21,10 +21,10 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 import openai
+from anthropic.types import ToolParam
 from openai import Stream
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
-from anthropic.types import ToolParam
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.tracer.context import TraceContext, get_current_span

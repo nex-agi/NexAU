@@ -30,7 +30,7 @@ def main():
         {
             "name": "amap-maps-streamableHTTP",
             "type": "http",
-            "url": "https://mcp.amap.com/mcp?key=4a1f6a2bb045e3d2e05461265bc8ead8",
+            "url": "https://mcp.amap.com/mcp?key=xxxx",
             "headers": {
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/event-stream",
@@ -43,6 +43,7 @@ def main():
         model=os.getenv("LLM_MODEL"),
         base_url=os.getenv("LLM_BASE_URL"),
         api_key=os.getenv("LLM_API_KEY"),
+        api_type="openai_chat_completion",
     )
 
     print("📋 Configured Amap MCP Server:")
@@ -72,6 +73,7 @@ You can use Amap Maps tools to:
 
 When using map tools, always provide clear and helpful information to users.
 Explain what you're doing and provide context for the results.""",
+            tool_call_mode="openai",
             mcp_servers=mcp_servers,
             llm_config=llm_config,
         )

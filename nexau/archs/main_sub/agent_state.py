@@ -14,7 +14,7 @@
 
 """Agent state management for unified state container."""
 
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from nexau.archs.main_sub.execution.executor import Executor

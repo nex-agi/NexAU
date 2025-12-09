@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 import yaml
-from pytest import CaptureFixture
 from diskcache import Cache
+from pytest import CaptureFixture
 
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.tool import tool as tool_module

@@ -20,8 +20,9 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
-from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
+
 from anthropic.types import ToolParam
+from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 
 from .model_response import ModelResponse
 from .parse_structures import ParsedResponse

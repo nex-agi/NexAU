@@ -21,8 +21,8 @@ from typing import Any, Literal
 
 import anthropic
 import openai
-from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 from anthropic.types import ToolParam
+from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
@@ -80,7 +80,6 @@ class Agent:
 
         self.tool_call_mode = normalize_tool_call_mode(self.exec_config.tool_call_mode)
         self.use_structured_tool_calls = self.tool_call_mode in STRUCTURED_TOOL_CALL_MODES
-        self.tool_call_payload = self._build_tool_call_payload() if self.use_structured_tool_calls else []
 
         # Initialize services
         self.openai_client = self._initialize_openai_client()
@@ -88,6 +87,9 @@ class Agent:
         # Initialize MCP tools if configured
         if self.config.mcp_servers:
             self._initialize_mcp_tools()
+
+        # Build tool payloads after all tools (including MCP) are loaded
+        self.tool_call_payload = self._build_tool_call_payload() if self.use_structured_tool_calls else []
 
         # Build tool registry for quick lookup
         self.tool_registry = {tool.name: tool for tool in self.config.tools}
@@ -485,7 +487,7 @@ def create_agent(
     middlewares: list[Callable[..., Any]] | None = None,
     # Global storage parameter
     global_storage: GlobalStorage | None = None,
-    tool_call_mode: str = "xml",
+    tool_call_mode: str = "openai",
     tracers: list[BaseTracer] | None = None,
     **llm_kwargs: Any,
 ) -> Agent:

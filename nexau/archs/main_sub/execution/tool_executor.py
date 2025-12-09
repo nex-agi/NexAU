@@ -14,10 +14,10 @@
 
 """Tool execution management with XML parsing and parallel execution."""
 
+import _thread
 import json
 import logging
 import threading
-import _thread
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
