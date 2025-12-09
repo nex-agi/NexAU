@@ -22,17 +22,18 @@ for all tests in the nexau test suite.
 import asyncio
 import os
 import shutil
-import sys
 import tempfile
 import types
 from pathlib import Path
+from typing import cast
 from unittest.mock import Mock, patch
 
 import pytest
 import yaml
 
+from nexau.archs.main_sub.execution.executor import Executor
+
 # Provide a lightweight anthropic stub for environments without the package
-sys.modules.setdefault("anthropic", Mock())
 
 
 def _load_nexau_dependencies():
@@ -151,13 +152,22 @@ def agent_context():
 
 
 @pytest.fixture
-def agent_state(mock_llm_config, global_storage, agent_context):
+def mock_executor():
+    """Lightweight executor mock for agent state interactions."""
+    executor = Mock()
+    executor.add_tool = Mock()
+    return cast(Executor, executor)
+
+
+@pytest.fixture
+def agent_state(mock_llm_config, global_storage, agent_context, mock_executor):
     """Agent state for testing."""
     return AgentState(
         agent_name="test_agent",
         agent_id="test_agent_123",
         context=agent_context,
         global_storage=global_storage,
+        executor=mock_executor,
     )
 
 

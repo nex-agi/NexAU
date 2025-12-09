@@ -24,8 +24,11 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import copy_context
 from copy import deepcopy
 from typing import Any, cast
+from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
+from anthropic.types import ToolParam
 
 from nexau.archs.llm.llm_config import LLMConfig
+from nexau.archs.tool.tool import Tool
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.execution.batch_processor import BatchProcessor
 from nexau.archs.main_sub.execution.hooks import (
@@ -87,7 +90,7 @@ class Executor:
         serial_tool_name: list[str] | None = None,
         global_storage: Any = None,
         tool_call_mode: str = "openai",
-        openai_tools: list[dict[str, Any]] | None = None,
+        openai_tools: list[ChatCompletionToolParam] | list[ToolParam] | None = None,
     ):
         """Initialize executor.
 
@@ -118,6 +121,7 @@ class Executor:
         self.max_running_subagents = max_running_subagents
 
         # Initialize components
+        self._tool_registry_lock = threading.RLock()
         self.middleware_manager = self._build_middleware_manager(
             middlewares or [],
             before_model_hooks or [],
@@ -126,9 +130,10 @@ class Executor:
             before_tool_hooks or [],
         )
         self.tool_executor = ToolExecutor(
-            tool_registry,
-            stop_tools,
+            tool_registry=tool_registry,
+            stop_tools=stop_tools,
             middleware_manager=self.middleware_manager,
+            registry_lock=self._tool_registry_lock,
         )
 
         self.subagent_manager = SubAgentManager(
@@ -161,7 +166,7 @@ class Executor:
         self.serial_tool_name = serial_tool_name or []
         self.tool_call_mode = normalize_tool_call_mode(tool_call_mode)
         self.use_structured_tool_calls = self.tool_call_mode in STRUCTURED_TOOL_CALL_MODES
-        self.structured_tool_payload = deepcopy(openai_tools) if openai_tools else []
+        self.structured_tool_payload: list[ChatCompletionToolParam] | list[ToolParam] = deepcopy(openai_tools) if openai_tools else []
         if self.use_structured_tool_calls and not self.structured_tool_payload:
             logger.warning(
                 f"⚠️ {self.tool_call_mode.capitalize()} tool call mode enabled but no tool definitions were provided.",
@@ -326,12 +331,18 @@ class Executor:
                 logger.info(
                     f"🧠 Calling LLM for agent '{self.agent_name}' with {calculated_max_tokens} max tokens...",
                 )
+                tools_payload = None
+                if self.use_structured_tool_calls:
+                    with self._tool_registry_lock:
+                        # Snapshot current structured tool definitions under lock to avoid concurrent mutation
+                        tools_payload = deepcopy(self.structured_tool_payload)
+
                 model_response = self.llm_caller.call_llm(
                     messages,
                     force_stop_reason=force_stop_reason,
                     agent_state=agent_state,
                     tool_call_mode=self.tool_call_mode,
-                    tools=self.structured_tool_payload if self.use_structured_tool_calls else None,
+                    tools=tools_payload,
                 )
                 if model_response is None:
                     break
@@ -1073,13 +1084,21 @@ class Executor:
                 f"Continue your response if you have more to say, or if you need to make additional tool calls or sub-agent calls."
             )
 
-    def add_tool(self, tool: Any) -> None:
+    def add_tool(self, tool: Tool) -> None:
         """Add a tool to the executor.
 
         Args:
             tool: Tool instance to add
         """
-        self.tool_executor.tool_registry[tool.name] = tool
+        with self._tool_registry_lock:
+            # Keep registry and structured payload updates atomic for concurrent readers/writers
+            self.tool_executor.tool_registry[tool.name] = tool
+            if self.tool_call_mode == "openai":
+                openai_tools = cast(list[ChatCompletionToolParam], self.structured_tool_payload)
+                openai_tools.append(tool.to_openai())
+            else:
+                anthropic_tools = cast(list[ToolParam], self.structured_tool_payload)
+                anthropic_tools.append(tool.to_anthropic())
 
     def add_sub_agent(self, name: str, agent_factory: Callable[[], Any]) -> None:
         """Add a sub-agent factory to the executor.

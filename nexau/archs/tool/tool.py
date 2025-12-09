@@ -19,6 +19,7 @@ import inspect
 import json
 import logging
 import traceback
+from copy import deepcopy
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, Protocol, TypeVar, cast
@@ -28,6 +29,8 @@ import yaml
 from diskcache import Cache  # type: ignore[import-untyped]
 from jsonschema.validators import validator_for
 from pydantic import BaseModel, ConfigDict, Field
+from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
+from anthropic.types import ToolParam
 
 from nexau.archs.main_sub.agent_state import AgentState
 
@@ -341,3 +344,40 @@ class Tool:
         if self.skill_description:
             tool_str += f"\nSkill description: {self.skill_description}"
         return tool_str
+
+    def to_openai(self) -> ChatCompletionToolParam:
+        """Return OpenAI tool definition (function calling schema)."""
+
+        # Deep copy to avoid accidental mutation sharing across callers
+        params: dict[str, Any] = deepcopy(self.get_schema())
+
+        # OpenAI expects a top-level object schema for parameters
+        if not params:
+            params = {"type": "object", "properties": {}}
+        elif "type" not in params:
+            params = {"type": "object", "properties": params.get("properties", {})}
+
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description or "",
+                "parameters": params,
+            },
+        }
+
+    def to_anthropic(self) -> ToolParam:
+        """Return Anthropic tool definition (Tools beta schema)."""
+
+        # Deep copy to avoid accidental mutation sharing across callers
+        params: dict[str, Any] = deepcopy(self.get_schema())
+        if not params:
+            params = {"type": "object", "properties": {}}
+        elif "type" not in params:
+            params = {"type": "object", "properties": params.get("properties", {})}
+
+        return {
+            "name": self.name,
+            "description": self.description or "",
+            "input_schema": params,
+        }

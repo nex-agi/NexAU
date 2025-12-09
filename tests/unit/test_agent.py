@@ -26,6 +26,7 @@ from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import AgentConfig, ExecutionConfig
 from nexau.archs.tracer.core import BaseTracer
+from nexau.archs.tool import Tool
 
 
 class TestAgent:
@@ -74,6 +75,61 @@ class TestAgent:
 
             assert sample_tool.name in agent.tool_registry
             assert sample_tool in agent.config.tools
+
+    def test_add_tool_updates_executor_payload_openai(self, agent_config, global_storage):
+        """add_tool should propagate structured payload for OpenAI mode."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            agent_config.tool_call_mode = "openai"
+            agent = Agent(agent_config, global_storage)
+
+            tool = Tool(
+                name="dynamic",
+                description="dyn tool",
+                input_schema={"type": "object", "properties": {}},
+                implementation=lambda: {"result": "ok"},
+            )
+
+            agent.add_tool(tool)
+
+            assert agent.executor.tool_executor.tool_registry["dynamic"] is tool
+            assert agent.executor.structured_tool_payload[-1]["function"]["name"] == "dynamic"
+
+    def test_add_tool_updates_executor_payload_anthropic(self, global_storage):
+        """add_tool should propagate structured payload for Anthropic mode."""
+        with patch("nexau.archs.main_sub.agent.anthropic") as mock_anthropic:
+            mock_anthropic.Anthropic.return_value = Mock()
+
+            anthropic_llm = LLMConfig(
+                model="claude-3-opus-20240229",
+                base_url="https://api.anthropic.com",
+                api_key="test-key",
+                api_type="anthropic_chat_completion",
+            )
+            agent_config = AgentConfig(
+                name="test_agent",
+                agent_id="test_agent_123",
+                system_prompt="",
+                tools=[],
+                sub_agents=[],
+                llm_config=anthropic_llm,
+                tool_call_mode="anthropic",
+            )
+
+            agent = Agent(agent_config, global_storage)
+
+            tool = Tool(
+                name="dynamic",
+                description="dyn tool",
+                input_schema={"type": "object", "properties": {}},
+                implementation=lambda: {"result": "ok"},
+            )
+
+            agent.add_tool(tool)
+
+            assert agent.executor.tool_executor.tool_registry["dynamic"] is tool
+            assert agent.executor.structured_tool_payload[-1]["name"] == "dynamic"
 
     def test_add_sub_agent(self, agent_config, global_storage):
         """Test adding sub-agents to agent."""
@@ -314,7 +370,7 @@ class TestAgent:
                 with pytest.raises(Exception, match="Test error"):
                     agent.run("Message")
 
-    def test_run_with_parent_agent_state(self, agent_config, global_storage):
+    def test_run_with_parent_agent_state(self, agent_config, global_storage, mock_executor):
         """Test agent run with parent agent state."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
@@ -326,6 +382,7 @@ class TestAgent:
                 agent_id="parent_123",
                 context=AgentContext(),
                 global_storage=global_storage,
+                executor=mock_executor,
             )
 
             with patch.object(agent.executor, "execute") as mock_execute:
@@ -456,16 +513,13 @@ class TestCreateAgent:
 class TestAgentState:
     """Test cases for AgentState."""
 
-    def test_agent_state_initialization(self):
+    def test_agent_state_initialization(self, mock_executor):
         """Test agent state initialization."""
         context = AgentContext({"test": "value"})
         global_storage = GlobalStorage()
 
         state = AgentState(
-            agent_name="test_agent",
-            agent_id="test_id_123",
-            context=context,
-            global_storage=global_storage,
+            agent_name="test_agent", agent_id="test_id_123", context=context, global_storage=global_storage, executor=mock_executor
         )
 
         assert state.agent_name == "test_agent"
@@ -474,13 +528,14 @@ class TestAgentState:
         assert state.global_storage == global_storage
         assert state.parent_agent_state is None
 
-    def test_agent_state_with_parent(self):
+    def test_agent_state_with_parent(self, mock_executor):
         """Test agent state with parent state."""
         parent_state = AgentState(
             agent_name="parent",
             agent_id="parent_123",
             context=AgentContext(),
             global_storage=GlobalStorage(),
+            executor=mock_executor,
         )
 
         child_state = AgentState(
@@ -489,43 +544,53 @@ class TestAgentState:
             context=AgentContext(),
             global_storage=GlobalStorage(),
             parent_agent_state=parent_state,
+            executor=mock_executor,
         )
 
         assert child_state.parent_agent_state == parent_state
 
-    def test_get_set_context_value(self):
+    def test_get_set_context_value(self, mock_executor):
         """Test getting and setting context values."""
         state = AgentState(
             agent_name="test",
             agent_id="test_123",
             context=AgentContext(),
             global_storage=GlobalStorage(),
+            executor=mock_executor,
         )
 
         state.set_context_value("test_key", "test_value")
         assert state.get_context_value("test_key") == "test_value"
         assert state.get_context_value("missing", "default") == "default"
 
-    def test_get_set_global_value(self):
+    def test_get_set_global_value(self, mock_executor):
         """Test getting and setting global values."""
         state = AgentState(
             agent_name="test",
             agent_id="test_123",
             context=AgentContext(),
             global_storage=GlobalStorage(),
+            executor=mock_executor,
         )
 
         state.set_global_value("global_key", "global_value")
         assert state.get_global_value("global_key") == "global_value"
         assert state.get_global_value("missing", "default") == "default"
 
-    def test_string_representations(self):
+    def test_add_tool_delegates_to_executor(self, agent_state, sample_tool, mock_executor):
+        """add_tool should forward to the executor for registration."""
+        agent_state.add_tool(sample_tool)
+
+        mock_executor.add_tool.assert_called_once_with(sample_tool)
+
+    def test_string_representations(self, mock_executor):
         """Test string representations of agent state."""
         state = AgentState(
             agent_name="test_agent",
             agent_id="test_id_123",
             context=AgentContext({"key": "value"}),
             global_storage=GlobalStorage(),
+            executor=mock_executor,
         )
 
         repr_str = repr(state)

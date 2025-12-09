@@ -23,6 +23,8 @@ from typing import Any, cast
 import openai
 from openai import Stream
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
+from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
+from anthropic.types import ToolParam
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.tracer.context import TraceContext, get_current_span
@@ -76,7 +78,7 @@ class LLMCaller:
         force_stop_reason: AgentStopReason | None = None,
         agent_state: AgentState | None = None,
         tool_call_mode: str = "xml",
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ChatCompletionToolParam] | list[ToolParam] | None = None,
     ) -> ModelResponse | None:
         """Call LLM with the given messages and return normalized response.
 

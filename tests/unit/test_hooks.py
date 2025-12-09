@@ -49,7 +49,7 @@ from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 
 
 @pytest.fixture
-def agent_state():
+def agent_state(mock_executor):
     """Create a mock agent state for testing."""
     context = AgentContext()
     global_storage = GlobalStorage()
@@ -58,6 +58,7 @@ def agent_state():
         agent_id="test_id_123",
         context=context,
         global_storage=global_storage,
+        executor=mock_executor,
     )
 
 

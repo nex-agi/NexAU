@@ -14,7 +14,11 @@
 
 """Agent state management for unified state container."""
 
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from nexau.archs.main_sub.execution.executor import Executor
+    from nexau.archs.tool.tool import Tool
 
 from .agent_context import AgentContext, GlobalStorage
 
@@ -35,6 +39,7 @@ class AgentState:
         agent_id: str,
         context: AgentContext,
         global_storage: GlobalStorage,
+        executor: "Executor",
         parent_agent_state: Optional["AgentState"] = None,
     ):
         """Initialize agent state.
@@ -44,12 +49,15 @@ class AgentState:
             agent_id: The unique identifier of the agent
             context: The AgentContext instance for runtime context management
             global_storage: The GlobalStorage instance
+            parent_agent_state: Optional parent state when this is a sub-agent
+            executor: Optional executor reference to allow runtime tool injection
         """
         self.agent_name = agent_name
         self.agent_id = agent_id
         self.context = context
         self.global_storage = global_storage
         self.parent_agent_state = parent_agent_state
+        self._executor = executor
 
     def get_context_value(self, key: str, default: Any = None) -> Any:
         """Get a value from the context.
@@ -92,6 +100,15 @@ class AgentState:
             value: The value to set
         """
         self.global_storage.set(key, value)
+
+    def add_tool(self, tool: "Tool") -> None:
+        """Dynamically add a tool into the current execution context.
+
+        The method prefers an attached executor reference; if unavailable,
+        it will look for an executor stored in global storage under the key
+        ``executor``. A RuntimeError is raised when no executor is found.
+        """
+        self._executor.add_tool(tool)
 
     def __repr__(self) -> str:
         """String representation of the agent state."""

@@ -16,11 +16,14 @@
 
 import json
 import logging
+import threading
+import _thread
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from ..agent_state import AgentState
 
+from nexau.archs.tool.tool import Tool
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
 
@@ -37,9 +40,11 @@ class ToolExecutor:
 
     def __init__(
         self,
-        tool_registry: dict[str, Any],
+        *,
+        tool_registry: dict[str, Tool],
         stop_tools: set[str],
         middleware_manager: MiddlewareManager | None = None,
+        registry_lock: _thread.RLock | None = None,
     ):
         """Initialize tool executor.
 
@@ -47,11 +52,14 @@ class ToolExecutor:
             tool_registry: Dictionary mapping tool names to tool objects
             stop_tools: Set of tool names that should trigger execution stop
             middleware_manager: Optional middleware manager
+            registry_lock: Optional shared lock protecting tool_registry access
         """
         self.tool_registry: dict[str, Any] = tool_registry
         self.stop_tools: set[str] = stop_tools
         self.xml_parser = XMLParser()
         self.middleware_manager = middleware_manager
+        # Re-entrant lock is shared with Executor to synchronize add/read and allow nested acquisitions in hooks.
+        self._registry_lock: _thread.RLock = registry_lock or threading.RLock()
 
     def execute_tool(
         self,
@@ -73,12 +81,13 @@ class ToolExecutor:
         Raises:
             ValueError: If tool is not found
         """
-        if tool_name not in self.tool_registry:
-            error_msg = f"Tool '{tool_name}' for agent '{agent_state.agent_id}' not found"
-            logger.error(f"❌ {error_msg}")
-            raise ValueError(error_msg)
-
-        tool = self.tool_registry[tool_name]
+        with self._registry_lock:
+            if tool_name not in self.tool_registry:
+                error_msg = f"Tool '{tool_name}' for agent '{agent_state.agent_id}' not found"
+                logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
+            tool = self.tool_registry[tool_name]
+            # Fetch tool while holding the lock to avoid TOCTOU races with concurrent registry updates.
 
         tool_parameters = parameters.copy()
         if self.middleware_manager:
@@ -289,10 +298,10 @@ class ToolExecutor:
         if not isinstance(param_value, str):
             return param_value
 
-        if tool_name not in self.tool_registry:
-            return param_value  # Return as string if tool not found
-
-        tool = self.tool_registry[tool_name]
+        with self._registry_lock:
+            tool = self.tool_registry.get(tool_name)
+        if tool is None:
+            return param_value
         schema = getattr(tool, "input_schema", {})
         properties = schema.get("properties", {})
 

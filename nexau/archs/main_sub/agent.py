@@ -14,7 +14,6 @@
 
 """Refactored Agent implementation for the NexAU framework."""
 
-import copy
 import logging
 import uuid
 from collections.abc import Callable
@@ -22,6 +21,8 @@ from typing import Any, Literal
 
 import anthropic
 import openai
+from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
+from anthropic.types import ToolParam
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
@@ -151,31 +152,9 @@ class Agent:
         except Exception as e:
             logger.error(f"Failed to initialize MCP tools: {e}")
 
-    def _build_openai_tool_specs(self) -> list[dict[str, Any]]:
+    def _build_openai_tool_specs(self) -> list[ChatCompletionToolParam]:
         """Convert configured tools and sub-agents into OpenAI tool definitions."""
-        tools_spec: list[dict[str, Any]] = []
-
-        for tool in self.config.tools:
-            parameters: dict[str, Any] = copy.deepcopy(tool.input_schema or {})
-
-            if not parameters:
-                parameters = {"type": "object", "properties": {}}
-            elif "type" not in parameters:
-                parameters = {
-                    "type": "object",
-                    "properties": parameters.get("properties", {}),
-                }
-
-            tools_spec.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description or "",
-                        "parameters": parameters,
-                    },
-                },
-            )
+        tools_spec: list[ChatCompletionToolParam] = [tool.to_openai() for tool in self.config.tools]
 
         for sub_agent_name in (self.config.sub_agent_factories or {}).keys():
             tools_spec.append(
@@ -200,28 +179,9 @@ class Agent:
 
         return tools_spec
 
-    def _build_anthropic_tool_specs(self) -> list[dict[str, Any]]:
+    def _build_anthropic_tool_specs(self) -> list[ToolParam]:
         """Convert tools and sub-agents into anthropic tool definitions."""
-        tools_spec: list[dict[str, Any]] = []
-
-        for tool in self.config.tools:
-            input_schema: dict[str, Any] = copy.deepcopy(tool.input_schema or {})
-
-            if not input_schema:
-                input_schema = {"type": "object", "properties": {}}
-            elif "type" not in input_schema:
-                input_schema = {
-                    "type": "object",
-                    "properties": input_schema.get("properties", {}),
-                }
-
-            tools_spec.append(
-                {
-                    "name": tool.name,
-                    "description": tool.description or "",
-                    "input_schema": input_schema,
-                },
-            )
+        tools_spec: list[ToolParam] = [tool.to_anthropic() for tool in self.config.tools]
 
         for sub_agent_name in (self.config.sub_agent_factories or {}).keys():
             tools_spec.append(
@@ -243,7 +203,7 @@ class Agent:
 
         return tools_spec
 
-    def _build_tool_call_payload(self) -> list[dict[str, Any]]:
+    def _build_tool_call_payload(self) -> list[ChatCompletionToolParam] | list[ToolParam]:
         """Build structured tool definitions for the active tool_call_mode."""
         if self.tool_call_mode == "openai":
             return self._build_openai_tool_specs()
@@ -349,6 +309,7 @@ class Agent:
                 context=ctx,
                 global_storage=self.global_storage,
                 parent_agent_state=parent_agent_state,
+                executor=self.executor,
             )
 
             # Execute with or without tracing

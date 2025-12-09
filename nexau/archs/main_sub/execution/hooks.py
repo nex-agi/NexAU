@@ -20,6 +20,8 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
+from anthropic.types import ToolParam
 
 from .model_response import ModelResponse
 from .parse_structures import ParsedResponse
@@ -218,7 +220,7 @@ class ModelCallParams:
     force_stop_reason: AgentStopReason | None
     agent_state: AgentState | None
     tool_call_mode: str
-    tools: list[dict[str, Any]] | None
+    tools: list[ChatCompletionToolParam] | list[ToolParam] | None
     api_params: dict[str, Any]
     openai_client: Any | None = None
     llm_config: Any | None = None
