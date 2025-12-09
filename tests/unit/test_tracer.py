@@ -304,7 +304,7 @@ def test_langfuse_tracer_creates_trace_and_generation():
     assert isinstance(root_span.vendor_obj, DummyLangfuseObject)
 
     llm_span = tracer.start_span("llm", SpanType.LLM, parent_span=root_span, attributes={"foo": "bar"})
-    assert root_span.vendor_obj.start_observation_calls[0]["as_type"] == "generation"
+    assert root_span.vendor_obj.start_observation_calls[0]["as_type"] == "span"
     assert llm_span.vendor_obj.metadata["span_type"] == SpanType.LLM.value
 
 

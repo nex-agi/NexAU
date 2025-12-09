@@ -19,32 +19,13 @@ import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Any, Protocol, cast
+from typing import Any, cast
+
+from langfuse import Langfuse, LangfuseSpan
 
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
 
 logger = logging.getLogger(__name__)
-
-# Try to import Langfuse - it's an optional dependency
-try:
-    from langfuse import Langfuse
-except ImportError:
-    Langfuse = None  # type: ignore
-    pass
-
-
-class _LangfuseSpanLike(Protocol):
-    """Minimal interface for Langfuse span/generation objects."""
-
-    metadata: dict[str, Any] | None
-
-    def start_span(self, **kwargs: Any) -> Any: ...
-
-    def start_observation(self, **kwargs: Any) -> Any: ...
-
-    def update(self, **kwargs: Any) -> Any: ...
-
-    def end(self) -> Any: ...
 
 
 class LangfuseTracer(BaseTracer):
@@ -98,9 +79,6 @@ class LangfuseTracer(BaseTracer):
         Raises:
             ImportError: If langfuse package is not installed
         """
-        if Langfuse is None:
-            raise ImportError("langfuse package is not installed. Install it with: pip install langfuse")
-
         self.enabled = enabled
         self.debug = debug
 
@@ -197,21 +175,22 @@ class LangfuseTracer(BaseTracer):
 
             elif span_type == SpanType.LLM:
                 # LLM call: Create a Generation
-                parent_obj = cast(_LangfuseSpanLike, parent_span.vendor_obj)
-                generation = parent_obj.start_observation(**langfuse_params, as_type="generation")
+                parent_obj = cast(LangfuseSpan, parent_span.vendor_obj)
+                # Workaround for Langfuse, as_type="generation" may lead to LLM event lost when using new api.
+                generation = parent_obj.start_observation(**langfuse_params, as_type="span")
                 span.vendor_obj = generation
                 if self.debug:
                     logger.debug(f"Created Langfuse generation: {name}")
             elif span_type == SpanType.TOOL:
                 # Tool call: Create a Span
-                parent_obj = cast(_LangfuseSpanLike, parent_span.vendor_obj)
+                parent_obj = cast(LangfuseSpan, parent_span.vendor_obj)
                 langfuse_span = parent_obj.start_span(**langfuse_params)
                 span.vendor_obj = langfuse_span
                 if self.debug:
                     logger.debug(f"Created Langfuse span: {name}")
             else:
                 # Other types: Create a Span
-                parent_obj = cast(_LangfuseSpanLike, parent_span.vendor_obj)
+                parent_obj = cast(LangfuseSpan, parent_span.vendor_obj)
                 langfuse_span = parent_obj.start_span(**langfuse_params)
                 span.vendor_obj = langfuse_span
                 if self.debug:
@@ -249,7 +228,7 @@ class LangfuseTracer(BaseTracer):
             return
 
         try:
-            langfuse_span = cast(_LangfuseSpanLike, span.vendor_obj)
+            langfuse_span = cast(LangfuseSpan, span.vendor_obj)
 
             # Prepare update parameters
             update_params: dict[str, Any] = {}
@@ -257,7 +236,7 @@ class LangfuseTracer(BaseTracer):
             if outputs is not None:
                 update_params["output"] = self._serialize_for_langfuse(outputs)
                 if "model" in outputs and "usage" in outputs:
-                    langfuse_span.update(model=outputs["model"], usage_details=outputs["usage"])
+                    langfuse_span.update(model=outputs["model"], usage_details=outputs["usage"])  # type: ignore
 
             if error is not None:
                 update_params["level"] = "ERROR"
