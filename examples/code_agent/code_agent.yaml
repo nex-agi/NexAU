@@ -1,18 +1,19 @@
 variables:
-  max_tokens: 100000
+  max_tokens: 64000
 
 type: agent
 name: nexau_code_agent
 max_context_tokens: ${variables.max_tokens}
 system_prompt: ./system-workflow.md
 system_prompt_type: jinja
-tool_call_mode: openai # xml, openai or anthorpic
+tool_call_mode: openai # xml, openai or anthropic
 llm_config: # Support environment variable replacement in YAML config
   model: ${env.LLM_MODEL}
   base_url: ${env.LLM_BASE_URL}
   api_key: ${env.LLM_API_KEY}
   temperature: 0.7
-  stream: False
+  stream: false
+  max_tokens: ${variables.max_tokens}
   api_type: openai_chat_completion # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
 tools: # Tool definition and implementation (binding) are decoupled
   - name: web_search

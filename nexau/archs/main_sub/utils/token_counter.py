@@ -14,9 +14,10 @@
 
 """Token counting utilities for agents."""
 
+import json
 import logging
 from collections.abc import Callable
-from typing import Any, Final
+from typing import Any, Final, cast
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,9 @@ class TokenCounter:
         self.model = model
         self._counter = self._create_counter()
 
-    def _create_counter(self) -> Callable[[list[dict[str, Any]]], int]:
+    def _create_counter(
+        self,
+    ) -> Callable[[list[dict[str, Any]], list[dict[str, Any]] | None], int]:
         """Create the appropriate token counter based on strategy."""
         if self.strategy == "tiktoken" and TIKTOKEN_AVAILABLE:
             return self._create_tiktoken_counter()
@@ -55,14 +58,19 @@ class TokenCounter:
                 )
             return self._create_fallback_counter()
 
-    def _create_tiktoken_counter(self) -> Callable[[list[dict[str, Any]]], int]:
+    def _create_tiktoken_counter(
+        self,
+    ) -> Callable[[list[dict[str, Any]], list[dict[str, Any]] | None], int]:
         """Create tiktoken-based counter."""
         if tiktoken is None:
             raise RuntimeError("tiktoken is not available")
         try:
             encoding = tiktoken.encoding_for_model(self.model)
 
-            def tiktoken_message_counter(messages: list[dict[str, Any]]) -> int:
+            def tiktoken_message_counter(
+                messages: list[dict[str, Any]],
+                tools: list[dict[str, Any]] | None = None,
+            ) -> int:
                 """Count tokens in messages using tiktoken."""
                 total_tokens = 0
                 for message in messages:
@@ -70,9 +78,24 @@ class TokenCounter:
                     total_tokens += len(
                         encoding.encode(
                             message.get("content", ""),
-                            disallowed_special=(),
+                            allowed_special=set(),
                         ),
                     )
+                    reasoning = message.get("reasoning_content", "")
+                    if reasoning:
+                        total_tokens += len(
+                            encoding.encode(
+                                reasoning,
+                                allowed_special=set(),
+                            ),
+                        )
+                    if tool_calls := message.get("tool_calls"):
+                        total_tokens += self._count_tiktoken_tool_calls(
+                            tool_calls,
+                            encoding,
+                        )
+                if tools:
+                    total_tokens += self._count_tiktoken_tools(tools, encoding)
                 return total_tokens
 
             return tiktoken_message_counter
@@ -82,29 +105,130 @@ class TokenCounter:
             )
             return self._create_fallback_counter()
 
-    def _create_fallback_counter(self) -> Callable[[list[dict[str, Any]]], int]:
+    def _create_fallback_counter(
+        self,
+    ) -> Callable[[list[dict[str, Any]], list[dict[str, Any]] | None], int]:
         """Create fallback counter using character approximation."""
 
-        def fallback_message_counter(messages: list[dict[str, Any]]) -> int:
+        def fallback_message_counter(
+            messages: list[dict[str, Any]],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> int:
             """Fallback token counter using character approximation."""
             total_tokens = 0
             for message in messages:
                 # Add tokens for role and content using chars/4 approximation
                 total_tokens += len(message.get("role", "")) // 4
                 total_tokens += len(message.get("content", "")) // 4
+                total_tokens += len(message.get("reasoning_content", "")) // 4
                 # Add overhead tokens for message formatting
                 total_tokens += 4
+                tool_calls = message.get("tool_calls")
+                if tool_calls:
+                    total_tokens += self._count_fallback_tool_calls(tool_calls)
+            if tools:
+                total_tokens += self._count_fallback_tools(tools)
             return max(total_tokens, 1)  # Ensure at least 1 token
 
         return fallback_message_counter
 
-    def count_tokens(self, messages: list[dict[str, Any]]) -> int:
+    def _count_tiktoken_tool_calls(
+        self,
+        tool_calls: list[dict[str, Any]],
+        encoding: Any,
+    ) -> int:
+        """Count tokens contributed by tool calls using tiktoken."""
+        total_tokens = 0
+        for call in tool_calls:
+            # Base overhead per tool call based on OpenAI cookbook guidance
+            total_tokens += 3
+
+            function_data = call.get("function")
+            if not isinstance(function_data, dict):
+                continue
+
+            function_data = cast(dict[str, Any], function_data)
+
+            total_tokens += len(
+                encoding.encode(
+                    str(function_data.get("name", "")),
+                    allowed_special=set(),
+                ),
+            )
+
+            args_value = function_data.get("arguments", "")
+            args_value = cast(dict[str, Any], args_value)
+            try:
+                args_str = json.dumps(args_value)
+            except TypeError:
+                args_str = str(args_value)
+            total_tokens += len(
+                encoding.encode(args_str, allowed_special=set()),
+            )
+
+        return total_tokens
+
+    def _count_tiktoken_tools(
+        self,
+        tools: list[dict[str, Any]],
+        encoding: Any,
+    ) -> int:
+        """Count tokens contributed by tool definitions using tiktoken."""
+        total_tokens = 0
+        for tool in tools:
+            try:
+                tool_str = json.dumps(tool)
+            except TypeError:
+                tool_str = str(tool)
+            total_tokens += len(encoding.encode(tool_str, allowed_special=set()))
+        return total_tokens
+
+    def _count_fallback_tool_calls(self, tool_calls: list[dict[str, Any]]) -> int:
+        """Approximate tokens contributed by tool calls without tiktoken."""
+        total_tokens = 0
+        for call in tool_calls:
+            total_tokens += 3
+
+            function_data = call.get("function")
+            if not isinstance(function_data, dict):
+                continue
+
+            function_data = cast(dict[str, Any], function_data)
+
+            total_tokens += len(str(function_data.get("name", ""))) // 4
+            args_value = function_data.get("arguments", "")
+            args_value = cast(dict[str, Any], args_value)
+            try:
+                args_str = json.dumps(args_value)
+            except TypeError:
+                args_str = str(args_value)
+            total_tokens += len(args_str) // 4
+
+        return total_tokens
+
+    def _count_fallback_tools(self, tools: list[dict[str, Any]]) -> int:
+        """Approximate tokens contributed by tool definitions without tiktoken."""
+        total_tokens = 0
+        for tool in tools:
+            try:
+                tool_str = json.dumps(tool)
+            except TypeError:
+                tool_str = str(tool)
+            total_tokens += len(tool_str) // 4
+        return total_tokens
+
+    def count_tokens(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> int:
         """Count total tokens in a list of messages.
 
         Args:
             messages: List of message dictionaries with 'role' and 'content' keys
+            tools: Optional list of tool definitions to include in token count
 
         Returns:
             Total token count
         """
-        return self._counter(messages)
+        return self._counter(messages, tools)

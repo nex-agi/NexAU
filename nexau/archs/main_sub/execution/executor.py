@@ -283,9 +283,16 @@ class Executor:
                     except Exception as e:
                         logger.warning(f"⚠️ Before-model middleware execution failed: {e}")
 
-                # Count current prompt tokens
+                tools_payload = None
+                if self.use_structured_tool_calls:
+                    with self._tool_registry_lock:
+                        # Snapshot current structured tool definitions under lock to avoid concurrent mutation
+                        tools_payload = deepcopy(self.structured_tool_payload)
+
+                # Count current prompt tokens (including tool definitions if present)
                 current_prompt_tokens = self.token_counter.count_tokens(
                     messages,
+                    tools=cast(list[dict[str, Any]], tools_payload),
                 )
 
                 force_stop_reason = AgentStopReason.SUCCESS
@@ -332,12 +339,6 @@ class Executor:
                 logger.info(
                     f"🧠 Calling LLM for agent '{self.agent_name}' with {calculated_max_tokens} max tokens...",
                 )
-                tools_payload = None
-                if self.use_structured_tool_calls:
-                    with self._tool_registry_lock:
-                        # Snapshot current structured tool definitions under lock to avoid concurrent mutation
-                        tools_payload = deepcopy(self.structured_tool_payload)
-
                 model_response = self.llm_caller.call_llm(
                     messages,
                     force_stop_reason=force_stop_reason,
@@ -475,6 +476,7 @@ class Executor:
                     )
                 current_prompt_tokens = self.token_counter.count_tokens(
                     messages,
+                    tools=cast(list[dict[str, Any]], tools_payload),
                 )
 
                 token_limit_hint = self._build_token_limit_hint(
