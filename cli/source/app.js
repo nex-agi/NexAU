@@ -183,10 +183,11 @@ export default function App({yamlPath}) {
 			steps: []
 		}]);
 
-		// Start the Python agent process
-		const pythonScript = path.join(__dirname, '..', 'agent_runner.py');
-		const python = spawn('uv', ['run', 'python', pythonScript, yamlPath], {
-			cwd: path.join(__dirname, '..', '..'),
+		// Start the Python agent process from the packaged module
+		const repoRoot = path.join(__dirname, '..', '..');
+		const pythonModule = 'nexau.cli.agent_runner';
+		const python = spawn('uv', ['run', 'python', '-m', pythonModule, yamlPath], {
+			cwd: repoRoot,
 		});
 
 		agentProcess.current = python;
@@ -343,7 +344,7 @@ export default function App({yamlPath}) {
 		if (!value.trim() || !isReady || isProcessing) return;
 
 		const userMessage = value.trim();
-		
+
 		// Check for /clear command
 		if (userMessage === "/clear" || userMessage.startsWith("/clear ")) {
 			// Clear all conversation history and reset to fresh empty state
@@ -354,7 +355,7 @@ export default function App({yamlPath}) {
 			setCurrentSteps([]);
 			setSubAgentTraces(new Map());
 			setActiveSubAgentId(null);
-			
+
 			// Send message to Python agent
 			if (agentProcess.current) {
 				agentProcess.current.stdin.write(

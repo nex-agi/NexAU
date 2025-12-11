@@ -26,11 +26,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-# Add parent directory to path to import nexau
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from cli_subagent_adapter import attach_cli_to_agent
-
 from nexau.archs.config.config_loader import (
     AgentBuilder,
     ConfigError,
@@ -43,6 +38,7 @@ from nexau.archs.main_sub.execution.hooks import (
     AfterToolHookInput,
     AfterToolHookResult,
 )
+from nexau.cli.cli_subagent_adapter import attach_cli_to_agent
 
 if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
     from nexau.archs.main_sub.agent import Agent

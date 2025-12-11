@@ -36,17 +36,44 @@ if [ ! -d "cli" ]; then
     exit 1
 fi
 
-# Build the CLI if needed
+# Build the CLI if needed (or if source files are newer)
 echo -e "${YELLOW}Checking if CLI needs to be built...${NC}"
 
-if [ ! -d "cli/dist" ] || [ ! -f "cli/dist/cli.js" ]; then
+# Temporarily disable exit-on-error so we can interpret the probe's status.
+set +e
+python - <<'PY'
+import os
+import sys
+
+dist = "cli/dist/cli.js"
+sources = ["cli/source/app.js", "cli/source/cli.js"]
+
+# If dist is missing, signal rebuild (exit 0)
+if not os.path.exists(dist):
+    sys.exit(0)
+
+dist_mtime = os.path.getmtime(dist)
+
+# If any source file is newer, signal rebuild (exit 0)
+for src in sources:
+    if not os.path.exists(src) or os.path.getmtime(src) > dist_mtime:
+        sys.exit(0)
+
+# No rebuild needed -> exit 1
+sys.exit(1)
+PY
+
+probe_status=$?
+set -e
+
+if [ $probe_status -eq 0 ]; then
     echo -e "${YELLOW}Building CLI...${NC}"
     cd cli
     npm install
     npm run build
     cd ..
 else
-    echo -e "${GREEN}CLI already built${NC}"
+    echo -e "${GREEN}CLI already built and up-to-date${NC}"
 fi
 
 # Run the agent
