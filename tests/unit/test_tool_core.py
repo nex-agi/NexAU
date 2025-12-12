@@ -55,6 +55,41 @@ def test_from_yaml_missing_file_raises_file_not_found():
         Tool.from_yaml("/non/existent/tool.yaml", binding=None)
 
 
+def test_from_yaml_uses_yaml_binding_when_agent_binding_missing(tmp_path: Path):
+    yaml_path = tmp_path / "yaml_binding.tool.yaml"
+    yaml_content = {
+        "type": "tool",
+        "name": "yaml_binding",
+        "description": "desc",
+        "binding": "pkg.module:func",
+        "input_schema": {"type": "object", "properties": {}},
+    }
+    yaml_path.write_text(yaml.safe_dump(yaml_content))
+
+    tool = Tool.from_yaml(str(yaml_path), binding=None)
+
+    assert tool.implementation is None
+    assert tool.implementation_import_path == "pkg.module:func"
+
+
+def test_from_yaml_prefers_agent_binding_over_yaml_binding(tmp_path: Path):
+    yaml_path = tmp_path / "yaml_binding_override.tool.yaml"
+    yaml_content = {
+        "type": "tool",
+        "name": "yaml_binding_override",
+        "description": "desc",
+        "binding": "yaml.module:func",
+        "input_schema": {"type": "object", "properties": {}},
+    }
+    yaml_path.write_text(yaml.safe_dump(yaml_content))
+
+    agent_binding = lambda: None  # noqa: E731
+    tool = Tool.from_yaml(str(yaml_path), binding=agent_binding)
+
+    assert tool.implementation is agent_binding
+    assert tool.implementation_import_path is None
+
+
 @pytest.mark.parametrize("reserved_field", ["global_storage", "agent_state"])
 def test_from_yaml_rejects_reserved_fields(tmp_path: Path, reserved_field):
     yaml_path = tmp_path / f"{reserved_field}.yaml"

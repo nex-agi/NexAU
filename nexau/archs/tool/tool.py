@@ -80,6 +80,7 @@ class ToolYamlSchema(BaseModel):
     template_override: str | None = None
     timeout: int | None = Field(default=None, gt=0)
     builtin: str | None = None
+    binding: str | None = None
 
 
 def cache_result(func: F) -> F:  # noqa: UP047
@@ -191,6 +192,9 @@ class Tool:
         input_schema = tool_def.get("input_schema", {})
         use_cache = tool_def.get("use_cache", False)
         disable_parallel = tool_def.get("disable_parallel", False)
+
+        if binding is None and "binding" in tool_def:
+            binding = tool_def.get("binding")
 
         if "global_storage" in input_schema:
             raise ValueError(
