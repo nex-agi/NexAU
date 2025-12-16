@@ -137,6 +137,7 @@ def todo_write(
         return {
             "status": "success",
             "message": f"Todo list updated with {total_todos} items",
+            "todos": validated_todos,
             "summary": {
                 "total": total_todos,
                 "pending": pending_count,
