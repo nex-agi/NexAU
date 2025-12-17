@@ -452,40 +452,13 @@ class Executor:
                         1,
                     ).strip()
 
-                # Add tool results as user feedback with iteration context
-                remaining_iterations = self.max_iterations - iteration - 1
-                iteration_hint = self._build_iteration_hint(
-                    iteration + 1,
-                    self.max_iterations,
-                    remaining_iterations,
-                )
-
                 if tool_results:
                     messages.append(
                         {
                             "role": "user",
-                            "content": f"Tool execution results:\n{tool_results}\n\n{iteration_hint}",
+                            "content": f"Tool execution results:\n{tool_results}",
                         },
                     )
-                else:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": f"{iteration_hint}",
-                        },
-                    )
-                current_prompt_tokens = self.token_counter.count_tokens(
-                    messages,
-                    tools=cast(list[dict[str, Any]], tools_payload),
-                )
-
-                token_limit_hint = self._build_token_limit_hint(
-                    current_prompt_tokens,
-                    self.max_context_tokens,
-                    available_tokens,
-                    desired_max_tokens,
-                )
-                messages[-1]["content"] += f"\n\n{token_limit_hint}"
 
                 iteration += 1
 
@@ -1040,52 +1013,6 @@ class Executor:
         logger.info(
             f"✅ Executor cleanup completed for agent '{self.agent_name}'",
         )
-
-    def _build_iteration_hint(
-        self,
-        current_iteration: int,
-        max_iterations: int,
-        remaining_iterations: int,
-    ) -> str:
-        """Build a hint message for the LLM about iteration status."""
-        if remaining_iterations <= 1:
-            return (
-                f"⚠️ WARNING: This is iteration {current_iteration}/{max_iterations}. "
-                f"You have only {remaining_iterations} iteration(s) remaining. "
-                f"Please provide a conclusive response and avoid making additional tool calls or sub-agent calls "
-                f"unless absolutely critical. Focus on summarizing your findings and providing final recommendations."
-            )
-        elif remaining_iterations <= 3:
-            return (
-                f"🔄 Iteration {current_iteration}/{max_iterations} - {remaining_iterations} iterations remaining. "
-                f"Please be mindful of the remaining steps and work towards a conclusion."
-            )
-        else:
-            return (
-                f"🔄 Iteration {current_iteration}/{max_iterations} - Continue your response if you have more to say, "
-                f"or if you need to make additional tool calls or sub-agent calls."
-            )
-
-    def _build_token_limit_hint(
-        self,
-        current_prompt_tokens: int,
-        max_tokens: int,
-        remaining_tokens: int,
-        desired_max_tokens: int,
-    ) -> str:
-        """Build a hint message for the LLM about token limit."""
-        if remaining_tokens < 3 * desired_max_tokens:
-            return (
-                f"⚠️ WARNING: Token usage is approaching the limit {current_prompt_tokens}/{max_tokens}."
-                f"You have only {remaining_tokens} tokens left."
-                f"Please be mindful of the token limit and avoid making additional tool calls or sub-agent calls "
-                f"unless absolutely critical. Focus on summarizing your findings and providing final recommendations."
-            )
-        else:
-            return (
-                f"🔄 Token Usage: {current_prompt_tokens}/{max_tokens} in the current prompt - {remaining_tokens} tokens left."
-                f"Continue your response if you have more to say, or if you need to make additional tool calls or sub-agent calls."
-            )
 
     def add_tool(self, tool: Tool) -> None:
         """Add a tool to the executor.

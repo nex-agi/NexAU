@@ -387,10 +387,10 @@ class TestExecutorExecution:
         tool_content = matching_tool_messages[0]["content"]
         assert '"result"' in tool_content
 
-        # Tool message should appear before the user iteration hint
+        # Tool message should appear before the final assistant reply
         tool_index = messages.index(matching_tool_messages[0])
         assert tool_index + 1 < len(messages)
-        assert messages[tool_index + 1]["role"] == "user"
+        assert messages[tool_index + 1]["role"] == "assistant"
 
     def test_execute_with_max_iterations(self, mock_llm_config, agent_state):
         """Test execution stops at max iterations."""
@@ -900,90 +900,6 @@ class TestExecutorCleanup:
 
 class TestExecutorHelperMethods:
     """Test executor helper methods."""
-
-    def test_build_iteration_hint_low_remaining(self, mock_llm_config):
-        """Test iteration hint with low remaining iterations."""
-        executor = Executor(
-            agent_name="test_agent",
-            agent_id="test_id",
-            tool_registry={},
-            sub_agent_factories={},
-            stop_tools=set(),
-            openai_client=Mock(),
-            llm_config=mock_llm_config,
-        )
-
-        hint = executor._build_iteration_hint(9, 10, 1)
-
-        assert "WARNING" in hint
-        assert "1 iteration(s) remaining" in hint
-
-    def test_build_iteration_hint_medium_remaining(self, mock_llm_config):
-        """Test iteration hint with medium remaining iterations."""
-        executor = Executor(
-            agent_name="test_agent",
-            agent_id="test_id",
-            tool_registry={},
-            sub_agent_factories={},
-            stop_tools=set(),
-            openai_client=Mock(),
-            llm_config=mock_llm_config,
-        )
-
-        hint = executor._build_iteration_hint(8, 10, 2)
-
-        assert "2 iterations remaining" in hint
-        assert "mindful" in hint
-
-    def test_build_iteration_hint_high_remaining(self, mock_llm_config):
-        """Test iteration hint with high remaining iterations."""
-        executor = Executor(
-            agent_name="test_agent",
-            agent_id="test_id",
-            tool_registry={},
-            sub_agent_factories={},
-            stop_tools=set(),
-            openai_client=Mock(),
-            llm_config=mock_llm_config,
-        )
-
-        hint = executor._build_iteration_hint(2, 10, 8)
-
-        assert "Continue your response" in hint
-
-    def test_build_token_limit_hint_low_remaining(self, mock_llm_config):
-        """Test token limit hint with low remaining tokens."""
-        executor = Executor(
-            agent_name="test_agent",
-            agent_id="test_id",
-            tool_registry={},
-            sub_agent_factories={},
-            stop_tools=set(),
-            openai_client=Mock(),
-            llm_config=mock_llm_config,
-        )
-
-        hint = executor._build_token_limit_hint(9000, 10000, 1000, 4000)
-
-        assert "WARNING" in hint
-        assert "1000 tokens left" in hint
-
-    def test_build_token_limit_hint_high_remaining(self, mock_llm_config):
-        """Test token limit hint with high remaining tokens."""
-        executor = Executor(
-            agent_name="test_agent",
-            agent_id="test_id",
-            tool_registry={},
-            sub_agent_factories={},
-            stop_tools=set(),
-            openai_client=Mock(),
-            llm_config=mock_llm_config,
-        )
-
-        hint = executor._build_token_limit_hint(5000, 10000, 5000, 1000)
-
-        assert "5000 tokens left" in hint
-        assert "Continue your response" in hint
 
     def test_add_tool(self, mock_llm_config):
         """Test adding a tool dynamically."""
