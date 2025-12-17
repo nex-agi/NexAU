@@ -79,6 +79,7 @@ class LLMCaller:
         agent_state: AgentState | None = None,
         tool_call_mode: str = "xml",
         tools: list[ChatCompletionToolParam] | list[ToolParam] | None = None,
+        openai_client: Any | None = None,
     ) -> ModelResponse | None:
         """Call LLM with the given messages and return normalized response.
 
@@ -94,7 +95,9 @@ class LLMCaller:
         Raises:
             RuntimeError: If OpenAI client is not available or API call fails
         """
-        if not self.openai_client and not self.middleware_manager:
+        runtime_client = openai_client if openai_client is not None else self.openai_client
+
+        if not runtime_client and not self.middleware_manager:
             raise RuntimeError(
                 "OpenAI client is not available. Please check your API configuration.",
             )
@@ -157,7 +160,7 @@ class LLMCaller:
             tool_call_mode=tool_call_mode,
             tools=tools,
             api_params=api_params,
-            openai_client=self.openai_client,
+            openai_client=runtime_client,
             llm_config=self.llm_config,
             retry_attempts=self.retry_attempts,
         )
@@ -209,8 +212,9 @@ class LLMCaller:
                 if force_stop_reason and force_stop_reason != AgentStopReason.SUCCESS:
                     return None
                 kwargs = dict(params.api_params)
+                client = params.openai_client if params.openai_client is not None else self.openai_client
                 response_content = call_llm_with_different_client(
-                    self.openai_client,
+                    client,
                     self.llm_config,
                     kwargs,
                     middleware_manager=self.middleware_manager,

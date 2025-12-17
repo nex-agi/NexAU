@@ -262,6 +262,7 @@ class Agent:
         state: dict[str, Any] | None = None,
         config: dict[str, Any] | None = None,
         parent_agent_state: AgentState | None = None,
+        custom_llm_client_provider: Callable[[str], Any] | None = None,
     ) -> str | tuple[str, dict[str, Any]]:
         """Run agent with a message and return response."""
         logger.info(f"🤖 Agent '{self.config.name}' starting execution")
@@ -288,6 +289,15 @@ class Agent:
 
         # Create agent context
         with AgentContext(context=merged_context) as ctx:
+            runtime_client = self.openai_client
+            if custom_llm_client_provider:
+                try:
+                    override_client = custom_llm_client_provider(self._agent_name)
+                    if override_client is not None:
+                        runtime_client = override_client
+                except Exception as exc:  # Defensive: user provided callable
+                    logger.warning(f"⚠️ custom_llm_client_provider failed for '{self._agent_name}': {exc}")
+
             # Build and add system prompt to history
             system_prompt = self.prompt_builder.build_system_prompt(
                 agent_config=self.config,
@@ -322,9 +332,16 @@ class Agent:
                     message=message,
                     agent_state=agent_state,
                     merged_context=merged_context,
+                    runtime_client=runtime_client,
+                    custom_llm_client_provider=custom_llm_client_provider,
                 )
             else:
-                return self._run_inner(agent_state, merged_context)
+                return self._run_inner(
+                    agent_state,
+                    merged_context,
+                    runtime_client=runtime_client,
+                    custom_llm_client_provider=custom_llm_client_provider,
+                )
 
     def _run_with_tracing(
         self,
@@ -333,6 +350,8 @@ class Agent:
         message: str,
         agent_state: AgentState,
         merged_context: dict[str, Any],
+        runtime_client: Any,
+        custom_llm_client_provider: Callable[[str], Any] | None,
     ) -> str:
         """Execute agent with tracing enabled.
 
@@ -359,7 +378,12 @@ class Agent:
         trace_ctx = TraceContext(tracer, span_name, span_type, inputs, attributes)
         with trace_ctx:
             try:
-                response = self._run_inner(agent_state, merged_context)
+                response = self._run_inner(
+                    agent_state,
+                    merged_context,
+                    runtime_client=runtime_client,
+                    custom_llm_client_provider=custom_llm_client_provider,
+                )
                 # Set outputs - TraceContext will handle ending the span
                 trace_ctx.set_outputs({"response": response})
                 return response
@@ -371,6 +395,9 @@ class Agent:
         self,
         agent_state: AgentState,
         merged_context: dict[str, Any],
+        *,
+        runtime_client: Any,
+        custom_llm_client_provider: Callable[[str], Any] | None,
     ) -> str:
         """Inner execution logic without tracing wrapper.
 
@@ -386,6 +413,8 @@ class Agent:
             response, updated_messages = self.executor.execute(
                 self.history,
                 agent_state,
+                runtime_client=runtime_client,
+                custom_llm_client_provider=custom_llm_client_provider,
             )
             self.history = updated_messages
 

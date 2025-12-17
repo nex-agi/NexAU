@@ -58,6 +58,7 @@ class SubAgentManager:
         message: str,
         context: dict[str, Any] | None = None,
         parent_agent_state: AgentState | None = None,
+        custom_llm_client_provider: Callable[[str], Any] | None = None,
     ) -> str:
         """Call a sub-agent like a tool call.
 
@@ -132,6 +133,7 @@ class SubAgentManager:
                 message,
                 context=effective_context,
                 parent_agent_state=parent_agent_state,
+                custom_llm_client_provider=custom_llm_client_provider,
             )
 
             logger.info(

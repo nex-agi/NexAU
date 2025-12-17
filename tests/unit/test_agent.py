@@ -338,6 +338,133 @@ class TestAgent:
                 # Verify merged context, state, and config were used
                 mock_execute.assert_called_once()
 
+    def test_run_uses_custom_llm_client_provider_for_main_agent(self, agent_config, global_storage):
+        """Custom provider should override the runtime client for the main agent only."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            default_client = Mock(name="default_client")
+            mock_openai.OpenAI.return_value = default_client
+
+            agent = Agent(agent_config, global_storage)
+
+            custom_client = Mock(name="custom_client")
+            provider = Mock(side_effect=lambda name: custom_client if name == agent_config.name else None)
+            captured_kwargs: dict[str, object] = {}
+
+            def fake_execute(messages, agent_state, *, runtime_client, custom_llm_client_provider):
+                captured_kwargs["runtime_client"] = runtime_client
+                captured_kwargs["custom_llm_client_provider"] = custom_llm_client_provider
+                return "Test response", messages + [{"role": "assistant", "content": "Test response"}]
+
+            with patch.object(agent.executor, "execute", side_effect=fake_execute) as mock_execute:
+                response = agent.run("Test message", custom_llm_client_provider=provider)
+
+            assert response == "Test response"
+            assert captured_kwargs["runtime_client"] is custom_client
+            assert captured_kwargs["custom_llm_client_provider"] is provider
+            provider.assert_called_once_with(agent_config.name)
+            mock_execute.assert_called_once()
+
+    def test_run_custom_llm_client_provider_failure_warns_and_falls_back(
+        self,
+        agent_config,
+        global_storage,
+        caplog,
+    ):
+        """If provider raises, fall back to default client and log warning."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            default_client = Mock(name="default_client")
+            mock_openai.OpenAI.return_value = default_client
+
+            agent = Agent(agent_config, global_storage)
+
+            provider = Mock(side_effect=Exception("boom"))
+            captured_kwargs: dict[str, object] = {}
+
+            def fake_execute(messages, agent_state, *, runtime_client, custom_llm_client_provider):
+                captured_kwargs["runtime_client"] = runtime_client
+                captured_kwargs["custom_llm_client_provider"] = custom_llm_client_provider
+                return "Test response", messages + [{"role": "assistant", "content": "Test response"}]
+
+            with caplog.at_level("WARNING"), patch.object(agent.executor, "execute", side_effect=fake_execute):
+                response = agent.run("Test message", custom_llm_client_provider=provider)
+
+            assert response == "Test response"
+            # Should fall back to default OpenAI client
+            assert captured_kwargs["runtime_client"] is default_client
+            assert captured_kwargs["custom_llm_client_provider"] is provider
+            provider.assert_called_once_with(agent_config.name)
+            assert any("custom_llm_client_provider failed" in rec.message for rec in caplog.records)
+
+    def test_run_with_tracing_passes_runtime_client_and_provider(
+        self,
+        agent_config,
+        global_storage,
+    ):
+        """Tracing path should forward runtime client and provider to _run_inner."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            default_client = Mock(name="default_client")
+            mock_openai.OpenAI.return_value = default_client
+
+            tracer = Mock()
+            global_storage.set("tracer", tracer)
+            agent = Agent(agent_config, global_storage)
+
+            custom_client = Mock(name="custom_client")
+            provider = Mock(return_value=custom_client)
+
+            called_args: dict[str, object] = {}
+
+            def fake_run_inner(agent_state, merged_context, *, runtime_client, custom_llm_client_provider):
+                called_args["runtime_client"] = runtime_client
+                called_args["custom_llm_client_provider"] = custom_llm_client_provider
+                return "Traced response"
+
+            class DummyTraceContext:
+                def __init__(self, tracer_arg, span_name, span_type, inputs, attributes):
+                    self.tracer_arg = tracer_arg
+                    self.span_name = span_name
+                    self.span_type = span_type
+                    self.inputs = inputs
+                    self.attributes = attributes
+                    self.outputs = None
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc_val, exc_tb):
+                    return False
+
+                def set_outputs(self, outputs):
+                    self.outputs = outputs
+
+            ctx_holder: dict[str, DummyTraceContext] = {}
+
+            def ctx_factory(tracer_arg, span_name, span_type, inputs, attributes):
+                ctx = DummyTraceContext(tracer_arg, span_name, span_type, inputs, attributes)
+                ctx_holder["ctx"] = ctx
+                return ctx
+
+            with (
+                patch("nexau.archs.main_sub.agent.TraceContext", side_effect=ctx_factory) as mock_ctx,
+                patch.object(
+                    agent,
+                    "_run_inner",
+                    side_effect=fake_run_inner,
+                ),
+            ):
+                response = agent.run("Test message", custom_llm_client_provider=provider)
+
+            assert response == "Traced response"
+            assert called_args["runtime_client"] is custom_client
+            assert called_args["custom_llm_client_provider"] is provider
+            provider.assert_called_once_with(agent_config.name)
+
+            mock_ctx.assert_called_once()
+            ctx_instance = ctx_holder["ctx"]
+            assert ctx_instance.tracer_arg is tracer
+            assert ctx_instance.span_name == f"Agent: {agent_config.name}"
+            assert ctx_instance.outputs == {"response": "Traced response"}
+
     def test_run_with_error_handler(self, agent_config, global_storage):
         """Test agent run with error handler."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:

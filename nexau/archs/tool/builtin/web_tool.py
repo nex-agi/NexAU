@@ -48,6 +48,7 @@ class SerperSearch:
         query: str,
         search_type: str = "search",
         num_results: int = 10,
+        proxy_url: str | None = None,
     ) -> list[dict[str, Any]] | str:
         if search_type not in self.result_key_for_type.keys():
             return f"Invalid search type: {search_type}. Serper search type should be one of {self.result_key_for_type.keys()}"
@@ -67,6 +68,7 @@ class SerperSearch:
                         write=self.timeout,
                         pool=self.timeout,
                     ),
+                    proxy=proxy_url,
                 ) as client:
                     response = client.post(
                         self.base_url + search_type,
@@ -170,6 +172,7 @@ def web_search(
     query: str,
     num_results: int = 10,
     search_type: str = "search",
+    proxy_url: str | None = None,
 ) -> dict[str, Any]:
     """
     Search the web using Serper API.
@@ -188,7 +191,7 @@ def web_search(
         if _serper_search is None:
             _serper_search = SerperSearch()
 
-        results = _serper_search.search(query, search_type, num_results)
+        results = _serper_search.search(query, search_type, num_results, proxy_url)
 
         if isinstance(results, str):
             # Error occurred

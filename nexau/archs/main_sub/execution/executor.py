@@ -197,6 +197,9 @@ class Executor:
         self,
         history: list[dict[str, Any]],
         agent_state: "AgentState",
+        *,
+        runtime_client: Any | None = None,
+        custom_llm_client_provider: Callable[[str], Any] | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         """Execute agent task with full orchestration.
 
@@ -341,6 +344,7 @@ class Executor:
                 )
                 model_response = self.llm_caller.call_llm(
                     messages,
+                    openai_client=runtime_client,
                     force_stop_reason=force_stop_reason,
                     agent_state=agent_state,
                     tool_call_mode=self.tool_call_mode,
@@ -389,6 +393,7 @@ class Executor:
                     execution_feedbacks,
                 ) = self._process_xml_calls(
                     after_model_hook_input,
+                    custom_llm_client_provider=custom_llm_client_provider,
                 )
 
                 # Update messages with any modifications from hooks
@@ -580,6 +585,8 @@ class Executor:
     def _process_xml_calls(
         self,
         hook_input: AfterModelHookInput,
+        *,
+        custom_llm_client_provider: Callable[[str], Any] | None = None,
     ) -> tuple[str, bool, str | None, list[dict[str, Any]], list[dict[str, Any]]]:
         """Process XML tool calls and sub-agent calls using two-phase approach.
 
@@ -632,6 +639,7 @@ class Executor:
         processed_response, should_stop, stop_tool_result, execution_feedbacks = self._execute_parsed_calls(
             parsed_response,
             hook_input.agent_state,
+            custom_llm_client_provider=custom_llm_client_provider,
         )
         return processed_response, should_stop, stop_tool_result, current_messages, execution_feedbacks
 
@@ -639,6 +647,8 @@ class Executor:
         self,
         parsed_response: ParsedResponse,
         agent_state: "AgentState",
+        *,
+        custom_llm_client_provider: Callable[[str], Any] | None = None,
     ) -> tuple[str, bool, str | None, list[dict[str, Any]]]:
         """Execute all parsed calls in parallel.
 
@@ -750,6 +760,7 @@ class Executor:
                     sub_agent_call,
                     context_dict,
                     parent_agent_state=agent_state,
+                    custom_llm_client_provider=custom_llm_client_provider,
                 )
                 sub_agent_futures[future] = ("sub_agent", sub_agent_call)
 
@@ -962,6 +973,8 @@ class Executor:
         sub_agent_call: SubAgentCall,
         context: dict[str, Any] | None = None,
         parent_agent_state: AgentState | None = None,
+        *,
+        custom_llm_client_provider: Callable[[str], Any] | None = None,
     ) -> tuple[str, str, bool]:
         """Safely execute a sub-agent call."""
         try:
@@ -970,6 +983,7 @@ class Executor:
                 sub_agent_call.message,
                 context,
                 parent_agent_state=parent_agent_state,
+                custom_llm_client_provider=custom_llm_client_provider,
             )
 
             return sub_agent_call.agent_name, result, False

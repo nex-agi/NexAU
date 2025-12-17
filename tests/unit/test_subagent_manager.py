@@ -21,6 +21,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from nexau.archs.main_sub.agent import Agent
 from nexau.archs.main_sub.agent_context import GlobalStorage
 from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
 
@@ -311,3 +312,48 @@ class TestSubAgentManager:
         assert result2 == "sub agent result"
         # Each call should create a new sub-agent instance
         assert len(subagent_manager.running_sub_agents) == 0
+
+    @patch("nexau.archs.main_sub.agent_context.get_context")
+    def test_call_sub_agent_uses_custom_llm_client_provider(self, mock_get_context, global_storage, agent_config):
+        """Provider should be able to override only the sub-agent client."""
+        mock_get_context.return_value = None
+
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+            sub_agent_config = agent_config.model_copy(update={"name": "sub_agent", "agent_id": "sub_agent_123"})
+            sub_agent = Agent(sub_agent_config, global_storage)
+
+        custom_client = Mock(name="custom_client")
+        provider_calls: list[str] = []
+
+        def custom_provider(name: str):
+            provider_calls.append(name)
+            return custom_client if name == "sub_agent" else None
+
+        captured_kwargs: dict[str, object] = {}
+
+        def fake_execute(messages, agent_state, *, runtime_client, custom_llm_client_provider):
+            captured_kwargs["runtime_client"] = runtime_client
+            captured_kwargs["custom_llm_client_provider"] = custom_llm_client_provider
+            return "sub agent result", messages + [{"role": "assistant", "content": "sub agent result"}]
+
+        sub_agent.executor.execute = Mock(side_effect=fake_execute)
+
+        storage = global_storage
+
+        def sub_agent_factory(global_storage=None):
+            assert global_storage is storage
+            return sub_agent
+
+        manager = SubAgentManager(
+            agent_name="parent_agent",
+            sub_agent_factories={"sub_agent": sub_agent_factory},
+            global_storage=storage,
+        )
+
+        result = manager.call_sub_agent("sub_agent", "message", custom_llm_client_provider=custom_provider)
+
+        assert result == "sub agent result"
+        assert captured_kwargs["runtime_client"] is custom_client
+        assert captured_kwargs["custom_llm_client_provider"] is custom_provider
+        assert provider_calls == ["sub_agent"]

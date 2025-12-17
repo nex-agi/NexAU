@@ -125,6 +125,7 @@ class CLIEnabledSubAgentManager(SubAgentManager):
         message: str,
         context: dict[str, Any] | None = None,
         parent_agent_state=None,
+        custom_llm_client_provider: Callable[[str], Any] | None = None,
     ) -> str:
         if self._shutdown_event.is_set():
             raise RuntimeError(f"Agent '{self.agent_name}' is shutting down")
@@ -176,6 +177,7 @@ class CLIEnabledSubAgentManager(SubAgentManager):
                 message,
                 context=effective_context,
                 parent_agent_state=parent_agent_state,
+                custom_llm_client_provider=custom_llm_client_provider,
             )
 
             self.running_sub_agents.pop(sub_agent.config.agent_id)
