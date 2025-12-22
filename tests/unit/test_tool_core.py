@@ -62,6 +62,7 @@ def test_from_yaml_uses_yaml_binding_when_agent_binding_missing(tmp_path: Path):
         "name": "yaml_binding",
         "description": "desc",
         "binding": "pkg.module:func",
+        "lazy": True,
         "input_schema": {"type": "object", "properties": {}},
     }
     yaml_path.write_text(yaml.safe_dump(yaml_content))

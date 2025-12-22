@@ -59,6 +59,7 @@ class ToolConfigEntry(BaseModel):
     name: str
     yaml_path: str
     binding: str | None = None
+    lazy: bool = False
     as_skill: bool = False
     extra_kwargs: dict[str, Any] = Field(default_factory=dict)
 
@@ -850,6 +851,10 @@ def load_tool_from_config(tool_config: dict[str, Any], base_path: Path) -> Tool:
 
     yaml_path = tool_config.get("yaml_path")
     binding = tool_config.get("binding", None)
+    lazy_raw: object = tool_config.get("lazy", False)
+    if not isinstance(lazy_raw, bool):
+        raise ConfigError(f"Tool '{name}' field 'lazy' must be a boolean")
+    lazy = lazy_raw
     as_skill = tool_config.get("as_skill", False)
     extra_kwargs_raw: object | None = tool_config.get("extra_kwargs", {})
 
@@ -871,7 +876,7 @@ def load_tool_from_config(tool_config: dict[str, Any], base_path: Path) -> Tool:
         yaml_path = base_path / yaml_path
 
     # Create tool
-    tool = Tool.from_yaml(str(yaml_path), binding, as_skill=as_skill, extra_kwargs=extra_kwargs)
+    tool = Tool.from_yaml(str(yaml_path), binding, as_skill=as_skill, extra_kwargs=extra_kwargs, lazy=lazy)
 
     # Override tool name with config-provided alias if present
     if name and tool.name != name:

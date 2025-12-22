@@ -77,6 +77,7 @@ class ToolYamlSchema(BaseModel):
     skill_description: str | None = None
     use_cache: bool = False
     disable_parallel: bool = False
+    lazy: bool = False
     template_override: str | None = None
     timeout: int | None = Field(default=None, gt=0)
     builtin: str | None = None
@@ -134,6 +135,7 @@ class Tool:
         as_skill: bool = False,
         use_cache: bool = False,
         disable_parallel: bool = False,
+        lazy: bool = False,
         template_override: str | None = None,
         timeout: int | None = None,
         extra_kwargs: dict[str, Any] | None = None,
@@ -144,11 +146,20 @@ class Tool:
         self.skill_description = skill_description
         self.as_skill = as_skill
         self.input_schema = input_schema
+        self.lazy = lazy
         self.implementation = None
         self.implementation_import_path = None
         if isinstance(implementation, str):
             self.implementation_import_path = implementation
-            self.implementation = None  # lazy import and bind at runtime
+            if lazy:
+                self.implementation = None  # lazy import and bind at runtime
+            else:
+                from nexau.archs.config.config_loader import import_from_string
+
+                func = import_from_string(implementation)
+                if use_cache:
+                    func = cache_result(func)
+                self.implementation = func
         else:
             self.implementation = implementation
         self.template_override = template_override
@@ -174,6 +185,7 @@ class Tool:
         binding: Callable[..., Any] | str | None,
         as_skill: bool = False,
         extra_kwargs: dict[str, Any] | None = None,
+        lazy: bool | None = None,
         **kwargs: Any,
     ) -> "Tool":
         """Load tool definition from YAML file and bind to implementation."""
@@ -192,6 +204,8 @@ class Tool:
         input_schema = tool_def.get("input_schema", {})
         use_cache = tool_def.get("use_cache", False)
         disable_parallel = tool_def.get("disable_parallel", False)
+        yaml_lazy = tool_def.get("lazy", False)
+        effective_lazy = yaml_lazy if lazy is None else lazy
 
         if binding is None and "binding" in tool_def:
             binding = tool_def.get("binding")
@@ -221,6 +235,7 @@ class Tool:
             as_skill=as_skill,
             use_cache=use_cache,
             disable_parallel=disable_parallel,
+            lazy=effective_lazy,
             template_override=template_override,
             timeout=timeout,
             extra_kwargs=extra_kwargs,
