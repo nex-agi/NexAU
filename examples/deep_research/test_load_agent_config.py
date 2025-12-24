@@ -19,7 +19,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from nexau import Agent, AgentConfig, LLMConfig
+from nexau.archs.config.config_loader import load_agent_config
 
 logging.basicConfig(level=logging.INFO)
 
@@ -38,28 +38,39 @@ def main():
         print("Loading deep research agent from YAML configuration...")
 
         # Build LLM configuration from environment variables
+        llm_config_overrides = {
+            "temperature": 0.7,
+            "max_tokens": 4096,
+        }
 
-        llm_config = LLMConfig(
-            model=os.getenv("LLM_MODEL"),
-            base_url=os.getenv("LLM_BASE_URL"),
-            api_key=os.getenv("LLM_API_KEY"),
-            temperature=0.7,
-            max_tokens=4096,
-        )
+        model = os.getenv("LLM_MODEL")
+        if model:
+            llm_config_overrides["model"] = model
+        base_url = os.getenv("LLM_BASE_URL")
+        if base_url:
+            llm_config_overrides["base_url"] = base_url
+        api_key = os.getenv("LLM_API_KEY")
+        if api_key:
+            llm_config_overrides["api_key"] = api_key
+
+        config_overrides = {
+            "deep_research_agent": {
+                "llm_config": llm_config_overrides,
+            },
+        }
 
         script_dir = Path(__file__).parent
-        deep_research_agent_config = AgentConfig.from_yaml(
-            script_dir / "deep_research_agent.yaml",
+        deep_research_agent = load_agent_config(
+            str(script_dir / "deep_research_agent.yaml"),
+            overrides=config_overrides,
         )
-        deep_research_agent_config.llm_config = llm_config
-        deep_research_agent = Agent(deep_research_agent_config)
         print("✓ Agent loaded successfully from YAML")
 
         print("\nTesting delegation with web research...")
         # web_message = '做一个孙悟空介绍的的html网页'
         # web_message = "List all commits in https://github.com/nex-agi/bp-sandbox"
         # web_message = "Show me details of the skill `algorithmic-art`"
-        web_message = "请使用sub_deep_research_agent调研英伟达股票市场"
+        web_message = "请使用sub_deep_research_agent查一下北京和上海的天气"
         print(f"\nUser: {web_message}")
         print("\nAgent Response:")
         print("-" * 30)

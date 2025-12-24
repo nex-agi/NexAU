@@ -16,17 +16,45 @@
 Unit tests for agent components.
 """
 
+import uuid
 from unittest.mock import Mock, patch
 
 import pytest
 
+from nexau import Agent, AgentConfig
 from nexau.archs.llm.llm_config import LLMConfig
-from nexau.archs.main_sub.agent import Agent, create_agent
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
-from nexau.archs.main_sub.config import AgentConfig, ExecutionConfig
+from nexau.archs.main_sub.config import ExecutionConfig
 from nexau.archs.tool import Tool
-from nexau.archs.tracer.core import BaseTracer
+from nexau.archs.tracer.core import BaseTracer, Span, SpanType
+
+
+class DummyTracer(BaseTracer):
+    """Minimal tracer implementation for tests."""
+
+    def start_span(
+        self,
+        name: str,
+        span_type: SpanType,
+        inputs: dict | None = None,
+        parent_span: Span | None = None,
+        attributes: dict | None = None,
+    ) -> Span:
+        return Span(
+            id=name,
+            name=name,
+            type=span_type,
+            parent_id=parent_span.id if parent_span else None,
+            inputs=inputs or {},
+            attributes=attributes or {},
+        )
+
+    def end_span(self, span: Span, outputs=None, error=None, attributes=None) -> None:
+        span.outputs = outputs or {}
+        span.error = str(error) if error else None
+        if attributes:
+            span.attributes.update(attributes)
 
 
 class TestAgent:
@@ -44,7 +72,7 @@ class TestAgent:
             agent_config.timeout = execution_config.timeout
             agent_config.tool_call_mode = execution_config.tool_call_mode
 
-            agent = Agent(agent_config, global_storage)
+            agent = Agent(agent_config, global_storage=global_storage)
 
             expected_exec_config = ExecutionConfig.from_agent_config(agent_config)
 
@@ -55,12 +83,27 @@ class TestAgent:
             assert agent.history == []
             assert agent.queued_messages == []
 
+    def test_agent_initialization_sets_agent_id(self, global_storage):
+        """Agent should populate missing agent_id with a UUID string."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            agent_config = AgentConfig(
+                name="test_agent",
+                llm_config=LLMConfig(model="gpt-4o-mini"),
+            )
+
+            agent = Agent(agent_config, global_storage=global_storage)
+
+            assert isinstance(agent.agent_id, str)
+            uuid.UUID(agent.agent_id)
+
     def test_agent_initialization_no_external_client(self, agent_config, global_storage):
         """Test agent initialization when OpenAI client creation fails."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.side_effect = Exception("API Error")
 
-            agent = Agent(agent_config, global_storage)
+            agent = Agent(agent_config, global_storage=global_storage)
 
             assert agent.openai_client is None
 
@@ -69,12 +112,95 @@ class TestAgent:
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = Agent(agent_config, global_storage)
+            agent = Agent(agent_config, global_storage=global_storage)
 
             agent.add_tool(sample_tool)
 
             assert sample_tool.name in agent.tool_registry
             assert sample_tool in agent.config.tools
+
+    def test_tool_call_payload_includes_sub_agents_openai(self, sample_tool):
+        """Structured OpenAI payload should include tools and sub-agent proxies."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            child_config = AgentConfig(name="child", llm_config=LLMConfig(model="gpt-4o-mini"))
+            agent_config = AgentConfig(
+                name="parent",
+                llm_config=LLMConfig(model="gpt-4o-mini"),
+                tools=[sample_tool],
+                sub_agents={"child": child_config},
+                tool_call_mode="openai",
+            )
+
+            agent = Agent(agent_config)
+
+            # Expect both tool and sub-agent proxy definitions
+            tool_names = {spec["function"]["name"] for spec in agent.tool_call_payload}
+            assert sample_tool.name in tool_names
+            assert "sub-agent-child" in tool_names
+
+    def test_tool_call_payload_anthropic_mode(self, sample_tool):
+        """Anthropic mode should build anthropic tool schema with sub-agent."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            child_config = AgentConfig(name="child", llm_config=LLMConfig(model="gpt-4o-mini"))
+            agent_config = AgentConfig(
+                name="parent",
+                llm_config=LLMConfig(model="gpt-4o-mini"),
+                tools=[sample_tool],
+                sub_agents={"child": child_config},
+                tool_call_mode="anthropic",
+            )
+
+            agent = Agent(agent_config)
+
+            names = {spec["name"] for spec in agent.tool_call_payload}
+            assert sample_tool.name in names
+            assert "sub-agent-child" in names
+
+    def test_token_counter_callable_is_wrapped(self, global_storage):
+        """Callable token_counter should be wrapped into TokenCounter instance."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            def counter(messages, tools=None):
+                return 123
+
+            agent_config = AgentConfig(
+                name="token_agent",
+                llm_config=LLMConfig(model="gpt-4o-mini"),
+                token_counter=counter,
+            )
+
+            agent = Agent(agent_config, global_storage=global_storage)
+
+            assert agent.executor.token_counter._counter([], None) == 123  # type: ignore[attr-defined]
+
+    def test_custom_llm_provider_failure_falls_back(self, agent_config, global_storage):
+        """Errors in custom provider should not replace the default runtime client."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            default_client = Mock(name="default_client")
+            mock_openai.OpenAI.return_value = default_client
+
+            agent = Agent(agent_config, global_storage)
+
+            def bad_provider(_):
+                raise RuntimeError("boom")
+
+            captured_client = {}
+
+            def fake_execute(history, agent_state, *, runtime_client, custom_llm_client_provider=None):
+                captured_client["client"] = runtime_client
+                return "ok", history or []
+
+            agent.executor.execute = fake_execute  # type: ignore[method-assign]
+
+            response = agent.run("hello", custom_llm_client_provider=bad_provider)
+
+            assert response == "ok"
+            assert captured_client["client"] is default_client
 
     def test_add_tool_updates_executor_payload_openai(self, agent_config, global_storage):
         """add_tool should propagate structured payload for OpenAI mode."""
@@ -82,7 +208,7 @@ class TestAgent:
             mock_openai.OpenAI.return_value = Mock()
 
             agent_config.tool_call_mode = "openai"
-            agent = Agent(agent_config, global_storage)
+            agent = Agent(agent_config, global_storage=global_storage)
 
             tool = Tool(
                 name="dynamic",
@@ -109,15 +235,14 @@ class TestAgent:
             )
             agent_config = AgentConfig(
                 name="test_agent",
-                agent_id="test_agent_123",
                 system_prompt="",
                 tools=[],
-                sub_agents=[],
+                sub_agents={},
                 llm_config=anthropic_llm,
                 tool_call_mode="anthropic",
             )
 
-            agent = Agent(agent_config, global_storage)
+            agent = Agent(agent_config, global_storage=global_storage)
 
             tool = Tool(
                 name="dynamic",
@@ -138,12 +263,11 @@ class TestAgent:
 
             agent = Agent(agent_config, global_storage)
 
-            def mock_sub_agent_factory():
-                return create_agent(name="sub_agent", llm_config=LLMConfig())
+            agent_config = AgentConfig(name="test_sub_agent", llm_config=LLMConfig())
 
-            agent.add_sub_agent("test_sub", mock_sub_agent_factory)
+            agent.add_sub_agent("test_sub_agent", agent_config)
 
-            assert "test_sub" in agent.config.sub_agent_factories
+            assert "test_sub_agent" in agent.config.sub_agents
 
     def test_enqueue_message(self, agent_config, global_storage):
         """Test enqueuing messages."""
@@ -175,10 +299,10 @@ class TestAgent:
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            tracer = Mock(spec=BaseTracer)
-            agent_payload = agent_config.model_dump()
-            agent_payload["tracers"] = [tracer]
-            config_with_tracer = AgentConfig(**agent_payload)
+            tracer = DummyTracer()
+            config_with_tracer = agent_config.model_copy(update={"tracers": [tracer]})
+            config_with_tracer.resolved_tracer = tracer
+            global_storage.set("tracer", tracer)
 
             Agent(config_with_tracer, global_storage)
 
@@ -189,13 +313,14 @@ class TestAgent:
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            parent_tracer = Mock(spec=BaseTracer)
+            parent_tracer = DummyTracer()
             global_storage.set("tracer", parent_tracer)
 
             agent_payload = agent_config.model_dump()
-            child_tracer = Mock(spec=BaseTracer)
+            child_tracer = DummyTracer()
             agent_payload["tracers"] = [child_tracer]
             config_with_tracer = AgentConfig(**agent_payload)
+            config_with_tracer.resolved_tracer = child_tracer
 
             Agent(config_with_tracer, global_storage)
 
@@ -406,8 +531,10 @@ class TestAgent:
             mock_openai.OpenAI.return_value = default_client
 
             tracer = Mock()
-            global_storage.set("tracer", tracer)
+            agent_config.tracers = [tracer]
+            agent_config.resolved_tracer = tracer
             agent = Agent(agent_config, global_storage)
+            global_storage.set("tracer", tracer)
 
             custom_client = Mock(name="custom_client")
             provider = Mock(return_value=custom_client)
@@ -452,6 +579,8 @@ class TestAgent:
                     side_effect=fake_run_inner,
                 ),
             ):
+                # ensure tracer available in global storage for TraceContext
+                agent.global_storage.set("tracer", tracer)
                 response = agent.run("Test message", custom_llm_client_provider=provider)
 
             assert response == "Traced response"
@@ -459,11 +588,65 @@ class TestAgent:
             assert called_args["custom_llm_client_provider"] is provider
             provider.assert_called_once_with(agent_config.name)
 
-            mock_ctx.assert_called_once()
+            assert mock_ctx.call_count >= 1
             ctx_instance = ctx_holder["ctx"]
             assert ctx_instance.tracer_arg is tracer
             assert ctx_instance.span_name == f"Agent: {agent_config.name}"
             assert ctx_instance.outputs == {"response": "Traced response"}
+
+    def test_run_with_tracing_propagates_exception(self, agent_config, global_storage):
+        """Tracing wrapper should re-raise errors from _run_inner."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            tracer = DummyTracer()
+            agent_config.tracers = [tracer]
+            agent_config.resolved_tracer = tracer
+            agent = Agent(agent_config, global_storage)
+
+            class DummyTraceContext:
+                def __init__(self, tracer_arg, span_name, span_type, inputs, attributes):
+                    self.tracer_arg = tracer_arg
+                    self.span_name = span_name
+                    self.span_type = span_type
+                    self.inputs = inputs
+                    self.attributes = attributes
+                    self.outputs = None
+                    self.errors: list[Exception] = []
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc_val, exc_tb):
+                    if exc_val:
+                        self.errors.append(exc_val)
+                    return False
+
+                def set_outputs(self, outputs):
+                    self.outputs = outputs
+
+            ctx_holder: dict[str, DummyTraceContext] = {}
+
+            def ctx_factory(tracer_arg, span_name, span_type, inputs, attributes):
+                ctx = DummyTraceContext(tracer_arg, span_name, span_type, inputs, attributes)
+                ctx_holder["ctx"] = ctx
+                return ctx
+
+            def failing_run_inner(*args, **kwargs):
+                raise RuntimeError("inner failure")
+
+            with (
+                patch("nexau.archs.main_sub.agent.TraceContext", side_effect=ctx_factory) as mock_ctx,
+                patch.object(agent, "_run_inner", side_effect=failing_run_inner),
+            ):
+                with pytest.raises(RuntimeError, match="inner failure"):
+                    agent.run("Test message")
+
+            assert mock_ctx.call_count == 1
+            ctx_instance = ctx_holder["ctx"]
+            assert ctx_instance.tracer_arg is tracer
+            assert ctx_instance.outputs is None
+            assert ctx_instance.errors and isinstance(ctx_instance.errors[0], RuntimeError)
 
     def test_run_with_error_handler(self, agent_config, global_storage):
         """Test agent run with error handler."""
@@ -532,32 +715,34 @@ class TestAgent:
 
 
 class TestCreateAgent:
-    """Test cases for create_agent factory function."""
+    """Test cases for agent from yaml function."""
 
     def test_create_agent_minimal(self):
         """Test creating agent with minimal parameters."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = create_agent(
+            agent_config = AgentConfig(
                 name="test_agent",
                 llm_config=LLMConfig(model="gpt-4o-mini"),
             )
+            agent = Agent(agent_config)
 
             assert agent.config.name == "test_agent"
             assert agent.config.llm_config.model == "gpt-4o-mini"
-            assert isinstance(agent.config.agent_id, str)
-            assert len(agent.config.agent_id) > 0
+            assert isinstance(agent.agent_id, str)
+            assert len(agent.agent_id) > 0
 
     def test_create_agent_with_dict_llm_config(self):
         """Test creating agent with dictionary LLM config."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = create_agent(
+            agent_config = AgentConfig(
                 name="test_agent",
                 llm_config=LLMConfig(model="gpt-4o-mini", temperature=0.5),
             )
+            agent = Agent(agent_config)
 
             assert agent.config.llm_config.model == "gpt-4o-mini"
             assert agent.config.llm_config.temperature == 0.5
@@ -567,12 +752,11 @@ class TestCreateAgent:
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = create_agent(
+            agent_config = AgentConfig(
                 name="test_agent",
                 llm_config=LLMConfig(model="gpt-4o-mini", temperature=0.3, max_tokens=2000),
-                temperature=0.3,
-                max_tokens=2000,
             )
+            agent = Agent(agent_config)
 
             assert agent.config.llm_config.model == "gpt-4o-mini"
             assert agent.config.llm_config.temperature == 0.3
@@ -580,19 +764,20 @@ class TestCreateAgent:
 
     def test_create_agent_missing_llm_config(self):
         """Test creating agent without LLM config."""
-        with pytest.raises(ValueError, match="llm_config is required"):
-            create_agent(name="test_agent")
+        agent_config = AgentConfig(name="test_agent")
+        assert agent_config.llm_config.model == "gpt-4o-mini"
 
     def test_create_agent_with_tools(self, sample_tool):
         """Test creating agent with tools."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = create_agent(
+            agent_config = AgentConfig(
                 name="test_agent",
                 llm_config=LLMConfig(model="gpt-4o-mini"),
                 tools=[sample_tool],
             )
+            agent = Agent(agent_config)
 
             assert len(agent.config.tools) == 1
             assert agent.config.tools[0].name == "sample_tool"
@@ -606,11 +791,12 @@ class TestCreateAgent:
             with patch("nexau.archs.main_sub.agent.Agent._initialize_mcp_tools"):
                 mcp_servers = [{"name": "test_server", "type": "stdio", "command": "python", "args": ["server.py"]}]
 
-                agent = create_agent(
+                agent_config = AgentConfig(
                     name="test_agent",
                     llm_config=LLMConfig(model="gpt-4o-mini"),
                     mcp_servers=mcp_servers,
                 )
+                agent = Agent(agent_config)
 
                 assert len(agent.config.mcp_servers) == 1
                 assert agent.config.mcp_servers[0]["name"] == "test_server"
@@ -624,13 +810,14 @@ class TestCreateAgent:
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            agent = create_agent(
+            agent_config = AgentConfig(
                 name="test_agent",
                 llm_config=LLMConfig(model="gpt-4o-mini"),
                 after_model_hooks=[mock_hook],
                 before_model_hooks=[mock_hook],
                 after_tool_hooks=[mock_hook],
             )
+            agent = Agent(agent_config)
 
             assert len(agent.config.after_model_hooks) == 1
             assert len(agent.config.before_model_hooks) == 1

@@ -17,10 +17,10 @@
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__all__ = ["load_agent_config", "ConfigError"]
+__all__ = ["ConfigError", "load_agent_config"]
 
 if TYPE_CHECKING:
-    from .config_loader import ConfigError, load_agent_config
+    from .config_loader import ConfigError, load_agent_config  # type: ignore[reportDeprecated]
 
 
 def __getattr__(name: str) -> Any:

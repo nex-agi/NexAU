@@ -104,7 +104,7 @@ middlewares:
       log_file: "/tmp/audit.log"
 ```
 
-When building agents programmatically, pass actual middleware instances to `create_agent(..., middlewares=[...])`.
+When building agents programmatically, pass actual middleware instances through `Agent(AgentConfig(..., middlewares=[...]))`.
 
 
 ## Customizing LLM Calls via Middleware

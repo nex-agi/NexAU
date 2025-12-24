@@ -86,12 +86,14 @@ results = analyze_data(data)
 **Using Python:**
 
 ```python
-from nexau import create_agent
+from nexau import Agent, AgentConfig
 
-agent = create_agent(
-    name="data_analyst",
-    llm_config={"model": "gpt-4o-mini"},
-    skills=["skills/data-analysis", "skills/web-scraping"]
+agent = Agent(
+    AgentConfig(
+        name="data_analyst",
+        llm_config={"model": "gpt-4o-mini"},
+        skills=["skills/data-analysis", "skills/web-scraping"],
+    )
 )
 ```
 
@@ -166,10 +168,14 @@ code_generator = Tool(
 #### Step 2: Add the Tool to Your Agent
 
 ```python
-agent = create_agent(
-    name="coding_assistant",
-    llm_config={"model": "gpt-4o-mini"},
-    tools=[code_generator]
+from nexau import Agent, AgentConfig
+
+agent = Agent(
+    AgentConfig(
+        name="coding_assistant",
+        llm_config={"model": "gpt-4o-mini"},
+        tools=[code_generator],
+    )
 )
 ```
 
@@ -209,7 +215,7 @@ skill_description: Code generation skill for multiple programming languages
 You can use both folder-based and tool-based skills together in the same agent:
 
 ```python
-from nexau import create_agent, Tool
+from nexau import Agent, AgentConfig, Tool
 
 # Define a tool-based skill
 web_search = Tool(
@@ -228,16 +234,18 @@ web_search = Tool(
 )
 
 # Create agent with both types
-agent = create_agent(
-    name="research_assistant",
-    llm_config={"model": "gpt-4o-mini"},
-    skills=[
-        "skills/data-analysis",    # Folder-based skill
-        "skills/report-writing"    # Folder-based skill
-    ],
-    tools=[
-        web_search  # Tool-based skill
-    ]
+agent = Agent(
+    AgentConfig(
+        name="research_assistant",
+        llm_config={"model": "gpt-4o-mini"},
+        skills=[
+            "skills/data-analysis",    # Folder-based skill
+            "skills/report-writing"    # Folder-based skill
+        ],
+        tools=[
+            web_search  # Tool-based skill
+        ],
+    )
 )
 ```
 
@@ -435,7 +443,7 @@ description: Advanced data visualization capabilities
 ### Example 1: Research Assistant with Multiple Skills
 
 ```python
-from nexau import create_agent, Tool
+from nexau import Agent, AgentConfig, Tool, Skill
 
 # Tool-based skill for web search
 web_search_tool = Tool(
@@ -453,16 +461,18 @@ web_search_tool = Tool(
 )
 
 # Create agent with both skill types
-agent = create_agent(
-    name="researcher",
-    llm_config={"model": "gpt-4o-mini"},
-    skills=[
-        Skill.from_folder("skills/academic-research"),  # Folder skill
-        Skill.from_folder("skills/citation-manager")    # Folder skill
-    ],
-    tools=[
-        web_search_tool  # Tool skill
-    ]
+agent = Agent(
+    AgentConfig(
+        name="researcher",
+        llm_config={"model": "gpt-4o-mini"},
+        skills=[
+            Skill.from_folder("skills/academic-research"),  # Folder skill
+            Skill.from_folder("skills/citation-manager")    # Folder skill
+        ],
+        tools=[
+            web_search_tool  # Tool skill
+        ],
+    )
 )
 
 # Agent can now discover and use all three skills

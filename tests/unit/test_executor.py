@@ -50,7 +50,7 @@ class TestExecutorInitialization:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -70,7 +70,7 @@ class TestExecutorInitialization:
             agent_name="custom_agent",
             agent_id="custom_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools={"stop_tool"},
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -97,7 +97,7 @@ class TestExecutorInitialization:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -117,7 +117,7 @@ class TestExecutorInitialization:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -136,7 +136,7 @@ class TestExecutorMessageEnqueueing:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -154,7 +154,7 @@ class TestExecutorMessageEnqueueing:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -178,40 +178,37 @@ class TestExecutorExecution:
 
     def test_execute_with_stop_signal(self, mock_llm_config, agent_state):
         """Test execution stops when stop_signal is set."""
+
+        class StopSignalMiddleware(Middleware):
+            executor: Executor
+
+            def before_agent(self, hook_input):  # type: ignore[override]
+                self.executor.stop_signal = True
+                return HookResult.no_changes()
+
+        middleware = StopSignalMiddleware()
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            middlewares=[middleware],
         )
+        middleware.executor = executor
 
         history = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Hello"},
         ]
 
-        # Set stop signal right before the iteration check would happen
-        # We need to mock the LLM caller to set the stop signal during execution
-        def set_stop_signal(*args, **kwargs):
-            executor.stop_signal = True
-            return ModelResponse(content="Response before stop")
+        with patch.object(executor.llm_caller, "call_llm") as mock_call_llm:
+            response, _ = executor.execute(history, agent_state)
 
-        with patch.object(executor.llm_caller, "call_llm", side_effect=set_stop_signal):
-            with patch.object(executor.response_parser, "parse_response") as mock_parse:
-                mock_parse.return_value = ParsedResponse(
-                    original_response="Response",
-                    tool_calls=[],
-                    sub_agent_calls=[],
-                    batch_agent_calls=[],
-                )
-
-                response, messages = executor.execute(history, agent_state)
-
-                # On next iteration it should stop
-                assert "Stop signal received" in response or "Response before stop" in response
+        mock_call_llm.assert_not_called()
+        assert response == "Stop signal received."
 
     def test_stop_signal_runs_after_agent_hooks(self, mock_llm_config, agent_state):
         """Stop-signal early exit should still trigger after-agent hooks."""
@@ -236,7 +233,7 @@ class TestExecutorExecution:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -278,7 +275,7 @@ class TestExecutorExecution:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -344,7 +341,7 @@ class TestExecutorExecution:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={"simple_tool": tool},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -406,7 +403,7 @@ class TestExecutorExecution:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=mock_client,
             llm_config=mock_llm_config,
@@ -442,7 +439,7 @@ class TestExecutorExecution:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -483,7 +480,7 @@ class TestExecutorExecution:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -513,7 +510,7 @@ class TestExecutorExecution:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -543,7 +540,7 @@ class TestExecutorXMLCallProcessing:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -594,7 +591,7 @@ class TestExecutorXMLCallProcessing:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={"simple_tool": tool},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -637,7 +634,7 @@ class TestExecutorXMLCallProcessing:
             assert "simple_tool" in processed
             assert len(feedbacks) == 1
 
-    def test_process_xml_calls_with_batch_calls(self, mock_llm_config, agent_state, temp_dir):
+    def test_process_xml_calls_with_batch_calls(self, mock_llm_config, agent_state, agent_config, temp_dir):
         """Test processing response with batch calls."""
         import os
 
@@ -646,11 +643,12 @@ class TestExecutorXMLCallProcessing:
         with open(test_file, "w") as f:
             json.dump([{"id": 1, "value": "test"}], f)
 
+        sub_agent_config = agent_config.model_copy(update={"name": "sub_agent", "agent_id": "sub_agent_123"})
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={"sub_agent": lambda: Mock()},
+            sub_agents={"sub_agent": sub_agent_config},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -678,7 +676,7 @@ class TestExecutorXMLCallProcessing:
         with patch.object(executor.response_parser, "parse_response") as mock_parse:
             mock_parse.return_value = parsed_response
 
-            with patch.object(executor.batch_processor, "_process_batch_data") as mock_batch:
+            with patch.object(executor.batch_processor, "process_batch_data") as mock_batch:
                 mock_batch.return_value = "Batch processed"
 
                 hook_input = AfterModelHookInput(
@@ -722,7 +720,7 @@ class TestExecutorToolExecution:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={"test_tool": tool},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -761,7 +759,7 @@ class TestExecutorToolExecution:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={"error_tool": tool},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -776,27 +774,22 @@ class TestExecutorToolExecution:
         tool_name, result, is_error = executor._execute_tool_call_safe(tool_call, agent_state)
 
         assert tool_name == "error_tool"
-        # Tool.execute wraps errors, so check that result contains error information
-        # is_error might be False but result will contain error details
-        assert "error" in result.lower() or "Tool error" in result or "ValueError" in result
+        assert is_error is False
+        parsed_result = json.loads(result)
+        assert parsed_result["error"] == "Tool error"
 
 
 class TestExecutorSubAgentExecution:
     """Test sub-agent execution methods."""
 
-    def test_execute_sub_agent_call_safe_success(self, mock_llm_config, agent_state):
+    def test_execute_sub_agent_call_safe_success(self, mock_llm_config, agent_state, agent_config):
         """Test successful sub-agent execution."""
-        mock_sub_agent = Mock()
-        mock_sub_agent.send_message.return_value = "Sub-agent response"
-
-        def sub_agent_factory():
-            return mock_sub_agent
-
+        sub_agent_config = agent_config.model_copy(update={"name": "sub_agent", "agent_id": "sub_agent_123"})
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={"sub_agent": sub_agent_factory},
+            sub_agents={"sub_agent": sub_agent_config},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -826,7 +819,7 @@ class TestExecutorSubAgentExecution:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -859,7 +852,7 @@ class TestExecutorCleanup:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -876,7 +869,7 @@ class TestExecutorCleanup:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -907,7 +900,7 @@ class TestExecutorHelperMethods:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -925,26 +918,24 @@ class TestExecutorHelperMethods:
         assert "new_tool" in executor.tool_executor.tool_registry
         assert executor.tool_executor.tool_registry["new_tool"] == tool
 
-    def test_add_sub_agent(self, mock_llm_config):
-        """Test adding a sub-agent dynamically."""
+    def test_add_sub_agent(self, mock_llm_config, agent_config):
+        """Test adding a sub-agent config dynamically."""
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
         )
 
-        def sub_agent_factory():
-            return Mock()
-
-        executor.add_sub_agent("new_sub_agent", sub_agent_factory)
+        new_config = agent_config.model_copy(update={"name": "new_sub_agent", "agent_id": "new_sub_agent_123"})
+        executor.add_sub_agent("new_sub_agent", new_config)
 
         # Verify it was added through subagent_manager
         # (internal implementation detail, but we can check it was called)
-        assert "new_sub_agent" in executor.subagent_manager.sub_agent_factories
+        assert "new_sub_agent" in executor.subagent_manager.sub_agents
 
 
 class TestExecutorStopToolHandling:
@@ -967,7 +958,7 @@ class TestExecutorStopToolHandling:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={"stop_tool": tool},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools={"stop_tool"},
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -1032,7 +1023,7 @@ class TestExecutorParallelExecution:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={"tool1": tool_obj1, "tool2": tool_obj2},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -1088,7 +1079,7 @@ class TestExecutorParallelExecution:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={"test_tool": tool},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -1148,7 +1139,7 @@ class TestExecutorWithHooks:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -1190,7 +1181,7 @@ class TestExecutorEdgeCases:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -1225,7 +1216,7 @@ class TestExecutorEdgeCases:
             agent_name="test_agent",
             agent_id="test_id",
             tool_registry={},
-            sub_agent_factories={},
+            sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
@@ -1245,7 +1236,7 @@ class TestExecutorEdgeCases:
         )
 
         # Mock batch processor
-        with patch.object(executor.batch_processor, "_process_batch_data") as mock_batch:
+        with patch.object(executor.batch_processor, "process_batch_data") as mock_batch:
             mock_batch.return_value = "Batch result"
 
             result = executor._execute_batch_call(batch_call)

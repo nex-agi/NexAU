@@ -12,10 +12,8 @@ Creating an agent in Python gives you maximum flexibility. This is ideal for dyn
 
 import os
 from datetime import datetime
-from nexau.archs.main_sub import create_agent
-from nexau.archs.tool import Tool
+from nexau import Agent, AgentConfig, Tool, LLMConfig
 from nexau.archs.tool.builtin.web_tool import web_search, web_read
-from nexau.archs.llm import LLMConfig
 
 def main():
     # Create tools from YAML configurations
@@ -30,12 +28,13 @@ def main():
     )
 
     # Create the agent instance
-    research_agent = create_agent(
+    agent_config = AgentConfig(
         name="research_agent",
         tools=[web_search_tool, web_read_tool],
         llm_config=llm_config,
         system_prompt="You are a research agent. Use web_search and web_read tools to find information.",
     )
+    research_agent = Agent(agent_config)
 
     # Run the agent
     response = research_agent.run(
@@ -67,10 +66,10 @@ For a more declarative approach, you can define an agent's entire configuration 
       max_tokens: 4096
     tools:
       - name: web_search
-        yaml_path: ../tools/WebSearch.yaml
+          yaml_path: ./tools/WebSearch.yaml
         binding: nexau.archs.tool.builtin.web_tool:web_search
       - name: web_read
-        yaml_path: ../tools/WebRead.yaml
+          yaml_path: ./tools/WebRead.yaml
         binding: nexau.archs.tool.builtin.web_tool:web_read
     sub_agents: []
     ```
@@ -81,22 +80,23 @@ For a more declarative approach, you can define an agent's entire configuration 
     
     import os
     from datetime import datetime
-    from nexau.archs.config.config_loader import load_agent_config
+    from nexau import Agent, AgentConfig, LLMConfig
+    from pathlib import Path
 
     def main():
-        # Define overrides, e.g., for loading secrets from the environment
-        config_overrides = {
-            "llm_config": {
-                "model": os.getenv("LLM_MODEL"),
-                "base_url": os.getenv("LLM_BASE_URL"),
-                "api_key": os.getenv("LLM_API_KEY"),
-            }
-        }
 
-        # Load the agent from its YAML configuration
-        agent = load_agent_config(
-            "agents/my_agent.yaml",
-            overrides=config_overrides
+        agent_config = AgentConfig.from_yaml(
+            Path("agent/my_agent.yaml")
+        )
+        agent_config.llm_config = LLMConfig(
+            model = os.getenv("LLM_MODEL"),
+            base_url = os.getenv("LLM_BASE_URL"),
+            api_key = os.getenv("LLM_API_KEY"),
+        )
+
+        # Load the agent from agent_config
+        agent = Agent(
+            agent_config
         )
 
         # Use the agent

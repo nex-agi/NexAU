@@ -23,7 +23,7 @@ tracers:
 tools: []
 ```
 
-When `load_agent_config` builds the agent, each tracer is instantiated, chained (if needed), and the resulting tracer is injected into the shared `global_storage["tracer"]`. Hooks, tool executors, and the LLM caller read from the same slot, so no additional wiring is required.
+When `Agent.from_yaml` builds the agent, each tracer is instantiated, chained (if needed), and the resulting tracer is injected into the shared `global_storage["tracer"]`. Hooks, tool executors, and the LLM caller read from the same slot, so no additional wiring is required.
 
 #### Provide a tracer when constructing `AgentConfig`
 
@@ -68,7 +68,7 @@ Hooks can retrieve it via `get_context().global_storage`, and custom execution c
 
 #### Common patterns
 
-1. **Per-environment overrides** – pass the `tracers` key through `overrides` when calling `load_agent_config(...)` to swap tracer implementations without editing the base YAML.
+1. **Per-environment overrides** – change the `tracers` via `AgentConfig(tracers=[tracer])` before calling `Agent(config = agent_config)` to swap tracer implementations without editing the base YAML.
 2. **Multi-backend tracing** – list several entries under `tracers` (or construct your own `CompositeTracer`) so every span fan-outs to your preferred sinks.
 3. **Test instrumentation** – inject fake tracers via `AgentConfig(tracers=[RecordingTracer()])` to assert span sequences in unit tests.
 

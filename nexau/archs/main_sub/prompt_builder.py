@@ -16,13 +16,15 @@
 
 import logging
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from jinja2 import Environment, FileSystemLoader
 
-from nexau.archs.main_sub.config import AgentConfig
 from nexau.archs.main_sub.prompt_handler import PromptHandler
 from nexau.archs.tool import Tool
+
+if TYPE_CHECKING:
+    from nexau.archs.main_sub.config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +86,9 @@ class PromptBuilder:
 
     def build_system_prompt(
         self,
-        agent_config: AgentConfig,
+        agent_config: "AgentConfig",
         tools: list[Tool] | None = None,
-        sub_agent_factories: dict[str, Any] | None = None,
+        sub_agents: dict[str, "AgentConfig"] | None = None,
         runtime_context: dict[str, Any] | None = None,
         include_tool_instructions: bool = True,
     ) -> str:
@@ -95,7 +97,7 @@ class PromptBuilder:
         Args:
             agent_config: Agent configuration
             tools: List of available tools
-            sub_agent_factories: Dictionary of sub-agent factories
+            sub_agents: Dictionary of sub-agent configs
             runtime_context: Additional runtime context
 
         Returns:
@@ -109,7 +111,7 @@ class PromptBuilder:
                 # Build capabilities documentation
                 capabilities_docs = self._build_capabilities_docs(
                     tools or agent_config.tools,
-                    sub_agent_factories or agent_config.sub_agent_factories,
+                    sub_agents or agent_config.sub_agents or {},
                     runtime_context,
                 )
 
@@ -128,7 +130,7 @@ class PromptBuilder:
 
     def _get_base_system_prompt(
         self,
-        agent_config: AgentConfig,
+        agent_config: "AgentConfig",
         runtime_context: dict[str, Any],
     ) -> str:
         """Get the base system prompt from configuration."""
@@ -169,7 +171,7 @@ class PromptBuilder:
     def _build_capabilities_docs(
         self,
         tools: list[Tool],
-        sub_agent_factories: dict[str, Any],
+        sub_agents: dict[str, "AgentConfig"],
         runtime_context: dict[str, Any] | None = None,
     ) -> str:
         """Build documentation for tools and sub-agents."""
@@ -181,9 +183,9 @@ class PromptBuilder:
             docs.append(tool_docs)
 
         # Add sub-agent documentation
-        if sub_agent_factories:
+        if sub_agents:
             subagent_docs = self._build_subagents_documentation(
-                sub_agent_factories,
+                sub_agents,
             )
             docs.append(subagent_docs)
 
@@ -226,7 +228,7 @@ class PromptBuilder:
 
     def _build_subagents_documentation(
         self,
-        sub_agent_factories: dict[str, Any],
+        sub_agents: dict[str, "AgentConfig"],
     ) -> str:
         """Build sub-agents documentation section."""
         try:
@@ -238,9 +240,9 @@ class PromptBuilder:
             sub_agents_context = [
                 {
                     "name": name,
-                    "description": f"Specialized agent for {name}-related tasks",
+                    "description": sub_agents[name].description or f"Specialized agent for {name}-related tasks",
                 }
-                for name in sub_agent_factories.keys()
+                for name in sub_agents.keys()
             ]
 
             context = {"sub_agents": sub_agents_context}

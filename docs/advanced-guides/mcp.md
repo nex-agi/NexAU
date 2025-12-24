@@ -4,6 +4,8 @@
 Define the mcp servers and create agent by setting `mcp_servers` as follows:
 
 ```python
+from nexau import Agent, AgentConfig, LLMConfig
+
 llm_config = LLMConfig(
     model=os.getenv("LLM_MODEL"),
     base_url=os.getenv("LLM_BASE_URL"),
@@ -23,7 +25,7 @@ mcp_servers = [
     }
 ]
 
-agent = create_agent(
+agent_config = AgentConfig(
     name="amap_agent",
     system_prompt="""You are an AI agent with access to Amap Maps services through MCP.
 
@@ -40,6 +42,7 @@ Explain what you're doing and provide context for the results.""",
     mcp_servers=mcp_servers,
     llm_config=llm_config,
 )
+agent = Agent(agent_config)
 
 response = agent.run("现在从漕河泾现代服务园A6到上南路 4265弄要多久？")
 print(response)

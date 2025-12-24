@@ -16,8 +16,6 @@
 Unit tests for AgentConfig and ExecutionConfig classes, focusing on skill-related functionality.
 """
 
-from unittest.mock import Mock
-
 import pytest
 
 from nexau.archs.llm.llm_config import LLMConfig
@@ -343,32 +341,12 @@ class TestGenerateSkillDescription:
 class TestAgentConfigPostInit:
     """Test cases for AgentConfig __post_init__ method."""
 
-    def test_post_init_sub_agents_conversion(self):
-        """Test that sub_agents list is converted to dictionary."""
-
-        def factory1():
-            return Mock()
-
-        def factory2():
-            return Mock()
-
-        sub_agents = [("agent1", factory1), ("agent2", factory2)]
-
-        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), sub_agents=sub_agents)
-
-        assert hasattr(config, "sub_agent_factories")
-        assert isinstance(config.sub_agent_factories, dict)
-        assert "agent1" in config.sub_agent_factories
-        assert "agent2" in config.sub_agent_factories
-        assert config.sub_agent_factories["agent1"] == factory1
-        assert config.sub_agent_factories["agent2"] == factory2
-
     def test_post_init_no_sub_agents(self):
-        """Test that sub_agent_factories is empty dict when no sub_agents."""
+        """Test that sub_agents is empty dict when no sub_agents."""
         config = AgentConfig(name="test_agent", llm_config=make_llm_config())
 
-        assert hasattr(config, "sub_agent_factories")
-        assert config.sub_agent_factories == {}
+        assert hasattr(config, "sub_agents")
+        assert config.sub_agents is None
 
     def test_post_init_stop_tools_list_to_set(self):
         """Test that stop_tools list is converted to set."""

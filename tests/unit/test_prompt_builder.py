@@ -149,14 +149,14 @@ class TestBuildSystemPrompt:
     def test_build_system_prompt_with_sub_agents(self, mock_config):
         """Test building system prompt with sub-agents."""
         builder = PromptBuilder()
-        sub_agent_factories = {"researcher": Mock()}
+        sub_agents = {"researcher": Mock()}
 
         with patch.object(builder, "_get_base_system_prompt", return_value="Base\n"):
             with patch.object(builder, "_build_capabilities_docs", return_value="SubAgents\n"):
                 with patch.object(builder, "_get_tool_execution_instructions", return_value="Instructions\n"):
                     result = builder.build_system_prompt(
                         mock_config,
-                        sub_agent_factories=sub_agent_factories,
+                        sub_agents=sub_agents,
                     )
 
         assert "SubAgents\n" in result
@@ -307,28 +307,28 @@ class TestBuildCapabilitiesDocs:
         builder = PromptBuilder()
 
         with patch.object(builder, "_build_tools_documentation", return_value="Tools doc"):
-            result = builder._build_capabilities_docs([mock_tool], {}, None)
+            result = builder._build_capabilities_docs([mock_tool], {}, {})
 
         assert "Tools doc" in result
 
     def test_build_capabilities_docs_with_subagents_only(self):
         """Test building capabilities docs with only sub-agents."""
         builder = PromptBuilder()
-        sub_agent_factories = {"researcher": Mock()}
+        sub_agents = {"researcher": Mock()}
 
         with patch.object(builder, "_build_subagents_documentation", return_value="SubAgents doc"):
-            result = builder._build_capabilities_docs([], sub_agent_factories, {})
+            result = builder._build_capabilities_docs([], sub_agents, {})
 
         assert "SubAgents doc" in result
 
     def test_build_capabilities_docs_with_both(self, mock_tool):
         """Test building capabilities docs with both tools and sub-agents."""
         builder = PromptBuilder()
-        sub_agent_factories = {"researcher": Mock()}
+        sub_agents = {"researcher": Mock()}
 
         with patch.object(builder, "_build_tools_documentation", return_value="Tools doc"):
             with patch.object(builder, "_build_subagents_documentation", return_value="SubAgents doc"):
-                result = builder._build_capabilities_docs([mock_tool], sub_agent_factories, {})
+                result = builder._build_capabilities_docs([mock_tool], sub_agents, {})
 
         assert "Tools doc" in result
         assert "SubAgents doc" in result
@@ -422,14 +422,14 @@ class TestBuildSubagentsDocumentation:
     def test_build_subagents_documentation_success(self):
         """Test successful sub-agents documentation building."""
         builder = PromptBuilder()
-        sub_agent_factories = {
+        sub_agents = {
             "researcher": Mock(),
             "writer": Mock(),
         }
 
         template_content = "{% for sub_agent in sub_agents %}{{ sub_agent.name }}{% endfor %}"
         with patch.object(builder, "_load_prompt_template", return_value=template_content):
-            result = builder._build_subagents_documentation(sub_agent_factories)
+            result = builder._build_subagents_documentation(sub_agents)
 
         assert "researcher" in result
         assert "writer" in result
@@ -437,29 +437,29 @@ class TestBuildSubagentsDocumentation:
     def test_build_subagents_documentation_template_not_found(self):
         """Test error when sub-agents template not found."""
         builder = PromptBuilder()
-        sub_agent_factories = {"researcher": Mock()}
+        sub_agents = {"researcher": Mock()}
 
         with patch.object(builder, "_load_prompt_template", return_value=""):
             with pytest.raises(ValueError, match="Error building sub-agents documentation"):
-                builder._build_subagents_documentation(sub_agent_factories)
+                builder._build_subagents_documentation(sub_agents)
 
     def test_build_subagents_documentation_error(self):
         """Test error handling in sub-agents documentation."""
         builder = PromptBuilder()
-        sub_agent_factories = {"researcher": Mock()}
+        sub_agents = {"researcher": Mock()}
 
         with patch.object(builder, "_load_prompt_template", side_effect=Exception("Test error")):
             with pytest.raises(ValueError, match="Error building sub-agents documentation"):
-                builder._build_subagents_documentation(sub_agent_factories)
+                builder._build_subagents_documentation(sub_agents)
 
     def test_build_subagents_documentation_empty(self):
-        """Test sub-agents documentation with empty factories."""
+        """Test sub-agents documentation with empty sub_agents."""
         builder = PromptBuilder()
-        sub_agent_factories = {}
+        sub_agents = {}
 
         template_content = "{% for sub_agent in sub_agents %}{{ sub_agent.name }}{% endfor %}"
         with patch.object(builder, "_load_prompt_template", return_value=template_content):
-            result = builder._build_subagents_documentation(sub_agent_factories)
+            result = builder._build_subagents_documentation(sub_agents)
 
         # Should be empty since no sub-agents
         assert result.strip() == ""
@@ -731,7 +731,7 @@ class TestPromptBuilderIntegration:
     def test_full_system_prompt_generation(self, full_config, full_tool):
         """Test generating a complete system prompt with all components."""
         builder = PromptBuilder()
-        sub_agent_factories = {"researcher": Mock()}
+        sub_agents = {"researcher": Mock()}
 
         # Mock all template loads
         templates = {
@@ -748,7 +748,7 @@ class TestPromptBuilderIntegration:
                 result = builder.build_system_prompt(
                     full_config,
                     tools=[full_tool],
-                    sub_agent_factories=sub_agent_factories,
+                    sub_agents=sub_agents,
                 )
 
         assert "System Prompt" in result

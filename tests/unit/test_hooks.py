@@ -55,7 +55,7 @@ def agent_state(mock_executor):
     global_storage = GlobalStorage()
     return AgentState(
         agent_name="test_agent",
-        agent_id="test_id_123",
+        agent_id="test_agent_id",
         context=context,
         global_storage=global_storage,
         executor=mock_executor,

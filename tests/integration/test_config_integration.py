@@ -18,19 +18,21 @@ Integration tests for configuration loading and agent creation.
 
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 
-from nexau.archs.config.config_loader import load_agent_config
+from nexau import Agent
+from nexau.archs.main_sub.config import AgentConfig
 
 
 class TestConfigIntegration:
     """Integration tests for configuration loading."""
 
     @pytest.mark.integration
-    def test_load_agent_from_yaml(self):
+    def test_agent_from_yaml(self):
         """Test loading agent configuration from YAML file."""
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = os.path.join(temp_dir, "agent.yaml")
@@ -46,13 +48,13 @@ class TestConfigIntegration:
                 yaml.dump(config, f)
 
             # Load config - returns Agent object
-            agent = load_agent_config(config_path)
+            agent = Agent.from_yaml(Path(config_path))
             assert agent.config.name == "test_agent"
             assert agent.config.llm_config.model == "gpt-4o-mini"
             assert "helpful assistant" in agent.config.system_prompt.lower()
 
     @pytest.mark.integration
-    def test_load_agent_with_tools(self):
+    def test_agent_from_yaml_with_tools(self):
         """Test loading agent with tool configurations."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create tools directory
@@ -83,13 +85,13 @@ class TestConfigIntegration:
                 yaml.dump(agent_config, f)
 
             # Load config - returns Agent object
-            agent = load_agent_config(config_path)
+            agent = Agent.from_yaml(Path(config_path))
             assert agent.config.name == "agent_with_tools"
             assert len(agent.config.tools) == 1
             assert agent.config.tools[0].name == "test_tool"
 
     @pytest.mark.integration
-    def test_load_agent_with_subagents(self):
+    def test_agent_from_yaml_with_subagents(self):
         """Test loading agent with sub-agent configurations."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create sub-agent config
@@ -110,12 +112,13 @@ class TestConfigIntegration:
                 yaml.dump(main_config, f)
 
             # Load main agent config - returns Agent object
-            agent = load_agent_config(main_agent_path)
+            agent = Agent.from_yaml(Path(main_agent_path))
             assert agent.config.name == "main_agent"
             assert agent.config.sub_agents is not None
             assert len(agent.config.sub_agents) == 1
-            # sub_agents are stored as (name, factory) tuples
-            assert any("sub_agent" in name for name, _ in agent.config.sub_agents)
+            sub_agent = agent.config.sub_agents["sub_agent"]
+            assert isinstance(sub_agent, AgentConfig)
+            assert sub_agent.name == "sub_agent"
 
     @pytest.mark.integration
     def test_config_with_environment_variables(self):
@@ -125,7 +128,11 @@ class TestConfigIntegration:
 
             config = {
                 "name": "test_agent",
-                "llm_config": {"model": "${MODEL_NAME:gpt-4o-mini}", "api_key": "${API_KEY}", "temperature": 0.7},
+                "llm_config": {
+                    "model": "${env.MODEL_NAME}",
+                    "api_key": "${env.API_KEY}",
+                    "temperature": 0.7,
+                },
                 "tools": [],
             }
 
@@ -138,7 +145,7 @@ class TestConfigIntegration:
 
             try:
                 # Load config - returns Agent object
-                agent = load_agent_config(config_path)
+                agent = Agent.from_yaml(Path(config_path))
                 assert agent.config.name == "test_agent"
                 # Environment variable substitution happens during config loading
                 # The actual model might be substituted or not depending on implementation
@@ -148,8 +155,8 @@ class TestConfigIntegration:
                 os.environ.pop("API_KEY", None)
 
 
-class TestAgentBuilderIntegration:
-    """Integration tests for AgentBuilder."""
+class TestAgentConfigBuilderIntegration:
+    """Integration tests for AgentConfigBuilder."""
 
     @pytest.mark.integration
     def test_build_agent_from_config(self):
@@ -167,14 +174,12 @@ class TestAgentBuilderIntegration:
             with open(config_path, "w") as f:
                 yaml.dump(config, f)
 
-            with patch("nexau.archs.config.config_loader.create_agent") as mock_create:
-                mock_agent = MagicMock()
-                mock_create.return_value = mock_agent
+            with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+                mock_openai.OpenAI.return_value = MagicMock()
 
-                # Build agent (would use actual AgentBuilder)
-                # agent = AgentBuilder.from_yaml(config_path)
-                # assert agent is not None
-                assert True  # Placeholder
+                agent = Agent.from_yaml(Path(config_path))
+
+                assert agent.config.name == "built_agent"
 
     @pytest.mark.integration
     def test_build_agent_with_overrides(self):
@@ -230,7 +235,7 @@ class TestComplexConfigScenarios:
                 yaml.dump(root_config, f)
 
             # Load root config - returns Agent object
-            agent = load_agent_config(root_agent_path)
+            agent = Agent.from_yaml(Path(root_agent_path))
             assert agent.config.name == "root_agent"
             assert agent.config.sub_agents is not None
             assert len(agent.config.sub_agents) >= 1

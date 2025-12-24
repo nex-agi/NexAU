@@ -17,8 +17,8 @@
 import logging
 import os
 
+from nexau import Agent, AgentConfig
 from nexau.archs.llm import LLMConfig
-from nexau.archs.main_sub.agent import create_agent
 from nexau.archs.main_sub.execution.hooks import create_tool_after_approve_hook
 from nexau.archs.tool import Tool
 from nexau.archs.tool.builtin.bash_tool import bash_tool
@@ -139,7 +139,7 @@ def main():
     try:
         # Create an agent with Github MCP server
         print("🤖 Creating agent with MiniMax MCP server...")
-        agent = create_agent(
+        agent_config = AgentConfig(
             name="minimax_agent",
             system_prompt="""You are an AI agent with access to MiniMax MCP, feishu tools, bash tool, and web search tool.
 
@@ -175,6 +175,7 @@ Today is {{date}}.
             tools=tools,
             after_model_hooks=[create_tool_after_approve_hook("WebSearch")],
         )
+        agent = Agent(agent_config)
 
         print("✅ Agent created successfully!")
         print(f"   Agent name: {agent.name}")

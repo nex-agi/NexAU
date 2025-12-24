@@ -20,6 +20,7 @@ from collections.abc import Callable
 from typing import Any
 
 from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.main_sub.config import AgentConfig
 from nexau.archs.main_sub.utils.xml_utils import XMLParser
 
 from ..agent_context import GlobalStorage
@@ -33,20 +34,20 @@ class SubAgentManager:
     def __init__(
         self,
         agent_name: str,
-        sub_agent_factories: dict[str, Callable[..., Any]],
+        sub_agents: dict[str, AgentConfig],
         global_storage: GlobalStorage | None = None,
     ):
         """Initialize sub-agent manager.
 
         Args:
             agent_name: Name of the parent agent
-            sub_agent_factories: Dictionary mapping sub-agent names to factory functions
+            sub_agents: Dictionary mapping sub-agent names to AgentConfig objects
             global_storage: Optional global storage to share with sub-agents
         """
         from nexau.archs.main_sub.agent import Agent
 
         self.agent_name = agent_name
-        self.sub_agent_factories = sub_agent_factories
+        self.sub_agents: dict[str, AgentConfig] = sub_agents
         self.global_storage = global_storage
         self.xml_parser = XMLParser()
         self._shutdown_event = threading.Event()
@@ -74,6 +75,7 @@ class SubAgentManager:
             RuntimeError: If agent is shutting down
             ValueError: If sub-agent is not found
         """
+        from ...main_sub.agent import Agent
         from ..agent_context import get_context
 
         # Check if agent is shutting down
@@ -87,36 +89,19 @@ class SubAgentManager:
             f"🤖➡️🤖 Agent '{self.agent_name}' calling sub-agent '{sub_agent_name}' with message: {message}",
         )
 
-        if sub_agent_name not in self.sub_agent_factories:
+        if sub_agent_name not in self.sub_agents:
             error_msg = f"Sub-agent '{sub_agent_name}' not found"
             logger.error(f"❌ {error_msg}")
             raise ValueError(error_msg)
 
-        # Instantiate a fresh sub-agent from the factory
-        sub_agent_factory = self.sub_agent_factories[sub_agent_name]
+        # Instantiate a new sub-agent
+        sub_agent_config = self.sub_agents[sub_agent_name]
+        sub_agent = Agent(
+            config=sub_agent_config,
+            global_storage=self.global_storage,
+        )
 
-        # Try to create sub-agent with global storage if available
-        if self.global_storage is not None:
-            try:
-                # Try to pass global_storage as keyword argument
-                sub_agent = sub_agent_factory(
-                    global_storage=self.global_storage,
-                )
-            except TypeError:
-                # If factory doesn't support global_storage parameter, create normally and set afterwards
-                sub_agent = sub_agent_factory()
-                sub_agent.global_storage = self.global_storage
-                # Also ensure the sub-agent's executor uses the same global storage
-                if hasattr(sub_agent, "executor"):
-                    sub_agent.executor.global_storage = self.global_storage
-                if hasattr(sub_agent, "executor") and hasattr(
-                    sub_agent.executor,
-                    "subagent_manager",
-                ):
-                    sub_agent.executor.subagent_manager.global_storage = self.global_storage
-        else:
-            sub_agent = sub_agent_factory()
-        self.running_sub_agents[sub_agent.config.agent_id] = sub_agent
+        self.running_sub_agents[sub_agent.agent_id] = sub_agent
 
         try:
             effective_context = None
@@ -139,12 +124,13 @@ class SubAgentManager:
             logger.info(
                 f"✅ Sub-agent '{sub_agent_name}' returned result to agent '{self.agent_name}'",
             )
-            self.running_sub_agents.pop(sub_agent.config.agent_id)
-            return result
+            return str(result)
 
         except Exception as e:
             logger.error(f"❌ Sub-agent '{sub_agent_name}' failed: {e}")
             raise
+        finally:
+            self.running_sub_agents.pop(sub_agent.agent_id, None)
 
     def shutdown(self) -> None:
         """Signal shutdown to prevent new sub-agent tasks."""
@@ -157,11 +143,11 @@ class SubAgentManager:
                     f"❌ Error shutting down sub-agent {sub_agent_id}: {e}",
                 )
 
-    def add_sub_agent(self, name: str, agent_factory: Callable[[], Any]) -> None:
-        """Add a sub-agent factory for delegation.
+    def add_sub_agent(self, name: str, agent_config: AgentConfig) -> None:
+        """Add a sub-agent config.
 
         Args:
             name: Name of the sub-agent
-            agent_factory: Factory function that creates the agent
+            agent_config: Config to create the sub-agent
         """
-        self.sub_agent_factories[name] = agent_factory
+        self.sub_agents[name] = agent_config

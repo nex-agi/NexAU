@@ -116,7 +116,7 @@ def test_execute_dynamic_import_wrapped_with_cache(monkeypatch, dummy_cache):
         call_counter["count"] += 1
         return {"value": x}
 
-    with patch("nexau.archs.config.config_loader.import_from_string", return_value=imported_impl) as mock_import:
+    with patch("nexau.archs.main_sub.utils.import_from_string", return_value=imported_impl) as mock_import:
         tool = Tool(
             name="cached_tool",
             description="desc",
@@ -143,7 +143,7 @@ def test_execute_without_implementation_raises():
 
 
 def test_execute_import_returns_none_reports_error(monkeypatch):
-    with patch("nexau.archs.config.config_loader.import_from_string", return_value=None):
+    with patch("nexau.archs.main_sub.utils.import_from_string", return_value=None):
         tool = Tool(
             name="import_none",
             description="desc",

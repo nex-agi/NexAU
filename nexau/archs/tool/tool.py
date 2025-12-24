@@ -152,7 +152,7 @@ class Tool:
             if lazy:
                 self.implementation = None  # lazy import and bind at runtime
             else:
-                from nexau.archs.config.config_loader import import_from_string
+                from ..main_sub.utils import import_from_string
 
                 func = import_from_string(implementation)
                 if use_cache:
@@ -244,7 +244,7 @@ class Tool:
             if self.implementation_import_path:
                 logger.info(f"Dynamic importing tool implementation '{self.name}': {self.implementation_import_path}")
 
-                from nexau.archs.config.config_loader import import_from_string
+                from ..main_sub.utils import import_from_string
 
                 func = import_from_string(str(self.implementation_import_path))
 

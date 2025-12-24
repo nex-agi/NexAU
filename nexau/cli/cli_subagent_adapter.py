@@ -16,10 +16,13 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 from typing import Any
 
+from nexau.archs.main_sub.agent import Agent
 from nexau.archs.main_sub.agent_context import get_context
+from nexau.archs.main_sub.config import AgentConfig
 from nexau.archs.main_sub.execution.hooks import FunctionMiddleware
 from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
 
@@ -30,7 +33,7 @@ class CLIEnabledSubAgentManager(SubAgentManager):
     def __init__(
         self,
         agent_name: str,
-        sub_agent_factories: dict[str, Callable[..., Any]],
+        sub_agents: dict[str, AgentConfig],
         global_storage=None,
         progress_hook=None,
         tool_hook=None,
@@ -38,7 +41,7 @@ class CLIEnabledSubAgentManager(SubAgentManager):
     ) -> None:
         super().__init__(
             agent_name,
-            sub_agent_factories,
+            sub_agents,
             global_storage=global_storage,
         )
         self.cli_progress_hook = progress_hook
@@ -55,7 +58,7 @@ class CLIEnabledSubAgentManager(SubAgentManager):
     ) -> CLIEnabledSubAgentManager:
         new_manager = cls(
             manager.agent_name,
-            manager.sub_agent_factories,
+            manager.sub_agents,
             global_storage=manager.global_storage,
             progress_hook=progress_hook,
             tool_hook=tool_hook,
@@ -130,26 +133,22 @@ class CLIEnabledSubAgentManager(SubAgentManager):
         if self._shutdown_event.is_set():
             raise RuntimeError(f"Agent '{self.agent_name}' is shutting down")
 
-        if sub_agent_name not in self.sub_agent_factories:
+        if sub_agent_name not in self.sub_agents.keys():
             raise ValueError(f"Sub-agent '{sub_agent_name}' not found")
 
-        sub_agent_factory = self.sub_agent_factories[sub_agent_name]
+        sub_agent_config = self.sub_agents[sub_agent_name]
 
         sub_agent = None
 
-        if self.global_storage is not None:
-            try:
-                sub_agent = sub_agent_factory(global_storage=self.global_storage)
-            except TypeError:
-                sub_agent = sub_agent_factory()
-                sub_agent.global_storage = self.global_storage
-                if hasattr(sub_agent, "executor"):
-                    sub_agent.executor.global_storage = self.global_storage
-                    if hasattr(sub_agent.executor, "subagent_manager"):
-                        sub_agent.executor.subagent_manager.global_storage = self.global_storage
-        else:
-            sub_agent = sub_agent_factory()
-        self.running_sub_agents[sub_agent.config.agent_id] = sub_agent
+        sub_agent = Agent(
+            config=sub_agent_config,
+            global_storage=self.global_storage,
+        )
+        agent_id = getattr(sub_agent, "agent_id", None)
+        if agent_id is None:
+            agent_id = str(uuid.uuid4())
+            setattr(sub_agent, "agent_id", agent_id)
+        self.running_sub_agents[agent_id] = sub_agent
 
         self._inject_cli_hooks(sub_agent)
 
@@ -159,7 +158,7 @@ class CLIEnabledSubAgentManager(SubAgentManager):
             {
                 "agent_name": sub_agent_name,
                 "display_name": getattr(sub_agent.config, "name", sub_agent_name),
-                "agent_id": sub_agent.config.agent_id,
+                "agent_id": agent_id,
                 "parent_agent_name": self.agent_name,
                 "parent_agent_id": parent_agent_id,
                 "message": message,
@@ -179,20 +178,21 @@ class CLIEnabledSubAgentManager(SubAgentManager):
                 parent_agent_state=parent_agent_state,
                 custom_llm_client_provider=custom_llm_client_provider,
             )
+            result_text = result[0] if isinstance(result, tuple) else result
 
-            self.running_sub_agents.pop(sub_agent.config.agent_id)
+            self.running_sub_agents.pop(agent_id)
             self._emit_event(
                 "complete",
                 {
                     "agent_name": sub_agent_name,
                     "display_name": getattr(sub_agent.config, "name", sub_agent_name),
-                    "agent_id": sub_agent.config.agent_id,
+                    "agent_id": agent_id,
                     "parent_agent_name": self.agent_name,
                     "parent_agent_id": parent_agent_id,
-                    "result": result,
+                    "result": result_text,
                 },
             )
-            return result
+            return result_text
 
         except Exception as exc:
             agent_id = getattr(sub_agent.config, "agent_id", "") if sub_agent else ""

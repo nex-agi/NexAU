@@ -561,8 +561,8 @@ class TestPromptTypeProcessing:
         agent = Mock()
         agent.name = "TestAgent"
         agent.config = Mock()
-        agent.config.agent_id = "test_123"
         agent.config.system_prompt_type = "string"
+        agent.agent_id = None
         return agent
 
     def test_process_prompt_validates_all_types(self, handler):
@@ -835,13 +835,11 @@ class TestGetDefaultContext:
         agent = Mock()
         agent.name = "TestAgent"
         agent.config = Mock()
-        agent.config.agent_id = "test_123"
         agent.config.system_prompt_type = "jinja"
 
         context = handler.get_default_context(agent)
 
         assert context["agent_name"] == "TestAgent"
-        assert context["agent_id"] == "test_123"
         assert context["system_prompt_type"] == "jinja"
         assert "timestamp" in context
 
@@ -858,13 +856,12 @@ class TestGetDefaultContext:
         """Test getting default context with partial config."""
         agent = Mock()
         agent.name = "TestAgent"
-        agent.config = Mock(spec=["agent_id"])
-        agent.config.agent_id = "test_456"
+        agent.config = Mock()
+        agent.config.system_prompt_type = "string"
 
         context = handler.get_default_context(agent)
 
         assert context["agent_name"] == "TestAgent"
-        assert context["agent_id"] == "test_456"
         assert context["system_prompt_type"] == "string"  # Default value
 
     def test_get_default_context_timestamp_format(self, handler):
@@ -892,7 +889,6 @@ class TestCreateDynamicPrompt:
         agent = Mock()
         agent.name = "TestAgent"
         agent.config = Mock()
-        agent.config.agent_id = "test_123"
         agent.config.system_prompt_type = "string"
         return agent
 
@@ -920,7 +916,7 @@ class TestCreateDynamicPrompt:
 
     def test_create_dynamic_prompt_jinja_file(self, handler, mock_agent):
         """Test creating dynamic prompt from jinja file."""
-        template_content = "Agent: {{ agent_name }}, ID: {{ agent_id }}"
+        template_content = "Agent: {{ agent_name }}"
 
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".j2") as f:
             f.write(template_content)
@@ -934,7 +930,6 @@ class TestCreateDynamicPrompt:
             )
 
             assert "TestAgent" in result
-            assert "test_123" in result
         finally:
             Path(temp_path).unlink()
 
@@ -963,7 +958,6 @@ class TestCreateDynamicPrompt:
     def test_create_dynamic_prompt_complex_template(self, handler, mock_agent):
         """Test creating dynamic prompt with complex template."""
         base_template = """Agent: {{ agent_name }}
-ID: {{ agent_id }}
 Timestamp: {{ timestamp }}
 {% if custom_field %}Custom: {{ custom_field }}{% endif %}"""
         additional_context = {"custom_field": "CustomValue"}
@@ -975,7 +969,6 @@ Timestamp: {{ timestamp }}
         )
 
         assert "TestAgent" in result
-        assert "test_123" in result
         assert "CustomValue" in result
 
     def test_create_dynamic_prompt_no_additional_context(self, handler, mock_agent):
@@ -1052,7 +1045,6 @@ class TestPromptHandlerIntegration:
         agent = Mock()
         agent.name = "IntegrationAgent"
         agent.config = Mock()
-        agent.config.agent_id = "integration_123"
         agent.config.system_prompt_type = "string"
         return agent
 
@@ -1114,7 +1106,6 @@ class TestPromptHandlerIntegration:
         """Test full workflow with jinja template."""
         # Create a jinja template
         template_content = """You are {{ agent_name }}.
-Agent ID: {{ agent_id }}
 Current time: {{ timestamp }}
 Mission: {{ mission }}"""
 
@@ -1133,7 +1124,6 @@ Mission: {{ mission }}"""
             )
 
             assert "IntegrationAgent" in result
-            assert "integration_123" in result
             assert "Test all features" in result
         finally:
             Path(temp_path).unlink()

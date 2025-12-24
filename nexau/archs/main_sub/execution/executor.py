@@ -30,6 +30,7 @@ from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.main_sub.config import AgentConfig
 from nexau.archs.main_sub.execution.batch_processor import BatchProcessor
 from nexau.archs.main_sub.execution.hooks import (
     AfterAgentHookInput,
@@ -74,7 +75,7 @@ class Executor:
         agent_name: str,
         agent_id: str,
         tool_registry: dict[str, Any],
-        sub_agent_factories: dict[str, Callable[[], Any]],
+        sub_agents: dict[str, AgentConfig],
         stop_tools: set[str],
         openai_client: Any,
         llm_config: LLMConfig,
@@ -100,7 +101,7 @@ class Executor:
             agent_id: ID of the agent
             tool_registry: Dictionary of available tools
             serial_tool_name: List of tool names that should be executed serially
-            sub_agent_factories: Dictionary of sub-agent factories
+            sub_agents: Dictionary of sub-agent configs
             stop_tools: Set of tool names that trigger execution stop
             openai_client: OpenAI client instance
             llm_config: LLM configuration
@@ -139,7 +140,7 @@ class Executor:
 
         self.subagent_manager = SubAgentManager(
             agent_name,
-            sub_agent_factories,
+            sub_agents,
             global_storage,
         )
         self.batch_processor = BatchProcessor(
@@ -1044,11 +1045,11 @@ class Executor:
                 anthropic_tools = cast(list[ToolParam], self.structured_tool_payload)
                 anthropic_tools.append(tool.to_anthropic())
 
-    def add_sub_agent(self, name: str, agent_factory: Callable[[], Any]) -> None:
-        """Add a sub-agent factory to the executor.
+    def add_sub_agent(self, name: str, agent_config: AgentConfig) -> None:
+        """Add a sub-agent config.
 
         Args:
             name: Name of the sub-agent
-            agent_factory: Factory function that creates the agent
+            agent_config: Config creates the agent
         """
-        self.subagent_manager.add_sub_agent(name, agent_factory)
+        self.subagent_manager.add_sub_agent(name, agent_config)

@@ -16,8 +16,8 @@
 
 import os
 
+from nexau import Agent, AgentConfig
 from nexau.archs.llm import LLMConfig
-from nexau.archs.main_sub.agent import create_agent
 
 
 def main():
@@ -62,7 +62,7 @@ def main():
     try:
         # Create an agent with Github MCP server
         print("🤖 Creating agent with Github MCP server...")
-        agent = create_agent(
+        agent_config = AgentConfig(
             name="github_agent",
             system_prompt="""You are an AI agent with access to Github services through MCP.
 
@@ -88,6 +88,7 @@ Explain what you're doing and provide context for the results.""",
             mcp_servers=mcp_servers,
             llm_config=llm_config,
         )
+        agent = Agent(agent_config)
 
         print("✅ Agent created successfully!")
         print(f"   Agent name: {agent.name}")

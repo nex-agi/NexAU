@@ -26,18 +26,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from nexau.archs.config.config_loader import (
-    AgentBuilder,
+from nexau.archs.main_sub.agent import Agent
+from nexau.archs.main_sub.config import (
     ConfigError,
-    load_yaml_with_vars,
-    normalize_agent_config_dict,
 )
+from nexau.archs.main_sub.config.config import AgentConfigBuilder
+from nexau.archs.main_sub.config.schema import normalize_agent_config_dict
 from nexau.archs.main_sub.execution.hooks import (
     AfterModelHookInput,
     AfterModelHookResult,
     AfterToolHookInput,
     AfterToolHookResult,
 )
+from nexau.archs.main_sub.utils import load_yaml_with_vars
 from nexau.cli.cli_subagent_adapter import attach_cli_to_agent
 
 if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
@@ -275,8 +276,8 @@ def main():
             normalized_config["after_model_hooks"] = [cli_progress_hook] + existing_model_hooks
             normalized_config["after_tool_hooks"] = [cli_tool_hook] + existing_tool_hooks
 
-            builder = AgentBuilder(normalized_config, config_path.parent)
-            return (
+            builder = AgentConfigBuilder(normalized_config, config_path.parent)
+            agent_config = (
                 builder.build_core_properties()
                 .build_llm_config()
                 .build_mcp_servers()
@@ -286,8 +287,9 @@ def main():
                 .build_sub_agents()
                 .build_skills()
                 .build_system_prompt_path()
-                .get_agent()
+                .get_agent_config()
             )
+            return Agent(config=agent_config)
 
         agent = build_agent_from_config()
 

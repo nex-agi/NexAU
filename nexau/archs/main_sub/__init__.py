@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .agent import Agent, create_agent
+from .agent import Agent
 
-__all__ = ["Agent", "create_agent"]
+__all__ = ["Agent"]

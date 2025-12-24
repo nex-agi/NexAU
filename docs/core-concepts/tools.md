@@ -27,7 +27,7 @@ NexAU comes with a variety of pre-built tools for common tasks.
 If you use python to create Agent:
 
 ```python
-from nexau.archs.tool import Tool
+from nexau import Agent, AgentConfig, Tool
 from nexau.archs.tool.builtin.todo_write import todo_write
 from nexau.archs.tool.builtin.web_tool import web_read
 from nexau.archs.tool.builtin.web_tool import web_search
@@ -49,11 +49,12 @@ todo_write_tool = Tool.from_yaml(
 )
 
 # Add it to your agent's tool list
-agent = create_agent(
+agent_config = AgentConfig(
     name="web_agent",
     tools=[web_search_tool, web_read_tool, todo_write_tool],
-    # ... other agent config
+    # ... other agent config (llm_config, system_prompt, etc.)
 )
+agent = Agent(agent_config)
 ```
 
 If you use agent yaml config, you can add these lines to the config file:
@@ -135,7 +136,7 @@ input_schema:
 Load the tool from its YAML file and bind it to the Python function you created.
 
 ```python
-from nexau.archs.tool import Tool
+from nexau import Agent, AgentConfig, Tool
 from my_tools.calculator import simple_calculator
 
 # Create the tool instance
@@ -145,11 +146,12 @@ calculator_tool = Tool.from_yaml(
 )
 
 # Add it to your agent's tool list
-agent = create_agent(
+agent_config = AgentConfig(
     name="calculator_agent",
     tools=[calculator_tool],
-    # ... other agent config
+    # ... other agent config (llm_config, system_prompt, etc.)
 )
+agent = Agent(agent_config)
 ```
 
 If you use agent yaml config, you can add these lines to the config file:

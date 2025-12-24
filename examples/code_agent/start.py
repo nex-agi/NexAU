@@ -19,7 +19,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from nexau.archs.config.config_loader import load_agent_config
+from nexau import Agent
 
 logging.basicConfig(level=logging.INFO)
 
@@ -38,7 +38,7 @@ def main():
         print("Loading Code agent from YAML configuration...")
 
         script_dir = Path(__file__).parent
-        claude_code_agent = load_agent_config(str(script_dir / "code_agent.yaml"))
+        claude_code_agent = Agent.from_yaml(config_path=script_dir / "code_agent.yaml")
         print("✓ Agent loaded successfully from YAML")
 
         print("\nTesting Code Agent...")

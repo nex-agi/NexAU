@@ -18,8 +18,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+from nexau import Agent, AgentConfig
 from nexau.archs.llm import LLMConfig
-from nexau.archs.main_sub import create_agent
 from nexau.archs.tool import Tool
 from nexau.archs.tool.builtin.todo_write import todo_write
 from nexau.archs.tool.builtin.web_tool import web_read, web_search
@@ -68,24 +68,23 @@ Wait for the web_read tool to finish before you continue your response.
 Before searching, you need to use todo_write_tool to write a todo list to track the research progress.
 When completing a task, you need to update the todo list. Todo list: {{current_todos}}
 """
-
-        def sub_agent_factory():
-            return create_agent(
-                name="sub_deep_research_agent",
-                tools=[web_search_tool, web_read_tool, todo_write_tool],
-                llm_config=llm_config,
-                system_prompt=system_prompt,
-            )
-
-        deep_research_agent = create_agent(
+        # It is not allowed for a sub-agent to list itself as one of its own sub-agents.
+        sub_agent_config = AgentConfig(
+            description="Delegate a research task to this agent.",
+            name="sub_deep_research_agent",
+            tools=[web_search_tool, web_read_tool, todo_write_tool],
+            llm_config=llm_config,
+            system_prompt=system_prompt,
+        )
+        main_agent_config = AgentConfig(
             name="deep_research_agent",
             tools=[web_search_tool, web_read_tool, todo_write_tool],
             llm_config=llm_config,
             system_prompt=system_prompt,
-            sub_agents=[("sub_deep_research_agent", sub_agent_factory)],
+            sub_agents={"sub_agent": sub_agent_config},
         )
+        deep_research_agent = Agent(config=main_agent_config)
         print("✓ Sub-agents created successfully")
-
         print("\nTesting delegation with web research...")
         web_message = "调研一下腾讯，拆解成多个调研子任务，并让多个 subagent 分别并行执行这些子任务"
         print(f"\nUser: {web_message}")

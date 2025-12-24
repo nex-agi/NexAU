@@ -38,7 +38,7 @@ from nexau.archs.main_sub.execution.executor import Executor
 
 def _load_nexau_dependencies():
     from nexau.archs.llm.llm_config import LLMConfig as _LLMConfig
-    from nexau.archs.main_sub.agent import create_agent as _create_agent
+    from nexau.archs.main_sub.agent import Agent as _Agent
     from nexau.archs.main_sub.agent_context import AgentContext as _AgentContext
     from nexau.archs.main_sub.agent_context import GlobalStorage as _GlobalStorage
     from nexau.archs.main_sub.agent_state import AgentState as _AgentState
@@ -48,7 +48,7 @@ def _load_nexau_dependencies():
 
     return (
         _LLMConfig,
-        _create_agent,
+        _Agent,
         _AgentContext,
         _GlobalStorage,
         _AgentState,
@@ -60,7 +60,7 @@ def _load_nexau_dependencies():
 
 (
     LLMConfig,
-    create_agent,
+    Agent,
     AgentContext,
     GlobalStorage,
     AgentState,
@@ -177,11 +177,10 @@ def agent_config(mock_llm_config):
     """Basic agent configuration for testing."""
     return AgentConfig(
         name="test_agent",
-        agent_id="test_agent_123",
         system_prompt="You are a helpful assistant.",
         system_prompt_type="string",
         tools=[],
-        sub_agents=[],
+        sub_agents={},
         llm_config=mock_llm_config,
         stop_tools=set(),
     )
@@ -313,13 +312,14 @@ def mock_agent(mock_llm_config, execution_config, global_storage):
     """Create a mock agent for testing."""
     with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
         mock_openai.OpenAI.return_value = Mock()
-        agent = create_agent(
+        agent_config = AgentConfig(
             name="test_agent",
             llm_config=mock_llm_config,
             max_iterations=execution_config.max_iterations,
             max_context_tokens=execution_config.max_context_tokens,
             global_storage=global_storage,
         )
+        agent = Agent(agent_config)
         yield agent
 
 

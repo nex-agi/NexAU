@@ -15,22 +15,26 @@
 """Refactored Agent implementation for the NexAU framework."""
 
 import logging
+import traceback
 import uuid
+import warnings
 from collections.abc import Callable
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any
 
 import anthropic
+import dotenv
 import openai
+import yaml
 from anthropic.types import ToolParam
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
-from nexau.archs.main_sub.config import AgentConfig, ExecutionConfig
+from nexau.archs.main_sub.config import AgentConfig, ConfigError, ExecutionConfig
 from nexau.archs.main_sub.execution.executor import Executor
 from nexau.archs.main_sub.prompt_builder import PromptBuilder
-from nexau.archs.main_sub.skill import Skill
 from nexau.archs.main_sub.sub_agent_naming import build_sub_agent_tool_name
 from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
@@ -60,6 +64,7 @@ class Agent:
     def __init__(
         self,
         config: AgentConfig,
+        agent_id: str | None = None,
         global_storage: GlobalStorage | None = None,
     ):
         """Initialize agent with configuration.
@@ -68,7 +73,7 @@ class Agent:
             config: Agent configuration
             global_storage: Optional global storage instance
         """
-        self.config = config
+        self.config: AgentConfig = config
         self.global_storage = global_storage if global_storage is not None else GlobalStorage()
         existing_tracer = self.global_storage.get("tracer")
         if existing_tracer is None and self.config.resolved_tracer is not None:
@@ -102,7 +107,7 @@ class Agent:
         # Initialize prompt builder
         self.prompt_builder = PromptBuilder()
         self._agent_name = self.config.name or f"agent_{uuid.uuid4().hex}"
-        self._agent_id = self.config.agent_id or self._agent_name
+        self.agent_id = agent_id or str(uuid.uuid4())
 
         # Initialize execution components
         self._initialize_execution_components()
@@ -115,6 +120,58 @@ class Agent:
 
         # Register for cleanup
         cleanup_manager.register_agent(self)
+
+    @classmethod
+    def from_yaml(
+        cls,
+        config_path: Path,
+        agent_id: str | None = None,
+        overrides: dict[str, Any] | None = None,
+        global_storage: GlobalStorage | None = None,
+    ) -> "Agent":
+        """
+        Create agent from YAML file.
+
+        Args:
+            config_path: Path to the agent configuration YAML file
+            overrides: Dictionary of configuration overrides
+            template_context: Context variables for Jinja template rendering
+            global_storage: Optional global storage instance
+
+        Returns:
+            Configured Agent instance
+        """
+        if overrides:
+            warnings.warn(
+                "The overrides parameter is deprecated and will be removed in a future "
+                "version. Please use AgentConfig.from_yaml() to load the configuration, "
+                "modify attributes directly (e.g., agent_config.key = value), and then "
+                "initialize the Agent using Agent(agent_config).",
+            )
+        try:
+            dotenv.load_dotenv()
+            if not config_path.exists():
+                raise ConfigError(f"Configuration file not found: {config_path}")
+
+            # Load config schema from YAML configuration
+            agent_config = AgentConfig.from_yaml(config_path, overrides)
+
+            if global_storage is None:
+                global_storage = GlobalStorage()
+            if agent_config.global_storage:
+                global_storage.update(agent_config.global_storage)
+
+            # if config.get("system_prompt_type") == "jinja" and template_context:
+
+            return cls(config=agent_config, agent_id=agent_id, global_storage=global_storage)
+
+        except yaml.YAMLError as e:
+            raise ConfigError(f"YAML parsing error in {config_path}: {e}")
+        except Exception as e:
+            traceback.print_exc()
+            raise ConfigError(
+                f"Error loading configuration from {config_path}: {e}",
+            )
 
     def _initialize_openai_client(self) -> Any:
         """Initialize OpenAI client from LLM config."""
@@ -158,13 +215,17 @@ class Agent:
         """Convert configured tools and sub-agents into OpenAI tool definitions."""
         tools_spec: list[ChatCompletionToolParam] = [tool.to_openai() for tool in self.config.tools]
 
-        for sub_agent_name in (self.config.sub_agent_factories or {}).keys():
+        if not self.config.sub_agents:
+            return tools_spec
+        for sub_agent_name in (self.config.sub_agents or {}).keys():
             tools_spec.append(
                 {
                     "type": "function",
                     "function": {
                         "name": build_sub_agent_tool_name(sub_agent_name),
-                        "description": f"Delegate work to sub-agent '{sub_agent_name}'.",
+                        "description": (
+                            self.config.sub_agents[sub_agent_name].description or f"Delegate work to sub-agent '{sub_agent_name}'."
+                        ),
                         "parameters": {
                             "type": "object",
                             "properties": {
@@ -185,11 +246,13 @@ class Agent:
         """Convert tools and sub-agents into anthropic tool definitions."""
         tools_spec: list[ToolParam] = [tool.to_anthropic() for tool in self.config.tools]
 
-        for sub_agent_name in (self.config.sub_agent_factories or {}).keys():
+        if not self.config.sub_agents:
+            return tools_spec
+        for sub_agent_name in (self.config.sub_agents or {}).keys():
             tools_spec.append(
                 {
                     "name": build_sub_agent_tool_name(sub_agent_name),
-                    "description": f"Delegate work to sub-agent '{sub_agent_name}'.",
+                    "description": self.config.sub_agents[sub_agent_name].description or f"Delegate work to sub-agent '{sub_agent_name}'.",
                     "input_schema": {
                         "type": "object",
                         "properties": {
@@ -219,10 +282,10 @@ class Agent:
         # Initialize the Executor
         self.executor = Executor(
             agent_name=self._agent_name,
-            agent_id=self._agent_id,
+            agent_id=self.agent_id,
             tool_registry=self.tool_registry,
             serial_tool_name=self.serial_tool_name,
-            sub_agent_factories=self.config.sub_agent_factories,
+            sub_agents=self.config.sub_agents or {},
             stop_tools=self.config.stop_tools or set(),
             openai_client=self.openai_client,
             llm_config=self.config.llm_config or LLMConfig(),
@@ -302,7 +365,7 @@ class Agent:
             system_prompt = self.prompt_builder.build_system_prompt(
                 agent_config=self.config,
                 tools=self.config.tools,
-                sub_agent_factories=self.config.sub_agent_factories,
+                sub_agents=self.config.sub_agents or {},
                 runtime_context=merged_context,
                 include_tool_instructions=not self.use_structured_tool_calls,
             )
@@ -317,7 +380,7 @@ class Agent:
             # Create the AgentState instance
             agent_state = AgentState(
                 agent_name=self._agent_name,
-                agent_id=self._agent_id,
+                agent_id=self.agent_id,
                 context=ctx,
                 global_storage=self.global_storage,
                 parent_agent_state=parent_agent_state,
@@ -368,7 +431,7 @@ class Agent:
         span_name = f"Agent: {self._agent_name}"
         inputs = {
             "message": message,
-            "agent_id": self._agent_id,
+            "agent_id": self.agent_id,
         }
         attributes: dict[str, Any] = {
             "agent_name": self._agent_name,
@@ -457,10 +520,12 @@ class Agent:
         self.tool_registry[tool.name] = tool
         self.executor.add_tool(tool)
 
-    def add_sub_agent(self, name: str, agent_factory: Callable[[], "Agent"]) -> None:
-        """Add a sub-agent factory for delegation."""
-        self.config.sub_agent_factories[name] = agent_factory
-        self.executor.add_sub_agent(name, agent_factory)
+    def add_sub_agent(self, name: str, agent_config: AgentConfig) -> None:
+        """Add a sub-agent config."""
+        if self.config.sub_agents is None:
+            self.config.sub_agents = {}
+        self.config.sub_agents[name] = agent_config
+        self.executor.add_sub_agent(name, agent_config)
 
     def enqueue_message(self, message: dict[str, str]) -> None:
         """Enqueue a message to be added to the history."""
@@ -480,84 +545,3 @@ class Agent:
             self.stop()
         except Exception:
             pass  # Avoid exceptions during garbage collection
-
-
-# Factory function for agent creation
-def create_agent(
-    name: str | None = None,
-    agent_id: str | None = None,
-    tools: list[Tool] | None = None,
-    sub_agents: list[tuple[str, Callable[[], "Agent"]]] | None = None,
-    skills: list[Skill] | None = None,
-    system_prompt: str | None = None,
-    system_prompt_type: Literal["string", "file", "jinja"] = "string",
-    llm_config: LLMConfig | dict[str, Any] | None = None,
-    max_iterations: int = 100,
-    max_context_tokens: int = 128000,
-    max_running_subagents: int = 5,
-    error_handler: Callable[..., Any] | None = None,
-    retry_attempts: int = 5,
-    timeout: int = 300,
-    # Token counting parameters
-    token_counter: Callable[[list[dict[str, str]]], int] | None = None,
-    # Context parameters
-    initial_state: dict[str, Any] | None = None,
-    initial_config: dict[str, Any] | None = None,
-    initial_context: dict[str, Any] | None = None,
-    # MCP parameters
-    mcp_servers: list[dict[str, Any]] | None = None,
-    # Stop tools parameters
-    stop_tools: list[str] | set[str] | None = None,
-    # Hook parameters
-    after_model_hooks: list[Callable[..., Any]] | None = None,
-    after_tool_hooks: list[Callable[..., Any]] | None = None,
-    before_model_hooks: list[Callable[..., Any]] | None = None,
-    before_tool_hooks: list[Callable[..., Any]] | None = None,
-    middlewares: list[Callable[..., Any]] | None = None,
-    # Global storage parameter
-    global_storage: GlobalStorage | None = None,
-    tool_call_mode: str = "openai",
-    tracers: list[BaseTracer] | None = None,
-    **llm_kwargs: Any,
-) -> Agent:
-    """Create a new agent with specified configuration."""
-    # Handle llm_config creation with backward compatibility
-    if llm_config is None and llm_kwargs:
-        llm_config = LLMConfig(**llm_kwargs)
-    elif llm_config is None:
-        raise ValueError("llm_config is required")
-
-    # Create agent configuration
-    agent_kwargs: dict[str, Any] = {
-        "name": name,
-        "agent_id": agent_id if agent_id else str(uuid.uuid4()),
-        "system_prompt": system_prompt,
-        "system_prompt_type": system_prompt_type,
-        "tools": tools or [],
-        "sub_agents": sub_agents,
-        "skills": skills or [],
-        "llm_config": llm_config,
-        "stop_tools": set(stop_tools) if stop_tools else None,
-        "initial_state": initial_state,
-        "initial_config": initial_config,
-        "initial_context": initial_context,
-        "mcp_servers": mcp_servers or [],
-        "after_model_hooks": after_model_hooks,
-        "after_tool_hooks": after_tool_hooks,
-        "before_model_hooks": before_model_hooks,
-        "before_tool_hooks": before_tool_hooks,
-        "middlewares": middlewares,
-        "error_handler": error_handler,
-        "token_counter": token_counter,
-        "max_iterations": max_iterations,
-        "max_context_tokens": max_context_tokens,
-        "max_running_subagents": max_running_subagents,
-        "tool_call_mode": tool_call_mode,
-        "retry_attempts": retry_attempts,
-        "timeout": timeout,
-        "tracers": tracers or [],
-    }
-
-    agent_config = AgentConfig(**agent_kwargs)
-
-    return Agent(agent_config, global_storage)
