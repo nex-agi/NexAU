@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import logging
 
-from ..hooks import BeforeModelHookInput, HookResult, Middleware
 from ...utils.token_counter import TokenCounter
+from ..hooks import BeforeModelHookInput, HookResult, Middleware
 
 logger = logging.getLogger(__name__)
 

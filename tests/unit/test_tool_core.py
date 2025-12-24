@@ -208,13 +208,11 @@ def test_get_info_and_string_helpers():
         input_schema={},
         implementation=impl,
         template_override="tmpl",
-        timeout=3,
     )
 
     info = tool.get_info()
     assert info["name"] == "info_tool"
     assert info["template_override"] == "tmpl"
-    assert info["timeout"] == 3
 
     assert "Tool 'info_tool'" in str(tool)
     assert "Skill description" in str(tool)

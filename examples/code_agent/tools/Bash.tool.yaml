@@ -183,7 +183,7 @@ input_schema:
       description: The command to execute
     timeout:
       type: number
-      description: Optional timeout in milliseconds (max 600000)
+      description: Optional timeout in milliseconds (max 6000000)
     description:
       type: string
       description: |2-

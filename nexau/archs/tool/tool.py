@@ -79,7 +79,6 @@ class ToolYamlSchema(BaseModel):
     disable_parallel: bool = False
     lazy: bool = False
     template_override: str | None = None
-    timeout: int | None = Field(default=None, gt=0)
     builtin: str | None = None
     binding: str | None = None
 
@@ -137,7 +136,6 @@ class Tool:
         disable_parallel: bool = False,
         lazy: bool = False,
         template_override: str | None = None,
-        timeout: int | None = None,
         extra_kwargs: dict[str, Any] | None = None,
     ):
         """Initialize a tool with schema and implementation."""
@@ -163,7 +161,6 @@ class Tool:
         else:
             self.implementation = implementation
         self.template_override = template_override
-        self.timeout = timeout
         self.disable_parallel = disable_parallel
         self.use_cache = use_cache
         reserved_keys = {"agent_state", "global_storage"}
@@ -223,7 +220,6 @@ class Tool:
             )
 
         template_override = tool_def.get("template_override")
-        timeout = tool_def.get("timeout")
 
         # Create tool instance
         return cls(
@@ -237,7 +233,6 @@ class Tool:
             disable_parallel=disable_parallel,
             lazy=effective_lazy,
             template_override=template_override,
-            timeout=timeout,
             extra_kwargs=extra_kwargs,
             **kwargs,
         )
@@ -350,7 +345,6 @@ class Tool:
             "description": self.description,
             "skill_description": self.skill_description,
             "input_schema": self.input_schema,
-            "timeout": self.timeout,
         }
 
     def __repr__(self) -> str:
