@@ -177,7 +177,7 @@ class TokenCounter:
         total_tokens = 0
         for tool in tools:
             try:
-                tool_str = json.dumps(tool)
+                tool_str = json.dumps(tool, ensure_ascii=False)
             except TypeError:
                 tool_str = str(tool)
             total_tokens += len(encoding.encode(tool_str, allowed_special=set()))
