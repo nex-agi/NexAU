@@ -157,6 +157,17 @@ class DummyLangfuseObject:
         self.ended = True
 
 
+class DummyLangfuseObjectWithTrace(DummyLangfuseObject):
+    """Dummy Langfuse object that also supports trace-level updates."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.update_trace_calls: list[dict[str, Any]] = []
+
+    def update_trace(self, **kwargs: Any) -> None:
+        self.update_trace_calls.append(kwargs)
+
+
 class DummyLangfuseClient:
     """Fake Langfuse client used to instantiate LangfuseTracer without real deps."""
 
@@ -337,6 +348,31 @@ def test_langfuse_tracer_end_span_updates_and_flushes():
     assert client.flush_count == 1
 
 
+def test_langfuse_tracer_end_span_updates_trace_fields_when_supported() -> None:
+    tracer = LangfuseTracer(
+        debug=True,
+        session_id="sess-123",
+        user_id="user-456",
+        tags=["tag-a", "tag-b"],
+        metadata={"meta": "value"},
+    )
+    span = tracer.start_span("tool", SpanType.TOOL)
+    assert span.vendor_obj is not None
+
+    # Swap the vendor object for one that supports trace-level updates.
+    trace_vendor = DummyLangfuseObjectWithTrace()
+    span.vendor_obj = trace_vendor
+
+    tracer.end_span(span, outputs={"result": "ok"})
+
+    assert trace_vendor.update_trace_calls == [
+        {"metadata": {"meta": "value"}},
+        {"user_id": "user-456"},
+        {"session_id": "sess-123"},
+        {"tags": ["tag-a", "tag-b"]},
+    ]
+
+
 def test_langfuse_tracer_disabled_skips_client():
     tracer = LangfuseTracer(enabled=False)
     span = tracer.start_span("noop", SpanType.AGENT)
@@ -467,6 +503,58 @@ def test_langfuse_deactivate_span_swallows_exit_errors() -> None:
             raise RuntimeError("exit-fail")
 
     tracer.deactivate_span(ExplodingToken())
+
+
+def test_langfuse_tracer_flush_calls_client_and_logs_debug(caplog: pytest.LogCaptureFixture) -> None:
+    tracer = LangfuseTracer(debug=True)
+    _ = tracer.start_span("root", SpanType.AGENT)
+    assert tracer.client is not None
+    client = cast(DummyLangfuseClient, tracer.client)
+    before = client.flush_count
+
+    caplog.set_level(logging.DEBUG)
+    tracer.flush()
+
+    assert client.flush_count == before + 1
+    assert any("Flushed Langfuse data" in rec.message for rec in caplog.records)
+
+
+def test_langfuse_tracer_flush_handles_exception(caplog: pytest.LogCaptureFixture) -> None:
+    class ExplodingClient:
+        def flush(self) -> None:
+            raise RuntimeError("flush-fail")
+
+    tracer = LangfuseTracer(debug=True)
+    tracer.client = cast(Any, ExplodingClient())
+
+    caplog.set_level(logging.WARNING)
+    tracer.flush()
+
+    assert any("Failed to flush Langfuse data" in rec.message for rec in caplog.records)
+
+
+def test_langfuse_tracer_shutdown_calls_client_and_logs_info(caplog: pytest.LogCaptureFixture) -> None:
+    tracer = LangfuseTracer()
+    tracer.client = cast(Any, DummyLangfuseClient())
+
+    caplog.set_level(logging.INFO)
+    tracer.shutdown()
+
+    assert any("Langfuse tracer shutdown" in rec.message for rec in caplog.records)
+
+
+def test_langfuse_tracer_shutdown_handles_exception(caplog: pytest.LogCaptureFixture) -> None:
+    class ExplodingClient:
+        def shutdown(self) -> None:
+            raise RuntimeError("shutdown-fail")
+
+    tracer = LangfuseTracer()
+    tracer.client = cast(Any, ExplodingClient())
+
+    caplog.set_level(logging.WARNING)
+    tracer.shutdown()
+
+    assert any("Failed to shutdown Langfuse client" in rec.message for rec in caplog.records)
 
 
 def test_composite_tracer_flush_and_activate_deactivate_best_effort(caplog: pytest.LogCaptureFixture) -> None:

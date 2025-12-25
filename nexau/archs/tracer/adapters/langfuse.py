@@ -66,6 +66,7 @@ class LangfuseTracer(BaseTracer):
         session_id: str | None = None,
         user_id: str | None = None,
         tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
         debug: bool = False,
         enabled: bool = True,
     ):
@@ -75,6 +76,10 @@ class LangfuseTracer(BaseTracer):
             public_key: Langfuse public key (or use LANGFUSE_PUBLIC_KEY env var)
             secret_key: Langfuse secret key (or use LANGFUSE_SECRET_KEY env var)
             host: Langfuse host URL (or use LANGFUSE_HOST env var)
+            session_id: Langfuse session ID
+            user_id: Langfuse user ID
+            tags: Langfuse tags
+            metadata: Langfuse metadata
             debug: Enable debug logging
             enabled: Whether tracing is enabled (can be disabled for testing)
 
@@ -95,6 +100,7 @@ class LangfuseTracer(BaseTracer):
         self.session_id = str(uuid.uuid4()) if session_id is None else session_id
         self.user_id = user_id
         self.tags = tags
+        self.metadata = metadata
 
         # Store config passed at construction time; actual keys may be injected later via env.
         self._init_public_key = public_key
@@ -225,6 +231,8 @@ class LangfuseTracer(BaseTracer):
             langfuse_params["metadata"]["langfuse_user_id"] = self.user_id
         if self.tags:
             langfuse_params["metadata"]["langfuse_tags"] = self.tags
+        if self.metadata:
+            langfuse_params["metadata"].update(self.metadata)
 
         # Serialize inputs properly
         if inputs:
@@ -343,6 +351,18 @@ class LangfuseTracer(BaseTracer):
             # Update the Langfuse object
             if update_params:
                 langfuse_span.update(**update_params)
+
+            # Trace-level fields are optional depending on the Langfuse SDK object type.
+            # Keep this best-effort so missing methods (e.g., in tests/mocks) don't prevent `.end()`/flush.
+            if hasattr(langfuse_span, "update_trace"):
+                if self.metadata:
+                    langfuse_span.update_trace(metadata=self.metadata)
+                if self.user_id:
+                    langfuse_span.update_trace(user_id=self.user_id)
+                if self.session_id:
+                    langfuse_span.update_trace(session_id=self.session_id)
+                if self.tags:
+                    langfuse_span.update_trace(tags=self.tags)
 
             # End the span (for timing)
             if hasattr(langfuse_span, "end"):
