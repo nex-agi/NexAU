@@ -16,12 +16,14 @@
 
 import json
 import logging
+import os
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, cast
 
 from langfuse import Langfuse, LangfuseSpan
+from opentelemetry import trace as otel_trace_api
 
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
 
@@ -79,31 +81,91 @@ class LangfuseTracer(BaseTracer):
         Raises:
             ImportError: If langfuse package is not installed
         """
+        # IMPORTANT:
+        # - This tracer is created during server warmup, before per-run configs/envs may be ready.
+        # - We must not "lock in" a Langfuse client too early, otherwise different projects/keys
+        #   in the same process can leak across runs.
+        # Therefore we ALWAYS initialize attributes and lazily create (or rotate) the client
+        # on first real span when keys are available.
         self.enabled = enabled
         self.debug = debug
 
-        if not self.enabled:
-            self.client = None
-            logger.info("Langfuse tracer disabled")
-            return
-
-        # Initialize Langfuse client
-        # It will fall back to environment variables if not provided
-        client_kwargs: dict[str, Any] = {}
-        if public_key:
-            client_kwargs["public_key"] = public_key
-        if secret_key:
-            client_kwargs["secret_key"] = secret_key
-        if host:
-            client_kwargs["host"] = host
-        client_kwargs["debug"] = debug
-
+        # Always define attributes to avoid AttributeError in start_span/end_span.
+        self.client: Langfuse | None = None
         self.session_id = str(uuid.uuid4()) if session_id is None else session_id
         self.user_id = user_id
         self.tags = tags
 
-        self.client = Langfuse(**client_kwargs)
-        logger.info(f"Langfuse tracer initialized (host: {host or 'default'})")
+        # Store config passed at construction time; actual keys may be injected later via env.
+        self._init_public_key = public_key
+        self._init_secret_key = secret_key
+        self._init_host = host
+
+        # Track which credentials the current client was created with (to support rotation).
+        self._client_identity: tuple[str, str, str | None] | None = None
+        self._missing_keys_warned = False
+
+        if not self.enabled:
+            logger.info("Langfuse tracer disabled")
+
+    def _current_credentials(self) -> tuple[str | None, str | None, str | None]:
+        """Resolve Langfuse credentials, preferring explicit args then environment variables."""
+        public_key = self._init_public_key or os.getenv("LANGFUSE_PUBLIC_KEY")
+        secret_key = self._init_secret_key or os.getenv("LANGFUSE_SECRET_KEY")
+        host = self._init_host or os.getenv("LANGFUSE_HOST")
+        return public_key, secret_key, host
+
+    def _ensure_client(self) -> Langfuse | None:
+        """Create or rotate the Langfuse client if credentials are available.
+
+        This is intentionally lazy so server warmup doesn't initialize a client before
+        per-run configuration (e.g. keys injected by prepare_env) is ready.
+        """
+        if not self.enabled:
+            return None
+
+        public_key, secret_key, host = self._current_credentials()
+        if not public_key or not secret_key:
+            # Keys not ready yet (common during warmup). Don't crash; just no-op tracing.
+            if not self._missing_keys_warned:
+                logger.warning("Langfuse tracer not initialized yet (public_key/secret_key missing)")
+                self._missing_keys_warned = True
+            return None
+
+        identity: tuple[str, str, str | None] = (public_key, secret_key, host)
+        if self.client is not None and self._client_identity == identity:
+            return self.client
+
+        # Credentials changed (multi-project in one process) OR client not created yet.
+        # Flush/shutdown old client best-effort to avoid dropping buffered events.
+        if self.client is not None:
+            try:
+                self.client.flush()
+            except Exception:
+                pass
+            try:
+                self.client.shutdown()
+            except Exception:
+                pass
+
+        client_kwargs: dict[str, Any] = {
+            "public_key": public_key,
+            "secret_key": secret_key,
+            "debug": self.debug,
+        }
+        if host:
+            client_kwargs["host"] = host
+
+        try:
+            self.client = Langfuse(**client_kwargs)
+            self._client_identity = identity
+            self._missing_keys_warned = False
+            logger.info(f"Langfuse tracer initialized (host: {host or 'default'})")
+        except Exception as e:
+            self.client = None
+            self._client_identity = None
+            logger.warning(f"Langfuse tracer failed to initialize: {e}")
+        return self.client
 
     def start_span(
         self,
@@ -144,7 +206,8 @@ class LangfuseTracer(BaseTracer):
             attributes=attributes or {},
         )
 
-        if not self.enabled or self.client is None:
+        client = self._ensure_client()
+        if not self.enabled or client is None:
             return span
 
         # Prepare common parameters
@@ -170,7 +233,7 @@ class LangfuseTracer(BaseTracer):
         try:
             if parent_span is None or parent_span.vendor_obj is None:
                 # Root level: Create a Trace
-                langfuse_span = self.client.start_span(**langfuse_params)
+                langfuse_span = client.start_span(**langfuse_params)
                 span.vendor_obj = langfuse_span
 
             elif span_type == SpanType.LLM:
@@ -200,6 +263,36 @@ class LangfuseTracer(BaseTracer):
             logger.warning(f"Failed to create Langfuse span '{name}': {e}")
 
         return span
+
+    def activate_span(self, span: Span) -> Any | None:  # noqa: ANN401
+        """Activate this span in OpenTelemetry context so Langfuse auto-instrumentations can parent correctly."""
+        if not self.enabled:
+            return None
+
+        vendor_obj = span.vendor_obj
+        if vendor_obj is None:
+            return None
+
+        # Langfuse spans wrap an OTEL span; activating that OTEL span makes downstream
+        # auto-instrumentation (e.g., Langfuse's OpenAI patch) attach as children.
+        otel_span = getattr(vendor_obj, "_otel_span", None)
+        if otel_span is None:
+            return None
+
+        try:
+            ctx_manager = otel_trace_api.use_span(otel_span, end_on_exit=False)
+            ctx_manager.__enter__()
+            return ctx_manager
+        except Exception:
+            return None
+
+    def deactivate_span(self, token: Any | None) -> None:  # noqa: ANN401
+        if token is None:
+            return
+        try:
+            token.__exit__(None, None, None)
+        except Exception:
+            return
 
     def end_span(
         self,

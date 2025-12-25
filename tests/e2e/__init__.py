@@ -26,6 +26,6 @@ try:
 except ImportError:
     pass
 
-__all__ = [
+__all__: list[str] = [
     # Add test class names as they are implemented
 ]

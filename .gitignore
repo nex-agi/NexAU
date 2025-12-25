@@ -12,3 +12,4 @@ mypy_reports/
 coverage.xml
 htmlcov/
 .vscode/
+.mypy_cache/

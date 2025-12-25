@@ -468,7 +468,7 @@ def call_llm_with_openai_chat_completion(
             last_chunk: ChatCompletionChunk | None = None
 
             if should_trace and tracer is not None:
-                trace_ctx = TraceContext(tracer, "OpenAI chat.completions.create (stream)", SpanType.LLM, inputs=payload)
+                trace_ctx: TraceContext = TraceContext(tracer, "OpenAI chat.completions.create (stream)", SpanType.LLM, inputs=payload)
                 with trace_ctx:
                     stream_ctx: Stream[ChatCompletionChunk] = client.chat.completions.create(
                         stream=True,

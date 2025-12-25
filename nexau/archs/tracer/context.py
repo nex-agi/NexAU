@@ -106,6 +106,7 @@ class TraceContext:
         self.span: Span | None = None
         self.token: Token[Span | None] | None = None
         self._outputs: Any = None
+        self._vendor_ctx_token: Any | None = None
 
     def __enter__(self) -> Span:
         """Enter the context and start a new span.
@@ -127,6 +128,15 @@ class TraceContext:
 
         # Set this new span as the current context
         self.token = set_current_span(self.span)
+
+        # Also activate vendor-specific "current span" context (optional).
+        # This enables auto-instrumentations (e.g., Langfuse OpenAI) to attach
+        # their spans as children of this span.
+        try:
+            self._vendor_ctx_token = self.tracer.activate_span(self.span)
+        except Exception:
+            # Never break core execution due to vendor context propagation issues.
+            self._vendor_ctx_token = None
         return self.span
 
     def __exit__(self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any) -> None:
@@ -146,6 +156,13 @@ class TraceContext:
                 outputs=self._outputs,
                 error=error,
             )
+
+        # Restore vendor-specific context first so outer spans (if any) become active again.
+        try:
+            self.tracer.deactivate_span(self._vendor_ctx_token)
+        except Exception:
+            pass
+        self._vendor_ctx_token = None
 
         # Restore the previous parent span
         if self.token is not None:

@@ -37,6 +37,6 @@ except ImportError:
 # from .test_llm_friendly import *
 # from .test_other_tools import *
 
-__all__ = [
+__all__: list[str] = [
     # Add test class names as they are implemented
 ]

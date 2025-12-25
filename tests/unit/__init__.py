@@ -40,6 +40,6 @@ except ImportError:
 # from .test_execution import *
 # from .test_tools import *
 
-__all__ = [
+__all__: list[str] = [
     # Add test class names as they are implemented
 ]

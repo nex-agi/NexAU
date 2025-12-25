@@ -176,6 +176,47 @@ class CompositeTracer(BaseTracer):
             except Exception as e:
                 logger.warning(f"Failed to flush tracer {idx}: {e}")
 
+    def activate_span(self, span: Span) -> Any | None:  # noqa: ANN401
+        """Activate vendor context in all underlying tracers (best-effort)."""
+        if not _is_vendor_map(span.vendor_obj):
+            return None
+
+        vendor_obj_dict = span.vendor_obj
+        tokens: VendorObjMap = {}
+
+        for idx, tracer in enumerate(self.tracers):
+            vendor_handle = vendor_obj_dict.get(idx)
+            if vendor_handle is None:
+                continue
+            try:
+                vendor_span = Span(
+                    id=span.id,
+                    name=span.name,
+                    type=span.type,
+                    vendor_obj=vendor_handle,
+                )
+                token = tracer.activate_span(vendor_span)
+                if token is not None:
+                    tokens[idx] = token
+            except Exception:
+                continue
+
+        return tokens or None
+
+    def deactivate_span(self, token: Any | None) -> None:  # noqa: ANN401
+        if not _is_vendor_map(token):
+            return
+
+        tokens = token
+        for idx, tracer in enumerate(self.tracers):
+            t = tokens.get(idx)
+            if t is None:
+                continue
+            try:
+                tracer.deactivate_span(t)
+            except Exception:
+                continue
+
     def shutdown(self) -> None:
         """Shutdown all registered tracers."""
         for idx, tracer in enumerate(self.tracers):

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
-from typing import Any
+from collections.abc import Iterator
+from typing import Any, cast
 
 import pytest
 
@@ -181,11 +183,15 @@ class DummyLangfuseClient:
 
 
 @pytest.fixture(autouse=True)
-def patch_langfuse(monkeypatch):
+def patch_langfuse(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Patch Langfuse SDK with dummy objects for all tests in this module."""
 
     DummyLangfuseClient.instances.clear()
     monkeypatch.setattr("nexau.archs.tracer.adapters.langfuse.Langfuse", DummyLangfuseClient)
+    # Provide dummy credentials so LangfuseTracer can initialize the (patched) client.
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://langfuse.test")
     yield
 
 
@@ -236,7 +242,9 @@ def test_composite_tracer_broadcasts_calls():
     child_span = composite.start_span("child", SpanType.TOOL, parent_span=root_span)
 
     assert isinstance(child_span.vendor_obj, dict)
-    assert backend_a.start_calls[1]["parent_vendor"] == root_span.vendor_obj[0]
+    assert isinstance(root_span.vendor_obj, dict)
+    root_vendor_obj = cast(dict[int, Any], root_span.vendor_obj)
+    assert backend_a.start_calls[1]["parent_vendor"] == root_vendor_obj[0]
 
     composite.end_span(child_span, outputs={"status": "ok"})
     assert backend_b.end_calls[0]["outputs"] == {"status": "ok"}
@@ -256,7 +264,9 @@ def test_composite_tracer_handles_backend_errors():
     composite = CompositeTracer([ExplodingTracer(), backend])
 
     span = composite.start_span("root", SpanType.AGENT)
-    assert span.vendor_obj[1]["name"] == "root"
+    assert isinstance(span.vendor_obj, dict)
+    vendor_obj = cast(dict[int, Any], span.vendor_obj)
+    assert vendor_obj[1]["name"] == "root"
 
 
 def test_in_memory_tracer_dumps_nested_spans():
@@ -305,7 +315,8 @@ def test_langfuse_tracer_creates_trace_and_generation():
 
     llm_span = tracer.start_span("llm", SpanType.LLM, parent_span=root_span, attributes={"foo": "bar"})
     assert root_span.vendor_obj.start_observation_calls[0]["as_type"] == "span"
-    assert llm_span.vendor_obj.metadata["span_type"] == SpanType.LLM.value
+    llm_vendor_obj = cast(DummyLangfuseObject, llm_span.vendor_obj)
+    assert llm_vendor_obj.metadata["span_type"] == SpanType.LLM.value
 
 
 def test_langfuse_tracer_end_span_updates_and_flushes():
@@ -315,13 +326,15 @@ def test_langfuse_tracer_end_span_updates_and_flushes():
 
     tracer.end_span(span, outputs=outputs, attributes={"color": "blue"})
 
-    vendor_obj: DummyLangfuseObject = span.vendor_obj  # type: ignore[assignment]
+    vendor_obj = cast(DummyLangfuseObject, span.vendor_obj)
     output_call = next(call for call in vendor_obj.update_calls if "output" in call)
     model_call = next(call for call in vendor_obj.update_calls if "model" in call)
     assert output_call["output"]["result"] == "ok"
     assert model_call["model"] == "gpt"
     assert vendor_obj.ended is True
-    assert tracer.client.flush_count == 1  # type: ignore[union-attr]
+    assert tracer.client is not None
+    client = cast(DummyLangfuseClient, tracer.client)
+    assert client.flush_count == 1
 
 
 def test_langfuse_tracer_disabled_skips_client():
@@ -336,7 +349,164 @@ def test_langfuse_serialization_handles_custom_objects():
         def __str__(self) -> str:
             return "custom-object"
 
-    data = {"values": (1, 2), "obj": Custom()}
-    serialized = LangfuseTracer._serialize_for_langfuse(data)
+    tracer = LangfuseTracer(debug=True)
+    span = tracer.start_span("root", SpanType.AGENT, inputs={"values": (1, 2), "obj": Custom()})
+    assert span.vendor_obj is not None
+
+    client = DummyLangfuseClient.instances[-1]
+    serialized = client.start_span_calls[0]["input"]
     assert serialized["values"] == [1, 2]
-    assert serialized["obj"].replace('"', "") == "custom-object"
+    assert str(serialized["obj"]).replace('"', "") == "custom-object"
+
+
+def test_langfuse_ensure_client_missing_keys_warns_once(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    tracer = LangfuseTracer()
+
+    # Simulate warmup: credentials not available yet.
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+
+    caplog.set_level(logging.WARNING)
+    span_1 = tracer.start_span("first", SpanType.AGENT)
+    span_2 = tracer.start_span("second", SpanType.AGENT)
+
+    assert span_1.vendor_obj is None
+    assert span_2.vendor_obj is None
+    assert sum("public_key/secret_key missing" in rec.message for rec in caplog.records) == 1
+
+
+def test_langfuse_ensure_client_rotates_and_flushes_old_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    tracer = LangfuseTracer()
+    root_span = tracer.start_span("root", SpanType.AGENT)
+    assert root_span.vendor_obj is not None
+
+    old_client = cast(DummyLangfuseClient, tracer.client)
+    assert old_client is not None
+
+    # Rotate credentials to force client replacement and best-effort flush/shutdown of the old one.
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-rotated")
+    _ = tracer.start_span("after-rotate", SpanType.AGENT)
+
+    assert old_client.flush_count == 1
+    assert old_client.shutdown_count == 1
+    # In prod this is `Langfuse | None`, but tests monkeypatch it to `DummyLangfuseClient`.
+    assert cast(Any, tracer.client) is not old_client
+
+
+def test_langfuse_ensure_client_init_failure_logs_warning(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    class ExplodingLangfuse:
+        def __init__(self, **kwargs: Any) -> None:
+            raise RuntimeError("init-fail")
+
+    monkeypatch.setattr("nexau.archs.tracer.adapters.langfuse.Langfuse", ExplodingLangfuse)
+
+    tracer = LangfuseTracer()
+    caplog.set_level(logging.WARNING)
+    span = tracer.start_span("root", SpanType.AGENT)
+
+    assert span.vendor_obj is None
+    assert tracer.client is None
+    assert any("Langfuse tracer failed to initialize" in rec.message for rec in caplog.records)
+
+
+def test_langfuse_activate_and_deactivate_span_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    tracer = LangfuseTracer()
+
+    class DummyVendor:
+        def __init__(self) -> None:
+            self._otel_span = object()
+
+    entered: list[bool] = []
+    exited: list[bool] = []
+
+    class DummyCtx:
+        def __enter__(self) -> DummyCtx:
+            entered.append(True)
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            exited.append(True)
+
+    def fake_use_span(span: Any, *, end_on_exit: bool = False) -> DummyCtx:
+        assert span is not None
+        assert end_on_exit is False
+        return DummyCtx()
+
+    monkeypatch.setattr("nexau.archs.tracer.adapters.langfuse.otel_trace_api.use_span", fake_use_span)
+
+    span = Span(id="s", name="n", type=SpanType.AGENT, vendor_obj=DummyVendor())
+    token = tracer.activate_span(span)
+    assert token is not None
+    assert entered == [True]
+
+    tracer.deactivate_span(token)
+    assert exited == [True]
+
+
+def test_langfuse_activate_span_handles_use_span_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    tracer = LangfuseTracer()
+
+    class DummyVendor:
+        def __init__(self) -> None:
+            self._otel_span = object()
+
+    def exploding_use_span(span: Any, *, end_on_exit: bool = False) -> Any:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("nexau.archs.tracer.adapters.langfuse.otel_trace_api.use_span", exploding_use_span)
+
+    span = Span(id="s", name="n", type=SpanType.AGENT, vendor_obj=DummyVendor())
+    assert tracer.activate_span(span) is None
+
+
+def test_langfuse_deactivate_span_swallows_exit_errors() -> None:
+    tracer = LangfuseTracer()
+
+    class ExplodingToken:
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            raise RuntimeError("exit-fail")
+
+    tracer.deactivate_span(ExplodingToken())
+
+
+def test_composite_tracer_flush_and_activate_deactivate_best_effort(caplog: pytest.LogCaptureFixture) -> None:
+    class ExplodingFlushTracer(FakeBackendTracer):
+        def flush(self) -> None:
+            raise RuntimeError("flush-fail")
+
+    class ActivatingTracer(FakeBackendTracer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deactivated: list[Any] = []
+
+        def activate_span(self, span: Span) -> Any | None:  # noqa: ANN401
+            return {"token_for": span.vendor_obj}
+
+        def deactivate_span(self, token: Any | None) -> None:  # noqa: ANN401
+            self.deactivated.append(token)
+
+    class ExplodingActivateTracer(FakeBackendTracer):
+        def activate_span(self, span: Span) -> Any | None:  # noqa: ANN401
+            raise RuntimeError("activate-fail")
+
+    caplog.set_level(logging.WARNING)
+    good = ActivatingTracer()
+    composite = CompositeTracer([ExplodingFlushTracer(), ExplodingActivateTracer(), good])
+
+    composite.flush()
+    assert any("Failed to flush tracer 0" in rec.message for rec in caplog.records)
+
+    # Not a vendor map => no-op for activate/deactivate
+    assert composite.activate_span(Span(id="x", name="x", type=SpanType.AGENT, vendor_obj=None)) is None
+    composite.deactivate_span("not-a-dict")
+
+    # Vendor map: activate should ignore exploding tracer and return token for good tracer only.
+    span = Span(id="s", name="n", type=SpanType.AGENT, vendor_obj={0: {"v": 0}, 1: {"v": 1}, 2: {"v": 2}})
+    token = composite.activate_span(span)
+    assert isinstance(token, dict)
+    assert 2 in token
+    assert 1 not in token
+
+    token_map = cast(dict[int, Any], token)
+    composite.deactivate_span(token_map)
+    assert len(good.deactivated) == 1

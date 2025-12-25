@@ -129,3 +129,29 @@ class BaseTracer(ABC):
 
         Override this method in implementations that need cleanup.
         """
+
+    # ---- Optional vendor context propagation hooks ----
+    #
+    # Some tracer backends (e.g., Langfuse's OpenAI auto-instrumentation) rely on
+    # their own notion of an "active span" (often via OpenTelemetry contextvars).
+    #
+    # Nexau's TraceContext manages its own contextvar (`nexau.archs.tracer.context`),
+    # so we provide optional hooks for tracer implementations to also set / restore
+    # vendor-specific "current span" state when a span becomes active.
+    #
+    # Implementations should return an opaque token that can later be passed to
+    # `deactivate_span` to restore the previous vendor context.
+    def activate_span(self, span: Span) -> Any | None:  # noqa: ANN401
+        """Activate the vendor-specific span context for this span (optional).
+
+        Args:
+            span: The span that is becoming the current active span.
+
+        Returns:
+            An opaque token to be passed back to `deactivate_span`, or None.
+        """
+        return None
+
+    def deactivate_span(self, token: Any | None) -> None:  # noqa: ANN401
+        """Deactivate previously-activated vendor context (optional)."""
+        return None
