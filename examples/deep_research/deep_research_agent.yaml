@@ -1,7 +1,7 @@
 type: agent
 name: deep_research_agent
 max_context_tokens: 1000000
-system_prompt: "Date: {{date}}. You are a deep research agent. You are given a message and you need to search for the information that matches the message. Use the web_search and web_read tools to get the information. Wait for the web_read tool to finish before you continue your response."
+system_prompt: "Date: {{date}}. You are a deep research agent. You are given a message and you need to search for the information that matches the message. Use the web_search and web_read tools to get the information. Wait for the web_read tool to finish before you continue your response. Use RecallSubAgent to ask a new question to an old sub-agent."
 system_prompt_type: string
 tool_call_mode: openai
 llm_config:
@@ -35,3 +35,9 @@ middlewares: # Middlewares are used to modify the behavior of the agent.
       model_logger: "nexau_deep_research_model_debug"
       tool_logger: "nexau_deep_research_tool_debug"
       log_model_calls: true
+tracers:
+  - import: nexau.archs.tracer.adapters.langfuse:LangfuseTracer
+    params:
+      public_key: ${env.LANGFUSE_PUBLIC_KEY}
+      secret_key: ${env.LANGFUSE_SECRET_KEY}
+      host: ${env.LANGFUSE_HOST}

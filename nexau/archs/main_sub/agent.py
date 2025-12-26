@@ -106,7 +106,7 @@ class Agent:
 
         # Initialize prompt builder
         self.prompt_builder = PromptBuilder()
-        self._agent_name = self.config.name or f"agent_{uuid.uuid4().hex}"
+        self.agent_name = self.config.name or f"agent_{uuid.uuid4().hex}"
         self.agent_id = agent_id or str(uuid.uuid4())
 
         # Initialize execution components
@@ -281,7 +281,7 @@ class Agent:
         token_counter = self._resolve_token_counter()
         # Initialize the Executor
         self.executor = Executor(
-            agent_name=self._agent_name,
+            agent_name=self.agent_name,
             agent_id=self.agent_id,
             tool_registry=self.tool_registry,
             serial_tool_name=self.serial_tool_name,
@@ -355,11 +355,11 @@ class Agent:
             runtime_client = self.openai_client
             if custom_llm_client_provider:
                 try:
-                    override_client = custom_llm_client_provider(self._agent_name)
+                    override_client = custom_llm_client_provider(self.agent_name)
                     if override_client is not None:
                         runtime_client = override_client
                 except Exception as exc:  # Defensive: user provided callable
-                    logger.warning(f"⚠️ custom_llm_client_provider failed for '{self._agent_name}': {exc}")
+                    logger.warning(f"⚠️ custom_llm_client_provider failed for '{self.agent_name}': {exc}")
 
             # Build and add system prompt to history
             system_prompt = self.prompt_builder.build_system_prompt(
@@ -379,7 +379,7 @@ class Agent:
 
             # Create the AgentState instance
             agent_state = AgentState(
-                agent_name=self._agent_name,
+                agent_name=self.agent_name,
                 agent_id=self.agent_id,
                 context=ctx,
                 global_storage=self.global_storage,
@@ -428,13 +428,13 @@ class Agent:
         Returns:
             Agent response string
         """
-        span_name = f"Agent: {self._agent_name}"
+        span_name = f"Agent: {self.agent_name}"
         inputs = {
             "message": message,
             "agent_id": self.agent_id,
         }
         attributes: dict[str, Any] = {
-            "agent_name": self._agent_name,
+            "agent_name": self.agent_name,
             "model": getattr(self.config.llm_config, "model", None),
         }
 

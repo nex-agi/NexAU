@@ -210,8 +210,15 @@ class AgentConfig(
         """Finalize configuration by normalizing fields and injecting skill tool."""
         if self._is_finalized:
             return self
+        from nexau.archs.tool.builtin.recall_sub_agent_tool import recall_sub_agent
 
         nexau_package_path = Path(__file__).parent.parent.parent.parent
+        if self.sub_agents:
+            recall_subagent_tool = Tool.from_yaml(
+                str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "recall_sub_agent_tool.yaml"),
+                binding=recall_sub_agent,
+            )
+            self.tools.append(recall_subagent_tool)
         has_skilled_tools = any(tool.as_skill for tool in self.tools)
         if has_skilled_tools or self.skills:
             skill_tool = Tool.from_yaml(

@@ -52,11 +52,13 @@ class SubAgentManager:
         self.xml_parser = XMLParser()
         self._shutdown_event = threading.Event()
         self.running_sub_agents: dict[str, Agent] = {}
+        self.finished_sub_agents: dict[str, Agent] = {}
 
     def call_sub_agent(
         self,
         sub_agent_name: str,
         message: str,
+        sub_agent_id: str | None = None,
         context: dict[str, Any] | None = None,
         parent_agent_state: AgentState | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
@@ -94,12 +96,32 @@ class SubAgentManager:
             logger.error(f"❌ {error_msg}")
             raise ValueError(error_msg)
 
+        # recall finished sub-agent
+        if sub_agent_id is not None:
+            if sub_agent_id not in self.finished_sub_agents.keys():
+                available_ids = list(self.finished_sub_agents.keys())
+                raise ValueError(
+                    f"Invalid sub_agent_id: '{sub_agent_id}'. "
+                    f"This ID was not found in the finished sub-agents list. "
+                    f"Available IDs are: {available_ids}"
+                )
+            logger.info(
+                f"🔄🤖 Recall finished sub-agent '{sub_agent_id}{sub_agent_name}' with message: {message}",
+            )
+            sub_agent = self.finished_sub_agents[sub_agent_id]
+            self.finished_sub_agents.pop(sub_agent_id)
+
+            if self.global_storage is not None:
+                sub_agent.global_storage = self.global_storage
+
+        # elif
         # Instantiate a new sub-agent
-        sub_agent_config = self.sub_agents[sub_agent_name]
-        sub_agent = Agent(
-            config=sub_agent_config,
-            global_storage=self.global_storage,
-        )
+        else:
+            sub_agent_config = self.sub_agents[sub_agent_name]
+            sub_agent = Agent(
+                config=sub_agent_config,
+                global_storage=self.global_storage,
+            )
 
         self.running_sub_agents[sub_agent.agent_id] = sub_agent
 
@@ -120,10 +142,16 @@ class SubAgentManager:
                 parent_agent_state=parent_agent_state,
                 custom_llm_client_provider=custom_llm_client_provider,
             )
+            result = (
+                f"{result}"
+                f"Sub-agent finished (sub_agent_name: {sub_agent.agent_name}, "
+                f"sub_agent_id: {sub_agent.agent_id}. Recall this agent if needed)."
+            )
 
             logger.info(
                 f"✅ Sub-agent '{sub_agent_name}' returned result to agent '{self.agent_name}'",
             )
+            self.finished_sub_agents[sub_agent.agent_id] = sub_agent
             return str(result)
 
         except Exception as e:

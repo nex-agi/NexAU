@@ -35,6 +35,7 @@ class TestSubAgentManager:
         sub_agent.config = Mock()
         sub_agent.run = Mock(return_value="sub agent result")
         sub_agent.stop = Mock()
+        sub_agent.agent_id = "mock_sub_agent_id"
         return sub_agent
 
     @pytest.fixture
@@ -62,6 +63,7 @@ class TestSubAgentManager:
         assert manager.xml_parser is not None
         assert isinstance(manager._shutdown_event, threading.Event)
         assert manager.running_sub_agents == {}
+        assert manager.finished_sub_agents == {}
 
     def test_initialization_with_optional_params(self, sub_agents):
         """Test SubAgentManager initialization with optional parameters."""
@@ -102,7 +104,9 @@ class TestSubAgentManager:
             mock_agent_cls.return_value = mock_sub_agent
             result = subagent_manager.call_sub_agent("test_sub_agent", "test message")
 
-        assert result == "sub agent result"
+        assert result.startswith("sub agent result")
+        assert "Sub-agent finished" in result
+        assert subagent_manager.finished_sub_agents[mock_sub_agent.agent_id] is mock_sub_agent
         mock_agent_cls.assert_called_once_with(
             config=sub_agent_config,
             global_storage=subagent_manager.global_storage,
@@ -130,7 +134,8 @@ class TestSubAgentManager:
             mock_agent_cls.return_value = mock_sub_agent
             result = subagent_manager.call_sub_agent("test_sub_agent", "test message")
 
-        assert result == "sub agent result"
+        assert result.startswith("sub agent result")
+        assert "Sub-agent finished" in result
         mock_agent_cls.assert_called_once_with(
             config=sub_agent_config,
             global_storage=subagent_manager.global_storage,
@@ -162,7 +167,8 @@ class TestSubAgentManager:
                 context=explicit_context,
             )
 
-        assert result == "sub agent result"
+        assert result.startswith("sub agent result")
+        assert "Sub-agent finished" in result
         call_args = mock_sub_agent.run.call_args
         assert call_args[1]["context"] == explicit_context
 
@@ -185,7 +191,7 @@ class TestSubAgentManager:
                 parent_agent_state=agent_state,
             )
 
-        assert result == "sub agent result"
+        assert result.startswith("sub agent result")
         call_args = mock_sub_agent.run.call_args
         assert call_args[1]["parent_agent_state"] == agent_state
 
@@ -206,7 +212,7 @@ class TestSubAgentManager:
             mock_agent_cls.return_value = mock_sub_agent
             result = manager.call_sub_agent("test_sub_agent", "message")
 
-        assert result == "sub agent result"
+        assert result.startswith("sub agent result")
         mock_agent_cls.assert_called_once_with(
             config=sub_agent_config,
             global_storage=mock_storage,
@@ -223,6 +229,7 @@ class TestSubAgentManager:
             with pytest.raises(Exception, match="Execution error"):
                 subagent_manager.call_sub_agent("test_sub_agent", "test message")
         assert subagent_manager.running_sub_agents == {}
+        assert subagent_manager.finished_sub_agents == {}
 
     @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_missing_agent_id(self, mock_get_context, subagent_manager, mock_sub_agent):
@@ -234,8 +241,9 @@ class TestSubAgentManager:
             mock_agent_cls.return_value = mock_sub_agent
             result = subagent_manager.call_sub_agent("test_sub_agent", "test message")
 
-        assert result == "sub agent result"
+        assert result.startswith("sub agent result")
         assert subagent_manager.running_sub_agents == {}
+        assert subagent_manager.finished_sub_agents.get(None) is mock_sub_agent
 
     @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_running_agents_tracking(self, mock_get_context, subagent_manager, mock_sub_agent):
@@ -254,7 +262,45 @@ class TestSubAgentManager:
             result = subagent_manager.call_sub_agent("test_sub_agent", "test message")
 
         assert len(subagent_manager.running_sub_agents) == 0
-        assert result == "sub agent result"
+        assert result.startswith("sub agent result")
+        assert subagent_manager.finished_sub_agents["sub_agent_123"] is mock_sub_agent
+
+    @patch("nexau.archs.main_sub.agent_context.get_context")
+    def test_call_sub_agent_recall_finished_agent(
+        self,
+        mock_get_context,
+        subagent_manager,
+        mock_sub_agent,
+    ):
+        """Ensure finished sub-agents can be recalled by id."""
+        mock_get_context.return_value = None
+        mock_sub_agent.run.return_value = "recalled result"
+        mock_sub_agent.agent_id = "finished-agent-1"
+        subagent_manager.finished_sub_agents[mock_sub_agent.agent_id] = mock_sub_agent
+
+        subagent_manager.global_storage = GlobalStorage()
+        mock_sub_agent.global_storage = None
+
+        with patch("nexau.archs.main_sub.agent.Agent") as mock_agent_cls:
+            result = subagent_manager.call_sub_agent(
+                "test_sub_agent",
+                "follow-up message",
+                sub_agent_id="finished-agent-1",
+            )
+            mock_agent_cls.assert_not_called()
+
+        assert result.startswith("recalled result")
+        assert "finished-agent-1" in result
+        assert subagent_manager.finished_sub_agents["finished-agent-1"] is mock_sub_agent
+        assert mock_sub_agent.global_storage is subagent_manager.global_storage
+
+    def test_call_sub_agent_invalid_recall_id(self, subagent_manager, mock_sub_agent):
+        """Invalid recall id should raise ValueError with available ids listed."""
+        mock_sub_agent.agent_id = "existing-id"
+        subagent_manager.finished_sub_agents["existing-id"] = mock_sub_agent
+
+        with pytest.raises(ValueError, match="Invalid sub_agent_id"):
+            subagent_manager.call_sub_agent("test_sub_agent", "message", sub_agent_id="missing-id")
 
     def test_shutdown(self, subagent_manager, mock_sub_agent):
         """Test shutdown method."""
@@ -318,6 +364,7 @@ class TestSubAgentManager:
                 custom_llm_client_provider=custom_provider,
             )
 
-        assert result == "sub agent result"
+        assert result.startswith("sub agent result")
+        assert "Sub-agent finished" in result
         call_args = mock_sub_agent.run.call_args
         assert call_args[1]["custom_llm_client_provider"] is custom_provider

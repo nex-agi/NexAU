@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -66,6 +65,7 @@ class CLIEnabledSubAgentManager(SubAgentManager):
         )
         # Preserve runtime state
         new_manager.running_sub_agents = manager.running_sub_agents
+        new_manager.finished_sub_agents = manager.finished_sub_agents
         if manager._shutdown_event.is_set():
             new_manager._shutdown_event.set()
         return new_manager
@@ -126,6 +126,7 @@ class CLIEnabledSubAgentManager(SubAgentManager):
         self,
         sub_agent_name: str,
         message: str,
+        sub_agent_id: str | None = None,
         context: dict[str, Any] | None = None,
         parent_agent_state=None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
@@ -133,22 +134,25 @@ class CLIEnabledSubAgentManager(SubAgentManager):
         if self._shutdown_event.is_set():
             raise RuntimeError(f"Agent '{self.agent_name}' is shutting down")
 
-        if sub_agent_name not in self.sub_agents.keys():
-            raise ValueError(f"Sub-agent '{sub_agent_name}' not found")
+        sub_agent: Agent
+        # Recall finished sub-agent if requested.
+        if sub_agent_id is not None and sub_agent_id in self.finished_sub_agents:
+            sub_agent = self.finished_sub_agents[sub_agent_id]
+            if self.global_storage is not None:
+                sub_agent.global_storage = self.global_storage
+            self.finished_sub_agents.pop(sub_agent_id)
+        else:
+            if sub_agent_name not in self.sub_agents.keys():
+                raise ValueError(f"Sub-agent '{sub_agent_name}' not found")
 
-        sub_agent_config = self.sub_agents[sub_agent_name]
+            sub_agent_config = self.sub_agents[sub_agent_name]
 
-        sub_agent = None
+            sub_agent = Agent(
+                config=sub_agent_config,
+                global_storage=self.global_storage,
+            )
 
-        sub_agent = Agent(
-            config=sub_agent_config,
-            global_storage=self.global_storage,
-        )
-        agent_id = getattr(sub_agent, "agent_id", None)
-        if agent_id is None:
-            agent_id = str(uuid.uuid4())
-            setattr(sub_agent, "agent_id", agent_id)
-        self.running_sub_agents[agent_id] = sub_agent
+        self.running_sub_agents[sub_agent.agent_id] = sub_agent
 
         self._inject_cli_hooks(sub_agent)
 
@@ -158,7 +162,7 @@ class CLIEnabledSubAgentManager(SubAgentManager):
             {
                 "agent_name": sub_agent_name,
                 "display_name": getattr(sub_agent.config, "name", sub_agent_name),
-                "agent_id": agent_id,
+                "agent_id": sub_agent.agent_id,
                 "parent_agent_name": self.agent_name,
                 "parent_agent_id": parent_agent_id,
                 "message": message,
@@ -178,15 +182,16 @@ class CLIEnabledSubAgentManager(SubAgentManager):
                 parent_agent_state=parent_agent_state,
                 custom_llm_client_provider=custom_llm_client_provider,
             )
-            result_text = result[0] if isinstance(result, tuple) else result
+            result = str(result) + f"Sub-agent finished (sub_agent_id: {sub_agent.agent_id}. Recall this agent if needed)."
+            result_text = result
 
-            self.running_sub_agents.pop(agent_id)
+            self.finished_sub_agents[sub_agent.agent_id] = sub_agent
             self._emit_event(
                 "complete",
                 {
                     "agent_name": sub_agent_name,
                     "display_name": getattr(sub_agent.config, "name", sub_agent_name),
-                    "agent_id": agent_id,
+                    "agent_id": sub_agent.agent_id,
                     "parent_agent_name": self.agent_name,
                     "parent_agent_id": parent_agent_id,
                     "result": result_text,
@@ -195,7 +200,7 @@ class CLIEnabledSubAgentManager(SubAgentManager):
             return result_text
 
         except Exception as exc:
-            agent_id = getattr(sub_agent.config, "agent_id", "") if sub_agent else ""
+            agent_id = getattr(sub_agent, "agent_id", "")
             display_name = getattr(sub_agent.config, "name", sub_agent_name) if sub_agent else sub_agent_name
             self._emit_event(
                 "error",
@@ -209,6 +214,8 @@ class CLIEnabledSubAgentManager(SubAgentManager):
                 },
             )
             raise
+        finally:
+            self.running_sub_agents.pop(getattr(sub_agent, "agent_id", ""), None)
 
 
 def attach_cli_manager(

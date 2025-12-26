@@ -294,6 +294,7 @@ class Executor:
                         tools_payload = deepcopy(self.structured_tool_payload)
 
                 # Count current prompt tokens (including tool definitions if present)
+
                 current_prompt_tokens = self.token_counter.count_tokens(
                     messages,
                     tools=cast(list[dict[str, Any]], tools_payload),
@@ -982,7 +983,7 @@ class Executor:
             result = self.subagent_manager.call_sub_agent(
                 sub_agent_call.agent_name,
                 sub_agent_call.message,
-                context,
+                context=context,
                 parent_agent_state=parent_agent_state,
                 custom_llm_client_provider=custom_llm_client_provider,
             )
