@@ -349,6 +349,16 @@ class LoggingMiddleware(Middleware):
         self.tool_preview_chars = tool_preview_chars
         self.log_model_calls = log_model_calls
 
+    def before_model(self, hook_input: BeforeModelHookInput) -> HookResult:  # type: ignore[override]
+        logger = self.model_logger
+        if not logger:
+            return HookResult.no_changes()
+
+        logger.info(
+            f"before_model hook triggered agent_id: {hook_input.agent_state.agent_id}, agent_name: {hook_input.agent_state.agent_name}"
+        )
+        return HookResult.no_changes()
+
     def after_model(self, hook_input: AfterModelHookInput) -> HookResult:  # type: ignore[override]
         logger = self.model_logger
         if not logger:
@@ -373,8 +383,24 @@ class LoggingMiddleware(Middleware):
         for idx, msg in enumerate(hook_input.messages[-3:]):
             preview = str(msg.get("content", ""))[: self.message_preview_chars]
             logger.info("Recent message %s: %s -> %s", idx + 1, msg.get("role"), preview)
+        logger.info(
+            f"after_model hook triggered agent_id: {hook_input.agent_state.agent_id}, agent_name: {hook_input.agent_state.agent_name}"
+        )
 
         logger.info("🎣 ===== END AFTER MODEL HOOK =====")
+        return HookResult.no_changes()
+
+    def before_tool(self, hook_input: BeforeToolHookInput) -> HookResult:  # type: ignore[override]
+        logger = self.tool_logger
+        if not logger:
+            return HookResult.no_changes()
+        logger.info(
+            f"before_tool hook triggered "
+            f"tool_id: {hook_input.tool_call_id}, "
+            f"tool_name: {hook_input.tool_name}, "
+            f"agent_name: {hook_input.agent_state.agent_name}, "
+            f"agent_id: {hook_input.agent_state.agent_id}"
+        )
         return HookResult.no_changes()
 
     def after_tool(self, hook_input: AfterToolHookInput) -> HookResult:  # type: ignore[override]
@@ -393,6 +419,14 @@ class LoggingMiddleware(Middleware):
             logger.info("🔧 Tool output (truncated): %s...", truncated)
         else:
             logger.info("🔧 Tool output: %s", output_preview)
+
+        logger.info(
+            f"after_tool hook triggered "
+            f"tool_id: {hook_input.tool_call_id}, "
+            f"tool_name: {hook_input.tool_name}, "
+            f"agent_name: {hook_input.agent_state.agent_name}, "
+            f"agent_id: {hook_input.agent_state.agent_id}"
+        )
         logger.info("🔧 ===== END AFTER TOOL HOOK =====")
         return HookResult.no_changes()
 
