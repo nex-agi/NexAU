@@ -75,8 +75,7 @@ class Agent:
         """
         self.config: AgentConfig = config
         self.global_storage = global_storage if global_storage is not None else GlobalStorage()
-        existing_tracer = self.global_storage.get("tracer")
-        if existing_tracer is None and self.config.resolved_tracer is not None:
+        if self.config.resolved_tracer is not None:
             self.global_storage.set("tracer", self.config.resolved_tracer)
         # Prefer the tool_call_mode defined on AgentConfig when an ExecutionConfig
         # is not explicitly provided to keep Python-created agents consistent with
