@@ -36,6 +36,8 @@ from nexau.archs.main_sub.execution.hooks import MiddlewareManager
 from nexau.archs.main_sub.execution.llm_caller import LLMCaller
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
+from nexau.core.adapters.legacy import messages_from_legacy_openai_chat, messages_to_legacy_openai_chat
+from nexau.core.messages import Message, Role, ToolResultBlock
 
 
 @pytest.fixture(autouse=True)
@@ -102,7 +104,7 @@ class TestLLMCallerBasicCalls:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         assert isinstance(response, ModelResponse)
@@ -124,10 +126,12 @@ class TestLLMCallerBasicCalls:
             "content": [{"type": "text", "text": "chain-of-thought"}],
         }
 
-        messages = [
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Cached reply", "response_items": [reasoning_item]},
-        ]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Cached reply", "response_items": [reasoning_item]},
+            ],
+        )
 
         mock_openai_client.chat.completions.create.return_value.choices[0].message.tool_calls = []
 
@@ -138,7 +142,7 @@ class TestLLMCallerBasicCalls:
         sent_messages = mock_openai_client.chat.completions.create.call_args.kwargs["messages"]
         assert all("response_items" not in msg for msg in sent_messages if isinstance(msg, dict))
         # Original history should remain intact for future Responses API use
-        assert messages[1]["response_items"][0]["id"] == "rs_reasoning_stream"
+        assert messages[1].metadata["response_items"][0]["id"] == "rs_reasoning_stream"
 
     def test_call_llm_success_responses_api(self, mock_openai_client, responses_llm_config, agent_state):
         """Test successful call flow when using the Responses API."""
@@ -163,7 +167,7 @@ class TestLLMCallerBasicCalls:
             llm_config=responses_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         response = caller.call_llm(messages, max_tokens=120, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         assert isinstance(response, ModelResponse)
@@ -211,13 +215,13 @@ class TestLLMCallerBasicCalls:
             llm_config=responses_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         response = caller.call_llm(messages, max_tokens=60, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         assert "[reasoning]" in response.render_text()
 
         # Append to history and ensure reasoning makes it into subsequent input
-        history = messages + [response.to_message_dict()]
+        history = messages + [response.to_ump_message()]
         mock_openai_client.responses.create.reset_mock()
 
         caller.call_llm(history, max_tokens=60, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
@@ -268,7 +272,7 @@ class TestLLMCallerBasicCalls:
         ]
 
         caller.call_llm(
-            messages=[{"role": "user", "content": "Hello"}],
+            messages=[Message.user("Hello")],
             max_tokens=50,
             force_stop_reason=AgentStopReason.SUCCESS,
             agent_state=agent_state,
@@ -338,17 +342,11 @@ class TestLLMCallerBasicCalls:
             llm_config=responses_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         first_response = caller.call_llm(messages, max_tokens=80, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
-        history = messages + [first_response.to_message_dict()]
-        history.append(
-            {
-                "role": "tool",
-                "tool_call_id": "call_1",
-                "content": "{}",
-            },
-        )
+        history = messages + [first_response.to_ump_message()]
+        history.append(Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_1", content="{}", is_error=False)]))
 
         caller.call_llm(history, max_tokens=80, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
@@ -374,7 +372,7 @@ class TestLLMCallerBasicCalls:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
 
         with pytest.raises(RuntimeError, match="OpenAI client is not available"):
             caller.call_llm(messages, max_tokens=100)
@@ -392,7 +390,7 @@ class TestLLMCallerBasicCalls:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         # Check that stop sequences were added
@@ -421,7 +419,7 @@ class TestLLMCallerBasicCalls:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         call_args = mock_openai_client.chat.completions.create.call_args
@@ -449,7 +447,7 @@ class TestLLMCallerBasicCalls:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         tools_payload = [
             {
                 "type": "function",
@@ -488,7 +486,7 @@ class TestLLMCallerBasicCalls:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
 
         # Mock response with proper tool_calls structure
         mock_response = Mock()
@@ -526,7 +524,7 @@ class TestLLMCallerBasicCalls:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         call_args = mock_openai_client.chat.completions.create.call_args
@@ -549,7 +547,7 @@ class TestLLMCallerBasicCalls:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         call_args = mock_openai_client.chat.completions.create.call_args
@@ -576,7 +574,7 @@ class TestLLMCallerXMLRestoration:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         # The XMLUtils.restore_closing_tags should add </tool_use>
@@ -597,7 +595,7 @@ class TestLLMCallerXMLRestoration:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         # Response should be split at the stop sequence
@@ -625,7 +623,12 @@ class TestLLMCallerDebugLogging:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "system", "content": "System prompt"}, {"role": "user", "content": "User message"}]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "system", "content": "System prompt"},
+                {"role": "user", "content": "User message"},
+            ],
+        )
 
         with caplog.at_level(logging.INFO):
             caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
@@ -650,7 +653,7 @@ class TestLLMCallerDebugLogging:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
 
         with caplog.at_level(logging.INFO):
             caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
@@ -678,7 +681,7 @@ class TestLLMCallerRetryLogic:
             retry_attempts=3,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
 
         with patch("time.sleep"):  # Mock sleep to speed up test
             response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
@@ -698,7 +701,7 @@ class TestLLMCallerRetryLogic:
             retry_attempts=3,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
 
         with patch("time.sleep"):  # Mock sleep to speed up test
             with pytest.raises(Exception, match="Persistent API Error"):
@@ -721,7 +724,7 @@ class TestLLMCallerRetryLogic:
             retry_attempts=3,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
 
         with patch("time.sleep") as mock_sleep:
             caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
@@ -746,7 +749,7 @@ class TestLLMCallerRetryLogic:
             retry_attempts=3,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
 
         with patch("time.sleep"):
             response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
@@ -772,7 +775,7 @@ class TestLLMCallerForceStopReason:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         response = caller.call_llm(
             messages,
             max_tokens=100,
@@ -791,7 +794,7 @@ class TestLLMCallerForceStopReason:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         response = caller.call_llm(
             messages,
             max_tokens=100,
@@ -810,7 +813,7 @@ class TestLLMCallerForceStopReason:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         response = caller.call_llm(
             messages,
             max_tokens=100,
@@ -859,7 +862,7 @@ class TestLLMCallerEdgeCases:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         response = caller.call_llm(messages, max_tokens=0, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         assert isinstance(response, ModelResponse)
@@ -883,7 +886,7 @@ class TestLLMCallerEdgeCases:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         assert isinstance(response, ModelResponse)
@@ -914,7 +917,7 @@ class TestLLMCallerEdgeCases:
             llm_config=mock_llm_config,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         # Response should preserve special characters
@@ -935,7 +938,7 @@ class TestLLMCallerEdgeCases:
             retry_attempts=100,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
         response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         assert isinstance(response, ModelResponse)
@@ -956,7 +959,7 @@ class TestLLMCallerEdgeCases:
             retry_attempts=3,
         )
 
-        messages = [{"role": "user", "content": "Hello"}]
+        messages = [Message.user("Hello")]
 
         with patch("time.sleep"):
             response = caller.call_llm(messages, max_tokens=100, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
@@ -988,7 +991,12 @@ class TestLLMCallerIntegration:
             retry_attempts=3,
         )
 
-        messages = [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": "Execute tool"}]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Execute tool"},
+            ],
+        )
 
         response = caller.call_llm(
             messages,
@@ -1003,7 +1011,7 @@ class TestLLMCallerIntegration:
 
         # Verify API was called with correct parameters
         call_args = mock_openai_client.chat.completions.create.call_args
-        assert call_args[1]["messages"] == messages
+        assert call_args[1]["messages"] == messages_to_legacy_openai_chat(messages)
         assert call_args[1]["max_tokens"] == 200
         assert "custom_stop" in call_args[1]["stop"]
         assert "</tool_use>" in call_args[1]["stop"]

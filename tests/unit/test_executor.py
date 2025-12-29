@@ -39,6 +39,7 @@ from nexau.archs.main_sub.execution.parse_structures import (
     ToolCall,
 )
 from nexau.archs.tool.tool import Tool
+from nexau.core.messages import Role, ToolResultBlock
 
 
 class TestExecutorInitialization:
@@ -146,7 +147,8 @@ class TestExecutorMessageEnqueueing:
         executor.enqueue_message(message)
 
         assert len(executor.queued_messages) == 1
-        assert executor.queued_messages[0] == message
+        assert executor.queued_messages[0].role == Role.USER
+        assert executor.queued_messages[0].get_text_content() == "Test message"
 
     def test_enqueue_multiple_messages(self, mock_llm_config):
         """Test enqueueing multiple messages."""
@@ -170,7 +172,8 @@ class TestExecutorMessageEnqueueing:
             executor.enqueue_message(msg)
 
         assert len(executor.queued_messages) == 3
-        assert executor.queued_messages == messages
+        assert [m.role.value for m in executor.queued_messages] == ["user", "assistant", "user"]
+        assert [m.get_text_content() for m in executor.queued_messages] == ["Message 1", "Message 2", "Message 3"]
 
 
 class TestExecutorExecution:
@@ -263,7 +266,9 @@ class TestExecutorExecution:
 
             def before_agent(self, hook_input):  # type: ignore[override]
                 self.before_agent_called += 1
-                updated = hook_input.messages + [{"role": "system", "content": "prep note"}]
+                from nexau.core.messages import Message, Role, TextBlock
+
+                updated = hook_input.messages + [Message(role=Role.SYSTEM, content=[TextBlock(text="prep note")])]
                 return HookResult.with_modifications(messages=updated)
 
             def after_agent(self, hook_input):  # type: ignore[override]
@@ -303,7 +308,7 @@ class TestExecutorExecution:
         assert lifecycle_middleware.before_agent_called == 1
         assert lifecycle_middleware.after_agent_called == 1
         assert response == "Simple response::final"
-        assert any(msg.get("content") == "prep note" for msg in messages)
+        assert any(msg.get_text_content() == "prep note" for msg in messages)
 
     def test_execute_openai_tool_messages(self, mock_llm_config, agent_state):
         """Test that OpenAI tool results are appended as tool messages."""
@@ -375,19 +380,25 @@ class TestExecutorExecution:
         assert response == "Final response"
 
         # Tool result should be appended as a tool message with matching call ID
-        tool_messages = [msg for msg in messages if msg.get("role") == "tool"]
+        tool_messages = [msg for msg in messages if msg.role == Role.TOOL]
         assert tool_messages, "Expected at least one tool message"
 
-        matching_tool_messages = [msg for msg in tool_messages if msg.get("tool_call_id") == "call_123"]
+        matching_tool_messages = []
+        for msg in tool_messages:
+            for block in msg.content:
+                if isinstance(block, ToolResultBlock) and block.tool_use_id == "call_123":
+                    matching_tool_messages.append(msg)
+                    break
         assert matching_tool_messages, "Tool message should reuse original tool_call_id"
 
-        tool_content = matching_tool_messages[0]["content"]
+        tool_block = next(block for block in matching_tool_messages[0].content if isinstance(block, ToolResultBlock))
+        tool_content = tool_block.content
         assert '"result"' in tool_content
 
         # Tool message should appear before the final assistant reply
         tool_index = messages.index(matching_tool_messages[0])
         assert tool_index + 1 < len(messages)
-        assert messages[tool_index + 1]["role"] == "assistant"
+        assert messages[tool_index + 1].role == Role.ASSISTANT
 
     def test_execute_with_max_iterations(self, mock_llm_config, agent_state):
         """Test execution stops at max iterations."""
@@ -471,7 +482,7 @@ class TestExecutorExecution:
                 response, messages = executor.execute(history, agent_state)
 
                 # Verify queued message was added to history
-                assert any(msg.get("content") == "Queued message" for msg in messages)
+                assert any(msg.role == Role.USER and msg.get_text_content() == "Queued message" for msg in messages)
                 assert len(executor.queued_messages) == 0
 
     def test_execute_with_token_limit_exceeded(self, mock_llm_config, agent_state):
@@ -1124,14 +1135,15 @@ class TestExecutorWithHooks:
 
     def test_execute_with_before_model_hook(self, mock_llm_config, agent_state):
         """Test execution with before model hook."""
-        from nexau.archs.main_sub.execution.hooks import BeforeModelHook, BeforeModelHookInput
+        from nexau.archs.main_sub.execution.hooks import BeforeModelHookInput, HookResult
+        from nexau.core.messages import Message, Role, TextBlock
 
-        class TestBeforeHook(BeforeModelHook):
-            def execute(self, hook_input: BeforeModelHookInput) -> list[dict[str, str]]:
+        class TestBeforeHook:
+            def __call__(self, hook_input: BeforeModelHookInput) -> HookResult:
                 # Add a system message
                 messages = hook_input.messages.copy()
-                messages.append({"role": "system", "content": "Hook added this"})
-                return messages
+                messages.append(Message(role=Role.SYSTEM, content=[TextBlock(text="Hook added this")]))
+                return HookResult.with_modifications(messages=messages)
 
         hook = TestBeforeHook()
 

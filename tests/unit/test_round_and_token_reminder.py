@@ -14,8 +14,6 @@
 
 """Unit tests for RoundAndTokenReminderMiddleware."""
 
-from typing import cast
-
 import pytest
 
 from nexau.archs.main_sub.agent_state import AgentState
@@ -23,20 +21,23 @@ from nexau.archs.main_sub.execution.hooks import BeforeModelHookInput
 from nexau.archs.main_sub.execution.middleware.round_and_token_reminder import (
     RoundAndTokenReminderMiddleware,
 )
+from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 
 
 @pytest.fixture
-def base_messages() -> list[dict[str, str]]:
+def base_messages():
     """Sample conversation messages."""
 
-    return [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Hello"},
-        {"role": "assistant", "content": "Hi there"},
-    ]
+    return messages_from_legacy_openai_chat(
+        [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+        ],
+    )
 
 
-def test_before_model_adds_iteration_hint(agent_state: AgentState, base_messages: list[dict[str, str]]):
+def test_before_model_adds_iteration_hint(agent_state: AgentState, base_messages):
     """Middleware appends iteration hint before model call."""
 
     middleware = RoundAndTokenReminderMiddleware(max_context_tokens=10)
@@ -52,12 +53,12 @@ def test_before_model_adds_iteration_hint(agent_state: AgentState, base_messages
     assert result.messages is not None
     assert len(result.messages) == len(base_messages) + 1
 
-    appended = cast(str, result.messages[-1]["content"])
+    appended = result.messages[-1].get_text_content()
     assert "iteration 4/5" in appended
     assert "iteration(s) remaining" in appended
 
 
-def test_before_model_adds_token_hint(agent_state: AgentState, base_messages: list[dict[str, str]]):
+def test_before_model_adds_token_hint(agent_state: AgentState, base_messages):
     """Middleware appends token warning when enabled."""
 
     middleware = RoundAndTokenReminderMiddleware(
@@ -73,7 +74,7 @@ def test_before_model_adds_token_hint(agent_state: AgentState, base_messages: li
 
     result = middleware.before_model(hook_input)
     assert result.messages is not None
-    appended = cast(str, result.messages[-1]["content"]).lower()
+    appended = result.messages[-1].get_text_content().lower()
     assert "iteration 2/4" in appended
     assert "token usage is approaching the limit" in appended
 

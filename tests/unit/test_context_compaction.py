@@ -29,6 +29,8 @@ from nexau.archs.main_sub.execution.middleware.context_compaction import (
 )
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.parse_structures import ParsedResponse
+from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
+from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, ToolUseBlock
 
 
 @pytest.fixture
@@ -48,7 +50,7 @@ def agent_state(mock_executor):
 @pytest.fixture
 def sample_messages():
     """Create sample messages for testing."""
-    return [
+    legacy = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Hello, what is Python?"},
         {"role": "assistant", "content": "Python is a programming language.", "tool_calls": []},
@@ -57,6 +59,7 @@ def sample_messages():
         {"role": "user", "content": "What are its main features?"},
         {"role": "assistant", "content": "Python has dynamic typing and automatic memory management.", "tool_calls": []},
     ]
+    return messages_from_legacy_openai_chat(legacy)
 
 
 @pytest.fixture
@@ -202,8 +205,8 @@ class TestSlidingWindowCompaction:
         messages = sample_messages * 3  # 21 messages, 3 iterations
         result = compaction.compact(messages)
 
-        assert result[0]["role"] == "system"
-        assert result[0]["content"] == "You are a helpful assistant."
+        assert result[0].role == Role.SYSTEM
+        assert result[0].get_text_content() == "You are a helpful assistant."
 
 
 class TestToolResultCompaction:
@@ -217,32 +220,38 @@ class TestToolResultCompaction:
     def test_compact_preserves_system_message(self):
         """Test that compaction preserves system message."""
         compaction = ToolResultCompaction()
-        messages = [
-            {"role": "system", "content": "System prompt"},
-            {"role": "user", "content": "Question"},
-            {"role": "assistant", "content": "Answer"},
-            {"role": "tool", "content": "Tool result"},
-        ]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "system", "content": "System prompt"},
+                {"role": "user", "content": "Question"},
+                {"role": "assistant", "content": "Answer"},
+                {"role": "tool", "tool_call_id": "call_1", "content": "Tool result"},
+            ],
+        )
         result = compaction.compact(messages)
-        assert result[0]["role"] == "system"
+        assert result[0].role == Role.SYSTEM
 
     def test_compact_tool_results(self):
         """Test that old tool results are compacted."""
         compaction = ToolResultCompaction()
-        messages = [
-            {"role": "user", "content": "Question 1"},
-            {"role": "assistant", "content": "Answer 1"},
-            {"role": "tool", "content": "Old tool result"},
-            {"role": "user", "content": "Question 2"},
-            {"role": "assistant", "content": "Answer 2"},  # Last assistant
-            {"role": "tool", "content": "Recent tool result"},
-        ]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "user", "content": "Question 1"},
+                {"role": "assistant", "content": "Answer 1"},
+                {"role": "tool", "tool_call_id": "call_old", "content": "Old tool result"},
+                {"role": "user", "content": "Question 2"},
+                {"role": "assistant", "content": "Answer 2"},  # Last assistant
+                {"role": "tool", "tool_call_id": "call_new", "content": "Recent tool result"},
+            ],
+        )
         result = compaction.compact(messages)
 
         # Old tool result should be compacted
-        assert result[2]["content"] == "Tool call result has been compacted"
+        old_tool_blocks = [b for b in result[2].content if isinstance(b, ToolResultBlock)]
+        assert old_tool_blocks and old_tool_blocks[0].content == "Tool call result has been compacted"
         # Recent tool result should be preserved
-        assert result[5]["content"] == "Recent tool result"
+        new_tool_blocks = [b for b in result[5].content if isinstance(b, ToolResultBlock)]
+        assert new_tool_blocks and new_tool_blocks[0].content == "Recent tool result"
 
 
 class TestContextCompactionMiddleware:
@@ -406,28 +415,32 @@ class TestSlidingWindowCompactionAdvanced:
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
         )
+        compaction._llm_caller.call_llm = Mock(  # type: ignore[method-assign]
+            return_value=ModelResponse(content="This is a comprehensive summary of the conversation.", role="assistant"),
+        )
 
-        messages = [
-            {"role": "system", "content": "System prompt"},
-            {"role": "user", "content": "Question 1"},
-            {"role": "assistant", "content": "Answer 1"},
-            {"role": "user", "content": "Question 2"},
-            {"role": "assistant", "content": "Answer 2"},
-        ]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "system", "content": "System prompt"},
+                {"role": "user", "content": "Question 1"},
+                {"role": "assistant", "content": "Answer 1"},
+                {"role": "user", "content": "Question 2"},
+                {"role": "assistant", "content": "Answer 2"},
+            ],
+        )
 
         result = compaction.compact(messages)
 
         # Should have system + modified first kept user message + assistant
         assert len(result) >= 2
-        assert result[0]["role"] == "system"
+        assert result[0].role == Role.SYSTEM
         # First kept user message should contain summary
-        assert "This session is being continued" in result[1]["content"]
-        assert result[1].get("isSummary") is True
+        assert "This session is being continued" in result[1].get_text_content()
+        assert result[1].metadata.get("isSummary") is True
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
     def test_compact_llm_failure_returns_original(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
         """Test that LLM failure returns original messages."""
-        mock_openai_client.chat.completions.create.side_effect = Exception("LLM Error")
         mock_openai_class.return_value = mock_openai_client
 
         compaction = SlidingWindowCompaction(
@@ -437,13 +450,16 @@ class TestSlidingWindowCompactionAdvanced:
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
         )
+        compaction._llm_caller.call_llm = Mock(side_effect=Exception("LLM Error"))  # type: ignore[method-assign]
 
-        messages = [
-            {"role": "user", "content": "Question 1"},
-            {"role": "assistant", "content": "Answer 1"},
-            {"role": "user", "content": "Question 2"},
-            {"role": "assistant", "content": "Answer 2"},
-        ]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "user", "content": "Question 1"},
+                {"role": "assistant", "content": "Answer 1"},
+                {"role": "user", "content": "Question 2"},
+                {"role": "assistant", "content": "Answer 2"},
+            ],
+        )
 
         result = compaction.compact(messages)
 
@@ -463,14 +479,16 @@ class TestSlidingWindowCompactionAdvanced:
             compact_prompt_path=temp_compact_prompt,
         )
 
-        messages = [
-            {"role": "user", "content": "Q1"},
-            {"role": "assistant", "content": "A1"},
-            {"role": "tool", "content": "T1"},
-            {"role": "tool", "content": "T2"},
-            {"role": "user", "content": "Q2"},
-            {"role": "assistant", "content": "A2"},
-        ]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "user", "content": "Q1"},
+                {"role": "assistant", "content": "A1"},
+                {"role": "tool", "tool_call_id": "call_1", "content": "T1"},
+                {"role": "tool", "tool_call_id": "call_2", "content": "T2"},
+                {"role": "user", "content": "Q2"},
+                {"role": "assistant", "content": "A2"},
+            ],
+        )
 
         iterations = compaction._group_into_iterations(messages)
 
@@ -493,17 +511,19 @@ class TestSlidingWindowCompactionAdvanced:
             compact_prompt_path=temp_compact_prompt,
         )
 
-        messages = [
-            {"role": "user", "content": "Q1"},
-            {"role": "assistant", "content": "A1"},
-            {"role": "user", "content": "Q2"},
-            {"role": "assistant", "content": "A2"},
-        ]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "user", "content": "Q1"},
+                {"role": "assistant", "content": "A1"},
+                {"role": "user", "content": "Q2"},
+                {"role": "assistant", "content": "A2"},
+            ],
+        )
 
         result = compaction.compact(messages)
 
         # Should not include system message in result
-        assert all(msg["role"] != "system" for msg in result)
+        assert all(msg.role != Role.SYSTEM for msg in result)
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
     def test_compact_with_structured_content(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
@@ -518,18 +538,20 @@ class TestSlidingWindowCompactionAdvanced:
             compact_prompt_path=temp_compact_prompt,
         )
 
-        messages = [
-            {"role": "user", "content": "Q1"},
-            {
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "A1"},
-                    {"type": "tool_use", "name": "test_tool"},
-                ],
-            },
-            {"role": "user", "content": "Q2"},
-            {"role": "assistant", "content": "A2"},
-        ]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "user", "content": "Q1"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "A1"},
+                        {"type": "tool_use", "id": "call_1", "name": "test_tool", "input": {}},
+                    ],
+                },
+                {"role": "user", "content": "Q2"},
+                {"role": "assistant", "content": "A2"},
+            ],
+        )
 
         result = compaction.compact(messages)
 
@@ -544,10 +566,12 @@ class TestToolResultCompactionAdvanced:
         """Test compaction when no assistant message exists."""
         compaction = ToolResultCompaction()
 
-        messages = [
-            {"role": "user", "content": "Question"},
-            {"role": "tool", "content": "Tool result"},
-        ]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "user", "content": "Question"},
+                {"role": "tool", "tool_call_id": "call_1", "content": "Tool result"},
+            ],
+        )
 
         result = compaction.compact(messages)
 
@@ -558,34 +582,41 @@ class TestToolResultCompactionAdvanced:
         """Test that multiple tool results after last assistant are preserved."""
         compaction = ToolResultCompaction()
 
-        messages = [
-            {"role": "user", "content": "Q1"},
-            {"role": "assistant", "content": "A1"},
-            {"role": "tool", "content": "Old result"},
-            {"role": "user", "content": "Q2"},
-            {"role": "assistant", "content": "A2"},
-            {"role": "tool", "content": "Recent result 1"},
-            {"role": "tool", "content": "Recent result 2"},
-        ]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "user", "content": "Q1"},
+                {"role": "assistant", "content": "A1"},
+                {"role": "tool", "tool_call_id": "call_old", "content": "Old result"},
+                {"role": "user", "content": "Q2"},
+                {"role": "assistant", "content": "A2"},
+                {"role": "tool", "tool_call_id": "call_1", "content": "Recent result 1"},
+                {"role": "tool", "tool_call_id": "call_2", "content": "Recent result 2"},
+            ],
+        )
 
         result = compaction.compact(messages)
 
         # Old tool result should be compacted
-        assert result[2]["content"] == "Tool call result has been compacted"
+        blocks = [b for b in result[2].content if isinstance(b, ToolResultBlock)]
+        assert blocks and blocks[0].content == "Tool call result has been compacted"
         # Recent tool results should be preserved
-        assert result[5]["content"] == "Recent result 1"
-        assert result[6]["content"] == "Recent result 2"
+        blocks_1 = [b for b in result[5].content if isinstance(b, ToolResultBlock)]
+        blocks_2 = [b for b in result[6].content if isinstance(b, ToolResultBlock)]
+        assert blocks_1 and blocks_1[0].content == "Recent result 1"
+        assert blocks_2 and blocks_2[0].content == "Recent result 2"
 
     def test_compact_without_system(self):
         """Test compaction without system message preservation."""
         compaction = ToolResultCompaction(keep_system=False)
 
-        messages = [
-            {"role": "system", "content": "System"},
-            {"role": "user", "content": "Question"},
-            {"role": "assistant", "content": "Answer"},
-            {"role": "tool", "content": "Result"},
-        ]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "system", "content": "System"},
+                {"role": "user", "content": "Question"},
+                {"role": "assistant", "content": "Answer"},
+                {"role": "tool", "tool_call_id": "call_1", "content": "Result"},
+            ],
+        )
 
         result = compaction.compact(messages)
 
@@ -597,10 +628,12 @@ class TestToolResultCompactionAdvanced:
         """Test compaction with no tool messages."""
         compaction = ToolResultCompaction()
 
-        messages = [
-            {"role": "user", "content": "Question"},
-            {"role": "assistant", "content": "Answer"},
-        ]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "user", "content": "Question"},
+                {"role": "assistant", "content": "Answer"},
+            ],
+        )
 
         result = compaction.compact(messages)
 
@@ -668,10 +701,22 @@ class TestContextCompactionMiddlewareAdvanced:
         )
 
         messages = [
-            {"role": "user", "content": "Question 1"},
-            {"role": "assistant", "content": "Answer 1", "tool_calls": [{"name": "test_tool"}]},
-            {"role": "user", "content": "Question 2"},
-            {"role": "assistant", "content": "Answer 2", "tool_calls": [{"name": "test_tool"}]},
+            Message(role=Role.USER, content=[TextBlock(text="Question 1")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    TextBlock(text="Answer 1"),
+                    ToolUseBlock(id="call_1", name="test_tool", input={}),
+                ],
+            ),
+            Message(role=Role.USER, content=[TextBlock(text="Question 2")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    TextBlock(text="Answer 2"),
+                    ToolUseBlock(id="call_2", name="test_tool", input={}),
+                ],
+            ),
         ]
 
         hook_input = AfterModelHookInput(
@@ -725,22 +770,22 @@ class TestContextCompactionMiddlewareAdvanced:
         )
 
         messages = [
-            {"role": "user", "content": "Question 1"},
-            {
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "Answer 1"},
-                    {"type": "tool_use", "name": "test_tool"},
+            Message(role=Role.USER, content=[TextBlock(text="Question 1")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    TextBlock(text="Answer 1"),
+                    ToolUseBlock(id="call_1", name="test_tool", input={}),
                 ],
-            },
-            {"role": "user", "content": "Question 2"},
-            {
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "Answer 2"},
-                    {"type": "tool_use", "name": "test_tool"},
+            ),
+            Message(role=Role.USER, content=[TextBlock(text="Question 2")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    TextBlock(text="Answer 2"),
+                    ToolUseBlock(id="call_2", name="test_tool", input={}),
                 ],
-            },
+            ),
         ]
 
         hook_input = AfterModelHookInput(
@@ -792,10 +837,12 @@ class TestContextCompactionMiddlewareAdvanced:
             compact_prompt_path=temp_compact_prompt,
         )
 
-        messages = [
-            {"role": "user", "content": "Question"},
-            {"role": "assistant", "content": "Answer without tool calls"},
-        ]
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "user", "content": "Question"},
+                {"role": "assistant", "content": "Answer without tool calls"},
+            ],
+        )
 
         hook_input = AfterModelHookInput(
             agent_state=agent_state,

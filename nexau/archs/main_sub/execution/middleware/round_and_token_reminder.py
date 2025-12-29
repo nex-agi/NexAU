@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import logging
 
+from nexau.core.messages import Message, Role, TextBlock
+
 from ...utils.token_counter import TokenCounter
 from ..hooks import BeforeModelHookInput, HookResult, Middleware
 
@@ -48,7 +50,7 @@ class RoundAndTokenReminderMiddleware(Middleware):
         """Append iteration (and optional token) hints prior to model invocation."""
 
         # If no assistant messages yet, skip adding hints to avoid front-loading noise.
-        has_assistant = any(msg.get("role") == "assistant" for msg in hook_input.messages)
+        has_assistant = any(msg.role == Role.ASSISTANT for msg in hook_input.messages)
         if not has_assistant:
             return HookResult.no_changes()
 
@@ -69,10 +71,21 @@ class RoundAndTokenReminderMiddleware(Middleware):
         hint_content = f"{iteration_hint}\n\n{token_hint}"
 
         updated_messages = list(hook_input.messages)
-        if updated_messages[-1]["role"] != "user":
-            updated_messages.append({"role": "user", "content": hint_content})
+        if updated_messages[-1].role != Role.USER:
+            updated_messages.append(Message(role=Role.USER, content=[TextBlock(text=hint_content)]))
         else:
-            updated_messages[-1]["content"] += f"\n\n{hint_content}"
+            last = updated_messages[-1]
+            blocks = list(last.content)
+            appended = False
+            for idx in range(len(blocks) - 1, -1, -1):
+                block = blocks[idx]
+                if isinstance(block, TextBlock):
+                    blocks[idx] = TextBlock(text=f"{block.text}\n\n{hint_content}")
+                    appended = True
+                    break
+            if not appended:
+                blocks.append(TextBlock(text=hint_content))
+            updated_messages[-1] = last.model_copy(update={"content": blocks})
 
         logger.info("[RoundAndTokenReminderMiddleware] Added iteration/token hint message")
         return HookResult.with_modifications(messages=updated_messages)

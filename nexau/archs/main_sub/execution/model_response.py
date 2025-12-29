@@ -19,7 +19,10 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from nexau.core.messages import Message
 
 JsonDict = dict[str, Any]
 
@@ -692,6 +695,38 @@ class ModelResponse:
         if self.reasoning_content:
             message["reasoning_content"] = self.reasoning_content
         return message
+
+    def to_ump_message(self) -> Message:
+        """Convert response into a vendor-agnostic UMP `Message`."""
+
+        from nexau.core.messages import Message, ReasoningBlock, Role, TextBlock, ToolUseBlock
+
+        try:
+            role = Role(self.role)
+        except Exception:
+            role = Role.ASSISTANT
+
+        blocks: list[Any] = []
+        if self.content:
+            blocks.append(TextBlock(text=self.content))
+
+        if self.reasoning_content:
+            blocks.append(ReasoningBlock(text=self.reasoning_content))
+
+        for call in self.tool_calls:
+            blocks.append(
+                ToolUseBlock(
+                    id=call.call_id or "tool_call",
+                    name=call.name,
+                    input=call.arguments,
+                    raw_input=call.raw_arguments,
+                ),
+            )
+
+        msg = Message(role=role, content=blocks)
+        if self.response_items:
+            msg.metadata["response_items"] = self.response_items
+        return msg
 
     def __str__(self) -> str:  # pragma: no cover - convenience
         rendered = self.render_text()

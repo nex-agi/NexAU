@@ -27,6 +27,7 @@ from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import ExecutionConfig
 from nexau.archs.tool import Tool
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
+from nexau.core.messages import Message, Role, TextBlock
 
 
 class DummyTracer(BaseTracer):
@@ -203,6 +204,31 @@ class TestAgent:
             assert response == "ok"
             assert captured_client["client"] is default_client
 
+    def test_run_accepts_list_of_messages(self, agent_config, global_storage):
+        """Agent.run should accept list[Message] and append them directly to history."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            agent = Agent(agent_config, global_storage)
+
+            captured_history: dict[str, list[Message]] = {}
+
+            def fake_execute(history, agent_state, *, runtime_client, custom_llm_client_provider=None):
+                captured_history["history"] = list(history) if history else []
+                return "ok", history or []
+
+            agent.executor.execute = fake_execute  # type: ignore[method-assign]
+
+            input_messages = [
+                Message.user("hello"),
+                Message(role=Role.ASSISTANT, content=[TextBlock(text="ack")]),
+            ]
+
+            response = agent.run(input_messages)
+
+            assert response == "ok"
+            assert captured_history["history"][-2:] == input_messages
+
     def test_add_tool_updates_executor_payload_openai(self, agent_config, global_storage):
         """add_tool should propagate structured payload for OpenAI mode."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
@@ -281,7 +307,7 @@ class TestAgent:
 
             agent.enqueue_message(test_message)
 
-            assert test_message in agent.executor.queued_messages
+            assert any(msg.role == Role.USER and msg.get_text_content() == "Test message" for msg in agent.executor.queued_messages)
 
     def test_agent_cleanup(self, agent_config, global_storage):
         """Test agent cleanup."""
@@ -392,9 +418,9 @@ class TestAgent:
                 mock_execute.return_value = (
                     "Test response",
                     [
-                        {"role": "system", "content": "System prompt"},
-                        {"role": "user", "content": "Test message"},
-                        {"role": "assistant", "content": "Test response"},
+                        Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+                        Message(role=Role.USER, content=[TextBlock(text="Test message")]),
+                        Message(role=Role.ASSISTANT, content=[TextBlock(text="Test response")]),
                     ],
                 )
 
@@ -402,8 +428,8 @@ class TestAgent:
 
                 assert response == "Test response"
                 assert len(agent.history) > 0
-                assert agent.history[-1]["role"] == "assistant"
-                assert agent.history[-1]["content"] == "Test response"
+                assert agent.history[-1].role == Role.ASSISTANT
+                assert agent.history[-1].get_text_content() == "Test response"
                 mock_execute.assert_called_once()
 
     def test_run_with_history(self, agent_config, global_storage):
@@ -419,11 +445,11 @@ class TestAgent:
                 mock_execute.return_value = (
                     "New response",
                     [
-                        {"role": "system", "content": "System prompt"},
-                        {"role": "user", "content": "Previous message"},
-                        {"role": "assistant", "content": "Previous response"},
-                        {"role": "user", "content": "New message"},
-                        {"role": "assistant", "content": "New response"},
+                        Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+                        Message(role=Role.USER, content=[TextBlock(text="Previous message")]),
+                        Message(role=Role.ASSISTANT, content=[TextBlock(text="Previous response")]),
+                        Message(role=Role.USER, content=[TextBlock(text="New message")]),
+                        Message(role=Role.ASSISTANT, content=[TextBlock(text="New response")]),
                     ],
                 )
 
@@ -432,7 +458,7 @@ class TestAgent:
                 assert response == "New response"
                 # Should include system prompt + existing history + new message
                 call_args = mock_execute.call_args[0][0]
-                assert any(msg["content"] == "Previous message" for msg in call_args)
+                assert any(msg.get_text_content() == "Previous message" for msg in call_args)
 
     def test_run_with_context_state_config(self, agent_config, global_storage):
         """Test agent run with context, state, and config."""
@@ -450,9 +476,9 @@ class TestAgent:
                 mock_execute.return_value = (
                     "Response",
                     [
-                        {"role": "system", "content": "System prompt"},
-                        {"role": "user", "content": "Message"},
-                        {"role": "assistant", "content": "Response"},
+                        Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+                        Message(role=Role.USER, content=[TextBlock(text="Message")]),
+                        Message(role=Role.ASSISTANT, content=[TextBlock(text="Response")]),
                     ],
                 )
 
@@ -479,7 +505,7 @@ class TestAgent:
             def fake_execute(messages, agent_state, *, runtime_client, custom_llm_client_provider):
                 captured_kwargs["runtime_client"] = runtime_client
                 captured_kwargs["custom_llm_client_provider"] = custom_llm_client_provider
-                return "Test response", messages + [{"role": "assistant", "content": "Test response"}]
+                return "Test response", messages + [Message(role=Role.ASSISTANT, content=[TextBlock(text="Test response")])]
 
             with patch.object(agent.executor, "execute", side_effect=fake_execute) as mock_execute:
                 response = agent.run("Test message", custom_llm_client_provider=provider)
@@ -509,7 +535,7 @@ class TestAgent:
             def fake_execute(messages, agent_state, *, runtime_client, custom_llm_client_provider):
                 captured_kwargs["runtime_client"] = runtime_client
                 captured_kwargs["custom_llm_client_provider"] = custom_llm_client_provider
-                return "Test response", messages + [{"role": "assistant", "content": "Test response"}]
+                return "Test response", messages + [Message(role=Role.ASSISTANT, content=[TextBlock(text="Test response")])]
 
             with caplog.at_level("WARNING"), patch.object(agent.executor, "execute", side_effect=fake_execute):
                 response = agent.run("Test message", custom_llm_client_provider=provider)
@@ -668,7 +694,7 @@ class TestAgent:
 
                 assert "Error handled: Test error" in response
                 assert len(error_handler_called) == 1
-                assert agent.history[-1]["role"] == "assistant"
+                assert agent.history[-1].role == Role.ASSISTANT
 
     def test_run_without_error_handler(self, agent_config, global_storage):
         """Test agent run without error handler."""
@@ -700,9 +726,9 @@ class TestAgent:
                 mock_execute.return_value = (
                     "Response",
                     [
-                        {"role": "system", "content": "System prompt"},
-                        {"role": "user", "content": "Message"},
-                        {"role": "assistant", "content": "Response"},
+                        Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+                        Message(role=Role.USER, content=[TextBlock(text="Message")]),
+                        Message(role=Role.ASSISTANT, content=[TextBlock(text="Response")]),
                     ],
                 )
 

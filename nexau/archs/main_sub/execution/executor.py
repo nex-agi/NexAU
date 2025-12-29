@@ -63,6 +63,8 @@ from nexau.archs.main_sub.tool_call_modes import (
 )
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
 from nexau.archs.tool.tool import Tool
+from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
+from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +183,7 @@ class Executor:
         self.stop_signal = False
 
         # Message queue for dynamic message enqueueing during execution
-        self.queued_messages: list[dict[str, str]] = []
+        self.queued_messages: list[Message] = []
 
     def enqueue_message(self, message: dict[str, str]) -> None:
         """Enqueue a message to be processed during execution.
@@ -189,19 +191,22 @@ class Executor:
         Args:
             message: Message dictionary with 'role' and 'content' keys
         """
-        self.queued_messages.append(message)
+        # Keep public API stable (dict input), but immediately normalize to UMP Message internally.
+        role = Role(message.get("role", "user"))
+        content = message.get("content", "")
+        self.queued_messages.append(Message(role=role, content=[TextBlock(text=content)]))
         logger.info(
             f"📝 Message enqueued during execution: {message.get('role', 'unknown')} - {message.get('content', '')[:50]}...",
         )
 
     def execute(
         self,
-        history: list[dict[str, Any]],
+        history: list[Message] | list[dict[str, Any]],
         agent_state: "AgentState",
         *,
         runtime_client: Any | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
-    ) -> tuple[str, list[dict[str, Any]]]:
+    ) -> tuple[str, list[Message]]:
         """Execute agent task with full orchestration.
 
         Args:
@@ -215,13 +220,16 @@ class Executor:
         self.stop_signal = False
         self._shutdown_event.clear()
 
-        messages: list[dict[str, Any]] = []
+        messages: list[Message] = []
 
         force_stop_reason = AgentStopReason.SUCCESS
 
         try:
             # Use history directly as the single source of truth
-            messages = history.copy()
+            if history and isinstance(history[0], dict):
+                messages = messages_from_legacy_openai_chat(cast(list[dict[str, Any]], history))
+            else:
+                messages = cast(list[Message], history).copy()
 
             if self.middleware_manager:
                 before_agent_hook_input = BeforeAgentHookInput(
@@ -371,7 +379,7 @@ class Executor:
                 )
 
                 # Add the assistant's original response to conversation
-                messages.append(model_response.to_message_dict())
+                messages.append(model_response.to_ump_message())
 
                 # Process tool calls and sub-agent calls
                 logger.info(
@@ -444,11 +452,16 @@ class Executor:
                             continue
 
                         messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": call_id,
-                                "content": content,
-                            },
+                            Message(
+                                role=Role.TOOL,
+                                content=[
+                                    ToolResultBlock(
+                                        tool_use_id=str(call_id),
+                                        content=str(content),
+                                        is_error=bool(feedback.get("is_error")),
+                                    ),
+                                ],
+                            ),
                         )
 
                     tool_results = ""
@@ -460,12 +473,9 @@ class Executor:
                     ).strip()
 
                 if tool_results:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": f"Tool execution results:\n{tool_results}",
-                        },
-                    )
+                    from nexau.core.messages import TextBlock
+
+                    messages.append(Message(role=Role.USER, content=[TextBlock(text=f"Tool execution results:\n{tool_results}")]))
 
                 iteration += 1
 
@@ -516,10 +526,10 @@ class Executor:
         self,
         *,
         agent_state: "AgentState",
-        messages: list[dict[str, Any]],
+        messages: list[Message],
         final_response: str,
         stop_reason: AgentStopReason | None,
-    ) -> tuple[str, list[dict[str, Any]]]:
+    ) -> tuple[str, list[Message]]:
         """Run after-agent middleware hooks and return possibly updated values."""
 
         if not self.middleware_manager:
@@ -589,7 +599,7 @@ class Executor:
         hook_input: AfterModelHookInput,
         *,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
-    ) -> tuple[str, bool, str | None, list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[str, bool, str | None, list[Message], list[dict[str, Any]]]:
         """Process XML tool calls and sub-agent calls using two-phase approach.
 
         Args:

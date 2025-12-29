@@ -29,6 +29,8 @@ from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.tracer.context import TraceContext, get_current_span
 from nexau.archs.tracer.core import BaseTracer, SpanType
+from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
+from nexau.core.messages import Message
 
 from ..agent_state import AgentState
 from ..tool_call_modes import STRUCTURED_TOOL_CALL_MODES, normalize_tool_call_mode
@@ -73,7 +75,7 @@ class LLMCaller:
 
     def call_llm(
         self,
-        messages: list[dict[str, str]],
+        messages: list[Message],
         max_tokens: int | None = None,
         force_stop_reason: AgentStopReason | None = None,
         agent_state: AgentState | None = None,
@@ -107,7 +109,6 @@ class LLMCaller:
 
         # Prepare API parameters
         api_params = self.llm_config.to_openai_params()
-        api_params["messages"] = messages
 
         if max_tokens is not None:
             api_params["max_tokens"] = max_tokens
@@ -147,7 +148,7 @@ class LLMCaller:
             logger.info("🐛 [DEBUG] LLM Request Messages:")
             for i, msg in enumerate(messages):
                 logger.info(
-                    f"🐛 [DEBUG] Message {i}: {msg['role']} -> {msg['content']}",
+                    f"🐛 [DEBUG] Message {i}: {msg.role.value} -> {msg.get_text_content()}",
                 )
 
         logger.info(f"🧠 Calling LLM with {max_tokens} max tokens...")
@@ -212,6 +213,7 @@ class LLMCaller:
                 if force_stop_reason and force_stop_reason != AgentStopReason.SUCCESS:
                     return None
                 kwargs = dict(params.api_params)
+                kwargs["messages"] = messages_to_legacy_openai_chat(params.messages)
                 client = params.openai_client if params.openai_client is not None else self.openai_client
                 response_content = call_llm_with_different_client(
                     client,
@@ -286,43 +288,15 @@ def call_llm_with_different_client(
 
 
 def openai_to_anthropic_message(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Convert an OpenAI message to an Anthropic message."""
-    system_messages: list[dict[str, str]] = []
-    user_messages: list[dict[str, Any]] = []
-    for message in messages:
-        if message.get("role") == "system":
-            system_messages.append({"type": "text", "text": message.get("content", "")})
-        elif message.get("role") == "user":
-            user_messages.append({"role": "user", "content": [{"type": "text", "text": message.get("content", "")}]})
-        elif message.get("role") == "tool":
-            user_messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "tool_result", "tool_use_id": message.get("tool_call_id", ""), "content": message.get("content", "")}
-                    ],
-                }
-            )
-        elif message.get("role") == "assistant":
-            new_message: dict[str, Any] = {"role": "assistant", "content": []}
-            if message.get("content", ""):
-                # if content is not empty, add it to the content list
-                new_message["content"].append({"type": "text", "text": message.get("content", "")})
-            tool_calls = message.get("tool_calls", [])
-            new_tool_calls: list[dict[str, Any]] = []
-            for tool_call in tool_calls:
-                new_tool_calls.append(
-                    {
-                        "type": "tool_use",
-                        "id": tool_call.get("id", ""),
-                        "name": tool_call.get("function", {}).get("name", ""),
-                        "input": json.loads(tool_call.get("function", {}).get("arguments", {})),
-                    }
-                )
-            new_message["content"].extend(new_tool_calls)
-            user_messages.append(new_message)
-        else:
-            raise ValueError(f"Invalid message role: {message.get('role')}")
+    """Convert NexAU legacy OpenAI-shaped chat messages to Anthropic Messages payload.
+
+    Internally this now uses the vendor-agnostic UMP model:
+      legacy dicts -> UMP -> Anthropic content blocks
+    """
+
+    from nexau.core.adapters.anthropic_messages import anthropic_payload_from_legacy_openai_chat
+
+    system_messages, user_messages = anthropic_payload_from_legacy_openai_chat(messages)
     return system_messages, user_messages
 
 

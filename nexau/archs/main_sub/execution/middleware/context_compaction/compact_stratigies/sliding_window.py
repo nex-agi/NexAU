@@ -16,12 +16,17 @@
 
 import logging
 from pathlib import Path
-from typing import Any, cast
 
-from openai import OpenAI
-from openai.types.chat import ChatCompletionMessageParam
+import openai
+
+from nexau.archs.llm.llm_config import LLMConfig
+from nexau.archs.main_sub.execution.llm_caller import LLMCaller
+from nexau.core.messages import Message, Role, TextBlock
 
 logger = logging.getLogger(__name__)
+
+# Backward-compatibility: older tests patch `sliding_window.OpenAI`.
+OpenAI = openai.OpenAI
 
 
 def _load_compact_prompt(prompt_path: str) -> str:
@@ -100,7 +105,7 @@ class SlidingWindowCompaction:
         self.keep_system = keep_system
         self.window_size = window_size
 
-        # Initialize LLM client for summarization
+        # Initialize LLM caller for summarization (route API calls through LLMCaller).
         self.summary_model = summary_model
         self.summary_base_url = summary_base_url
         self.summary_api_key = summary_api_key
@@ -108,24 +113,31 @@ class SlidingWindowCompaction:
         # Load compact prompt using the resolved path
         self.compact_prompt = _load_compact_prompt(compact_prompt_path)
 
-        self.llm_client = OpenAI(base_url=self.summary_base_url, api_key=self.summary_api_key)
+        summary_llm_config = LLMConfig(
+            model=self.summary_model,
+            base_url=self.summary_base_url,
+            api_key=self.summary_api_key,
+            api_type="openai_chat_completion",
+        )
+        summary_client = OpenAI(**summary_llm_config.to_client_kwargs())
+        self._llm_caller = LLMCaller(summary_client, summary_llm_config, retry_attempts=3)
         logger.info(
             f"[SlidingWindowCompaction] Initialized with LLM summarization: model={self.summary_model}, window_size={self.window_size}"
         )
 
     def compact(
         self,
-        messages: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+        messages: list[Message],
+    ) -> list[Message]:
         """Compact messages by keeping recent iterations."""
         logger.info(f"[SlidingWindowCompaction] Starting compaction on {len(messages)} messages")
 
-        result: list[dict[str, Any]] = []
+        result: list[Message] = []
         start_idx = 0
 
         # Keep system message if present
-        if self.keep_system and messages and messages[0].get("role") == "system":
-            result.append(messages[0].copy())
+        if self.keep_system and messages and messages[0].role == Role.SYSTEM:
+            result.append(messages[0])
             start_idx = 1
 
         # Group messages into iterations, iteration means user message + assistant response + tool results (if any)
@@ -143,8 +155,8 @@ class SlidingWindowCompaction:
         if iterations_to_compress:
             # Generate summary for compressed iterations
             # Include system message if present
-            all_compressed_messages: list[dict[str, Any]] = []
-            if self.keep_system and messages and messages[0].get("role") == "system":
+            all_compressed_messages: list[Message] = []
+            if self.keep_system and messages and messages[0].role == Role.SYSTEM:
                 all_compressed_messages.append(messages[0])
 
             for iteration_msgs in iterations_to_compress:
@@ -160,27 +172,26 @@ class SlidingWindowCompaction:
             first_iteration_modified = False
             for iteration_msgs in iterations_to_keep:
                 for msg in iteration_msgs:
-                    if msg.get("role") == "user" and not first_iteration_modified:
+                    if msg.role == Role.USER and not first_iteration_modified:
                         # Get original user query
-                        original_content = msg.get("content", "")
+                        original_content = msg.get_text_content()
                         # Prepend summary context
                         modified_content = (
                             f"This session is being continued from a previous conversation that ran out of context. "
                             f"The conversation is summarized as follows: {summary}. "
                             f"The user request for this round is: {original_content}"
                         )
-                        modified_msg = msg.copy()
-                        modified_msg["content"] = modified_content
-                        modified_msg["isSummary"] = True
+                        modified_msg = msg.model_copy(update={"content": [TextBlock(text=modified_content)]})
+                        modified_msg.metadata["isSummary"] = True
                         result.append(modified_msg)
                         first_iteration_modified = True
                     else:
-                        result.append(msg.copy())
+                        result.append(msg)
 
         else:
             # No compression needed, just add all kept iterations
             for iteration_msgs in iterations_to_keep:
-                result.extend(msg.copy() for msg in iteration_msgs)
+                result.extend(iteration_msgs)
 
         logger.info(
             f"[SlidingWindowCompaction] Compaction complete: "
@@ -189,18 +200,16 @@ class SlidingWindowCompaction:
         )
         return result
 
-    def _group_into_iterations(self, messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    def _group_into_iterations(self, messages: list[Message]) -> list[list[Message]]:
         """Group messages into conversation iterations.
 
         A iteration consists of: [user] -> [assistant] -> [tool, tool, ...]
         """
-        iterations: list[list[dict[str, Any]]] = []
-        current_iteration: list[dict[str, Any]] = []
+        iterations: list[list[Message]] = []
+        current_iteration: list[Message] = []
 
         for msg in messages:
-            role = msg.get("role")
-
-            if role == "user":
+            if msg.role == Role.USER:
                 # Start a new iteration
                 if current_iteration:
                     iterations.append(current_iteration)
@@ -215,7 +224,7 @@ class SlidingWindowCompaction:
 
         return iterations
 
-    def _generate_summary(self, messages: list[dict[str, Any]]) -> str:
+    def _generate_summary(self, messages: list[Message]) -> str:
         """Generate summary using LLM.
 
         Raises:
@@ -225,15 +234,12 @@ class SlidingWindowCompaction:
 
         # Prepare messages for LLM: original messages + compact prompt as final user message
         llm_messages = messages.copy()
-        llm_messages.append({"role": "user", "content": self.compact_prompt})
+        llm_messages.append(Message(role=Role.USER, content=[TextBlock(text=self.compact_prompt)]))
 
-        response = self.llm_client.chat.completions.create(
-            model=self.summary_model,
-            messages=cast(list[ChatCompletionMessageParam], llm_messages),
-            temperature=0.6,
+        model_response = self._llm_caller.call_llm(
+            llm_messages,
+            max_tokens=2048,
         )
-
-        content = response.choices[0].message.content
-        summary = content.strip() if content else ""
+        summary = (model_response.content or "").strip() if model_response else ""
         logger.info("[SlidingWindowCompaction] LLM summary generated success")
         return summary

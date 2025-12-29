@@ -46,6 +46,8 @@ from nexau.archs.main_sub.execution.parse_structures import (
     ToolCall,
 )
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
+from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
+from nexau.core.messages import Message, Role, TextBlock
 
 
 @pytest.fixture
@@ -65,11 +67,13 @@ def agent_state(mock_executor):
 @pytest.fixture
 def messages():
     """Create sample messages for testing."""
-    return [
-        {"role": "user", "content": "Hello"},
-        {"role": "assistant", "content": "Hi there"},
-        {"role": "user", "content": "How are you?"},
-    ]
+    return messages_from_legacy_openai_chat(
+        [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+            {"role": "user", "content": "How are you?"},
+        ],
+    )
 
 
 @pytest.fixture
@@ -199,7 +203,7 @@ class TestBeforeModelHookResult:
 
     def test_has_modifications_true(self):
         """Test has_modifications returns True when messages are modified."""
-        result = BeforeModelHookResult(messages=[{"role": "user", "content": "test"}])
+        result = BeforeModelHookResult(messages=[Message.user("test")])
         assert result.has_modifications() is True
 
     def test_has_modifications_false(self):
@@ -215,7 +219,7 @@ class TestBeforeModelHookResult:
 
     def test_with_modifications_messages(self):
         """Test with_modifications with messages."""
-        messages = [{"role": "user", "content": "test"}]
+        messages = [Message.user("test")]
         result = BeforeModelHookResult.with_modifications(messages=messages)
         assert result.messages == messages
         assert result.has_modifications() is True
@@ -237,14 +241,14 @@ class TestAfterModelHookResult:
 
     def test_has_modifications_messages(self):
         """Test has_modifications with messages."""
-        result = AfterModelHookResult(messages=[{"role": "user", "content": "test"}])
+        result = AfterModelHookResult(messages=[Message.user("test")])
         assert result.has_modifications() is True
 
     def test_has_modifications_both(self, parsed_response):
         """Test has_modifications with both modifications."""
         result = AfterModelHookResult(
             parsed_response=parsed_response,
-            messages=[{"role": "user", "content": "test"}],
+            messages=[Message.user("test")],
         )
         assert result.has_modifications() is True
 
@@ -269,7 +273,7 @@ class TestAfterModelHookResult:
 
     def test_with_modifications_messages(self):
         """Test with_modifications with messages."""
-        messages = [{"role": "user", "content": "test"}]
+        messages = [Message.user("test")]
         result = AfterModelHookResult.with_modifications(messages=messages)
         assert result.parsed_response is None
         assert result.messages == messages
@@ -277,7 +281,7 @@ class TestAfterModelHookResult:
 
     def test_with_modifications_both(self, parsed_response):
         """Test with_modifications with both."""
-        messages = [{"role": "user", "content": "test"}]
+        messages = [Message.user("test")]
         result = AfterModelHookResult.with_modifications(
             parsed_response=parsed_response,
             messages=messages,
@@ -306,7 +310,7 @@ class TestAfterModelHookResult:
 
     def test_with_modifications_force_continue_true(self):
         """Test with_modifications with force_continue=True."""
-        messages = [{"role": "user", "content": "feedback"}]
+        messages = [Message.user("feedback")]
         result = AfterModelHookResult.with_modifications(
             messages=messages,
             force_continue=True,
@@ -317,7 +321,7 @@ class TestAfterModelHookResult:
 
     def test_with_modifications_force_continue_default(self):
         """Test with_modifications force_continue defaults to False."""
-        messages = [{"role": "user", "content": "test"}]
+        messages = [Message.user("test")]
         result = AfterModelHookResult.with_modifications(messages=messages)
         assert result.force_continue is False
 
@@ -402,7 +406,7 @@ class TestMiddlewareManager:
         def make_hook(name: str):
             def hook(hook_input: BeforeModelHookInput) -> HookResult:
                 order.append(name)
-                new_messages = hook_input.messages + [{"role": "system", "content": name}]
+                new_messages = hook_input.messages + [Message(role=Role.SYSTEM, content=[TextBlock(text=name)])]
                 return HookResult.with_modifications(messages=new_messages)
 
             return hook
@@ -423,7 +427,7 @@ class TestMiddlewareManager:
 
         updated_messages = manager.run_before_model(hook_input)
         assert order == ["first", "second"]
-        assert [msg["content"] for msg in updated_messages[-2:]] == ["first", "second"]
+        assert [msg.get_text_content() for msg in updated_messages[-2:]] == ["first", "second"]
 
     def test_run_after_model_reverse_order_with_force_continue(self, agent_state, messages, parsed_response):
         """After-model hooks execute in reverse order and can set force_continue."""
@@ -431,7 +435,7 @@ class TestMiddlewareManager:
 
         def feedback_hook(hook_input: AfterModelHookInput) -> HookResult:
             order.append("feedback")
-            new_messages = hook_input.messages + [{"role": "user", "content": "feedback"}]
+            new_messages = hook_input.messages + [Message(role=Role.USER, content=[TextBlock(text="feedback")])]
             return HookResult.with_modifications(messages=new_messages)
 
         def cleanup_hook(hook_input: AfterModelHookInput) -> HookResult:
@@ -462,7 +466,7 @@ class TestMiddlewareManager:
         assert order == ["cleanup", "feedback"]
         assert parsed is parsed_response
         assert not parsed.tool_calls
-        assert updated_messages[-1]["content"] == "feedback"
+        assert updated_messages[-1].get_text_content() == "feedback"
         assert force_continue is True
 
     def test_run_after_tool_reverse_order(self, agent_state):
@@ -514,7 +518,7 @@ class TestMiddlewareManager:
         )
 
         params = ModelCallParams(
-            messages=[{"role": "user", "content": "hi"}],
+            messages=[Message.user("hi")],
             max_tokens=10,
             force_stop_reason=None,
             agent_state=None,
@@ -603,7 +607,7 @@ class TestMiddlewareManager:
         middleware = LoggingMiddleware(log_model_calls=True)
 
         params = ModelCallParams(
-            messages=[{"role": "user", "content": "hello"}],
+            messages=[Message.user("hello")],
             max_tokens=10,
             force_stop_reason=None,
             agent_state=agent_state,

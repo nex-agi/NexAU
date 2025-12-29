@@ -15,7 +15,8 @@
 """Trigger compaction when token usage exceeds a percentage threshold."""
 
 import logging
-from typing import Any
+
+from nexau.core.messages import Message
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class TokenThresholdTrigger:
 
     def should_compact(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[Message],
         current_tokens: int,
         max_context_tokens: int,
     ) -> tuple[bool, str]:

@@ -14,7 +14,9 @@
 
 """Base protocol for trigger strategies."""
 
-from typing import Any, Protocol
+from typing import Protocol
+
+from nexau.core.messages import Message
 
 
 class TriggerStrategy(Protocol):
@@ -22,7 +24,7 @@ class TriggerStrategy(Protocol):
 
     def should_compact(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[Message],
         current_tokens: int,
         max_context_tokens: int,
     ) -> tuple[bool, str]:

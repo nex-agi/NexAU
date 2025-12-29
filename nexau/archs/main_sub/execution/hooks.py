@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from anthropic.types import ToolParam
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 
+from nexau.core.messages import Message
+
 from .model_response import ModelResponse
 from .parse_structures import ParsedResponse
 
@@ -40,7 +42,7 @@ class BeforeAgentHookInput:
     """Input passed to before_agent hooks prior to the run loop."""
 
     agent_state: AgentState
-    messages: list[dict[str, Any]]
+    messages: list[Message]
 
 
 @dataclass
@@ -48,7 +50,7 @@ class AfterAgentHookInput:
     """Input passed to after_agent hooks once execution finishes."""
 
     agent_state: AgentState
-    messages: list[dict[str, Any]]
+    messages: list[Message]
     agent_response: str
     stop_reason: AgentStopReason | None = None
 
@@ -67,7 +69,7 @@ class BeforeModelHookInput:
     agent_state: AgentState
     max_iterations: int
     current_iteration: int
-    messages: list[dict[str, Any]]
+    messages: list[Message]
 
 
 @dataclass
@@ -91,7 +93,7 @@ HookResultT = TypeVar("HookResultT", bound="HookResult")
 class HookResult:
     """Unified result object for all middleware hook phases."""
 
-    messages: list[dict[str, Any]] | None = None
+    messages: list[Message] | None = None
     parsed_response: ParsedResponse | None = None
     force_continue: bool = False
     tool_output: Any | None = None
@@ -128,7 +130,7 @@ class HookResult:
     def with_modifications(
         cls: type[HookResultT],
         *,
-        messages: list[dict[str, Any]] | None = None,
+        messages: list[Message] | None = None,
         parsed_response: ParsedResponse | None = None,
         force_continue: bool = False,
         tool_output: Any | None = None,
@@ -149,7 +151,7 @@ class BeforeModelHookResult(HookResult):
     """Backward compatible alias for HookResult (before model)."""
 
     @classmethod
-    def with_modifications(cls, messages: list[dict[str, Any]] | None = None) -> BeforeModelHookResult:  # type: ignore[override]
+    def with_modifications(cls, messages: list[Message] | None = None) -> BeforeModelHookResult:  # type: ignore[override]
         return cls(messages=messages)
 
 
@@ -160,7 +162,7 @@ class AfterModelHookResult(HookResult):
     def with_modifications(  # type: ignore[override]
         cls,
         parsed_response: ParsedResponse | None = None,
-        messages: list[dict[str, Any]] | None = None,
+        messages: list[Message] | None = None,
         force_continue: bool = False,
     ) -> AfterModelHookResult:
         return cls(
@@ -216,7 +218,7 @@ class BeforeToolHook(Protocol):
 class ModelCallParams:
     """Context passed to middleware wrapping model calls."""
 
-    messages: list[dict[str, Any]]
+    messages: list[Message]
     max_tokens: int | None
     force_stop_reason: AgentStopReason | None
     agent_state: AgentState | None
@@ -381,11 +383,11 @@ class LoggingMiddleware(Middleware):
 
         logger.info("Message history: %s items", len(hook_input.messages))
         for idx, msg in enumerate(hook_input.messages[-3:]):
-            preview = str(msg.get("content", ""))[: self.message_preview_chars]
-            logger.info("Recent message %s: %s -> %s", idx + 1, msg.get("role"), preview)
-        logger.info(
-            f"after_model hook triggered agent_id: {hook_input.agent_state.agent_id}, agent_name: {hook_input.agent_state.agent_name}"
-        )
+            preview = msg.get_text_content()[: self.message_preview_chars]
+            logger.info("Recent message %s: %s -> %s", idx + 1, msg.role.value, preview)
+            logger.info(
+                f"after_model hook triggered agent_id: {hook_input.agent_state.agent_id}, agent_name: {hook_input.agent_state.agent_name}"
+            )
 
         logger.info("🎣 ===== END AFTER MODEL HOOK =====")
         return HookResult.no_changes()
@@ -500,7 +502,7 @@ class MiddlewareManager:
     def __len__(self) -> int:
         return len(self.middlewares)
 
-    def run_before_agent(self, hook_input: BeforeAgentHookInput) -> list[dict[str, Any]]:
+    def run_before_agent(self, hook_input: BeforeAgentHookInput) -> list[Message]:
         for middleware in self.middlewares:
             handler = middleware.before_agent
             try:
@@ -524,7 +526,7 @@ class MiddlewareManager:
     def run_after_agent(
         self,
         hook_input: AfterAgentHookInput,
-    ) -> tuple[str, list[dict[str, Any]]]:
+    ) -> tuple[str, list[Message]]:
         for middleware in reversed(self.middlewares):
             handler = middleware.after_agent
             try:
@@ -546,7 +548,7 @@ class MiddlewareManager:
                 logger.warning(f"⚠️ After-agent middleware {middleware} failed: {exc}")
         return hook_input.agent_response, hook_input.messages
 
-    def run_before_model(self, hook_input: BeforeModelHookInput) -> list[dict[str, Any]]:
+    def run_before_model(self, hook_input: BeforeModelHookInput) -> list[Message]:
         current_messages = hook_input.messages
         for _, middleware in enumerate(self.middlewares):
             handler = getattr(middleware, "before_model", None)
@@ -568,7 +570,7 @@ class MiddlewareManager:
     def run_after_model(
         self,
         hook_input: AfterModelHookInput,
-    ) -> tuple[ParsedResponse | None, list[dict[str, Any]], bool]:
+    ) -> tuple[ParsedResponse | None, list[Message], bool]:
         current_parsed = hook_input.parsed_response
         current_messages = hook_input.messages
         force_continue = False

@@ -16,10 +16,16 @@
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Final, cast
 
+from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
+from nexau.core.messages import Message
+
 logger = logging.getLogger(__name__)
+
+type LegacyOpenAIChatMessage = dict[str, Any]
+type TokenCountableMessage = Message | LegacyOpenAIChatMessage
 
 _tiktoken: Any
 try:
@@ -47,7 +53,7 @@ class TokenCounter:
 
     def _create_counter(
         self,
-    ) -> Callable[[list[dict[str, Any]], list[dict[str, Any]] | None], int]:
+    ) -> Callable[[Sequence[TokenCountableMessage], list[dict[str, Any]] | None], int]:
         """Create the appropriate token counter based on strategy."""
         if self.strategy == "tiktoken" and TIKTOKEN_AVAILABLE:
             return self._create_tiktoken_counter()
@@ -60,7 +66,7 @@ class TokenCounter:
 
     def _create_tiktoken_counter(
         self,
-    ) -> Callable[[list[dict[str, Any]], list[dict[str, Any]] | None], int]:
+    ) -> Callable[[Sequence[TokenCountableMessage], list[dict[str, Any]] | None], int]:
         """Create tiktoken-based counter."""
         if tiktoken is None:
             raise RuntimeError("tiktoken is not available")
@@ -68,12 +74,17 @@ class TokenCounter:
             encoding = tiktoken.encoding_for_model(self.model)
 
             def tiktoken_message_counter(
-                messages: list[dict[str, Any]],
+                messages: Sequence[TokenCountableMessage],
                 tools: list[dict[str, Any]] | None = None,
             ) -> int:
                 """Count tokens in messages using tiktoken."""
+                legacy_messages: list[LegacyOpenAIChatMessage]
+                if messages and isinstance(messages[0], Message):
+                    legacy_messages = messages_to_legacy_openai_chat(cast(list[Message], list(messages)))
+                else:
+                    legacy_messages = cast(list[LegacyOpenAIChatMessage], list(messages))
                 total_tokens = 0
-                for message in messages:
+                for message in legacy_messages:
                     # Add tokens for role and content
                     total_tokens += len(
                         encoding.encode(
@@ -107,16 +118,21 @@ class TokenCounter:
 
     def _create_fallback_counter(
         self,
-    ) -> Callable[[list[dict[str, Any]], list[dict[str, Any]] | None], int]:
+    ) -> Callable[[Sequence[TokenCountableMessage], list[dict[str, Any]] | None], int]:
         """Create fallback counter using character approximation."""
 
         def fallback_message_counter(
-            messages: list[dict[str, Any]],
+            messages: Sequence[TokenCountableMessage],
             tools: list[dict[str, Any]] | None = None,
         ) -> int:
             """Fallback token counter using character approximation."""
+            legacy_messages: list[LegacyOpenAIChatMessage]
+            if messages and isinstance(messages[0], Message):
+                legacy_messages = messages_to_legacy_openai_chat(cast(list[Message], list(messages)))
+            else:
+                legacy_messages = cast(list[LegacyOpenAIChatMessage], list(messages))
             total_tokens = 0
-            for message in messages:
+            for message in legacy_messages:
                 # Add tokens for role and content using chars/4 approximation
                 total_tokens += len(message.get("role", "")) // 4
                 total_tokens += len(message.get("content", "")) // 4
@@ -219,13 +235,13 @@ class TokenCounter:
 
     def count_tokens(
         self,
-        messages: list[dict[str, Any]],
+        messages: Sequence[TokenCountableMessage],
         tools: list[dict[str, Any]] | None = None,
     ) -> int:
         """Count total tokens in a list of messages.
 
         Args:
-            messages: List of message dictionaries with 'role' and 'content' keys
+            messages: UMP `Message` objects (or legacy OpenAI-style dict messages for backward compatibility).
             tools: Optional list of tool definitions to include in token count
 
         Returns:

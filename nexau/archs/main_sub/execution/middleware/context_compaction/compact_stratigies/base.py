@@ -14,7 +14,9 @@
 
 """Base protocol for compaction strategies."""
 
-from typing import Any, Protocol
+from typing import Protocol
+
+from nexau.core.messages import Message
 
 
 class CompactionStrategy(Protocol):
@@ -22,8 +24,8 @@ class CompactionStrategy(Protocol):
 
     def compact(
         self,
-        messages: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+        messages: list[Message],
+    ) -> list[Message]:
         """Compact messages to reduce token usage.
 
         Args:

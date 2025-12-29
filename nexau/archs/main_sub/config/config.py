@@ -19,10 +19,10 @@ from __future__ import annotations
 import inspect
 import logging
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import dotenv
 from pydantic import ConfigDict, Field, PrivateAttr, field_validator, model_validator
@@ -39,6 +39,9 @@ from nexau.archs.tracer.core import BaseTracer
 
 from .base import AgentConfigBase, HookCallable, HookDefinition
 from .schema import AgentConfigSchema
+
+if TYPE_CHECKING:
+    from nexau.core.messages import Message
 
 dotenv.load_dotenv()
 
@@ -772,8 +775,17 @@ class AgentConfigBuilder:
                 params_dict = params_raw
                 if params_dict:
                     # Create a wrapper function with the parameters
-                    def configured_token_counter(messages: list[dict[str, Any]]) -> int:
-                        return int(token_counter_func(messages, **params_dict))
+                    def configured_token_counter(messages: Sequence[Message] | Sequence[dict[str, Any]]) -> int:
+                        # Internally NexAU uses UMP Messages; preserve backward compatibility
+                        # for custom token counters that were written against legacy dict messages.
+                        from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
+                        from nexau.core.messages import Message
+
+                        if messages and isinstance(messages[0], Message):
+                            legacy_messages = messages_to_legacy_openai_chat(list(cast(Sequence[Message], messages)))
+                        else:
+                            legacy_messages = list(cast(Sequence[dict[str, Any]], messages))
+                        return int(token_counter_func(legacy_messages, **params_dict))
 
                     token_counter = configured_token_counter
                 else:

@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from ...hooks import AfterModelHookInput, HookResult, Middleware
 from .config import CompactionConfig
@@ -25,6 +25,8 @@ from .factory import create_compaction_strategy, create_trigger_strategy
 
 if TYPE_CHECKING:
     from ....utils.token_counter import TokenCounter
+
+from nexau.core.messages import Message, Role, ToolUseBlock
 
 logger = logging.getLogger(__name__)
 
@@ -137,28 +139,14 @@ class ContextCompactionMiddleware(Middleware):
 
         # Check if the last assistant message has tool calls
         # If not, skip compaction to preserve the conversation state
-        last_assistant_msg: dict[str, Any] | None = None
+        last_assistant_msg: Message | None = None
         for msg in reversed(messages):
-            if msg.get("role") == "assistant":
+            if msg.role == Role.ASSISTANT:
                 last_assistant_msg = msg
                 break
 
         if last_assistant_msg is not None:
-            # Check for tool_calls in various formats
-            has_tool_calls = False
-
-            # OpenAI format: tool_calls field
-            if last_assistant_msg.get("tool_calls"):
-                has_tool_calls = True
-
-            # Content list format: check for tool_use type
-            content = last_assistant_msg.get("content")
-            if isinstance(content, list):
-                content_list = cast(list[dict[str, Any]], content)
-                for item in content_list:
-                    if item.get("type") == "tool_use":
-                        has_tool_calls = True
-                        break
+            has_tool_calls = any(isinstance(block, ToolUseBlock) for block in last_assistant_msg.content)
 
             if not has_tool_calls:
                 logger.info(
@@ -201,7 +189,7 @@ class ContextCompactionMiddleware(Middleware):
 
     def _compact_messages(
         self,
-        messages: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+        messages: list[Message],
+    ) -> list[Message]:
         """Compact messages using the configured strategy."""
         return self.compaction_strategy.compact(messages)

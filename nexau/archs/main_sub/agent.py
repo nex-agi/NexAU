@@ -45,6 +45,8 @@ from nexau.archs.main_sub.utils.token_counter import TokenCounter
 from nexau.archs.tool import Tool
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
+from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
+from nexau.core.messages import Message, Role, TextBlock
 
 # Setup logger for agent execution
 logger = logging.getLogger(__name__)
@@ -112,10 +114,10 @@ class Agent:
         self._initialize_execution_components()
 
         # Conversation history
-        self.history: list[dict[str, Any]] = []
+        self.history: list[Message] = []
 
         # Queue for messages to be processed in the next execution cycle
-        self.queued_messages: list[dict[str, str]] = []
+        self.queued_messages: list[Message] = []
 
         # Register for cleanup
         cleanup_manager.register_agent(self)
@@ -318,7 +320,7 @@ class Agent:
 
     def run(
         self,
-        message: str,
+        message: str | list[Message],
         history: list[dict[str, Any]] | None = None,
         context: dict[str, Any] | None = None,
         state: dict[str, Any] | None = None,
@@ -328,7 +330,15 @@ class Agent:
     ) -> str | tuple[str, dict[str, Any]]:
         """Run agent with a message and return response."""
         logger.info(f"🤖 Agent '{self.config.name}' starting execution")
-        logger.info(f"📝 User message: {message}")
+        message_text_for_logs = (
+            message
+            if isinstance(message, str)
+            else next(
+                (m.get_text_content() for m in reversed(message) if m.role == Role.USER and m.get_text_content()),
+                f"<{len(message)} Message blocks>",
+            )
+        )
+        logger.info(f"📝 User message: {message_text_for_logs}")
 
         # Merge initial state/config/context with provided ones
         merged_state = {**(self.config.initial_state or {})}
@@ -369,12 +379,15 @@ class Agent:
                 include_tool_instructions=not self.use_structured_tool_calls,
             )
             if not self.history:
-                self.history = [{"role": "system", "content": system_prompt}]
+                self.history = [Message(role=Role.SYSTEM, content=[TextBlock(text=system_prompt)])]
 
             if history:
-                self.history.extend(history)
+                self.history.extend(messages_from_legacy_openai_chat(history))
 
-            self.history.append({"role": "user", "content": message})
+            if isinstance(message, str):
+                self.history.append(Message.user(message))
+            else:
+                self.history.extend(message)
 
             # Create the AgentState instance
             agent_state = AgentState(
@@ -391,7 +404,7 @@ class Agent:
                 return self._run_with_tracing(
                     tracer=tracer,
                     span_type=span_type,
-                    message=message,
+                    message_text_for_logs=message_text_for_logs,
                     agent_state=agent_state,
                     merged_context=merged_context,
                     runtime_client=runtime_client,
@@ -409,7 +422,7 @@ class Agent:
         self,
         tracer: BaseTracer,
         span_type: SpanType,
-        message: str,
+        message_text_for_logs: str,
         agent_state: AgentState,
         merged_context: dict[str, Any],
         runtime_client: Any,
@@ -429,7 +442,7 @@ class Agent:
         """
         span_name = f"Agent: {self.agent_name}"
         inputs = {
-            "message": message,
+            "message": message_text_for_logs,
             "agent_id": self.agent_id,
         }
         attributes: dict[str, Any] = {
@@ -481,10 +494,8 @@ class Agent:
             self.history = updated_messages
 
             # Add final assistant response to history if not already included
-            if not self.history or self.history[-1]["role"] != "assistant" or self.history[-1]["content"] != response:
-                self.history.append(
-                    {"role": "assistant", "content": response},
-                )
+            if not self.history or self.history[-1].role != Role.ASSISTANT or self.history[-1].get_text_content() != response:
+                self.history.append(Message.assistant(response))
 
             logger.info(
                 f"✅ Agent '{self.config.name}' completed execution",
@@ -502,15 +513,11 @@ class Agent:
                     self,
                     merged_context,
                 )
-                self.history.append(
-                    {"role": "assistant", "content": error_response},
-                )
+                self.history.append(Message.assistant(error_response))
                 return error_response
             else:
                 error_message = f"Error: {str(e)}"
-                self.history.append(
-                    {"role": "assistant", "content": error_message},
-                )
+                self.history.append(Message.assistant(error_message))
                 raise
 
     def add_tool(self, tool: Tool) -> None:
