@@ -39,7 +39,7 @@ from nexau.archs.main_sub.execution.parse_structures import (
     ToolCall,
 )
 from nexau.archs.tool.tool import Tool
-from nexau.core.messages import Role, ToolResultBlock
+from nexau.core.messages import ImageBlock, Role, TextBlock, ToolOutputImage, ToolResultBlock
 
 
 class TestExecutorInitialization:
@@ -399,6 +399,145 @@ class TestExecutorExecution:
         tool_index = messages.index(matching_tool_messages[0])
         assert tool_index + 1 < len(messages)
         assert messages[tool_index + 1].role == Role.ASSISTANT
+
+    def test_execute_openai_tool_messages_support_image_results(self, mock_llm_config, agent_state):
+        """Tool results can include images (ToolOutputImage or dict form) in tool messages."""
+
+        def image_tool() -> list[object]:
+            return [
+                {"type": "text", "text": "Here is the image:"},
+                ToolOutputImage(image_url="data:image/png;base64,AAAA", detail="high"),
+            ]
+
+        tool = Tool(
+            name="image_tool",
+            description="Returns an image",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            implementation=image_tool,
+        )
+
+        openai_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "image_tool",
+                    "description": "Returns an image",
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
+            },
+        ]
+
+        executor = Executor(
+            agent_name="test_agent",
+            agent_id="test_id",
+            tool_registry={"image_tool": tool},
+            sub_agents={},
+            stop_tools=set(),
+            openai_client=Mock(),
+            llm_config=mock_llm_config,
+            max_iterations=2,
+            tool_call_mode="openai",
+            openai_tools=openai_tools,
+        )
+
+        history = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Use the tool"},
+        ]
+
+        first_response = ModelResponse(
+            content="",
+            tool_calls=[ModelToolCall(call_id="call_img", name="image_tool", arguments={}, raw_arguments="{}")],
+        )
+        second_response = ModelResponse(content="Final response")
+
+        with patch.object(executor.llm_caller, "call_llm", side_effect=[first_response, second_response]):
+            response, messages = executor.execute(history, agent_state)
+
+        assert response == "Final response"
+
+        tool_messages = [msg for msg in messages if msg.role == Role.TOOL]
+        assert tool_messages, "Expected a tool message"
+
+        tool_block = next(
+            block
+            for msg in tool_messages
+            for block in msg.content
+            if isinstance(block, ToolResultBlock) and block.tool_use_id == "call_img"
+        )
+
+        assert isinstance(tool_block.content, list)
+        assert any(isinstance(p, TextBlock) and "Here is the image" in p.text for p in tool_block.content)
+        img = next(p for p in tool_block.content if isinstance(p, ImageBlock))
+        assert img.detail == "high"
+
+    def test_execute_openai_tool_messages_input_image_dict_with_detail(self, mock_llm_config, agent_state):
+        """Dict form: tools can return type='input_image' with detail."""
+
+        def image_tool() -> dict:
+            return {
+                "type": "input_image",
+                "image_url": "https://example.com/image.jpg",
+                "detail": "high",
+            }
+
+        tool = Tool(
+            name="image_tool",
+            description="Returns an image dict",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            implementation=image_tool,
+        )
+
+        openai_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "image_tool",
+                    "description": "Returns an image dict",
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
+            },
+        ]
+
+        executor = Executor(
+            agent_name="test_agent",
+            agent_id="test_id",
+            tool_registry={"image_tool": tool},
+            sub_agents={},
+            stop_tools=set(),
+            openai_client=Mock(),
+            llm_config=mock_llm_config,
+            max_iterations=2,
+            tool_call_mode="openai",
+            openai_tools=openai_tools,
+        )
+
+        history = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Use the tool"},
+        ]
+
+        first_response = ModelResponse(
+            content="",
+            tool_calls=[ModelToolCall(call_id="call_img", name="image_tool", arguments={}, raw_arguments="{}")],
+        )
+        second_response = ModelResponse(content="Final response")
+
+        with patch.object(executor.llm_caller, "call_llm", side_effect=[first_response, second_response]):
+            response, messages = executor.execute(history, agent_state)
+
+        assert response == "Final response"
+        tool_block = next(
+            block
+            for msg in messages
+            if msg.role == Role.TOOL
+            for block in msg.content
+            if isinstance(block, ToolResultBlock) and block.tool_use_id == "call_img"
+        )
+        assert isinstance(tool_block.content, list)
+        img = next(p for p in tool_block.content if isinstance(p, ImageBlock))
+        assert img.url == "https://example.com/image.jpg"
+        assert img.detail == "high"
 
     def test_execute_with_max_iterations(self, mock_llm_config, agent_state):
         """Test execution stops at max iterations."""
@@ -786,8 +925,8 @@ class TestExecutorToolExecution:
 
         assert tool_name == "error_tool"
         assert is_error is False
-        parsed_result = json.loads(result)
-        assert parsed_result["error"] == "Tool error"
+        assert isinstance(result, dict)
+        assert result["error"] == "Tool error"
 
 
 class TestExecutorSubAgentExecution:

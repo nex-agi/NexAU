@@ -86,7 +86,9 @@ def test_openai_to_anthropic_message_uses_blocks() -> None:
         for b in assistant_blocks
     )
 
-    assert messages[2]["role"] == "tool"
+    # Bedrock Claude only allows roles: "user" | "assistant".
+    # Tool results are represented as a user message containing a tool_result block.
+    assert messages[2]["role"] == "user"
     assert messages[2]["content"] == [
         {"type": "tool_result", "tool_use_id": "call_1", "content": "4", "is_error": False},
     ]
@@ -127,6 +129,59 @@ def test_legacy_roundtrip_structured_content_with_image_url() -> None:
 
     roundtripped = messages_to_legacy_openai_chat(ump)
     assert roundtripped == legacy
+
+
+def test_injected_tool_image_user_message_is_merged_back_into_tool_result() -> None:
+    """If legacy history used Chat Completions image workaround, reconstruct a multimodal ToolResultBlock."""
+
+    ump_msgs = messages_from_legacy_openai_chat(
+        [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "file_read", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "Here is the image: <image>"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Images returned by tool call call_1:"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+                ],
+            },
+        ]
+    )
+
+    # The injected user image message should be dropped, and its image should be attached to the tool result.
+    tool_msg = next(m for m in ump_msgs if m.role == Role.TOOL)
+    tr = next(b for b in tool_msg.content if isinstance(b, ToolResultBlock))
+    assert tr.tool_use_id == "call_1"
+    assert isinstance(tr.content, list)
+    assert any(getattr(p, "type", None) == "image" for p in tr.content)
+
+
+def test_openai_to_anthropic_message_embeds_tool_result_images_as_anthropic_image_blocks() -> None:
+    legacy: list[dict[str, Any]] = [
+        {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "file_read", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "Done <image>"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Images returned by tool call call_1:"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+            ],
+        },
+    ]
+
+    system, messages = openai_to_anthropic_message(legacy)
+    assert system == []
+    # Tool results are represented as a user message containing a tool_result block.
+    tool_result_msg = next(m for m in messages if m.get("role") == "user" and isinstance(m.get("content"), list))
+    tool_result_block = next(b for b in tool_result_msg["content"] if isinstance(b, dict) and b.get("type") == "tool_result")
+    assert tool_result_block["tool_use_id"] == "call_1"
+    assert isinstance(tool_result_block["content"], list)
+    # Images are emitted as sibling blocks outside tool_result for maximum compatibility.
+    assert not any(isinstance(p, dict) and p.get("type") == "image" for p in tool_result_block["content"])
+    assert any(isinstance(p, dict) and p.get("type") == "image" for p in tool_result_msg["content"])
 
 
 def test_unknown_role_logs_warning_and_coerces_to_user(caplog: LogCaptureFixture) -> None:

@@ -16,7 +16,7 @@
 
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Final, cast
 
 from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
@@ -26,6 +26,63 @@ logger = logging.getLogger(__name__)
 
 type LegacyOpenAIChatMessage = dict[str, Any]
 type TokenCountableMessage = Message | LegacyOpenAIChatMessage
+
+
+def _coerce_legacy_content_to_text(content: Any) -> str:
+    """Coerce legacy OpenAI-style message ``content`` into a plain string for token counting.
+
+    NexAU's legacy adapter may emit multi-part content (e.g. text + image_url dict parts)
+    for multimodal messages. Token counters must never pass non-strings to tiktoken.
+
+    Notes:
+    - We intentionally do NOT include image URLs / base64 payloads; they are not a useful
+      proxy for model-context token usage and can be extremely large.
+    - This is a best-effort approximation suitable for budgeting/compaction heuristics.
+    """
+
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in cast(list[Any], content):
+            if item is None:
+                continue
+            if isinstance(item, str):
+                if item:
+                    parts.append(item)
+                continue
+            if isinstance(item, Mapping):
+                item_dict = cast(Mapping[str, Any], item)
+                part_type = str(item_dict.get("type") or "")
+
+                # Common OpenAI/Anthropic-ish multi-part schemas.
+                if part_type in {"text", "input_text", "output_text"}:
+                    text = item_dict.get("text") or item_dict.get("content") or ""
+                    if isinstance(text, str) and text:
+                        parts.append(text)
+                    elif text is not None:
+                        parts.append(str(text))
+                    continue
+                if part_type in {"image", "image_url", "input_image"}:
+                    parts.append("<image>")
+                    continue
+
+                # Unknown part: try to preserve any visible text-ish payload, otherwise ignore.
+                text = item_dict.get("text") or item_dict.get("content")
+                if text is None:
+                    continue
+                parts.append(text if isinstance(text, str) else str(text))
+                continue
+
+            # Last resort: stringify.
+            parts.append(str(item))
+        return "".join(parts)
+
+    # Some callers might pass a dict-like shape; do a conservative stringify.
+    return str(content)
+
 
 _tiktoken: Any
 try:
@@ -88,11 +145,11 @@ class TokenCounter:
                     # Add tokens for role and content
                     total_tokens += len(
                         encoding.encode(
-                            message.get("content", ""),
+                            _coerce_legacy_content_to_text(message.get("content", "")),
                             allowed_special=set(),
                         ),
                     )
-                    reasoning = message.get("reasoning_content", "")
+                    reasoning = _coerce_legacy_content_to_text(message.get("reasoning_content", ""))
                     if reasoning:
                         total_tokens += len(
                             encoding.encode(
@@ -135,8 +192,8 @@ class TokenCounter:
             for message in legacy_messages:
                 # Add tokens for role and content using chars/4 approximation
                 total_tokens += len(message.get("role", "")) // 4
-                total_tokens += len(message.get("content", "")) // 4
-                total_tokens += len(message.get("reasoning_content", "")) // 4
+                total_tokens += len(_coerce_legacy_content_to_text(message.get("content", ""))) // 4
+                total_tokens += len(_coerce_legacy_content_to_text(message.get("reasoning_content", ""))) // 4
                 # Add overhead tokens for message formatting
                 total_tokens += 4
                 tool_calls = message.get("tool_calls")

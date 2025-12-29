@@ -20,6 +20,8 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Any, cast
 
+from pydantic import BaseModel
+
 if TYPE_CHECKING:
     from ..agent_state import AgentState
 
@@ -226,6 +228,18 @@ class ToolExecutor:
             }
 
         # Normalize result to a dict for downstream processing
+        def _make_jsonable(obj: Any) -> Any:
+            if isinstance(obj, BaseModel):
+                return obj.model_dump()
+            if isinstance(obj, dict):
+                obj_dict = cast(dict[Any, Any], obj)
+                return {str(k): _make_jsonable(v) for k, v in obj_dict.items()}
+            if isinstance(obj, list):
+                obj_list = cast(list[Any], obj)
+                return [_make_jsonable(v) for v in obj_list]
+            return obj
+
+        result = _make_jsonable(result)
         if isinstance(result, dict):
             result_dict: JsonDict = cast(JsonDict, result)
         else:

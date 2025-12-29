@@ -37,7 +37,7 @@ from nexau.archs.main_sub.execution.llm_caller import LLMCaller
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat, messages_to_legacy_openai_chat
-from nexau.core.messages import Message, Role, ToolResultBlock
+from nexau.core.messages import ImageBlock, Message, Role, TextBlock, ToolResultBlock
 
 
 @pytest.fixture(autouse=True)
@@ -364,6 +364,119 @@ class TestLLMCallerBasicCalls:
         for output_value in output_values:
             assert isinstance(output_value, str)
         assert "Result text" in output_values
+
+    def test_call_llm_responses_api_tool_output_images_preserved_in_function_call_output(
+        self, mock_openai_client, responses_llm_config, agent_state
+    ):
+        """Responses API supports multimodal function_call_output.output arrays; preserve images there."""
+
+        responses_payload = SimpleNamespace(
+            output=[
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "ok"}],
+                },
+            ],
+            output_text="ok",
+            model="gpt-4o-mini",
+            usage=SimpleNamespace(input_tokens=20, output_tokens=10),
+        )
+        mock_openai_client.responses.create.return_value = responses_payload
+
+        caller = LLMCaller(openai_client=mock_openai_client, llm_config=responses_llm_config)
+
+        # This tool message gets converted to legacy OpenAI-shaped dicts via messages_to_legacy_openai_chat,
+        # which represent images as {"type":"image_url","image_url":{"url":"...","detail":"high"}} parts.
+        history = [
+            Message.user("Hello"),
+            Message(
+                role=Role.TOOL,
+                content=[
+                    ToolResultBlock(
+                        tool_use_id="call_1",
+                        content=[
+                            TextBlock(text="Here is the image"),
+                            ImageBlock(url="https://example.com/a.jpg", detail="high"),
+                        ],
+                    ),
+                ],
+            ),
+        ]
+
+        caller.call_llm(history, max_tokens=80, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
+
+        call_kwargs = mock_openai_client.responses.create.call_args.kwargs
+        input_items = call_kwargs["input"]
+
+        function_outputs = [item for item in input_items if isinstance(item, dict) and item.get("type") == "function_call_output"]
+        assert function_outputs
+        output_payload = function_outputs[0].get("output")
+        assert isinstance(output_payload, list)
+        assert any(isinstance(p, dict) and p.get("type") == "input_image" for p in output_payload)
+        assert any(isinstance(p, dict) and p.get("type") == "input_text" for p in output_payload)
+
+    def test_call_llm_responses_api_sanitizes_response_items_multimodal_function_call_output(
+        self, mock_openai_client, responses_llm_config, agent_state
+    ) -> None:
+        """Cover response_items sanitizer: output_text->input_text, image_url string/map, skip non-mapping, omit auto detail."""
+
+        responses_payload = SimpleNamespace(
+            output=[
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "ok"}],
+                },
+            ],
+            output_text="ok",
+            model="gpt-4o-mini",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+        )
+        mock_openai_client.responses.create.return_value = responses_payload
+
+        caller = LLMCaller(openai_client=mock_openai_client, llm_config=responses_llm_config)
+
+        response_items = [
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": [
+                    "not a mapping",
+                    {"type": "output_text", "text": "Result text"},
+                    {"type": "image_url", "image_url": "https://example.com/a.png"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/b.png", "detail": "auto"}},
+                ],
+            }
+        ]
+
+        history = [
+            Message.user("Hello"),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="cached")], metadata={"response_items": response_items}),
+        ]
+
+        caller.call_llm(history, max_tokens=80, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
+
+        call_kwargs = mock_openai_client.responses.create.call_args.kwargs
+        input_items = call_kwargs["input"]
+        function_outputs = [item for item in input_items if isinstance(item, dict) and item.get("type") == "function_call_output"]
+        assert function_outputs
+
+        output_payload = function_outputs[0].get("output")
+        assert isinstance(output_payload, list)
+
+        # output_text -> input_text
+        assert {"type": "input_text", "text": "Result text"} in output_payload
+
+        # image_url (string) -> input_image
+        assert {"type": "input_image", "image_url": "https://example.com/a.png"} in output_payload
+
+        # image_url with detail=auto should omit detail field
+        assert {"type": "input_image", "image_url": "https://example.com/b.png"} in output_payload
+        assert not any(
+            isinstance(p, dict) and p.get("type") == "input_image" and p.get("image_url") == "https://example.com/b.png" and "detail" in p
+            for p in output_payload
+        )
 
     def test_call_llm_without_client_raises_error(self, mock_llm_config):
         """Test that calling LLM without client raises RuntimeError."""
@@ -1011,7 +1124,7 @@ class TestLLMCallerIntegration:
 
         # Verify API was called with correct parameters
         call_args = mock_openai_client.chat.completions.create.call_args
-        assert call_args[1]["messages"] == messages_to_legacy_openai_chat(messages)
+        assert call_args[1]["messages"] == messages_to_legacy_openai_chat(messages, tool_image_policy="inject_user_message")
         assert call_args[1]["max_tokens"] == 200
         assert "custom_stop" in call_args[1]["stop"]
         assert "</tool_use>" in call_args[1]["stop"]

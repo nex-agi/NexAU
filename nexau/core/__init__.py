@@ -15,6 +15,8 @@ from .messages import (
     ReasoningBlock,
     Role,
     TextBlock,
+    ToolOutputImage,
+    ToolOutputImageDict,
     ToolResultBlock,
     ToolUseBlock,
 )

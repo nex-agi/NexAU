@@ -118,6 +118,53 @@ def test_anthropic_stream_aggregator_builds_message_blocks():
     assert message["content"][0]["text"] == "Hi there"
 
 
+def test_anthropic_stream_aggregator_does_not_overwrite_tool_block_on_duplicate_starts():
+    """Regression: some stream traces surface duplicate content_block_start events for the same index.
+
+    We should never overwrite a well-formed tool_use block (id/name) with an empty one.
+    """
+    aggregator = AnthropicStreamAggregator()
+
+    aggregator.consume({"type": "message_start", "message": {"role": "assistant", "model": "claude-3"}})
+    aggregator.consume(
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "tool_use", "id": "toolu_1", "name": "file_read", "input": {}},
+        },
+    )
+    aggregator.consume(
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": '{"file_path": "/tmp/image.png"'},
+        },
+    )
+    # Duplicate start (observed in the wild) with missing name/id should not clobber state.
+    aggregator.consume(
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "tool_use", "id": None, "name": None, "input": {}},
+        },
+    )
+    aggregator.consume(
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": "}"},
+        },
+    )
+    aggregator.consume({"type": "content_block_stop", "index": 0})
+
+    message = aggregator.finalize()
+
+    assert message["content"][0]["type"] == "tool_use"
+    assert message["content"][0]["id"] == "toolu_1"
+    assert message["content"][0]["name"] == "file_read"
+    assert message["content"][0]["input"] == {"file_path": "/tmp/image.png"}
+
+
 def test_openai_responses_stream_aggregator_reconstructs_items():
     aggregator = OpenAIResponsesStreamAggregator()
 

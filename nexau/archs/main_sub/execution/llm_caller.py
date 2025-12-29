@@ -18,7 +18,7 @@ import json
 import logging
 import time
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import openai
 from anthropic.types import ToolParam
@@ -187,8 +187,6 @@ class LLMCaller:
         if self.llm_config.debug:
             logger.info(f"🐛 [DEBUG] LLM Response: {model_response.render_text()}")
 
-        logger.info(f"💬 LLM Response: {model_response.render_text()}")
-
         return model_response
 
     def _call_with_retry(
@@ -213,7 +211,10 @@ class LLMCaller:
                 if force_stop_reason and force_stop_reason != AgentStopReason.SUCCESS:
                     return None
                 kwargs = dict(params.api_params)
-                kwargs["messages"] = messages_to_legacy_openai_chat(params.messages)
+                tool_image_policy: Literal["inject_user_message", "embed_in_tool_message"] = (
+                    "embed_in_tool_message" if self.llm_config.api_type == "openai_responses" else "inject_user_message"
+                )
+                kwargs["messages"] = messages_to_legacy_openai_chat(params.messages, tool_image_policy=tool_image_policy)
                 client = params.openai_client if params.openai_client is not None else self.openai_client
                 response_content = call_llm_with_different_client(
                     client,
@@ -616,11 +617,54 @@ def _prepare_responses_api_input(messages: list[dict[str, Any]]) -> tuple[list[d
         if role == "tool":
             tool_call_id = message.get("tool_call_id")
             if tool_call_id:
+                output_value: Any = None
+                if isinstance(content, list):
+                    out_items: list[dict[str, Any]] = []
+                    for part in cast(list[Any], content):
+                        if not isinstance(part, Mapping):
+                            continue
+                        part_map = cast(Mapping[str, Any], part)
+                        part_type = str(part_map.get("type") or "")
+
+                        if part_type in {"text", "output_text", "input_text"}:
+                            text_val: Any = part_map.get("text") or part_map.get("content")
+                            out_items.append({"type": "input_text", "text": str(text_val or "")})
+                            continue
+
+                        if part_type == "image_url":
+                            image_url_any = part_map.get("image_url")
+                            url: str | None = None
+                            detail: str | None = None
+                            if isinstance(image_url_any, Mapping):
+                                image_url_map = cast(Mapping[str, Any], image_url_any)
+                                url_any = image_url_map.get("url")
+                                if isinstance(url_any, str) and url_any.strip():
+                                    url = url_any.strip()
+                                detail_any = image_url_map.get("detail")
+                                if isinstance(detail_any, str) and detail_any in {"low", "high", "auto"}:
+                                    detail = detail_any
+                            elif isinstance(image_url_any, str) and image_url_any.strip():
+                                url = image_url_any.strip()
+
+                            if url:
+                                payload: dict[str, Any] = {"type": "input_image", "image_url": url}
+                                if detail and detail != "auto":
+                                    payload["detail"] = detail
+                                out_items.append(payload)
+                            continue
+
+                    # Use array output if it contains any images; otherwise keep legacy string coercion.
+                    if any(item.get("type") == "input_image" for item in out_items):
+                        output_value = out_items
+
+                if output_value is None:
+                    output_value = _coerce_tool_output_text(content)
+
                 prepared.append(
                     {
                         "type": "function_call_output",
                         "call_id": tool_call_id,
-                        "output": _coerce_tool_output_text(content),
+                        "output": output_value,
                     },
                 )
             continue
@@ -737,6 +781,18 @@ def _sanitize_response_items_for_input(items: list[Any], *, drop_ephemeral_ids: 
 
     sanitized: list[dict[str, Any]] = []
 
+    def _is_multimodal_output_list(value: Any) -> bool:
+        if not isinstance(value, list):
+            return False
+        for item in cast(list[Any], value):
+            if not isinstance(item, Mapping):
+                continue
+            item_dict = cast(Mapping[str, Any], item)
+            item_type = str(item_dict.get("type") or "")
+            if item_type in {"input_image", "image", "image_url", "input_file"}:
+                return True
+        return False
+
     for item in items:
         if isinstance(item, Mapping):
             item_mapping = cast(Mapping[str, Any], item)
@@ -748,7 +804,42 @@ def _sanitize_response_items_for_input(items: list[Any], *, drop_ephemeral_ids: 
             if item_type == "message":
                 item_copy.pop("status", None)
             elif item_type == "function_call_output":
-                item_copy["output"] = _coerce_tool_output_text(item_copy.get("output"))
+                output_value = item_copy.get("output")
+                # Preserve multimodal tool outputs as arrays; otherwise coerce to string for legacy compatibility.
+                if _is_multimodal_output_list(output_value):
+                    cleaned: list[dict[str, Any]] = []
+                    for out_item in cast(list[Any], output_value):
+                        if not isinstance(out_item, Mapping):
+                            continue
+                        out_dict = dict(cast(Mapping[str, Any], out_item))
+                        out_type = str(out_dict.get("type") or "")
+                        if out_type == "output_text":
+                            cleaned.append({"type": "input_text", "text": str(out_dict.get("text") or "")})
+                            continue
+                        if out_type == "image_url":
+                            image_url_any = out_dict.get("image_url")
+                            url: str | None = None
+                            detail: str | None = None
+                            if isinstance(image_url_any, Mapping):
+                                image_url_map = cast(Mapping[str, Any], image_url_any)
+                                url_any = image_url_map.get("url")
+                                if isinstance(url_any, str) and url_any.strip():
+                                    url = url_any.strip()
+                                detail_any = image_url_map.get("detail")
+                                if isinstance(detail_any, str) and detail_any in {"low", "high", "auto"}:
+                                    detail = detail_any
+                            elif isinstance(image_url_any, str) and image_url_any.strip():
+                                url = image_url_any.strip()
+                            if url:
+                                payload: dict[str, Any] = {"type": "input_image", "image_url": url}
+                                if detail and detail != "auto":
+                                    payload["detail"] = detail
+                                cleaned.append(payload)
+                            continue
+                        cleaned.append(out_dict)
+                    item_copy["output"] = cleaned
+                else:
+                    item_copy["output"] = _coerce_tool_output_text(output_value)
             elif item_type == "reasoning":
                 item_copy.pop("id", None)
                 item_copy["summary"] = _ensure_reasoning_summary(item_copy)
@@ -774,12 +865,18 @@ def _coerce_tool_output_text(output: Any) -> str:
         for item in output_list:
             if isinstance(item, dict):
                 item_dict = cast(dict[str, Any], item)
+                item_type = str(item_dict.get("type") or "")
+                if item_type in {"image_url", "input_image", "image"}:
+                    parts.append("<image>")
+                    continue
                 list_text_value: Any = item_dict.get("text") or item_dict.get("content")
                 if list_text_value is not None:
                     parts.append(str(list_text_value))
             else:
                 parts.append(str(item))
-        return "\n".join(parts)
+        # Ensure non-empty output so tool results aren't silently dropped.
+        rendered = "\n".join(parts)
+        return rendered if rendered.strip() else "<tool_output>"
 
     if isinstance(output, dict):
         output_dict = cast(dict[str, Any], output)
@@ -1059,8 +1156,24 @@ class AnthropicStreamAggregator:
             index = payload.get("index")
             block = _to_serializable_dict(payload.get("content_block", {}))
             if block and isinstance(index, int):
-                block["_input_buffer"] = ""
-                self._active_blocks[index] = block
+                # Some Anthropic SDK stream traces can surface duplicate content_block_start events
+                # for the same index (sometimes with missing fields like name/id). Never overwrite a
+                # previously-seen block with a more empty one; merge only meaningful fields.
+                existing = self._active_blocks.get(index)
+                if existing is not None:
+                    existing_input_buffer = existing.get("_input_buffer", "")
+                    for key, value in block.items():
+                        if key == "_input_buffer":
+                            continue
+                        # Only merge "meaningful" values; don't clobber with None/empty.
+                        if value in (None, "", {}, []):
+                            continue
+                        if existing.get(key) in (None, "", {}, []):
+                            existing[key] = value
+                    existing["_input_buffer"] = existing_input_buffer
+                else:
+                    block["_input_buffer"] = ""
+                    self._active_blocks[index] = block
         elif event_type == "content_block_delta":
             self._apply_block_delta(payload)
         elif event_type == "content_block_stop":
@@ -1087,12 +1200,15 @@ class AnthropicStreamAggregator:
         if not isinstance(index, int):
             return
         delta = _to_serializable_dict(payload.get("delta", {}))
-        block = self._active_blocks.setdefault(index, {"type": "text", "text": "", "_input_buffer": ""})
+        # Avoid defaulting to text: in rare malformed streams we might see deltas before start,
+        # and for tool blocks we can infer the type from the delta itself.
+        block = self._active_blocks.setdefault(index, {"_input_buffer": ""})
         delta_type = delta.get("type")
         if delta_type == "text_delta":
             block["type"] = "text"
             block["text"] = block.get("text", "") + delta.get("text", "")
         elif delta_type == "input_json_delta":
+            block.setdefault("type", "tool_use")
             fragment = delta.get("partial_json", "")
             block["_input_buffer"] = block.get("_input_buffer", "") + fragment
         else:

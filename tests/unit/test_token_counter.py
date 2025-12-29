@@ -23,6 +23,7 @@ from pytest import MonkeyPatch
 
 from nexau.archs.main_sub.utils import token_counter
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
+from nexau.core.messages import ImageBlock, Message, Role, TextBlock
 
 
 def test_fallback_counter_counts_content_and_tools():
@@ -121,6 +122,42 @@ def test_tiktoken_strategy_uses_stub_encoding(monkeypatch: MonkeyPatch):
     )
 
     assert result == expected
+
+
+def test_tiktoken_strategy_supports_multimodal_message_content(monkeypatch: MonkeyPatch):
+    """tiktoken strategy should not crash when legacy content is a list (e.g. image + text)."""
+
+    class DummyEncoding:
+        def encode(
+            self,
+            text: str,
+            allowed_special: Iterable[str] | None = None,
+        ) -> list[int]:
+            return [0] * len(text)
+
+    def dummy_encoding_for_model(model: str):
+        return DummyEncoding()
+
+    monkeypatch.setattr(token_counter, "TIKTOKEN_AVAILABLE", True)
+    monkeypatch.setattr(
+        token_counter,
+        "tiktoken",
+        SimpleNamespace(encoding_for_model=dummy_encoding_for_model),
+    )
+
+    counter = TokenCounter(strategy="tiktoken", model="dummy-model")
+    messages = [
+        Message(
+            role=Role.USER,
+            content=[
+                TextBlock(text="hello"),
+                ImageBlock(base64="AAAA", mime_type="image/png"),
+            ],
+        ),
+    ]
+
+    # Adapter emits [{"type":"text","text":"hello"},{"type":"image_url",...}]; token counter should coerce to "hello<image>".
+    assert counter.count_tokens(messages) == len("hello<image>")
 
 
 def test_tiktoken_strategy_falls_back_on_encoder_error(monkeypatch: MonkeyPatch):

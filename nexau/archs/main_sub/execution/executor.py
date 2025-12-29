@@ -64,7 +64,7 @@ from nexau.archs.main_sub.tool_call_modes import (
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
 from nexau.archs.tool.tool import Tool
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
-from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock
+from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, coerce_tool_result_content
 
 logger = logging.getLogger(__name__)
 
@@ -364,11 +364,6 @@ class Executor:
                     break
 
                 assistant_content = model_response.content or ""
-                assistant_log_text = model_response.render_text() or assistant_content
-
-                logger.info(
-                    f"💬 LLM Response for agent '{self.agent_name}': {assistant_log_text}",
-                )
 
                 # Store this as the latest response (potential final response)
                 final_response = assistant_content
@@ -440,6 +435,7 @@ class Executor:
                         call_obj = feedback.get("call")
                         call_type = feedback.get("call_type")
                         content = feedback.get("content") or ""
+                        output = feedback.get("output")
 
                         if call_type == "tool":
                             call_id = getattr(call_obj, "tool_call_id", None)
@@ -451,16 +447,16 @@ class Executor:
                         if not call_id:
                             continue
 
+                        tool_result_block = ToolResultBlock(
+                            tool_use_id=str(call_id),
+                            content=coerce_tool_result_content(output if output is not None else content, fallback_text=str(content)),
+                            is_error=bool(feedback.get("is_error")),
+                        )
+
                         messages.append(
                             Message(
                                 role=Role.TOOL,
-                                content=[
-                                    ToolResultBlock(
-                                        tool_use_id=str(call_id),
-                                        content=str(content),
-                                        is_error=bool(feedback.get("is_error")),
-                                    ),
-                                ],
+                                content=[tool_result_block],
                             ),
                         )
 
@@ -495,7 +491,7 @@ class Executor:
                 f"🔄 Force stop reason: {force_stop_reason.name}",
             )
             logger.info(
-                f"🔄 Final response for agent '{self.agent_name}': {final_response}",
+                f"🔄 Final response for agent '{self.agent_name}': {final_response[:100]}",
             )
             return final_response, messages
 
@@ -748,7 +744,7 @@ class Executor:
 
         try:
             # Submit tool execution tasks
-            tool_futures: dict[Future[tuple[str, str, bool]], tuple[str, ToolCall]] = {}
+            tool_futures: dict[Future[tuple[str, Any, bool]], tuple[str, ToolCall]] = {}
             for tool_call in parsed_response.tool_calls:
                 task_ctx = copy_context()
                 future = tool_executor.submit(
@@ -777,10 +773,7 @@ class Executor:
                 sub_agent_futures[future] = ("sub_agent", sub_agent_call)
 
             # Combine all futures
-            all_futures: dict[
-                Future[tuple[str, str, bool]],
-                tuple[str, ToolCall | SubAgentCall],
-            ] = {**tool_futures, **sub_agent_futures}
+            all_futures: dict[Future[tuple[str, Any, bool]], tuple[str, ToolCall | SubAgentCall]] = {**tool_futures, **sub_agent_futures}
 
             # Collect results as they complete
             tool_results: list[str] = []
@@ -838,17 +831,19 @@ class Executor:
                         continue
                     elif call_type == "tool":
                         tool_name, result, is_error = result_data
+                        result_str = result if isinstance(result, str) else json.dumps(result, indent=2, ensure_ascii=False)
                         execution_feedbacks.append(
                             {
                                 "call_type": "tool",
                                 "call": call_obj,
-                                "content": result,
+                                "content": result_str,
+                                "output": result,
                                 "is_error": is_error,
                             },
                         )
                         if is_error:
                             logger.error(
-                                f"❌ Tool '{tool_name}' error: {result}",
+                                f"❌ Tool '{tool_name}' error: {result_str}",
                             )
                             should_append_xml = getattr(call_obj, "source", "xml") != "openai"
                             if should_append_xml:
@@ -856,19 +851,19 @@ class Executor:
                                     f"""
 <tool_result>
 <tool_name>{tool_name}</tool_name>
-<error>{result}</error>
+<error>{result_str}</error>
 </tool_result>
 """,
                                 )
                         else:
                             logger.info(
-                                f"📤 Tool '{tool_name}' result: {result}",
+                                f"📤 Tool '{tool_name}' result: {result_str[:100]}",
                             )
                             should_append_xml = getattr(call_obj, "source", "xml") != "openai"
                             tool_result_xml = f"""
 <tool_result>
 <tool_name>{tool_name}</tool_name>
-<result>{result}</result>
+<result>{result_str}</result>
 </tool_result>
 """
                             if should_append_xml:
@@ -876,7 +871,7 @@ class Executor:
 
                             # Check if this tool result indicates a stop tool was executed
                             try:
-                                parsed_result = json.loads(result)
+                                parsed_result = json.loads(result_str)
                                 if isinstance(parsed_result, dict):
                                     parsed_result_dict = cast(dict[str, Any], parsed_result)
                                     if parsed_result_dict.get("_is_stop_tool"):
@@ -951,7 +946,7 @@ class Executor:
         self,
         tool_call: ToolCall,
         agent_state: "AgentState",
-    ) -> tuple[str, str, bool]:
+    ) -> tuple[str, Any, bool]:
         """Safely execute a tool call."""
         try:
             # Convert parameters to correct types and execute
@@ -971,11 +966,7 @@ class Executor:
                 tool_call_id=tool_call_id,
             )
 
-            return (
-                tool_call.tool_name,
-                json.dumps(result, indent=2, ensure_ascii=False),
-                False,
-            )
+            return (tool_call.tool_name, result, False)
 
         except Exception as e:
             return tool_call.tool_name, str(e), True

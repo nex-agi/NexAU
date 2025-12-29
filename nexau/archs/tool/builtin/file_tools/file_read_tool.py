@@ -441,10 +441,8 @@ def read_image_file(file_path: str) -> dict[str, Any]:
 
         return {
             "type": "image",
-            "base64": base64.b64encode(image_data).decode("utf-8"),
-            "media_type": mime_type,
-            "original_size": file_size,
-            "compressed": False,
+            "image_url": f"data:{mime_type};base64,{base64.b64encode(image_data).decode('utf-8')}",
+            "detail": "auto",
         }
 
     except Exception as e:
@@ -482,7 +480,7 @@ def file_read_tool(
     file_path: str,
     offset: int | float | None = None,
     limit: int | float | None = None,
-) -> str:
+) -> str | dict[str, Any]:
     """
     Read a file from the local filesystem. Supports both text and image files.
 
@@ -579,23 +577,7 @@ def file_read_tool(
                     ensure_ascii=False,
                 )
 
-            duration_ms = int((time.time() - start_time) * 1000)
-
-            return json.dumps(
-                {
-                    "type": "image",
-                    "file_path": file_path,
-                    "file_size": file_size,
-                    "base64": image_result["base64"],
-                    "media_type": image_result["media_type"],
-                    "compressed": image_result.get("compressed", False),
-                    "original_size": image_result.get("original_size", file_size),
-                    "compressed_size": image_result.get("compressed_size"),
-                    "duration_ms": duration_ms,
-                },
-                indent=2,
-                ensure_ascii=False,
-            )
+            return image_result
 
         # Handle text files - check size first
         if file_size > MAX_OUTPUT_SIZE and offset is None and limit is None:

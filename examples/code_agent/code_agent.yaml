@@ -11,7 +11,6 @@ llm_config: # Support environment variable replacement in YAML config
   model: ${env.LLM_MODEL}
   base_url: ${env.LLM_BASE_URL}
   api_key: ${env.LLM_API_KEY}
-  temperature: 0.7
   stream: true
   max_tokens: ${variables.max_tokens}
   api_type: openai_chat_completion # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion

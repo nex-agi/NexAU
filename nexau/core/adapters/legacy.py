@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from nexau.core.messages import (
     ImageBlock,
@@ -19,9 +20,13 @@ from nexau.core.messages import (
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
+    coerce_tool_result_content,
+    parse_base64_data_url,
 )
 
 logger = logging.getLogger(__name__)
+
+_INJECTED_TOOL_IMAGES_RE = re.compile(r"^\s*Images returned by tool call\s+(?P<id>.+?)\s*:\s*$")
 
 
 def _coerce_str(value: Any) -> str:
@@ -80,22 +85,54 @@ def messages_from_legacy_openai_chat(messages: list[dict[str, Any]]) -> list[Mes
                 if not isinstance(part, Mapping):
                     text = _coerce_str(part)
                     if text:
-                        content_blocks.append(TextBlock(text=text))
+                        content_blocks.append(TextBlock(text=text))  # pyright: ignore[reportCallIssue]
                     continue
                 part_dict = cast(Mapping[str, Any], part)
                 part_type = str(part_dict.get("type") or "")
                 if part_type in {"text", "output_text", "input_text"}:
                     text = _coerce_str(part_dict.get("text") or part_dict.get("content"))
                     if text:
-                        content_blocks.append(TextBlock(text=text))
-                elif part_type in {"image", "image_url"}:
+                        content_blocks.append(TextBlock(text=text))  # pyright: ignore[reportCallIssue]
+                elif part_type in {"image", "image_url", "input_image"}:
                     url = part_dict.get("url")
                     if url is None and isinstance(part_dict.get("image_url"), Mapping):
                         url = cast(Mapping[str, Any], part_dict.get("image_url")).get("url")
+                    if url is None and part_type == "input_image":
+                        url = part_dict.get("image_url")
                     b64 = part_dict.get("base64")
                     mime = _coerce_str(part_dict.get("mime_type") or "image/jpeg")
+                    detail_any: Any = part_dict.get("detail")
+                    detail: str = _coerce_str(detail_any) if detail_any is not None else "auto"
+                    if detail not in {"low", "high", "auto"}:
+                        detail = "auto"
                     try:
-                        content_blocks.append(ImageBlock(url=cast(str | None, url), base64=cast(str | None, b64), mime_type=mime))
+                        # If the image is provided as an OpenAI-style data URL, normalize it into
+                        # the UMP ImageBlock(base64=...) form so vendor adapters (e.g. Anthropic)
+                        # can send raw base64 without a "data:" prefix.
+                        if isinstance(url, str) and url.strip().startswith("data:"):
+                            parsed = parse_base64_data_url(url)
+                            if parsed:
+                                parsed_mime, parsed_b64 = parsed
+                                url = None
+                                b64 = parsed_b64
+                                mime = parsed_mime or mime
+
+                        if isinstance(b64, str) and b64.strip().startswith("data:"):
+                            parsed = parse_base64_data_url(b64)
+                            if parsed:
+                                parsed_mime, parsed_b64 = parsed
+                                url = None
+                                b64 = parsed_b64
+                                mime = parsed_mime or mime
+
+                        content_blocks.append(
+                            ImageBlock(
+                                url=cast(str | None, url),
+                                base64=cast(str | None, b64),
+                                mime_type=mime,
+                                detail=cast(Any, detail),
+                            ),
+                        )
                     except Exception:
                         # Best-effort: drop invalid image blocks
                         pass
@@ -109,10 +146,13 @@ def messages_from_legacy_openai_chat(messages: list[dict[str, Any]]) -> list[Mes
                         ),
                     )
                 elif part_type == "tool_result":
+                    raw_content: Any = part_dict.get("content")
+                    # Best-effort: preserve multimodal tool results embedded in legacy structured content.
+                    coerced = coerce_tool_result_content(raw_content, fallback_text=_coerce_str(raw_content))
                     content_blocks.append(
                         ToolResultBlock(
                             tool_use_id=_coerce_str(part_dict.get("tool_use_id") or part_dict.get("tool_call_id")),
-                            content=_coerce_str(part_dict.get("content")),
+                            content=coerced,
                             is_error=bool(part_dict.get("is_error") or part_dict.get("error")),
                         ),
                     )
@@ -124,11 +164,52 @@ def messages_from_legacy_openai_chat(messages: list[dict[str, Any]]) -> list[Mes
                     # Unknown structured part; store as text so we don't drop user-visible info
                     text = _coerce_str(part_dict.get("text") or part_dict.get("content"))
                     if text:
-                        content_blocks.append(TextBlock(text=text))
+                        content_blocks.append(TextBlock(text=text))  # pyright: ignore[reportCallIssue]
         else:
             text = _coerce_str(content)
             if text:
-                content_blocks.append(TextBlock(text=text))
+                content_blocks.append(TextBlock(text=text))  # pyright: ignore[reportCallIssue]
+
+        # Undo our own legacy workaround:
+        # messages_to_legacy_openai_chat(tool_image_policy="inject_user_message") emits an extra user message:
+        #   {"role":"user","content":[{"type":"text","text":"Images returned by tool call X:"},{"type":"image_url",...},...]}
+        # When we see that pattern, merge the images back into the preceding tool result block and drop this user message.
+        if role == Role.USER and isinstance(content, list):
+            first_text = next((b.text for b in content_blocks if isinstance(b, TextBlock) and b.text), None)
+            if first_text:
+                m = _INJECTED_TOOL_IMAGES_RE.match(first_text)
+            else:
+                m = None
+            if m:
+                tool_call_id = m.group("id").strip()
+                injected_images = [b for b in content_blocks if isinstance(b, ImageBlock)]
+                if tool_call_id and injected_images:
+                    # Find the nearest preceding tool message for this call id.
+                    target_msg = next(
+                        (
+                            msg
+                            for msg in reversed(result)
+                            if msg.role == Role.TOOL
+                            and any(isinstance(b, ToolResultBlock) and b.tool_use_id == tool_call_id for b in msg.content)
+                        ),
+                        None,
+                    )
+                    if target_msg is not None:
+                        tr = next(b for b in target_msg.content if isinstance(b, ToolResultBlock) and b.tool_use_id == tool_call_id)
+                        if isinstance(tr.content, str):
+                            # Strip placeholders now that we'll carry real image blocks.
+                            tool_text = tr.content.replace("<image>", "").strip()
+                            merged_parts: list[TextBlock | ImageBlock] = []
+                            if tool_text:
+                                merged_parts.append(TextBlock(text=tool_text))  # pyright: ignore[reportCallIssue]
+                            merged_parts.extend(injected_images)
+                            tr.content = merged_parts
+                        else:
+                            merged_parts_existing: list[TextBlock | ImageBlock] = list(tr.content)
+                            merged_parts_existing.extend(injected_images)
+                            tr.content = merged_parts_existing
+                        # Drop this injected user message.
+                        continue
 
         metadata: dict[str, Any] = {}
         if "response_items" in raw:
@@ -173,22 +254,82 @@ def messages_from_legacy_openai_chat(messages: list[dict[str, Any]]) -> list[Mes
         # Tool result messages (OpenAI tool role)
         if role == Role.TOOL:
             tool_call_id = _coerce_str(raw.get("tool_call_id"))
-            # Replace textual content blocks with an explicit tool_result block
-            tool_text = "".join(b.text for b in content_blocks if isinstance(b, TextBlock))
-            content_blocks = [
-                ToolResultBlock(tool_use_id=tool_call_id, content=tool_text),
-            ]
+            # Replace content blocks with an explicit tool_result block (preserve images if present).
+            has_images = any(isinstance(b, ImageBlock) for b in content_blocks)
+            if has_images:
+                parts: list[TextBlock | ImageBlock] = [b for b in content_blocks if isinstance(b, (TextBlock, ImageBlock))]
+                content_blocks = [ToolResultBlock(tool_use_id=tool_call_id, content=parts)]
+            else:
+                tool_text = "".join(b.text for b in content_blocks if isinstance(b, TextBlock))
+                content_blocks = [ToolResultBlock(tool_use_id=tool_call_id, content=tool_text)]
 
         result.append(Message(role=role, content=content_blocks, metadata=metadata))
     return result
 
 
-def messages_to_legacy_openai_chat(messages: list[Message]) -> list[dict[str, Any]]:
-    """Convert UMP messages into OpenAI Chat-Completions-shaped dicts (legacy NexAU format)."""
+def messages_to_legacy_openai_chat(
+    messages: list[Message],
+    *,
+    tool_image_policy: Literal["inject_user_message", "embed_in_tool_message"] = "inject_user_message",
+) -> list[dict[str, Any]]:
+    """Convert UMP messages into OpenAI Chat-Completions-shaped dicts (legacy NexAU format).
+
+    Notes:
+    - OpenAI Chat Completions tool-role messages do NOT support image parts (tool content supports text only).
+      When tool results contain images, `tool_image_policy="inject_user_message"` will:
+        - emit a tool-role message with text (images replaced by "<image>")
+        - emit an extra user-role multimodal message containing the images (image_url parts)
+    - For OpenAI Responses API input reconstruction, set `tool_image_policy="embed_in_tool_message"` so
+      downstream conversion can preserve image_url parts for function_call_output output arrays.
+    """
 
     output: list[dict[str, Any]] = []
     for msg in messages or []:
         role = msg.role.value
+
+        def _image_part_to_image_url_obj(img: ImageBlock) -> dict[str, Any]:
+            url = img.url if img.url else f"data:{img.mime_type};base64,{img.base64}"
+            image_url_obj: dict[str, Any] = {"url": url}
+            if img.detail != "auto":
+                image_url_obj["detail"] = img.detail
+            return image_url_obj
+
+        def _emit_tool_result_as_messages(
+            *,
+            tool_call_id: str,
+            tool_content: str | list[TextBlock | ImageBlock],
+        ) -> list[dict[str, Any]]:
+            if not isinstance(tool_content, list):
+                return [{"role": "tool", "tool_call_id": tool_call_id, "content": tool_content}]
+
+            text_parts: list[str] = []
+            tool_text_only_parts: list[dict[str, Any]] = []
+            image_parts: list[dict[str, Any]] = []
+            for part in tool_content:
+                if isinstance(part, TextBlock):
+                    if part.text:
+                        tool_text_only_parts.append({"type": "text", "text": part.text})
+                        text_parts.append(part.text)
+                else:
+                    # image
+                    image_parts.append({"type": "image_url", "image_url": _image_part_to_image_url_obj(part)})
+                    text_parts.append("<image>")
+
+            if tool_image_policy == "embed_in_tool_message":
+                # Used for Responses API input reconstruction (not sent directly to Chat Completions).
+                return [{"role": "tool", "tool_call_id": tool_call_id, "content": tool_text_only_parts + image_parts}]
+
+            # Chat Completions spec: tool message content parts can only be text.
+            tool_text = "".join(text_parts) or "<tool_output>"
+            emitted: list[dict[str, Any]] = [{"role": "tool", "tool_call_id": tool_call_id, "content": tool_text}]
+            if image_parts:
+                emitted.append(
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": f"Images returned by tool call {tool_call_id}:"}] + image_parts,
+                    },
+                )
+            return emitted
 
         # Tool results become role=tool messages (OpenAI expected)
         if role == Role.TOOL.value:
@@ -197,13 +338,7 @@ def messages_to_legacy_openai_chat(messages: list[Message]) -> list[dict[str, An
             if tr is None:
                 output.append({"role": "tool", "content": msg.get_text_content()})
             else:
-                output.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tr.tool_use_id,
-                        "content": tr.content,
-                    },
-                )
+                output.extend(_emit_tool_result_as_messages(tool_call_id=tr.tool_use_id, tool_content=tr.content))
             continue
 
         entry: dict[str, Any] = {"role": role, "content": ""}
@@ -241,21 +376,21 @@ def messages_to_legacy_openai_chat(messages: list[Message]) -> list[dict[str, An
                 )
             elif isinstance(block, ToolResultBlock):
                 # ToolResultBlocks should be represented as role=tool messages in legacy format.
-                output.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": block.tool_use_id,
-                        "content": block.content,
-                    },
-                )
+                output.extend(_emit_tool_result_as_messages(tool_call_id=block.tool_use_id, tool_content=block.content))
             elif isinstance(block, ImageBlock):  # pyright: ignore[reportUnnecessaryIsInstance]
                 # OpenAI Chat Completions supports multi-part content with images:
                 # {"content": [{"type":"text","text":"..."},{"type":"image_url","image_url":{"url":"..."}}]}
                 if block.url:
-                    content_parts.append({"type": "image_url", "image_url": {"url": block.url}})
+                    image_url_obj: dict[str, Any] = {"url": block.url}
+                    if block.detail != "auto":
+                        image_url_obj["detail"] = block.detail
+                    content_parts.append({"type": "image_url", "image_url": image_url_obj})
                 else:
                     # Use a data URL so downstream OpenAI-compatible clients can send the image.
-                    content_parts.append({"type": "image_url", "image_url": {"url": f"data:{block.mime_type};base64,{block.base64}"}})
+                    image_url_obj = {"url": f"data:{block.mime_type};base64,{block.base64}"}
+                    if block.detail != "auto":
+                        image_url_obj["detail"] = block.detail
+                    content_parts.append({"type": "image_url", "image_url": image_url_obj})
 
         entry["content"] = content_parts if has_images else "".join(text_parts)
         if reasoning_parts:

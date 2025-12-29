@@ -56,18 +56,22 @@ class ResponseParser:
         if model_response and model_response.tool_calls:
             logger.info("🔧 Found structured OpenAI tool calls, normalizing")
             for call in model_response.tool_calls:
+                tool_name = (call.name or "").strip()
+                if not tool_name:
+                    logger.warning("❌ Skipping structured tool call with empty name (call_id=%s)", call.call_id)
+                    continue
                 parameters: dict[str, Any] = call.arguments
 
                 normalized_tool_call = ToolCall(
-                    tool_name=call.name,
+                    tool_name=tool_name,
                     parameters=parameters,
                     raw_content=call.raw_arguments,
                     tool_call_id=call.call_id,
                     source="openai",
                 )
 
-                if is_sub_agent_tool_name(call.name):
-                    agent_name = extract_sub_agent_name(call.name)
+                if is_sub_agent_tool_name(tool_name):
+                    agent_name = extract_sub_agent_name(tool_name)
                     if not agent_name:
                         continue
                     message = self._format_parameters_for_message(parameters)

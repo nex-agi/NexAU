@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import warnings
 from enum import Enum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypedDict, cast
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, model_validator
@@ -45,6 +45,9 @@ class ImageBlock(ContentBlock):
     url: str | None = None
     base64: str | None = None
     mime_type: str = "image/jpeg"
+    # Optional hint for multimodal-capable models (OpenAI-style):
+    # "low" | "high" | "auto" (default).
+    detail: Literal["low", "high", "auto"] = "auto"
 
     @model_validator(mode="after")
     def _validate_source(self) -> ImageBlock:
@@ -53,6 +56,189 @@ class ImageBlock(ContentBlock):
         if self.url and self.base64:
             raise ValueError("ImageBlock cannot have both url and base64")
         return self
+
+
+class ToolOutputImage(BaseModel):
+    """Developer-friendly tool output type for returning images.
+
+    Tools may return:
+    - `ToolOutputImage(image_url="https://...")`
+    - `ToolOutputImage(image_url="data:image/png;base64,....")`
+    """
+
+    type: Literal["input_image"] = "input_image"
+    image_url: str
+    detail: Literal["low", "high", "auto"] = "auto"
+
+    @model_validator(mode="after")
+    def _validate(self) -> ToolOutputImage:
+        if not self.image_url.strip():
+            raise ValueError("ToolOutputImage.image_url must be a non-empty string")
+        return self
+
+
+class ToolOutputImageDict(TypedDict, total=False):
+    """Dict form for returning images from tools.
+
+    Example:
+      {
+        "type": "input_image",
+        "image_url": "https://... or data:image/png;base64,...",
+        "detail": "high" | "low" | "auto",
+      }
+    """
+
+    type: Literal["input_image"]
+    image_url: str
+    detail: Literal["low", "high", "auto"]
+
+
+def _parse_base64_data_url(url: str) -> tuple[str, str] | None:
+    url = url.strip()
+    if not url.startswith("data:"):
+        return None
+    try:
+        header, data = url.split(",", 1)
+    except ValueError:
+        return None
+    if ";base64" not in header:
+        return None
+    mime = header[len("data:") :].split(";", 1)[0] or "image/jpeg"
+    # Be liberal in what we accept: downstream vendors require raw base64 without
+    # a "data:" prefix and without whitespace/newlines.
+    cleaned = "".join(data.split())
+    # Guard against common mistakes where callers stringify bytes:
+    #   str(base64.b64encode(...)) -> "b'...'"
+    if (cleaned.startswith("b'") and cleaned.endswith("'")) or (cleaned.startswith('b"') and cleaned.endswith('"')):
+        cleaned = cleaned[2:-1]
+    # Also accept accidental quoting.
+    if (cleaned.startswith("'") and cleaned.endswith("'")) or (cleaned.startswith('"') and cleaned.endswith('"')):
+        cleaned = cleaned[1:-1]
+    return mime, cleaned
+
+
+def parse_base64_data_url(url: str) -> tuple[str, str] | None:
+    """Parse a base64 data URL into (mime_type, base64_data).
+
+    This is intentionally tolerant of whitespace and accidental quoting, since
+    callers frequently copy/paste base64 strings or stringify bytes.
+    """
+
+    return _parse_base64_data_url(url)
+
+
+def _image_block_from_image_url(image_url: str, *, detail: Literal["low", "high", "auto"] = "auto") -> ImageBlock:
+    parsed = _parse_base64_data_url(image_url)
+    if parsed:
+        mime_type, b64 = parsed
+        return ImageBlock(base64=b64, mime_type=mime_type, detail=detail)
+    return ImageBlock(url=image_url, detail=detail)
+
+
+def coerce_tool_result_content(
+    value: Any,
+    *,
+    fallback_text: str | None = None,
+) -> str | list[TextBlock | ImageBlock]:
+    """Coerce arbitrary tool output into ToolResultBlock.content.
+
+    Supported developer return shapes:
+    - `ToolOutputImage(image_url="...")`
+    - `{"type": "image", "image_url": "https://..."}` or base64 data URL
+    - `{"type": "image", "base64": "...", "media_type": "image/png"}` (common in built-in tools)
+    - lists mixing text/image parts
+
+    Backwards-compat: if no image parts are detected and `fallback_text` is provided,
+    return the fallback string.
+    """
+
+    def from_mapping(obj: dict[str, Any]) -> TextBlock | ImageBlock | None:
+        part_type = str(obj.get("type") or "")
+        if part_type in {"text", "output_text", "input_text"}:
+            text_val: Any = obj.get("text")
+            if text_val is None:
+                text_val = obj.get("content")
+            return TextBlock(text=str(text_val or ""))
+
+        if part_type in {"input_image", "image"}:
+            detail_any: Any = obj.get("detail")
+            detail: Literal["low", "high", "auto"] = "auto"
+            if isinstance(detail_any, str) and detail_any in {"low", "high", "auto"}:
+                detail = cast(Literal["low", "high", "auto"], detail_any)
+
+            image_url: Any = obj.get("image_url") or obj.get("url")
+            if isinstance(image_url, str) and image_url.strip():
+                return _image_block_from_image_url(image_url.strip(), detail=detail)
+
+            b64: Any = obj.get("base64")
+            media_type: Any = obj.get("media_type") or obj.get("mime_type") or "image/jpeg"
+            if isinstance(b64, str) and b64:
+                return ImageBlock(base64=b64, mime_type=str(media_type or "image/jpeg"), detail=detail)
+            return None
+
+        # Unknown mapping: try to preserve any user-visible text-ish payload.
+        text_val = obj.get("text") or obj.get("content")
+        if text_val is None:
+            return None
+        return TextBlock(text=text_val if isinstance(text_val, str) else str(text_val))
+
+    def coerce_any(item: Any) -> list[TextBlock | ImageBlock]:
+        if item is None:
+            return []
+        if isinstance(item, ToolOutputImage):
+            return [_image_block_from_image_url(item.image_url, detail=item.detail)]
+        if isinstance(item, str):
+            text = item
+            if text:
+                return [TextBlock(text=text)]
+            return []
+        if isinstance(item, dict):
+            item_dict = cast(dict[str, Any], item)
+            # Common wrapper shapes from ToolExecutor: {"result": ...} or {"content": [...]}
+            if "type" not in item_dict:
+                inner = item_dict.get("content", item_dict.get("result"))
+                if inner is not None and isinstance(inner, (list, dict, ToolOutputImage)):
+                    return coerce_any(inner)
+
+            block = from_mapping(item_dict)
+            if block is None:
+                return []
+            # Drop empty text blocks
+            if isinstance(block, TextBlock) and not block.text:
+                return []
+            return [block]
+        if isinstance(item, list):
+            out: list[TextBlock | ImageBlock] = []
+            for sub in cast(list[Any], item):
+                out.extend(coerce_any(sub))
+            return out
+        # Last resort stringify
+        return [TextBlock(text=str(item))]
+
+    # If tool returns JSON-as-string, try to decode it before coercion.
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = None
+            if parsed is not None:
+                blocks = coerce_any(parsed)
+                if any(b.type == "image" for b in blocks):
+                    return blocks
+        # Fallback: keep historical behavior for normal tool JSON strings
+        return fallback_text if fallback_text is not None else value
+
+    blocks = coerce_any(value)
+    if any(b.type == "image" for b in blocks):
+        return blocks
+    if fallback_text is not None:
+        return fallback_text
+    # No images found: collapse to string to preserve prior behavior (common tool results are JSON dicts)
+    if not blocks:
+        return ""
+    return "".join(b.text for b in blocks if isinstance(b, TextBlock))
 
 
 class ReasoningBlock(ContentBlock):
@@ -72,10 +258,15 @@ class ToolUseBlock(ContentBlock):
     raw_input: str | None = None
 
 
+ToolResultContentBlock = Annotated[TextBlock | ImageBlock, Field(discriminator="type")]
+
+
 class ToolResultBlock(ContentBlock):
     type: Literal["tool_result"] = "tool_result"
     tool_use_id: str
-    content: str
+    # Backwards-compatible: historically tool result content was a plain string.
+    # We now also support mixed multimodal content (text + images).
+    content: str | list[ToolResultContentBlock]
     is_error: bool = False
 
 
@@ -116,6 +307,11 @@ class Message(BaseModel):
             tr = next((b for b in self.content if isinstance(b, ToolResultBlock)), None)
             if tr is None:
                 return {"role": "tool", "content": self.get_text_content()}
+            if isinstance(tr.content, list):
+                # Chat Completions spec: tool-role messages support text only.
+                # Collapse images to placeholders so legacy dict access stays usable.
+                folded = "".join(p.text if isinstance(p, TextBlock) else "<image>" for p in tr.content) or "<tool_output>"
+                return {"role": "tool", "tool_call_id": tr.tool_use_id, "content": folded}
             return {"role": "tool", "tool_call_id": tr.tool_use_id, "content": tr.content}
 
         entry: dict[str, Any] = {"role": self.role.value, "content": ""}
@@ -154,15 +350,26 @@ class Message(BaseModel):
             elif isinstance(block, ToolResultBlock):
                 # Legacy chat schema expects tool results as a separate role=tool message.
                 # For dict-style access compatibility, fold tool results into textual content.
-                if has_images:
-                    content_parts.append({"type": "text", "text": block.content})
+                if isinstance(block.content, list):
+                    # Fold text portions; represent images as "<image>" placeholders.
+                    folded = "".join(p.text if isinstance(p, TextBlock) else "<image>" for p in block.content)
                 else:
-                    text_parts.append(block.content)
+                    folded = block.content
+                if has_images:
+                    content_parts.append({"type": "text", "text": folded})
+                else:
+                    text_parts.append(folded)
             elif isinstance(block, ImageBlock):  # pyright: ignore[reportUnnecessaryIsInstance]
                 if block.url:
-                    content_parts.append({"type": "image_url", "image_url": {"url": block.url}})
+                    image_url_obj: dict[str, Any] = {"url": block.url}
+                    if block.detail != "auto":
+                        image_url_obj["detail"] = block.detail
+                    content_parts.append({"type": "image_url", "image_url": image_url_obj})
                 else:
-                    content_parts.append({"type": "image_url", "image_url": {"url": f"data:{block.mime_type};base64,{block.base64}"}})
+                    image_url_obj = {"url": f"data:{block.mime_type};base64,{block.base64}"}
+                    if block.detail != "auto":
+                        image_url_obj["detail"] = block.detail
+                    content_parts.append({"type": "image_url", "image_url": image_url_obj})
 
         entry["content"] = content_parts if has_images else "".join(text_parts)
         if reasoning_parts:
