@@ -880,7 +880,17 @@ def _to_serializable_dict(payload: Any) -> dict[str, Any]:
     model_dump = getattr(payload, "model_dump", None)
     if callable(model_dump):
         try:
-            return cast(dict[str, Any], model_dump())
+            # Pydantic v2 defaults `warnings="warn"` which can be noisy for some
+            # third-party SDK models (e.g., OpenAI Responses typed generics).
+            # Prefer a JSON-ready dump and silence serializer warnings.
+            try:
+                return cast(dict[str, Any], model_dump(mode="json", warnings=False))
+            except TypeError:
+                # Older/newer pydantic versions may not support all kwargs.
+                try:
+                    return cast(dict[str, Any], model_dump(warnings=False))
+                except TypeError:
+                    return cast(dict[str, Any], model_dump())
         except Exception:  # pragma: no cover - defensive
             pass
 

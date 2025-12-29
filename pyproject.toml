@@ -71,7 +71,7 @@ nexau = [
 [tool.ruff]
 # Keep ruff aligned with formatter + lint outputs used in CI.
 extend-exclude = [
-  "examples/code_agent/skills",
+  "examples/",
 ]
 line-length = 140
 output-format = "grouped"
@@ -117,7 +117,7 @@ cache_fine_grained = true
 exclude = [
   ".venv/.*",
   ".nox/.*",
-  "examples/code_agent/skills/.*",
+  "examples/",
 ]
 implicit_reexport = true
 namespace_packages = true

@@ -62,7 +62,15 @@ def _to_serializable_dict(payload: Any) -> dict[str, Any]:
     model_dump = getattr(payload, "model_dump", None)
     if callable(model_dump):
         try:
-            return cast(dict[str, Any], model_dump())
+            # See `nexau.archs.main_sub.execution.llm_caller._to_serializable_dict`:
+            # some SDK models can trigger Pydantic's serializer warnings during dump.
+            try:
+                return cast(dict[str, Any], model_dump(mode="json", warnings=False))
+            except TypeError:
+                try:
+                    return cast(dict[str, Any], model_dump(warnings=False))
+                except TypeError:
+                    return cast(dict[str, Any], model_dump())
         except Exception:  # pragma: no cover - fallback
             pass
 
