@@ -143,7 +143,7 @@ class SubAgentManager:
                 custom_llm_client_provider=custom_llm_client_provider,
             )
             result = (
-                f"{result}"
+                f"{result}\n"
                 f"Sub-agent finished (sub_agent_name: {sub_agent.agent_name}, "
                 f"sub_agent_id: {sub_agent.agent_id}. Recall this agent if needed)."
             )

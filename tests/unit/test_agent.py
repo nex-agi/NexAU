@@ -16,7 +16,6 @@
 Unit tests for agent components.
 """
 
-import uuid
 from unittest.mock import Mock, patch
 
 import pytest
@@ -84,7 +83,7 @@ class TestAgent:
             assert agent.queued_messages == []
 
     def test_agent_initialization_sets_agent_id(self, global_storage):
-        """Agent should populate missing agent_id with a UUID string."""
+        """Agent should populate missing agent_id with a short UUID-like hex string."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
@@ -96,7 +95,9 @@ class TestAgent:
             agent = Agent(agent_config, global_storage=global_storage)
 
             assert isinstance(agent.agent_id, str)
-            uuid.UUID(agent.agent_id)
+            assert len(agent.agent_id) == 8
+            # Should be valid hexadecimal
+            int(agent.agent_id, 16)
 
     def test_agent_initialization_no_external_client(self, agent_config, global_storage):
         """Test agent initialization when OpenAI client creation fails."""

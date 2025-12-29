@@ -106,7 +106,7 @@ class Agent:
         # Initialize prompt builder
         self.prompt_builder = PromptBuilder()
         self.agent_name = self.config.name or f"agent_{uuid.uuid4().hex}"
-        self.agent_id = agent_id or str(uuid.uuid4())
+        self.agent_id = agent_id or uuid.uuid4().hex[:8]
 
         # Initialize execution components
         self._initialize_execution_components()
