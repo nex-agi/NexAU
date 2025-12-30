@@ -137,6 +137,7 @@ class DummyLangfuseObject:
         self.update_calls: list[dict[str, Any]] = []
         self.ended = False
         self.metadata: dict[str, Any] = {}
+        self.trace_id: str | None = None
 
     def start_span(self, **kwargs: Any) -> DummyLangfuseObject:
         self.start_span_calls.append(kwargs)
@@ -183,6 +184,7 @@ class DummyLangfuseClient:
     def start_span(self, **kwargs: Any) -> DummyLangfuseObject:
         self.start_span_calls.append(kwargs)
         root = DummyLangfuseObject()
+        root.trace_id = kwargs.get("trace_context", {}).get("trace_id", None)
         root.metadata = kwargs.get("metadata", {})
         return root
 
@@ -598,3 +600,12 @@ def test_composite_tracer_flush_and_activate_deactivate_best_effort(caplog: pyte
     token_map = cast(dict[int, Any], token)
     composite.deactivate_span(token_map)
     assert len(good.deactivated) == 1
+
+
+def test_langfuse_tracer_id(caplog: pytest.LogCaptureFixture) -> None:
+    trace_id = "c86a9db70f561c9ad82d134217485867"
+    tracer = LangfuseTracer(debug=True, trace_id=trace_id)
+    span = tracer.start_span("root", SpanType.AGENT)
+    assert tracer.client is not None
+    span_vendor_obj = cast(DummyLangfuseObject, span.vendor_obj)
+    assert span_vendor_obj.trace_id == trace_id

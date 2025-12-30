@@ -65,6 +65,7 @@ class LangfuseTracer(BaseTracer):
         host: str | None = None,
         session_id: str | None = None,
         user_id: str | None = None,
+        trace_id: str | None = None,
         tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
         debug: bool = False,
@@ -78,6 +79,7 @@ class LangfuseTracer(BaseTracer):
             host: Langfuse host URL (or use LANGFUSE_HOST env var)
             session_id: Langfuse session ID
             user_id: Langfuse user ID
+            trace_id: Langfuse trace ID
             tags: Langfuse tags
             metadata: Langfuse metadata
             debug: Enable debug logging
@@ -101,7 +103,7 @@ class LangfuseTracer(BaseTracer):
         self.user_id = user_id
         self.tags = tags
         self.metadata = metadata
-
+        self.trace_id = trace_id
         # Store config passed at construction time; actual keys may be injected later via env.
         self._init_public_key = public_key
         self._init_secret_key = secret_key
@@ -233,11 +235,13 @@ class LangfuseTracer(BaseTracer):
             langfuse_params["metadata"]["langfuse_tags"] = self.tags
         if self.metadata:
             langfuse_params["metadata"].update(self.metadata)
-
+        if self.trace_id:
+            if langfuse_params.get("trace_context") is None:
+                langfuse_params["trace_context"] = {}
+            langfuse_params["trace_context"]["trace_id"] = self.trace_id
         # Serialize inputs properly
         if inputs:
             langfuse_params["input"] = self._serialize_for_langfuse(inputs)
-
         try:
             if parent_span is None or parent_span.vendor_obj is None:
                 # Root level: Create a Trace
@@ -395,6 +399,15 @@ class LangfuseTracer(BaseTracer):
                 logger.info("Langfuse tracer shutdown")
             except Exception as e:
                 logger.warning(f"Failed to shutdown Langfuse client: {e}")
+
+    def set_trace_id(self, trace_id: str) -> None:
+        """Set the trace ID for the current session.
+
+        Args:
+            trace_id: The trace ID to set
+        """
+        self.trace_id = trace_id
+        logger.info(f"Langfuse trace ID set: {trace_id}")
 
     @staticmethod
     def _serialize_for_langfuse(data: Any) -> Any:
