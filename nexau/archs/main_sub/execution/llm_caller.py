@@ -344,7 +344,8 @@ def call_llm_with_anthropic_chat_completion(
             if isinstance(content, list) and content:
                 content[0]["cache_control"] = {
                     "type": "ephemeral",
-                    "ttl": kwargs.get("anthropic_cache_control_ttl", "5m"),
+                    # remove ttl due to litellm incompatibility
+                    # "ttl": kwargs.get("anthropic_cache_control_ttl", "5m"),
                 }
 
         new_kwargs = kwargs.copy()
@@ -375,7 +376,8 @@ def call_llm_with_anthropic_chat_completion(
             if isinstance(content, list) and content:
                 content[0]["cache_control"] = {
                     "type": "ephemeral",
-                    "ttl": kwargs.get("anthropic_cache_control_ttl", "5m"),
+                    # remove ttl due to litellm incompatibility
+                    # "ttl": kwargs.get("anthropic_cache_control_ttl", "5m"),
                 }
 
         new_kwargs: dict[str, Any] = kwargs.copy()
