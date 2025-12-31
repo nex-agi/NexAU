@@ -26,17 +26,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-# Ensure the active project root is importable.
-#
-# When Python runs a script by filename, it adds the script directory to sys.path,
-# not the current working directory. The workbench runs this runner from a
-# project/worktree and expects project-local packages (e.g. `tools.*`) to be
-# importable.
-_project_root = os.environ.get("projectRoot") or os.environ.get("PROJECT_ROOT") or os.getcwd()
-if _project_root and _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
-
 from nexau.archs.main_sub.agent import Agent
 from nexau.archs.main_sub.config import (
     ConfigError,
@@ -54,6 +43,17 @@ from nexau.cli.cli_subagent_adapter import attach_cli_to_agent
 
 if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
     from nexau.archs.main_sub.agent import Agent
+
+
+# Ensure the active project root is importable.
+#
+# When Python runs a script by filename, it adds the script directory to sys.path,
+# not the current working directory. The workbench runs this runner from a
+# project/worktree and expects project-local packages (e.g. `tools.*`) to be
+# importable.
+_project_root = os.environ.get("projectRoot") or os.environ.get("PROJECT_ROOT") or os.getcwd()
+if _project_root and _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 
 def get_date():
