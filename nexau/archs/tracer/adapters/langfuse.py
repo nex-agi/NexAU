@@ -235,16 +235,16 @@ class LangfuseTracer(BaseTracer):
             langfuse_params["metadata"]["langfuse_tags"] = self.tags
         if self.metadata:
             langfuse_params["metadata"].update(self.metadata)
-        if self.trace_id:
-            if langfuse_params.get("trace_context") is None:
-                langfuse_params["trace_context"] = {}
-            langfuse_params["trace_context"]["trace_id"] = self.trace_id
+
         # Serialize inputs properly
         if inputs:
             langfuse_params["input"] = self._serialize_for_langfuse(inputs)
         try:
             if parent_span is None or parent_span.vendor_obj is None:
-                # Root level: Create a Trace
+                if self.trace_id:
+                    if langfuse_params.get("trace_context") is None:
+                        langfuse_params["trace_context"] = {}
+                    langfuse_params["trace_context"]["trace_id"] = self.trace_id
                 langfuse_span = client.start_span(**langfuse_params)
                 span.vendor_obj = langfuse_span
 
