@@ -862,4 +862,4 @@ class TestContextCompactionMiddlewareAdvanced:
         result = middleware.after_model(hook_input)
 
         # Should skip compaction
-        assert result.has_modifications() is False
+        assert result.has_modifications() is True

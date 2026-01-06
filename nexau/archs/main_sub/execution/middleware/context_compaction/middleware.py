@@ -26,7 +26,7 @@ from .factory import create_compaction_strategy, create_trigger_strategy
 if TYPE_CHECKING:
     from ....utils.token_counter import TokenCounter
 
-from nexau.core.messages import Message, Role, ToolUseBlock
+from nexau.core.messages import Message
 
 logger = logging.getLogger(__name__)
 
@@ -136,26 +136,6 @@ class ContextCompactionMiddleware(Middleware):
             f"[ContextCompactionMiddleware] Checking compaction: "
             f"{len(messages)} messages, {current_tokens}/{self.max_context_tokens} tokens ({usage_ratio:.1%})"
         )
-
-        # Check if the last assistant message has tool calls
-        # If not, skip compaction to preserve the conversation state
-        last_assistant_msg: Message | None = None
-        for msg in reversed(messages):
-            if msg.role == Role.ASSISTANT:
-                last_assistant_msg = msg
-                break
-
-        if last_assistant_msg is not None:
-            has_tool_calls = any(isinstance(block, ToolUseBlock) for block in last_assistant_msg.content)
-
-            if not has_tool_calls:
-                logger.info(
-                    "[ContextCompactionMiddleware] Last assistant message has no tool calls, "
-                    "skipping compaction to preserve conversation state"
-                )
-                return HookResult.no_changes()
-            else:
-                logger.info("[ContextCompactionMiddleware] Last assistant message has tool calls, proceeding with compaction check")
 
         # Check if compaction should be triggered
         should_compact, trigger_reason = self.trigger_strategy.should_compact(
