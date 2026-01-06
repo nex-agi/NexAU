@@ -22,7 +22,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, cast
 
-from langfuse import Langfuse, LangfuseSpan
+from langfuse import Langfuse, LangfuseSpan  # type: ignore
 from opentelemetry import trace as otel_trace_api
 
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType

@@ -155,6 +155,7 @@ class TraceContext:
                 self.span,
                 outputs=self._outputs,
                 error=error,
+                attributes=self.attributes,
             )
 
         # Restore vendor-specific context first so outer spans (if any) become active again.
@@ -175,3 +176,11 @@ class TraceContext:
             outputs: The output data to record
         """
         self._outputs = outputs
+
+    def set_attributes(self, attributes: dict[str, Any]) -> None:
+        """Set the attributes
+
+        Args:
+            attributes: The attributes to set
+        """
+        self.attributes.update(attributes)

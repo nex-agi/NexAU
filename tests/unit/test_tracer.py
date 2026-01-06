@@ -237,6 +237,18 @@ def test_trace_context_propagates_errors():
     assert isinstance(tracer.end_calls[0]["error"], RuntimeError)
 
 
+def test_trace_context_set_attributes_updates_end_span_attributes() -> None:
+    tracer = RecordingTracer()
+
+    ctx = TraceContext(tracer, "attrs", SpanType.TOOL, attributes={"a": 1})
+    with ctx:
+        ctx.set_attributes({"b": 2})
+
+    end_call = tracer.end_calls[0]
+    assert end_call["span"].name == "attrs"
+    assert end_call["attributes"] == {"a": 1, "b": 2}
+
+
 def test_context_helpers_set_and_reset():
     tracer = RecordingTracer()
     span = tracer.start_span("helper", SpanType.AGENT)

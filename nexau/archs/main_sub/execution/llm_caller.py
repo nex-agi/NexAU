@@ -392,14 +392,24 @@ def call_llm_with_anthropic_chat_completion(
         if should_trace and tracer is not None:
             trace_ctx = TraceContext(tracer, "Anthropic messages.stream", SpanType.LLM, inputs=api_kwargs)
             with trace_ctx:
+                start_time = time.time()
+                first_token_time = None
                 with client.messages.stream(**api_kwargs) as stream:
                     for event in stream:
+                        if first_token_time is None:
+                            first_token_time = time.time()
                         processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
                         if processed_event is None:
                             continue
                         aggregator.consume(processed_event)
                 message_payload = aggregator.finalize()
                 trace_ctx.set_outputs(message_payload)
+                if first_token_time is not None:
+                    trace_ctx.set_attributes(
+                        {
+                            "time_to_first_token_ms": (first_token_time - start_time) * 1000,
+                        }
+                    )
                 return message_payload, aggregator.model_name
         else:
             with client.messages.stream(**api_kwargs) as stream:
@@ -447,12 +457,16 @@ def call_llm_with_openai_chat_completion(
             if should_trace and tracer is not None:
                 trace_ctx: TraceContext = TraceContext(tracer, "OpenAI chat.completions.create (stream)", SpanType.LLM, inputs=payload)
                 with trace_ctx:
+                    start_time = time.time()
+                    first_token_time = None
                     stream_ctx: Stream[ChatCompletionChunk] = client.chat.completions.create(
                         stream=True,
                         **payload,
                     )
                     with stream_ctx:
                         for chunk in stream_ctx:
+                            if first_token_time is None:
+                                first_token_time = time.time()
                             last_chunk = chunk
                             processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
                             if processed_chunk is None:
@@ -460,6 +474,12 @@ def call_llm_with_openai_chat_completion(
                             aggregator.consume(processed_chunk)
                     message_payload = aggregator.finalize()
                     trace_ctx.set_outputs(message_payload)
+                    if first_token_time is not None:
+                        trace_ctx.set_attributes(
+                            {
+                                "time_to_first_token_ms": (first_token_time - start_time) * 1000,
+                            }
+                        )
                     return message_payload, last_chunk, aggregator.model_name
             else:
                 stream_ctx = client.chat.completions.create(
@@ -577,15 +597,25 @@ def call_llm_with_openai_responses(
 
         if should_trace and tracer is not None:
             trace_ctx = TraceContext(tracer, "OpenAI responses.stream", SpanType.LLM, inputs=payload)
+            start_time = time.time()
+            first_token_time = None
             with trace_ctx:
                 with client.responses.stream(**payload) as stream:
                     for event in stream:
+                        if first_token_time is None:
+                            first_token_time = time.time()
                         processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
                         if processed_event is None:
                             continue
                         aggregator.consume(processed_event)
                 response_payload = aggregator.finalize()
                 trace_ctx.set_outputs(response_payload)
+                if first_token_time is not None:
+                    trace_ctx.set_attributes(
+                        {
+                            "time_to_first_token_ms": (first_token_time - start_time) * 1000,
+                        }
+                    )
                 return response_payload
         else:
             with client.responses.stream(**payload) as stream:
