@@ -21,36 +21,35 @@ import time
 from typing import Any
 
 from .file_state import update_file_timestamp, validate_file_read_state
-
-# Import file state management for read/write coordination
+from .file_type_utils import is_binary_extension
 
 logger = logging.getLogger(__name__)
 
-# 最大显示行数限制
+# Maximum lines to display in preview
 MAX_LINES_TO_RENDER = 10
 MAX_LINES_TO_RENDER_FOR_ASSISTANT = 16000
 
 
 def _detect_file_encoding(file_path: str) -> str:
-    """检测文件编码"""
+    """Detect file encoding."""
     try:
         chardet = importlib.import_module("chardet")
         with open(file_path, "rb") as f:
-            raw_data = f.read(10000)  # 读取前10KB用于检测
+            raw_data = f.read(10000)  # Read first 10KB for detection
             result = chardet.detect(raw_data)
             return result.get("encoding", "utf-8") or "utf-8"
     except ModuleNotFoundError:
         return "utf-8"
     except Exception:
-        # 如果chardet不可用或检测失败，默认使用utf-8
+        # If chardet is unavailable or detection fails, default to utf-8
         return "utf-8"
 
 
 def _detect_line_endings(file_path: str) -> str:
-    """检测文件行结束符"""
+    """Detect file line endings."""
     try:
         with open(file_path, "rb") as f:
-            content = f.read(1024)  # 读取前1KB
+            content = f.read(1024)  # Read first 1KB
             if b"\r\n" in content:
                 return "\r\n"
             elif b"\n" in content:
@@ -59,33 +58,33 @@ def _detect_line_endings(file_path: str) -> str:
                 return "\r"
     except Exception:
         pass
-    return "\n"  # 默认使用\n
+    return "\n"  # Default to \n
 
 
 def _has_write_permission(file_path: str) -> bool:
-    """检查是否有写入权限"""
+    """Check if we have write permission."""
     try:
-        # 检查目录是否存在且可写
+        # Check if directory exists and is writable
         directory = os.path.dirname(file_path)
         if not os.path.exists(directory):
-            # 检查是否可以创建目录
+            # Check if we can create the directory
             parent = os.path.dirname(directory)
             while parent and not os.path.exists(parent):
                 parent = os.path.dirname(parent)
             return os.access(parent, os.W_OK) if parent else False
 
-        # 检查文件是否存在
+        # Check if file exists
         if os.path.exists(file_path):
             return os.access(file_path, os.W_OK)
         else:
-            # 检查目录是否可写
+            # Check if directory is writable
             return os.access(directory, os.W_OK)
     except Exception:
         return False
 
 
 def _generate_diff(old_content: str, new_content: str, file_path: str) -> str:
-    """生成差异对比"""
+    """Generate diff comparison."""
     try:
         old_lines = old_content.splitlines(keepends=True)
         new_lines = new_content.splitlines(keepends=True)
@@ -100,7 +99,7 @@ def _generate_diff(old_content: str, new_content: str, file_path: str) -> str:
 
         return "".join(diff)
     except Exception as e:
-        logger.error(f"生成差异对比失败: {e}")
+        logger.error(f"Failed to generate diff: {e}")
         return ""
 
 
@@ -110,17 +109,17 @@ def _write_file_content(
     encoding: str = "utf-8",
     line_ending: str = "\n",
 ) -> None:
-    """写入文件内容"""
-    # 标准化行结束符
+    """Write file content."""
+    # Normalize line endings
     if line_ending != "\n":
         content = content.replace("\n", line_ending)
 
-    # 创建目录
+    # Create directory
     directory = os.path.dirname(file_path)
     if directory:
         os.makedirs(directory, exist_ok=True)
 
-    # 写入文件
+    # Write file
     with open(file_path, "w", encoding=encoding, newline="") as f:
         f.write(content)
 
@@ -130,33 +129,33 @@ def file_write_tool(
     content: str,
 ) -> str:
     """
-    将内容写入本地文件系统中的文件。如果文件已存在则覆盖。
+    Write content to a file in the local file system. Overwrites if file exists.
 
-    使用此工具前请注意：
-    1. 使用ReadFile工具先了解文件的内容和上下文
-    2. 目录验证（仅在创建新文件时适用）：
-       - 使用LS工具验证父目录是否存在且位置正确
+    Before using this tool:
+    1. Use ReadFile tool to understand the file content and context
+    2. Directory validation (only for new files):
+       - Use LS tool to verify parent directory exists and is correct
 
-    功能特性：
-    - 自动检测和保持文件编码
-    - 自动检测和保持行结束符格式
-    - 提供文件修改时间戳验证以防止冲突
-    - 生成详细的差异对比
-    - 支持创建目录结构
-    - 权限检查和安全验证
+    Features:
+    - Auto-detect and preserve file encoding
+    - Auto-detect and preserve line ending format
+    - File modification timestamp validation to prevent conflicts
+    - Generate detailed diff comparison
+    - Support creating directory structure
+    - Permission check and security validation
 
-    返回：
-    - 成功时返回操作结果的JSON格式字符串
-    - 失败时返回错误信息的JSON格式字符串
+    Returns:
+    - JSON string with operation result on success
+    - JSON string with error info on failure
     """
     start_time = time.time()
 
     try:
-        # 验证文件路径
+        # Validate file path
         if not os.path.isabs(file_path):
             return json.dumps(
                 {
-                    "error": "文件路径必须是绝对路径",
+                    "error": "File path must be absolute",
                     "file_path": file_path,
                     "success": False,
                     "duration_ms": int((time.time() - start_time) * 1000),
@@ -165,11 +164,11 @@ def file_write_tool(
                 ensure_ascii=False,
             )
 
-        # 检查写入权限
+        # Check write permission
         if not _has_write_permission(file_path):
             return json.dumps(
                 {
-                    "error": f"没有写入权限: {file_path}",
+                    "error": f"No write permission: {file_path}",
                     "file_path": file_path,
                     "success": False,
                     "duration_ms": int((time.time() - start_time) * 1000),
@@ -178,17 +177,31 @@ def file_write_tool(
                 ensure_ascii=False,
             )
 
-        # 检查文件是否存在
+        # Check if binary format (cannot write in text mode)
+        if is_binary_extension(file_path):
+            ext = os.path.splitext(file_path)[1].lower()
+            return json.dumps(
+                {
+                    "error": f"Cannot create binary format file with Write tool ({ext})",
+                    "file_path": file_path,
+                    "success": False,
+                    "duration_ms": int((time.time() - start_time) * 1000),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+
+        # Check if file exists
         file_exists = os.path.exists(file_path)
         operation_type = "update" if file_exists else "create"
 
-        # 读取原始内容和检测编码
+        # Read original content and detect encoding
         old_content = ""
         encoding = "utf-8"
         line_ending = "\n"
 
         if file_exists:
-            # 验证文件状态
+            # Validate file state
             is_valid, error_msg = validate_file_read_state(file_path)
             if not is_valid:
                 return json.dumps(
@@ -202,19 +215,19 @@ def file_write_tool(
                     ensure_ascii=False,
                 )
 
-            # 检测文件编码和行结束符
+            # Detect file encoding and line endings
             encoding = _detect_file_encoding(file_path)
             line_ending = _detect_line_endings(file_path)
 
-            # 读取原始内容
+            # Read original content
             try:
                 with open(file_path, encoding=encoding) as f:
                     old_content = f.read()
             except Exception as e:
-                logger.error(f"读取原始文件内容失败: {e}")
+                logger.error(f"Failed to read original file: {e}")
                 return json.dumps(
                     {
-                        "error": f"读取原始文件失败: {str(e)}",
+                        "error": f"Failed to read original file: {str(e)}",
                         "file_path": file_path,
                         "success": False,
                         "duration_ms": int((time.time() - start_time) * 1000),
@@ -223,14 +236,14 @@ def file_write_tool(
                     ensure_ascii=False,
                 )
 
-        # 写入文件
+        # Write file
         try:
             _write_file_content(file_path, content, encoding, line_ending)
         except Exception as e:
-            logger.error(f"写入文件失败: {e}")
+            logger.error(f"Failed to write file: {e}")
             return json.dumps(
                 {
-                    "error": f"写入文件失败: {str(e)}",
+                    "error": f"Failed to write file: {str(e)}",
                     "file_path": file_path,
                     "success": False,
                     "duration_ms": int((time.time() - start_time) * 1000),
@@ -239,22 +252,22 @@ def file_write_tool(
                 ensure_ascii=False,
             )
 
-        # 更新时间戳缓存
+        # Update timestamp cache
         update_file_timestamp(file_path)
 
-        # 生成差异对比（如果是更新操作）
+        # Generate diff (for update operations)
         diff_content = ""
         if operation_type == "update" and old_content != content:
             diff_content = _generate_diff(old_content, content, file_path)
 
-        # 计算持续时间
+        # Calculate duration
         duration_ms = int((time.time() - start_time) * 1000)
 
-        # 统计信息
+        # Statistics
         content_lines = content.split("\n")
         num_lines = len(content_lines)
 
-        # 准备结果
+        # Prepare result
         result: dict[str, Any] = {
             "success": True,
             "operation_type": operation_type,
@@ -265,12 +278,12 @@ def file_write_tool(
             "duration_ms": duration_ms,
         }
 
-        # 添加差异信息（仅在更新时）
+        # Add diff info (only for updates)
         if operation_type == "update":
             result["has_changes"] = old_content != content
             if diff_content:
                 result["diff"] = diff_content
-                # 统计变更行数
+                # Count changed lines
                 diff_lines = diff_content.split("\n")
                 added_lines = len(
                     [line for line in diff_lines if line.startswith("+")],
@@ -283,7 +296,7 @@ def file_write_tool(
                     "lines_removed": removed_lines,
                 }
 
-        # 添加内容预览（限制行数）
+        # Add content preview (limited lines)
         if num_lines <= MAX_LINES_TO_RENDER:
             result["content_preview"] = content
         else:
@@ -292,24 +305,24 @@ def file_write_tool(
             result["content_truncated"] = True
             result["truncated_lines"] = num_lines - MAX_LINES_TO_RENDER
 
-        # 成功消息
+        # Success message
         if operation_type == "create":
-            result["message"] = f"成功创建文件，共 {num_lines} 行"
+            result["message"] = f"Successfully created file, {num_lines} lines"
         else:
             if old_content == content:
-                result["message"] = "文件内容未发生变化"
+                result["message"] = "File content unchanged"
             else:
-                result["message"] = f"成功更新文件，共 {num_lines} 行"
+                result["message"] = f"Successfully updated file, {num_lines} lines"
 
-        logger.info(f"文件 {operation_type} 操作成功: {file_path} ({duration_ms}ms)")
+        logger.info(f"File {operation_type} succeeded: {file_path} ({duration_ms}ms)")
 
         return json.dumps(result, indent=2, ensure_ascii=False)
 
     except Exception as e:
-        logger.error(f"文件写入工具执行失败: {e}")
+        logger.error(f"File write tool execution failed: {e}")
         return json.dumps(
             {
-                "error": f"工具执行失败: {str(e)}",
+                "error": f"Tool execution failed: {str(e)}",
                 "file_path": file_path,
                 "success": False,
                 "duration_ms": int((time.time() - start_time) * 1000),
@@ -319,10 +332,10 @@ def file_write_tool(
         )
 
 
-# 工具类实现，用于更高级的用法
+# Class implementation for advanced usage
 class FileWriteTool:
     """
-    文件写入工具的类实现，提供更高级的功能和配置选项。
+    Class implementation of file write tool with advanced features and config options.
     """
 
     def __init__(
@@ -332,12 +345,12 @@ class FileWriteTool:
         check_permissions: bool = True,
     ):
         """
-        初始化文件写入工具。
+        Initialize file write tool.
 
         Args:
-            max_lines_preview: 预览显示的最大行数
-            auto_create_dirs: 是否自动创建目录
-            check_permissions: 是否检查权限
+            max_lines_preview: Maximum lines to show in preview.
+            auto_create_dirs: Whether to auto-create directories.
+            check_permissions: Whether to check permissions.
         """
         self.max_lines_preview = max_lines_preview
         self.auto_create_dirs = auto_create_dirs
@@ -352,33 +365,33 @@ class FileWriteTool:
         line_ending: str | None = None,
     ) -> dict[str, Any]:
         """
-        写入文件并返回结构化结果。
+        Write file and return structured result.
 
         Args:
-            file_path: 文件路径
-            content: 文件内容
-            encoding: 指定编码（可选）
-            line_ending: 指定行结束符（可选）
+            file_path: File path.
+            content: File content.
+            encoding: Encoding (optional).
+            line_ending: Line ending (optional).
 
         Returns:
-            包含操作结果的字典
+            Dict containing operation result.
         """
         start_time = time.time()
 
         try:
-            # 验证路径
+            # Validate path
             if not os.path.isabs(file_path):
-                raise ValueError("文件路径必须是绝对路径")
+                raise ValueError("File path must be absolute")
 
-            # 检查权限
+            # Check permissions
             if self.check_permissions and not _has_write_permission(file_path):
-                raise PermissionError(f"没有写入权限: {file_path}")
+                raise PermissionError(f"No write permission: {file_path}")
 
-            # 检查文件状态
+            # Check file state
             file_exists = os.path.exists(file_path)
             operation_type = "update" if file_exists else "create"
 
-            # 处理编码和行结束符
+            # Handle encoding and line endings
             if file_exists:
                 if encoding is None:
                     encoding = _detect_file_encoding(file_path)
@@ -388,19 +401,19 @@ class FileWriteTool:
                 encoding = encoding or "utf-8"
                 line_ending = line_ending or "\n"
 
-            # 读取原始内容
+            # Read original content
             old_content = ""
             if file_exists:
                 with open(file_path, encoding=encoding) as f:
                     old_content = f.read()
 
-            # 写入文件
+            # Write file
             _write_file_content(file_path, content, encoding, line_ending)
 
-            # 更新时间戳
+            # Update timestamp
             update_file_timestamp(file_path)
 
-            # 生成结果
+            # Generate result
             duration_ms = int((time.time() - start_time) * 1000)
 
             return {
@@ -415,7 +428,7 @@ class FileWriteTool:
             }
 
         except Exception as e:
-            self.logger.error(f"文件写入失败: {e}")
+            self.logger.error(f"File write failed: {e}")
             return {
                 "success": False,
                 "error": str(e),
@@ -425,26 +438,26 @@ class FileWriteTool:
 
 
 def main():
-    """测试函数"""
-    # 测试创建文件
+    """Test function."""
+    # Test create file
     test_file = "//users/chenlu//src/tools/file_tools/test_file_write.txt"
     test_content = "Hello, World!\nThis is a test file.\nLine 3"
 
     result = file_write_tool(file_path=test_file, content=test_content)
-    print("创建文件测试:")
+    print("Create file test:")
     print(result)
     print()
 
-    # 更新文件时间戳（模拟读取）
+    # Update file timestamp (simulate read)
     update_file_timestamp(test_file)
-    # breakpoint()
-    # 测试更新文件
+
+    # Test update file
     updated_content = "Hello, World!\nThis is an updated test file.\nLine 3\nNew line 4"
     result = file_write_tool(file_path=test_file, content=updated_content)
-    print("更新文件测试:")
+    print("Update file test:")
     print(result)
-    # breakpoint()
-    # 清理测试文件
+
+    # Cleanup test file
     try:
         os.remove(test_file)
     except Exception:
