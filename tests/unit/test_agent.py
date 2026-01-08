@@ -25,9 +25,12 @@ from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import ExecutionConfig
+from nexau.archs.main_sub.execution.llm_caller import openai_to_anthropic_message
+from nexau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
 from nexau.archs.tool import Tool
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
-from nexau.core.messages import Message, Role, TextBlock
+from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
+from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock
 
 
 class DummyTracer(BaseTracer):
@@ -431,6 +434,84 @@ class TestAgent:
                 assert agent.history[-1].role == Role.ASSISTANT
                 assert agent.history[-1].get_text_content() == "Test response"
                 mock_execute.assert_called_once()
+
+    def test_stop_tool_history_keeps_tool_result_for_next_round(self, global_storage):
+        """Regression: if execution stops on a stop_tool, history must retain a tool-result message.
+
+        This guards against a Bedrock/LiteLLM validation failure when a tool_use is not immediately
+        followed by a corresponding tool_result in the next request payload.
+        """
+
+        def stop_tool() -> dict:
+            # Returning a dict keeps the path aligned with typical tool outputs.
+            return {"result": "666"}
+
+        tool = Tool(
+            name="stopper",
+            description="Stop tool",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            implementation=stop_tool,
+        )
+
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            agent_config = AgentConfig(
+                name="stop_agent",
+                llm_config=LLMConfig(model="gpt-4o-mini"),
+                tools=[tool],
+                tool_call_mode="openai",
+                stop_tools={"stopper"},
+            )
+            agent = Agent(agent_config, global_storage=global_storage)
+
+            first_response = ModelResponse(
+                content="I'll call the stop tool.",
+                tool_calls=[
+                    ModelToolCall(
+                        call_id="call_stop",
+                        name="stopper",
+                        arguments={},
+                        raw_arguments="{}",
+                    )
+                ],
+            )
+
+            # Stop tool should terminate after the first tool execution; there should be no second LLM call.
+            with patch.object(agent.executor.llm_caller, "call_llm", side_effect=[first_response]) as mock_call_llm:
+                response = agent.run("do stop")
+
+            mock_call_llm.assert_called_once()
+            assert "666" in response
+
+            # History must contain a tool result block with the original call_id.
+            tool_msg = next((m for m in agent.history if m.role == Role.TOOL), None)
+            assert tool_msg is not None, "Expected a Role.TOOL message in history for stop tool execution"
+            tr = next((b for b in tool_msg.content if isinstance(b, ToolResultBlock) and b.tool_use_id == "call_stop"), None)
+            assert tr is not None, "Expected ToolResultBlock with tool_use_id matching the tool_call_id"
+
+            # Legacy conversion must preserve a role=tool message (OpenAI chat shape).
+            legacy = messages_to_legacy_openai_chat(agent.history)
+            tool_dict = next((m for m in legacy if m.get("role") == "tool" and m.get("tool_call_id") == "call_stop"), None)
+            assert tool_dict is not None, "Expected legacy role=tool message with matching tool_call_id"
+
+            # And when converting to Anthropic Messages (Bedrock), tool_result must appear immediately after tool_use.
+            _, anthropic_msgs = openai_to_anthropic_message(legacy + [{"role": "user", "content": "hi"}])
+            idx = next(
+                i
+                for i, m in enumerate(anthropic_msgs)
+                if m.get("role") == "assistant"
+                and any(
+                    isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id") == "call_stop" for b in (m.get("content") or [])
+                )
+            )
+            assert idx + 1 < len(anthropic_msgs), "Expected a message after tool_use"
+            next_msg = anthropic_msgs[idx + 1]
+            assert next_msg.get("role") == "user"
+            next_blocks = next_msg.get("content") or []
+            assert any(
+                isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == "call_stop" for b in next_blocks
+            ), "Expected an immediate tool_result block following the tool_use"
 
     def test_run_with_history(self, agent_config, global_storage):
         """Test agent run with existing history."""

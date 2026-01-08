@@ -406,23 +406,6 @@ class Executor:
 
                 processed_parsed_response = after_model_hook_input.parsed_response
 
-                # Check if a stop tool was executed
-                if should_stop and len(self.queued_messages) == 0:
-                    # Return the stop tool result directly, formatted as JSON if it's not a string
-                    if stop_tool_result is not None:
-                        logger.info(
-                            "🛑 Stop tool detected, returning stop tool result as final response",
-                        )
-                        force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
-                        final_response = stop_tool_result
-                        break
-                    else:
-                        logger.info("🛑 No more tool calls, stop.")
-                        force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
-                        # Fallback to the processed response if no specific result
-                        final_response = processed_response
-                        break
-
                 # Extract just the tool results from processed_response
                 openai_tool_mode = bool(
                     processed_parsed_response
@@ -472,6 +455,23 @@ class Executor:
                     from nexau.core.messages import TextBlock
 
                     messages.append(Message(role=Role.USER, content=[TextBlock(text=f"Tool execution results:\n{tool_results}")]))
+
+                # Check if a stop tool was executed
+                if should_stop and len(self.queued_messages) == 0:
+                    # Return the stop tool result directly, formatted as JSON if it's not a string
+                    if stop_tool_result is not None:
+                        logger.info(
+                            "🛑 Stop tool detected, returning stop tool result as final response",
+                        )
+                        force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
+                        final_response = stop_tool_result
+                        break
+                    else:
+                        logger.info("🛑 No more tool calls, stop.")
+                        force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
+                        # Fallback to the processed response if no specific result
+                        final_response = processed_response
+                        break
 
                 iteration += 1
 

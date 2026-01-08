@@ -493,10 +493,6 @@ class Agent:
             )
             self.history = updated_messages
 
-            # Add final assistant response to history if not already included
-            if not self.history or self.history[-1].role != Role.ASSISTANT or self.history[-1].get_text_content() != response:
-                self.history.append(Message.assistant(response))
-
             logger.info(
                 f"✅ Agent '{self.config.name}' completed execution",
             )
