@@ -21,6 +21,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
+from json_repair import repair_json
+
 if TYPE_CHECKING:
     from nexau.core.messages import Message
 
@@ -226,31 +228,33 @@ class ModelToolCall:
             raise ValueError("OpenAI tool call function block missing name")
 
         parsed_arguments: JsonDict = {}
+        normalized_raw_arguments: str | None = None
         if isinstance(raw_arguments, str):
             raw_arguments_str = raw_arguments.strip()
             if raw_arguments_str:
                 try:
-                    parsed = json.loads(raw_arguments_str)
+                    good_json_string = repair_json(raw_arguments_str)
+                    parsed = json.loads(good_json_string)
                     if isinstance(parsed, dict):
                         parsed_arguments = cast(JsonDict, parsed)
                     else:
                         parsed_arguments = {"_": parsed}
                 except json.JSONDecodeError:
-                    parsed_arguments = {"raw_arguments": raw_arguments}
+                    # Always keep a valid JSON object string in raw_arguments to avoid downstream tool-call validation failures.
+                    parsed_arguments = {"raw_arguments": raw_arguments_str}
+            normalized_raw_arguments = json.dumps(parsed_arguments, ensure_ascii=False)
         elif raw_arguments is not None:
             if isinstance(raw_arguments, dict):
                 parsed_arguments = cast(JsonDict, raw_arguments)
+                normalized_raw_arguments = json.dumps(parsed_arguments, ensure_ascii=False)
             else:
-                parsed_arguments = {"raw_arguments": json.dumps(raw_arguments)}
+                parsed_arguments = {"raw_arguments": json.dumps(raw_arguments, ensure_ascii=False)}
+                normalized_raw_arguments = json.dumps(parsed_arguments, ensure_ascii=False)
         return cls(
             call_id=call_id,
             name=name,
             arguments=parsed_arguments,
-            raw_arguments=raw_arguments
-            if isinstance(raw_arguments, str)
-            else json.dumps(raw_arguments)
-            if raw_arguments is not None
-            else None,
+            raw_arguments=normalized_raw_arguments,
             call_type=call_type or "function",
             raw_call=call,
         )
@@ -616,17 +620,18 @@ class ModelResponse:
         parsed_arguments: JsonDict = {}
 
         if isinstance(arguments_payload, str):
-            raw_arguments = arguments_payload
             payload_str = arguments_payload.strip()
             if payload_str:
                 try:
-                    parsed = json.loads(payload_str)
+                    good_json_string = repair_json(payload_str)
+                    parsed = json.loads(good_json_string)
                     if isinstance(parsed, dict):
                         parsed_arguments = cast(JsonDict, parsed)
                     else:
                         parsed_arguments = {"_": parsed}
                 except json.JSONDecodeError:
                     parsed_arguments = {"raw_arguments": payload_str}
+            raw_arguments = json.dumps(parsed_arguments, ensure_ascii=False)
         elif isinstance(arguments_payload, dict):
             parsed_arguments = cast(JsonDict, arguments_payload)
             raw_arguments = json.dumps(arguments_payload, ensure_ascii=False)
@@ -645,7 +650,6 @@ class ModelResponse:
             except Exception:
                 flattened = ""
             if flattened:
-                raw_arguments = flattened
                 try:
                     parsed = json.loads(flattened)
                     if isinstance(parsed, dict):
@@ -654,6 +658,7 @@ class ModelResponse:
                         parsed_arguments = {"_": parsed}
                 except json.JSONDecodeError:
                     parsed_arguments = {"raw_arguments": flattened}
+                raw_arguments = json.dumps(parsed_arguments, ensure_ascii=False)
         elif arguments_payload is not None:
             raw_arguments = json.dumps(arguments_payload, ensure_ascii=False)
             parsed_arguments = {"raw_arguments": raw_arguments}
