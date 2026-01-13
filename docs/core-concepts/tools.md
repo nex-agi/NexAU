@@ -54,7 +54,7 @@ agent_config = AgentConfig(
     tools=[web_search_tool, web_read_tool, todo_write_tool],
     # ... other agent config (llm_config, system_prompt, etc.)
 )
-agent = Agent(agent_config)
+agent = Agent(config=agent_config)
 ```
 
 If you use agent yaml config, you can add these lines to the config file:
@@ -151,7 +151,7 @@ agent_config = AgentConfig(
     tools=[calculator_tool],
     # ... other agent config (llm_config, system_prompt, etc.)
 )
-agent = Agent(agent_config)
+agent = Agent(config=agent_config)
 ```
 
 If you use agent yaml config, you can add these lines to the config file:

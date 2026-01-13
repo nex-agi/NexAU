@@ -175,59 +175,28 @@ Today is {{date}}.
             tools=tools,
             after_model_hooks=[create_tool_after_approve_hook("WebSearch")],
         )
-        agent = Agent(agent_config)
+        agent = Agent(config=agent_config)
 
         print("✅ Agent created successfully!")
-        print(f"   Agent name: {agent.name}")
-        print(f"   Total tools available: {len(agent.tools)}")
+        print(f"   Agent name: {agent.config.name}")
+        print(f"   Total tools available: {len(agent.config.tools)}")
 
         # List available tools
-        if agent.tools:
+        if agent.config.tools:
             print("\n🗺️  Available MiniMax tools:")
-            for tool in agent.tools:
+            for tool in agent.config.tools:
                 print(
                     f"   - {tool.name}: {getattr(tool, 'description', 'No description')}",
                 )
         else:
             print("\n⚠️  No tools available")
-
-        #         content = """
-        #         早安呀，亲爱的小伙伴们！我是小北~
-
-        # 【今日上海天气小播报 - 8月8日】
-
-        # 今天上海的天空依旧是多云飘飘的呢~ 不过呢，小北要提醒大家，今天真的是热辣辣的一天哦！
-
-        # 温度情况：最高温36℃，最低温30℃
-        #       当前温度33℃，但体感温度高达39.9℃！（是不是感觉自己在桑拿房里呀~）
-
-        # 湿度风力：相对湿度61%，西南风小于3级（约2.9米/秒）
-
-        # 空气质量：AQI 57，等级"良"，首要污染物PM2.5
-
-        # 降水概率：0%（今天不用带伞啦~）
-
-        # 特别注意：上海中心气象台已发布高温黄色预警！预计全市最高气温将超过35℃
-
-        # 小北温馨提示：
-        # 1. 今天外出记得防晒、补水、戴墨镜！
-        # 2. 尽量避开中午高温时段户外活动
-        # 3. 多喝水，少吃辛辣食物
-        # 4. 办公室的小伙伴们别忘了适当起身活动，避免久坐哦~
-
-        # 祝大家今天工作顺利，保持清凉好心情！
-        # —— 爱你们的小北
-        #         """
-        #         response = agent.run(f"帮我生成一段语音并发送到飞书群 bot测试群 里，内容是：{content}")
         response = agent.run(
             "WebSearch 和 WebRead 工具，搜索并整理今天的最新的 LLM 相关的资讯，然后用MiniMax的生成语音，并发语音消息到飞书的 bot测试群 里",
             context={
                 "date": "2025年 8 月 27 日",
             },
         )
-        # response = agent.run("/Users/hanzhenhua/Desktop/tts_1754551121_7gneh8.mp3 帮我转成 opus并发送到飞书群 bot 测试群里")
-        # response = agent.run("帮我获取飞书群列表")
-        # （可以用ffproobe 拿），并用语音消息发送到飞书群 bot 测试群里""")
+
         print(response)
 
     except Exception as e:

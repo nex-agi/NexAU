@@ -34,7 +34,7 @@ def main():
         llm_config=llm_config,
         system_prompt="You are a research agent. Use web_search and web_read tools to find information.",
     )
-    research_agent = Agent(agent_config)
+    research_agent = Agent(config=agent_config)
 
     # Run the agent
     response = research_agent.run(
@@ -77,7 +77,7 @@ For a more declarative approach, you can define an agent's entire configuration 
 2.  **Load and use the agent in Python:**
 
     ```python
-    
+
     import os
     from datetime import datetime
     from nexau import Agent, AgentConfig, LLMConfig
@@ -96,7 +96,7 @@ For a more declarative approach, you can define an agent's entire configuration 
 
         # Load the agent from agent_config
         agent = Agent(
-            agent_config
+            config=agent_config
         )
 
         # Use the agent

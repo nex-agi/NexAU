@@ -113,7 +113,7 @@ class TestSubAgentManager:
         )
         mock_sub_agent.run.assert_called_once()
         call_args = mock_sub_agent.run.call_args
-        assert call_args[0][0] == "test message"
+        assert call_args[1]["message"] == "test message"
         assert call_args[1]["context"] is None
         assert call_args[1]["parent_agent_state"] is None
 
@@ -142,7 +142,8 @@ class TestSubAgentManager:
         )
         mock_sub_agent.run.assert_called_once()
         call_args = mock_sub_agent.run.call_args
-        assert call_args[0][0] == "test message"
+        print(call_args)
+        assert call_args[1]["message"] == "test message"
         assert call_args[1]["context"] == {"key": "value"}
         assert call_args[1]["context"] is not mock_context.context
 

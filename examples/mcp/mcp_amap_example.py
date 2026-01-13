@@ -77,7 +77,7 @@ Explain what you're doing and provide context for the results.""",
             mcp_servers=mcp_servers,
             llm_config=llm_config,
         )
-        agent = Agent(agent_config)
+        agent = Agent(config=agent_config)
 
         print("✅ Agent created successfully!")
         print(f"   Agent name: {agent.config.name}")

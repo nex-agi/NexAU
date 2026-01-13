@@ -52,7 +52,7 @@ def main():
             script_dir / "deep_research_agent.yaml",
         )
         deep_research_agent_config.llm_config = llm_config
-        deep_research_agent = Agent(deep_research_agent_config)
+        deep_research_agent = Agent(config=deep_research_agent_config)
         print("✓ Agent loaded successfully from YAML")
 
         print("\nTesting delegation with web research...")

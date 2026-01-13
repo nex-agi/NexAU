@@ -46,7 +46,7 @@ def load_agent_config(
             "The overrides parameter is deprecated and will be removed in a future "
             "version. Please use AgentConfig.from_yaml() to load the configuration, "
             "modify attributes directly (e.g., agent_config.key = value), and then "
-            "initialize the Agent using Agent(agent_config).",
+            "initialize the Agent using Agent(config=agent_config).",
         )
     try:
         path = Path(config_path)

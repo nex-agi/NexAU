@@ -344,7 +344,7 @@ def main():
 
                     # Run the agent
                     response = agent.run(
-                        user_message,
+                        message=user_message,
                         context={
                             "date": get_date(),
                             "username": os.getenv("USER", "user"),

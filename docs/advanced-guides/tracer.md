@@ -44,7 +44,7 @@ agent_config = AgentConfig(
     tracers=[tracer],
 )
 
-agent = Agent(agent_config, GlobalStorage())
+agent = Agent(config=agent_config, global_storage=GlobalStorage())
 # agent.global_storage.get("tracer") is the composed tracer instance
 ```
 

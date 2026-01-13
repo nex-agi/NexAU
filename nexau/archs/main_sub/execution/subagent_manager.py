@@ -137,7 +137,7 @@ class SubAgentManager:
                     effective_context = current_context.context.copy()
 
             result = sub_agent.run(
-                message,
+                message=message,
                 context=effective_context,
                 parent_agent_state=parent_agent_state,
                 custom_llm_client_provider=custom_llm_client_provider,

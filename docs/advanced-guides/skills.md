@@ -89,7 +89,7 @@ results = analyze_data(data)
 from nexau import Agent, AgentConfig
 
 agent = Agent(
-    AgentConfig(
+    config=AgentConfig(
         name="data_analyst",
         llm_config={"model": "gpt-4o-mini"},
         skills=["skills/data-analysis", "skills/web-scraping"],
@@ -171,7 +171,7 @@ code_generator = Tool(
 from nexau import Agent, AgentConfig
 
 agent = Agent(
-    AgentConfig(
+    config=AgentConfig(
         name="coding_assistant",
         llm_config={"model": "gpt-4o-mini"},
         tools=[code_generator],
@@ -235,7 +235,7 @@ web_search = Tool(
 
 # Create agent with both types
 agent = Agent(
-    AgentConfig(
+    config=AgentConfig(
         name="research_assistant",
         llm_config={"model": "gpt-4o-mini"},
         skills=[
@@ -462,7 +462,7 @@ web_search_tool = Tool(
 
 # Create agent with both skill types
 agent = Agent(
-    AgentConfig(
+    config=AgentConfig(
         name="researcher",
         llm_config={"model": "gpt-4o-mini"},
         skills=[

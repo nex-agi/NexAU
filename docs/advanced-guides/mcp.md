@@ -42,7 +42,7 @@ Explain what you're doing and provide context for the results.""",
     mcp_servers=mcp_servers,
     llm_config=llm_config,
 )
-agent = Agent(agent_config)
+agent = Agent(config=agent_config)
 
 response = agent.run("现在从漕河泾现代服务园A6到上南路 4265弄要多久？")
 print(response)
@@ -58,7 +58,7 @@ mcp_servers:
     env:
       GITHUB_PERSONAL_ACCESS_TOKEN: "xxxx"
     timeout: 30
-  
+
   - name: amap-maps
     type: http
     url: "https://mcp.amap.com/mcp?key=your_amap_key_here"

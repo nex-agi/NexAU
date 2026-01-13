@@ -65,6 +65,7 @@ class Agent:
 
     def __init__(
         self,
+        *,
         config: AgentConfig,
         agent_id: str | None = None,
         global_storage: GlobalStorage | None = None,
@@ -147,7 +148,7 @@ class Agent:
                 "The overrides parameter is deprecated and will be removed in a future "
                 "version. Please use AgentConfig.from_yaml() to load the configuration, "
                 "modify attributes directly (e.g., agent_config.key = value), and then "
-                "initialize the Agent using Agent(agent_config).",
+                "initialize the Agent using Agent(config=agent_config).",
             )
         try:
             dotenv.load_dotenv()
@@ -320,6 +321,7 @@ class Agent:
 
     def run(
         self,
+        *,
         message: str | list[Message],
         history: list[dict[str, Any]] | None = None,
         context: dict[str, Any] | None = None,

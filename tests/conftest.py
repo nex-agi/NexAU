@@ -319,7 +319,7 @@ def mock_agent(mock_llm_config, execution_config, global_storage):
             max_context_tokens=execution_config.max_context_tokens,
             global_storage=global_storage,
         )
-        agent = Agent(agent_config)
+        agent = Agent(config=agent_config)
         yield agent
 
 
