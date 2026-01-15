@@ -285,7 +285,8 @@ def messages_to_legacy_openai_chat(
 
     output: list[dict[str, Any]] = []
     for msg in messages or []:
-        role = msg.role.value
+        # FRAMEWORK is treated as "user" when sent to LLM
+        role = "user" if msg.role == Role.FRAMEWORK else msg.role.value
 
         def _image_part_to_image_url_obj(img: ImageBlock) -> dict[str, Any]:
             url = img.url if img.url else f"data:{img.mime_type};base64,{img.base64}"

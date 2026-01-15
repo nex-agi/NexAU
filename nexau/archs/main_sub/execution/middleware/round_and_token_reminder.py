@@ -71,8 +71,8 @@ class RoundAndTokenReminderMiddleware(Middleware):
         hint_content = f"{iteration_hint}\n\n{token_hint}"
 
         updated_messages = list(hook_input.messages)
-        if updated_messages[-1].role != Role.USER:
-            updated_messages.append(Message(role=Role.USER, content=[TextBlock(text=hint_content)]))
+        if updated_messages[-1].role not in (Role.USER, Role.FRAMEWORK):
+            updated_messages.append(Message(role=Role.FRAMEWORK, content=[TextBlock(text=hint_content)]))
         else:
             last = updated_messages[-1]
             blocks = list(last.content)

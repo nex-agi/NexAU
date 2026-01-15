@@ -49,7 +49,7 @@ def main():
         print("-" * 30)
 
         response = claude_code_agent.run(
-            user_message,
+            message=user_message,
             context={
                 "date": get_date(),
                 "username": os.getenv("USER"),

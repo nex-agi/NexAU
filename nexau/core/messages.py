@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, model_validator
 class Role(str, Enum):
     SYSTEM = "system"
     USER = "user"
+    FRAMEWORK = "FRAMEWORK"  # Framework-injected user messages (treated as "user" when sent to LLM)
     ASSISTANT = "assistant"
     TOOL = "tool"
 

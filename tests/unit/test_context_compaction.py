@@ -158,7 +158,7 @@ class TestSlidingWindowCompaction:
         """Test that initialization requires LLM configuration."""
         with pytest.raises(ValueError, match="LLM configuration is required"):
             SlidingWindowCompaction(
-                window_size=3,
+                keep_iterations=3,
                 summary_model=None,
                 summary_base_url=None,
                 summary_api_key=None,
@@ -169,20 +169,20 @@ class TestSlidingWindowCompaction:
         with patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI") as mock_openai:
             mock_openai.return_value = mock_openai_client
             compaction = SlidingWindowCompaction(
-                window_size=3,
+                keep_iterations=3,
                 summary_model="gpt-4o-mini",
                 summary_base_url="https://api.openai.com/v1",
                 summary_api_key="test-key",
                 compact_prompt_path=temp_compact_prompt,
             )
             assert compaction.summary_model == "gpt-4o-mini"
-            assert compaction.window_size == 3
+            assert compaction.keep_iterations == 3
 
-    def test_window_size_validation(self, temp_compact_prompt):
-        """Test that window_size must be >= 1."""
-        with pytest.raises(ValueError, match="window_size must be >= 1"):
+    def test_keep_iterations_validation(self, temp_compact_prompt):
+        """Test that keep_iterations must be >= 1."""
+        with pytest.raises(ValueError, match="keep_iterations must be >= 1"):
             SlidingWindowCompaction(
-                window_size=0,
+                keep_iterations=0,
                 summary_model="gpt-4o-mini",
                 summary_base_url="https://api.openai.com/v1",
                 summary_api_key="test-key",
@@ -194,7 +194,7 @@ class TestSlidingWindowCompaction:
         """Test that compaction preserves system message."""
         mock_openai_class.return_value = mock_openai_client
         compaction = SlidingWindowCompaction(
-            window_size=2,
+            keep_iterations=2,
             summary_model="gpt-4o-mini",
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
@@ -388,7 +388,7 @@ class TestContextCompactionMiddleware:
         mock_openai_class.return_value = mock_openai_client
         middleware = ContextCompactionMiddleware(
             compaction_strategy="sliding_window",
-            window_size=5,
+            keep_iterations=5,
             token_counter=mock_token_counter,
             summary_model="gpt-4o-mini",
             summary_base_url="https://api.openai.com/v1",
@@ -397,7 +397,7 @@ class TestContextCompactionMiddleware:
         )
 
         assert isinstance(middleware.compaction_strategy, SlidingWindowCompaction)
-        assert middleware.compaction_strategy.window_size == 5
+        assert middleware.compaction_strategy.keep_iterations == 5
 
 
 class TestSlidingWindowCompactionAdvanced:
@@ -405,11 +405,22 @@ class TestSlidingWindowCompactionAdvanced:
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
     def test_compact_with_llm_summary(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
-        """Test compaction with LLM-generated summary."""
+        """Test compaction with LLM-generated summary.
+
+        With the iteration definition:
+        [USER or FRAMEWORK](optional) -> [ASSISTANT] -> [TOOL results](optional)
+
+        Messages: [system, user1, assistant1, user2, assistant2, user3, assistant3]
+        - Iteration 1: [user1, assistant1]
+        - Iteration 2: [user2, assistant2]
+        - Iteration 3: [user3, assistant3]
+
+        With keep_iterations=2, we keep iterations 2-3 and compress iteration 1.
+        """
         mock_openai_class.return_value = mock_openai_client
 
         compaction = SlidingWindowCompaction(
-            window_size=1,
+            keep_iterations=2,  # Keep 2 iterations to ensure USER message is in kept iterations
             summary_model="gpt-4o-mini",
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
@@ -426,17 +437,21 @@ class TestSlidingWindowCompactionAdvanced:
                 {"role": "assistant", "content": "Answer 1"},
                 {"role": "user", "content": "Question 2"},
                 {"role": "assistant", "content": "Answer 2"},
+                {"role": "user", "content": "Question 3"},
+                {"role": "assistant", "content": "Answer 3"},
             ],
         )
 
         result = compaction.compact(messages)
 
-        # Should have system + modified first kept user message + assistant
+        # Should have system + kept iterations with summary injected into first USER message
         assert len(result) >= 2
         assert result[0].role == Role.SYSTEM
-        # First kept user message should contain summary
-        assert "This session is being continued" in result[1].get_text_content()
-        assert result[1].metadata.get("isSummary") is True
+        # Find the first USER message in result and check for summary
+        user_msgs = [m for m in result if m.role == Role.USER]
+        assert len(user_msgs) > 0
+        assert "This session is being continued" in user_msgs[0].get_text_content()
+        assert user_msgs[0].metadata.get("isSummary") is True
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
     def test_compact_llm_failure_returns_original(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
@@ -444,7 +459,7 @@ class TestSlidingWindowCompactionAdvanced:
         mock_openai_class.return_value = mock_openai_client
 
         compaction = SlidingWindowCompaction(
-            window_size=1,
+            keep_iterations=1,
             summary_model="gpt-4o-mini",
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
@@ -468,11 +483,19 @@ class TestSlidingWindowCompactionAdvanced:
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
     def test_group_into_iterations_complex(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
-        """Test iteration grouping with tools."""
+        """Test iteration grouping with tools.
+
+        An iteration is bounded by ASSISTANT messages:
+        [USER or FRAMEWORK](optional) -> [ASSISTANT] -> [TOOL results](optional)
+
+        Messages: [user1, assistant1, tool1, tool2, user2, assistant2]
+        - Iteration 1: [user1, assistant1, tool1, tool2]
+        - Iteration 2: [user2, assistant2]
+        """
         mock_openai_class.return_value = mock_openai_client
 
         compaction = SlidingWindowCompaction(
-            window_size=1,
+            keep_iterations=1,
             summary_model="gpt-4o-mini",
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
@@ -492,10 +515,65 @@ class TestSlidingWindowCompactionAdvanced:
 
         iterations = compaction._group_into_iterations(messages)
 
-        # Should group: [user, assistant, tool, tool], [user, assistant]
+        # Should group by ASSISTANT boundaries with USER moved to new iteration:
+        # Iteration 1: [user1, assistant1, tool1, tool2]
+        # Iteration 2: [user2, assistant2]
         assert len(iterations) == 2
-        assert len(iterations[0]) == 4
-        assert len(iterations[1]) == 2
+        assert len(iterations[0]) == 4  # user1, assistant1, tool1, tool2
+        assert len(iterations[1]) == 2  # user2, assistant2
+
+    @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
+    def test_group_into_iterations_with_framework(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
+        """Test iteration grouping with FRAMEWORK messages.
+
+        An iteration is bounded by ASSISTANT messages:
+        [USER or FRAMEWORK](optional) -> [ASSISTANT] -> [TOOL results](optional)
+
+        FRAMEWORK messages are injected by middleware after TOOL results and before
+        the next ASSISTANT response. So a realistic sequence is:
+        [user1, assistant1, tool1, framework1, assistant2, user2, assistant3]
+
+        Expected iterations:
+        - Iteration 1: [user1, assistant1, tool1]
+        - Iteration 2: [framework1, assistant2]
+        - Iteration 3: [user2, assistant3]
+        """
+        mock_openai_class.return_value = mock_openai_client
+
+        compaction = SlidingWindowCompaction(
+            keep_iterations=1,
+            summary_model="gpt-4o-mini",
+            summary_base_url="https://api.openai.com/v1",
+            summary_api_key="test-key",
+            compact_prompt_path=temp_compact_prompt,
+        )
+
+        messages = [
+            Message(role=Role.USER, content=[TextBlock(text="Q1")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="A1")]),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_1", content="T1")]),
+            Message(role=Role.FRAMEWORK, content=[TextBlock(text="System reminder")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="A2")]),
+            Message(role=Role.USER, content=[TextBlock(text="Q2")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="A3")]),
+        ]
+
+        iterations = compaction._group_into_iterations(messages)
+
+        # Iteration 1: [user1, assistant1, tool1]
+        # Iteration 2: [framework1, assistant2]
+        # Iteration 3: [user2, assistant3]
+        assert len(iterations) == 3
+        assert len(iterations[0]) == 3  # user1, assistant1, tool1
+        assert len(iterations[1]) == 2  # framework1, assistant2
+        assert len(iterations[2]) == 2  # user2, assistant3
+        assert iterations[0][0].role == Role.USER
+        assert iterations[0][1].role == Role.ASSISTANT
+        assert iterations[0][2].role == Role.TOOL
+        assert iterations[1][0].role == Role.FRAMEWORK
+        assert iterations[1][1].role == Role.ASSISTANT
+        assert iterations[2][0].role == Role.USER
+        assert iterations[2][1].role == Role.ASSISTANT
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
     def test_compact_without_system_message(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
@@ -504,7 +582,7 @@ class TestSlidingWindowCompactionAdvanced:
 
         compaction = SlidingWindowCompaction(
             keep_system=False,
-            window_size=1,
+            keep_iterations=1,
             summary_model="gpt-4o-mini",
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
@@ -531,7 +609,7 @@ class TestSlidingWindowCompactionAdvanced:
         mock_openai_class.return_value = mock_openai_client
 
         compaction = SlidingWindowCompaction(
-            window_size=1,
+            keep_iterations=1,
             summary_model="gpt-4o-mini",
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
@@ -645,14 +723,14 @@ class TestContextCompactionMiddlewareAdvanced:
     """Advanced tests for ContextCompactionMiddleware."""
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
-    def test_window_size_validation_in_middleware(self, mock_openai_class, mock_openai_client, mock_token_counter, temp_compact_prompt):
-        """Test that window_size validation works in middleware."""
+    def test_keep_iterations_validation_in_middleware(self, mock_openai_class, mock_openai_client, mock_token_counter, temp_compact_prompt):
+        """Test that keep_iterations validation works in middleware."""
         mock_openai_class.return_value = mock_openai_client
 
-        with pytest.raises(ValueError, match="window_size must be >= 1"):
+        with pytest.raises(ValueError, match="keep_iterations must be >= 1"):
             ContextCompactionMiddleware(
                 compaction_strategy="sliding_window",
-                window_size=0,
+                keep_iterations=0,
                 token_counter=mock_token_counter,
                 summary_model="gpt-4o-mini",
                 summary_base_url="https://api.openai.com/v1",

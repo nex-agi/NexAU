@@ -58,7 +58,12 @@ def _load_compact_prompt(prompt_path: str) -> str:
 class SlidingWindowCompaction:
     """Sliding window compaction strategy - keeps recent conversation iterations.
 
-    A "iteration" is defined as: user message + assistant response + tool results (if any).
+    An "iteration" is bounded by ASSISTANT messages:
+    [USER or FRAMEWORK](optional) -> [ASSISTANT] -> [TOOL results](optional)
+
+    - Each ASSISTANT message starts a new iteration
+    - USER or FRAMEWORK messages before the ASSISTANT are part of that iteration (optional)
+    - TOOL results after the ASSISTANT are part of that iteration (optional)
 
     This strategy:
     1. Groups messages into conversation iterations
@@ -69,7 +74,7 @@ class SlidingWindowCompaction:
     def __init__(
         self,
         keep_system: bool = True,
-        window_size: int = 2,
+        keep_iterations: int = 2,
         summary_model: str | None = None,
         summary_base_url: str | None = None,
         summary_api_key: str | None = None,
@@ -79,17 +84,17 @@ class SlidingWindowCompaction:
 
         Args:
             keep_system: Whether to preserve the system message.
-            window_size: Number of recent iterations to keep. Must be >= 1.
+            keep_iterations: Number of recent iterations to keep. Must be >= 1.
             summary_model: LLM model for summarization. Required.
             summary_base_url: LLM API base URL for summarization. Required.
             summary_api_key: LLM API key for summarization. Required.
             compact_prompt_path: Path to compact prompt file (already resolved by config). Required.
 
         Raises:
-            ValueError: If window_size < 1 or LLM configuration is missing.
+            ValueError: If keep_iterations < 1 or LLM configuration is missing.
         """
-        if window_size < 1:
-            raise ValueError(f"window_size must be >= 1, got {window_size}")
+        if keep_iterations < 1:
+            raise ValueError(f"keep_iterations must be >= 1, got {keep_iterations}")
 
         # Validate LLM configuration
         if not summary_model or not summary_base_url or not summary_api_key:
@@ -103,7 +108,7 @@ class SlidingWindowCompaction:
             raise ValueError("compact_prompt_path is required for SlidingWindowCompaction.")
 
         self.keep_system = keep_system
-        self.window_size = window_size
+        self.keep_iterations = keep_iterations
 
         # Initialize LLM caller for summarization (route API calls through LLMCaller).
         self.summary_model = summary_model
@@ -121,9 +126,7 @@ class SlidingWindowCompaction:
         )
         summary_client = OpenAI(**summary_llm_config.to_client_kwargs())
         self._llm_caller = LLMCaller(summary_client, summary_llm_config, retry_attempts=3)
-        logger.info(
-            f"[SlidingWindowCompaction] Initialized with LLM summarization: model={self.summary_model}, window_size={self.window_size}"
-        )
+        logger.info(f"[SlidingWindowCompaction] Initialized: model={self.summary_model}, keep_iterations={self.keep_iterations}")
 
     def compact(
         self,
@@ -143,13 +146,13 @@ class SlidingWindowCompaction:
         # Group messages into iterations, iteration means user message + assistant response + tool results (if any)
         iterations = self._group_into_iterations(messages[start_idx:])
 
-        if len(iterations) <= self.window_size:
-            logger.info(f"[SlidingWindowCompaction] Skipping compaction: {len(iterations)} iterations <= {self.window_size} (window size)")
+        if len(iterations) <= self.keep_iterations:
+            logger.info(f"[SlidingWindowCompaction] Skipping: {len(iterations)} iterations <= {self.keep_iterations}")
             return messages.copy()
 
         # Calculate how many iterations to compress
-        iterations_to_compress = iterations[: -self.window_size]
-        iterations_to_keep = iterations[-self.window_size :]
+        iterations_to_compress = iterations[: -self.keep_iterations]
+        iterations_to_keep = iterations[-self.keep_iterations :]
 
         # Process kept iterations - check if we need to add summary
         if iterations_to_compress:
@@ -178,7 +181,7 @@ class SlidingWindowCompaction:
                         # Prepend summary context
                         modified_content = (
                             f"This session is being continued from a previous conversation that ran out of context. "
-                            f"The conversation is summarized as follows: {summary}. "
+                            f"The previous conversation is summarized as follows: {summary}. "
                             f"The user request for this round is: {original_content}"
                         )
                         modified_msg = msg.model_copy(update={"content": [TextBlock(text=modified_content)]})
@@ -203,22 +206,33 @@ class SlidingWindowCompaction:
     def _group_into_iterations(self, messages: list[Message]) -> list[list[Message]]:
         """Group messages into conversation iterations.
 
-        A iteration consists of: [user] -> [assistant] -> [tool, tool, ...]
+        An iteration is bounded by ASSISTANT messages:
+        [USER or FRAMEWORK](optional) -> [ASSISTANT] -> [TOOL results](optional)
+
+        - Each ASSISTANT message starts a new iteration
+        - USER or FRAMEWORK messages before the ASSISTANT are part of that iteration (optional)
+        - TOOL results after the ASSISTANT are part of that iteration (optional)
         """
         iterations: list[list[Message]] = []
         current_iteration: list[Message] = []
 
         for msg in messages:
-            if msg.role == Role.USER:
-                # Start a new iteration
+            if msg.role == Role.ASSISTANT:
+                # ASSISTANT starts a new iteration
+                # Move any preceding USER and FRAMEWORK messages to the new iteration
+                prefix_msgs: list[Message] = []
+                while current_iteration and current_iteration[-1].role in (Role.USER, Role.FRAMEWORK):
+                    prefix_msgs.insert(0, current_iteration.pop())
+
                 if current_iteration:
                     iterations.append(current_iteration)
-                current_iteration = [msg]
+
+                current_iteration = prefix_msgs + [msg]
             else:
-                # Continue current iteration (assistant or tool)
+                # Continue current iteration (user, framework, or tool)
                 current_iteration.append(msg)
 
-        # add the last iteration
+        # Add the last iteration
         if current_iteration:
             iterations.append(current_iteration)
 

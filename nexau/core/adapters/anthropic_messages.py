@@ -101,8 +101,9 @@ class AnthropicMessagesAdapter(LLMAdapter):
 
             # Bedrock Claude Messages only allows roles: "user" | "assistant".
             # Tool results must be sent as a *user* message containing a "tool_result" content block.
+            # FRAMEWORK is treated as *user* message when sent to LLM.
             role = msg.role.value
-            if msg.role == Role.TOOL:
+            if msg.role in (Role.TOOL, Role.FRAMEWORK):
                 role = Role.USER.value
 
             convo.append({"role": role, "content": content_blocks})

@@ -61,7 +61,7 @@ middlewares: # Middlewares are used to modify the behavior of the agent.
       auto_compact: true
       threshold: 0.75  # Trigger compaction when token usage reaches 75%
       compaction_strategy: "tool_result_compaction"  # "sliding_window" or "tool_result_compaction"
-      window_size: 2  # Only use in sliding_window strategy, keep last 2 conversation rounds
+      keep_iterations: 2  # Only use in sliding_window strategy, keep last 2 conversation rounds
 
       # Only use in sliding_window strategy, Summary model for compression
       summary_model: ${env.SUMMARY_MODEL}
