@@ -37,6 +37,7 @@ def create_compaction_strategy(config: CompactionConfig) -> CompactionStrategy:
     if config.compaction_strategy == "sliding_window":
         return SlidingWindowCompaction(
             keep_iterations=config.keep_iterations,
+            keep_user_rounds=config.keep_user_rounds,
             summary_model=config.summary_model,
             summary_base_url=config.summary_base_url,
             summary_api_key=config.summary_api_key,
@@ -44,7 +45,10 @@ def create_compaction_strategy(config: CompactionConfig) -> CompactionStrategy:
         )
 
     elif config.compaction_strategy == "tool_result_compaction":
-        return ToolResultCompaction(keep_iterations=config.keep_iterations)
+        return ToolResultCompaction(
+            keep_iterations=config.keep_iterations,
+            keep_user_rounds=config.keep_user_rounds,
+        )
 
     raise ValueError(f"Unknown compaction strategy: {config.compaction_strategy}")
 

@@ -233,7 +233,7 @@ class TestToolResultCompaction:
 
     def test_compact_tool_results(self):
         """Test that old tool results are compacted."""
-        compaction = ToolResultCompaction()
+        compaction = ToolResultCompaction(keep_iterations=1)
         messages = messages_from_legacy_openai_chat(
             [
                 {"role": "user", "content": "Question 1"},
@@ -398,6 +398,100 @@ class TestContextCompactionMiddleware:
 
         assert isinstance(middleware.compaction_strategy, SlidingWindowCompaction)
         assert middleware.compaction_strategy.keep_iterations == 5
+
+
+class TestSlidingWindowCompactionKeepUserRounds:
+    """Tests for SlidingWindowCompaction keep_user_rounds functionality."""
+
+    def test_keep_user_rounds_validation(self, temp_compact_prompt):
+        """Test that keep_user_rounds must be >= 0."""
+        with pytest.raises(ValueError, match="keep_user_rounds must be >= 0"):
+            with patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI"):
+                SlidingWindowCompaction(
+                    keep_user_rounds=-1,
+                    summary_model="gpt-4o-mini",
+                    summary_base_url="https://api.openai.com/v1",
+                    summary_api_key="test-key",
+                    compact_prompt_path=temp_compact_prompt,
+                )
+
+    def test_cannot_set_both_keep_iterations_and_keep_user_rounds(self, temp_compact_prompt):
+        """Test that setting both keep_iterations and keep_user_rounds raises error."""
+        with pytest.raises(ValueError, match="Cannot set both keep_iterations and keep_user_rounds"):
+            with patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI"):
+                SlidingWindowCompaction(
+                    keep_iterations=2,
+                    keep_user_rounds=1,
+                    summary_model="gpt-4o-mini",
+                    summary_base_url="https://api.openai.com/v1",
+                    summary_api_key="test-key",
+                    compact_prompt_path=temp_compact_prompt,
+                )
+
+    @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
+    def test_group_into_user_rounds_basic(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
+        """Test basic user rounds grouping."""
+        mock_openai_class.return_value = mock_openai_client
+
+        compaction = SlidingWindowCompaction(
+            keep_user_rounds=1,
+            summary_model="gpt-4o-mini",
+            summary_base_url="https://api.openai.com/v1",
+            summary_api_key="test-key",
+            compact_prompt_path=temp_compact_prompt,
+        )
+
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "user", "content": "Q1"},
+                {"role": "assistant", "content": "A1"},  # Final response (no tool calls)
+                {"role": "user", "content": "Q2"},
+                {"role": "assistant", "content": "A2"},  # Final response (no tool calls)
+            ],
+        )
+
+        user_rounds = compaction._group_into_user_rounds(messages)
+
+        # Should have 2 user rounds
+        assert len(user_rounds) == 2
+        assert len(user_rounds[0]) == 2  # Q1, A1
+        assert len(user_rounds[1]) == 2  # Q2, A2
+
+    @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
+    def test_compact_with_keep_user_rounds(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
+        """Test compaction using keep_user_rounds."""
+        mock_openai_class.return_value = mock_openai_client
+
+        compaction = SlidingWindowCompaction(
+            keep_user_rounds=1,
+            summary_model="gpt-4o-mini",
+            summary_base_url="https://api.openai.com/v1",
+            summary_api_key="test-key",
+            compact_prompt_path=temp_compact_prompt,
+        )
+        compaction._llm_caller.call_llm = Mock(  # type: ignore[method-assign]
+            return_value=ModelResponse(content="Summary of round 1.", role="assistant"),
+        )
+
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "system", "content": "System prompt"},
+                {"role": "user", "content": "Q1"},
+                {"role": "assistant", "content": "A1"},  # End of round 1
+                {"role": "user", "content": "Q2"},
+                {"role": "assistant", "content": "A2"},  # End of round 2
+            ],
+        )
+
+        result = compaction.compact(messages)
+
+        # Should have system + kept user round with summary injected
+        assert result[0].role == Role.SYSTEM
+        # Find the first USER message in result and check for summary
+        user_msgs = [m for m in result if m.role == Role.USER]
+        assert len(user_msgs) > 0
+        assert "This session is being continued" in user_msgs[0].get_text_content()
+        assert user_msgs[0].metadata.get("isSummary") is True
 
 
 class TestSlidingWindowCompactionAdvanced:
@@ -637,6 +731,103 @@ class TestSlidingWindowCompactionAdvanced:
         assert len(result) >= 2
 
 
+class TestToolResultCompactionKeepUserRounds:
+    """Tests for ToolResultCompaction keep_user_rounds functionality."""
+
+    def test_keep_user_rounds_validation(self):
+        """Test that keep_user_rounds must be >= 0."""
+        with pytest.raises(ValueError, match="keep_user_rounds must be >= 0"):
+            ToolResultCompaction(keep_user_rounds=-1)
+
+    def test_cannot_set_both_keep_iterations_and_keep_user_rounds(self):
+        """Test that setting both keep_iterations and keep_user_rounds raises error."""
+        with pytest.raises(ValueError, match="Cannot set both keep_iterations and keep_user_rounds"):
+            ToolResultCompaction(keep_iterations=2, keep_user_rounds=1)
+
+    def test_group_into_user_rounds_basic(self):
+        """Test basic user rounds grouping."""
+        compaction = ToolResultCompaction(keep_user_rounds=1)
+
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "user", "content": "Q1"},
+                {"role": "assistant", "content": "A1"},  # Final response (no tool calls)
+                {"role": "user", "content": "Q2"},
+                {"role": "assistant", "content": "A2"},  # Final response (no tool calls)
+            ],
+        )
+
+        user_rounds = compaction._group_into_user_rounds(messages)
+
+        # Should have 2 user rounds
+        assert len(user_rounds) == 2
+        assert len(user_rounds[0]) == 2  # Q1, A1
+        assert len(user_rounds[1]) == 2  # Q2, A2
+
+    def test_group_into_user_rounds_with_tool_calls(self):
+        """Test user rounds grouping with tool calls."""
+        compaction = ToolResultCompaction(keep_user_rounds=1)
+
+        messages = [
+            Message(role=Role.USER, content=[TextBlock(text="Q1")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    TextBlock(text="Let me use a tool"),
+                    ToolUseBlock(id="call_1", name="test_tool", input={}),
+                ],
+            ),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_1", content="Tool result")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="Final answer")]),  # Final response
+            Message(role=Role.USER, content=[TextBlock(text="Q2")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="A2")]),  # Final response
+        ]
+
+        user_rounds = compaction._group_into_user_rounds(messages)
+
+        # Should have 2 user rounds
+        assert len(user_rounds) == 2
+        assert len(user_rounds[0]) == 4  # Q1, assistant with tool, tool result, final answer
+        assert len(user_rounds[1]) == 2  # Q2, A2
+
+    def test_compact_with_keep_user_rounds(self):
+        """Test compaction using keep_user_rounds."""
+        compaction = ToolResultCompaction(keep_user_rounds=1)
+
+        messages = [
+            Message(role=Role.USER, content=[TextBlock(text="Q1")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    TextBlock(text="Let me use a tool"),
+                    ToolUseBlock(id="call_1", name="test_tool", input={}),
+                ],
+            ),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_1", content="Old tool result")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="Final answer 1")]),  # End of round 1
+            Message(role=Role.USER, content=[TextBlock(text="Q2")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    TextBlock(text="Using another tool"),
+                    ToolUseBlock(id="call_2", name="test_tool", input={}),
+                ],
+            ),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_2", content="Recent tool result")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="Final answer 2")]),  # End of round 2
+        ]
+
+        result = compaction.compact(messages)
+
+        # Old tool result (round 1) should be compacted
+        old_tool_blocks = [b for b in result[2].content if isinstance(b, ToolResultBlock)]
+        assert old_tool_blocks and old_tool_blocks[0].content == "Tool call result has been compacted"
+
+        # Recent tool result (round 2) should be preserved
+        new_tool_blocks = [b for b in result[6].content if isinstance(b, ToolResultBlock)]
+        assert new_tool_blocks and new_tool_blocks[0].content == "Recent tool result"
+
+
 class TestToolResultCompactionAdvanced:
     """Advanced tests for ToolResultCompaction."""
 
@@ -658,7 +849,7 @@ class TestToolResultCompactionAdvanced:
 
     def test_multiple_tool_results_after_last_assistant(self):
         """Test that multiple tool results after last assistant are preserved."""
-        compaction = ToolResultCompaction()
+        compaction = ToolResultCompaction(keep_iterations=1)
 
         messages = messages_from_legacy_openai_chat(
             [
@@ -717,6 +908,41 @@ class TestToolResultCompactionAdvanced:
 
         # Should preserve all messages
         assert result == messages
+
+
+class TestContextCompactionMiddlewareKeepUserRounds:
+    """Tests for ContextCompactionMiddleware keep_user_rounds functionality."""
+
+    def test_keep_user_rounds_passed_to_tool_result_compaction(self, mock_token_counter):
+        """Test that keep_user_rounds is correctly passed to ToolResultCompaction."""
+        middleware = ContextCompactionMiddleware(
+            compaction_strategy="tool_result_compaction",
+            keep_user_rounds=2,
+            token_counter=mock_token_counter,
+        )
+
+        assert isinstance(middleware.compaction_strategy, ToolResultCompaction)
+        assert middleware.compaction_strategy.keep_user_rounds == 2
+
+    @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
+    def test_keep_user_rounds_passed_to_sliding_window(
+        self, mock_openai_class, mock_openai_client, mock_token_counter, temp_compact_prompt
+    ):
+        """Test that keep_user_rounds is correctly passed to SlidingWindowCompaction."""
+        mock_openai_class.return_value = mock_openai_client
+
+        middleware = ContextCompactionMiddleware(
+            compaction_strategy="sliding_window",
+            keep_user_rounds=2,
+            token_counter=mock_token_counter,
+            summary_model="gpt-4o-mini",
+            summary_base_url="https://api.openai.com/v1",
+            summary_api_key="test-key",
+            compact_prompt_path=temp_compact_prompt,
+        )
+
+        assert isinstance(middleware.compaction_strategy, SlidingWindowCompaction)
+        assert middleware.compaction_strategy.keep_user_rounds == 2
 
 
 class TestContextCompactionMiddlewareAdvanced:

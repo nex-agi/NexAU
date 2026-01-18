@@ -11,7 +11,7 @@ llm_config: # Support environment variable replacement in YAML config
   model: ${env.LLM_MODEL}
   base_url: ${env.LLM_BASE_URL}
   api_key: ${env.LLM_API_KEY}
-  stream: true
+  stream: false
   max_tokens: ${variables.max_tokens}
   api_type: openai_chat_completion # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
 tools: # Tool definition and implementation (binding) are decoupled
@@ -61,12 +61,7 @@ middlewares: # Middlewares are used to modify the behavior of the agent.
       auto_compact: true
       threshold: 0.75  # Trigger compaction when token usage reaches 75%
       compaction_strategy: "tool_result_compaction"  # "sliding_window" or "tool_result_compaction"
-      keep_iterations: 2  # Only use in sliding_window strategy, keep last 2 conversation rounds
-
-      # Only use in sliding_window strategy, Summary model for compression
-      summary_model: ${env.SUMMARY_MODEL}
-      summary_base_url: ${env.SUMMARY_BASE_URL}
-      summary_api_key: ${env.SUMMARY_API_KEY}
+      keep_user_rounds: 2
 
   - import: nexau.archs.main_sub.execution.hooks:LoggingMiddleware
     params:

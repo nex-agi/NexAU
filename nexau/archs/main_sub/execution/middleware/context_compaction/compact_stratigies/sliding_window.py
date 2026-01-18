@@ -21,7 +21,7 @@ import openai
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.execution.llm_caller import LLMCaller
-from nexau.core.messages import Message, Role, TextBlock
+from nexau.core.messages import Message, Role, TextBlock, ToolUseBlock
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,8 @@ class SlidingWindowCompaction:
     def __init__(
         self,
         keep_system: bool = True,
-        keep_iterations: int = 2,
+        keep_iterations: int = 3,
+        keep_user_rounds: int = 0,
         summary_model: str | None = None,
         summary_base_url: str | None = None,
         summary_api_key: str | None = None,
@@ -84,17 +85,26 @@ class SlidingWindowCompaction:
 
         Args:
             keep_system: Whether to preserve the system message.
-            keep_iterations: Number of recent iterations to keep. Must be >= 1.
+            keep_iterations: Number of recent iterations to keep. Default: 3.
+            keep_user_rounds: Number of recent user rounds to keep. Default: 0 (disabled).
+                When > 0, uses user rounds mode instead of iterations mode.
             summary_model: LLM model for summarization. Required.
             summary_base_url: LLM API base URL for summarization. Required.
             summary_api_key: LLM API key for summarization. Required.
             compact_prompt_path: Path to compact prompt file (already resolved by config). Required.
 
         Raises:
-            ValueError: If keep_iterations < 1 or LLM configuration is missing.
+            ValueError: If both keep_iterations != 3 and keep_user_rounds > 0 are set.
+            ValueError: If keep_iterations < 1 or keep_user_rounds < 0.
+            ValueError: If LLM configuration is missing.
         """
+        if keep_iterations != 3 and keep_user_rounds > 0:
+            raise ValueError("Cannot set both keep_iterations and keep_user_rounds")
+
         if keep_iterations < 1:
             raise ValueError(f"keep_iterations must be >= 1, got {keep_iterations}")
+        if keep_user_rounds < 0:
+            raise ValueError(f"keep_user_rounds must be >= 0, got {keep_user_rounds}")
 
         # Validate LLM configuration
         if not summary_model or not summary_base_url or not summary_api_key:
@@ -109,6 +119,7 @@ class SlidingWindowCompaction:
 
         self.keep_system = keep_system
         self.keep_iterations = keep_iterations
+        self.keep_user_rounds = keep_user_rounds
 
         # Initialize LLM caller for summarization (route API calls through LLMCaller).
         self.summary_model = summary_model
@@ -126,13 +137,16 @@ class SlidingWindowCompaction:
         )
         summary_client = OpenAI(**summary_llm_config.to_client_kwargs())
         self._llm_caller = LLMCaller(summary_client, summary_llm_config, retry_attempts=3)
-        logger.info(f"[SlidingWindowCompaction] Initialized: model={self.summary_model}, keep_iterations={self.keep_iterations}")
+        logger.info(
+            f"[SlidingWindowCompaction] Initialized: model={self.summary_model}, "
+            f"keep_iterations={self.keep_iterations}, keep_user_rounds={self.keep_user_rounds}"
+        )
 
     def compact(
         self,
         messages: list[Message],
     ) -> list[Message]:
-        """Compact messages by keeping recent iterations."""
+        """Compact messages by keeping recent iterations or user rounds."""
         logger.info(f"[SlidingWindowCompaction] Starting compaction on {len(messages)} messages")
 
         result: list[Message] = []
@@ -143,27 +157,34 @@ class SlidingWindowCompaction:
             result.append(messages[0])
             start_idx = 1
 
-        # Group messages into iterations, iteration means user message + assistant response + tool results (if any)
-        iterations = self._group_into_iterations(messages[start_idx:])
+        # Group messages based on keep_user_rounds or keep_iterations
+        if self.keep_user_rounds > 0:
+            groups = self._group_into_user_rounds(messages[start_idx:])
+            keep_count = self.keep_user_rounds
+            group_name = "user_rounds"
+        else:
+            groups = self._group_into_iterations(messages[start_idx:])
+            keep_count = self.keep_iterations
+            group_name = "iterations"
 
-        if len(iterations) <= self.keep_iterations:
-            logger.info(f"[SlidingWindowCompaction] Skipping: {len(iterations)} iterations <= {self.keep_iterations}")
+        if len(groups) <= keep_count:
+            logger.info(f"[SlidingWindowCompaction] Skipping: {len(groups)} {group_name} <= {keep_count}")
             return messages.copy()
 
-        # Calculate how many iterations to compress
-        iterations_to_compress = iterations[: -self.keep_iterations]
-        iterations_to_keep = iterations[-self.keep_iterations :]
+        # Calculate how many groups to compress
+        groups_to_compress = groups[:-keep_count]
+        groups_to_keep = groups[-keep_count:]
 
-        # Process kept iterations - check if we need to add summary
-        if iterations_to_compress:
-            # Generate summary for compressed iterations
+        # Process kept groups - check if we need to add summary
+        if groups_to_compress:
+            # Generate summary for compressed groups
             # Include system message if present
             all_compressed_messages: list[Message] = []
             if self.keep_system and messages and messages[0].role == Role.SYSTEM:
                 all_compressed_messages.append(messages[0])
 
-            for iteration_msgs in iterations_to_compress:
-                all_compressed_messages.extend(iteration_msgs)
+            for group_msgs in groups_to_compress:
+                all_compressed_messages.extend(group_msgs)
 
             try:
                 summary = self._generate_summary(all_compressed_messages)
@@ -171,11 +192,11 @@ class SlidingWindowCompaction:
                 logger.error(f"[SlidingWindowCompaction] Failed to generate summary, returning original messages: {e}")
                 return messages.copy()
 
-            # Find the first user message in kept iterations and prepend the summary
-            first_iteration_modified = False
-            for iteration_msgs in iterations_to_keep:
-                for msg in iteration_msgs:
-                    if msg.role == Role.USER and not first_iteration_modified:
+            # Find the first user message in kept groups and prepend the summary
+            first_group_modified = False
+            for group_msgs in groups_to_keep:
+                for msg in group_msgs:
+                    if msg.role == Role.USER and not first_group_modified:
                         # Get original user query
                         original_content = msg.get_text_content()
                         # Prepend summary context
@@ -187,19 +208,19 @@ class SlidingWindowCompaction:
                         modified_msg = msg.model_copy(update={"content": [TextBlock(text=modified_content)]})
                         modified_msg.metadata["isSummary"] = True
                         result.append(modified_msg)
-                        first_iteration_modified = True
+                        first_group_modified = True
                     else:
                         result.append(msg)
 
         else:
-            # No compression needed, just add all kept iterations
-            for iteration_msgs in iterations_to_keep:
-                result.extend(iteration_msgs)
+            # No compression needed, just add all kept groups
+            for group_msgs in groups_to_keep:
+                result.extend(group_msgs)
 
         logger.info(
             f"[SlidingWindowCompaction] Compaction complete: "
             f"{len(messages)} messages -> {len(result)} messages "
-            f"({len(iterations_to_compress)} iterations compressed, {len(iterations_to_keep)} iterations kept)"
+            f"({len(groups_to_compress)} {group_name} compressed, {len(groups_to_keep)} {group_name} kept)"
         )
         return result
 
@@ -237,6 +258,31 @@ class SlidingWindowCompaction:
             iterations.append(current_iteration)
 
         return iterations
+
+    def _group_into_user_rounds(self, messages: list[Message]) -> list[list[Message]]:
+        """Group messages into user rounds.
+
+        A UserRound starts with a USER message and ends with an ASSISTANT message
+        that has no tool calls (final response).
+        """
+        user_rounds: list[list[Message]] = []
+        current_round: list[Message] = []
+
+        for msg in messages:
+            current_round.append(msg)
+
+            if msg.role == Role.ASSISTANT:
+                # Check if this is a final response (no tool calls)
+                has_tool_use = any(isinstance(block, ToolUseBlock) for block in msg.content)
+                if not has_tool_use and current_round:
+                    user_rounds.append(current_round)
+                    current_round = []
+
+        # Handle incomplete round at the end
+        if current_round:
+            user_rounds.append(current_round)
+
+        return user_rounds
 
     def _generate_summary(self, messages: list[Message]) -> str:
         """Generate summary using LLM.

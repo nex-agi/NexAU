@@ -32,7 +32,8 @@ class CompactionConfig(BaseModel):
     compaction_strategy: Literal["sliding_window", "tool_result_compaction"] = "tool_result_compaction"
 
     # Shared Settings (used by both strategies)
-    keep_iterations: int = 1  # Number of recent iterations to keep uncompacted
+    keep_iterations: int = 3  # Number of recent iterations to keep uncompacted
+    keep_user_rounds: int = 0  # Number of recent user rounds to keep uncompacted (0 = disabled)
 
     # Sliding Window Specifics (Optional in YAML, handled by validator)
     summary_model: str | None = None
