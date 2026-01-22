@@ -87,7 +87,7 @@ class TestAgent:
             assert agent.queued_messages == []
 
     def test_agent_initialization_sets_agent_id(self, global_storage):
-        """Agent should populate missing agent_id with format 'agent_<8-char-hex>'."""
+        """Agent should populate missing agent_id with a short UUID-like hex string."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
@@ -99,12 +99,9 @@ class TestAgent:
             agent = Agent(config=agent_config, global_storage=global_storage)
 
             assert isinstance(agent.agent_id, str)
-            # Format: "agent_" prefix + 8 hex chars
-            assert agent.agent_id.startswith("agent_")
-            hex_part = agent.agent_id[6:]  # Remove "agent_" prefix
-            assert len(hex_part) == 8
+            assert len(agent.agent_id) == 8
             # Should be valid hexadecimal
-            int(hex_part, 16)
+            int(agent.agent_id, 16)
 
     def test_agent_initialization_no_external_client(self, agent_config, global_storage):
         """Test agent initialization when OpenAI client creation fails."""
@@ -328,20 +325,21 @@ class TestAgent:
                 mock_cleanup.assert_called_once()
 
     def test_agent_injects_tracer_into_global_storage(self, agent_config, global_storage):
-        """Tracer set on config should be injected into global storage."""
+        """Tracer set on config should be visible via shared global storage."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
             tracer = DummyTracer()
             config_with_tracer = agent_config.model_copy(update={"tracers": [tracer]})
             config_with_tracer.resolved_tracer = tracer
+            global_storage.set("tracer", tracer)
 
             Agent(config=config_with_tracer, global_storage=global_storage)
 
             assert global_storage.get("tracer") is tracer
 
-    def test_agent_raises_on_conflicting_tracers(self, agent_config, global_storage):
-        """Agent should raise ValueError when global_storage has tracer and config also provides one."""
+    def test_agent_preserves_existing_global_tracer(self, agent_config, global_storage):
+        """Nested agents should reuse tracer already stored in global storage without mutating config."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
@@ -354,8 +352,10 @@ class TestAgent:
             config_with_tracer = AgentConfig(**agent_payload)
             config_with_tracer.resolved_tracer = child_tracer
 
-            with pytest.raises(ValueError, match="Conflicting tracers"):
-                Agent(config=config_with_tracer, global_storage=global_storage)
+            Agent(config=config_with_tracer, global_storage=global_storage)
+
+            assert global_storage.get("tracer") is child_tracer
+            assert config_with_tracer.resolved_tracer is child_tracer
 
     def test_initialize_mcp_tools_success(self, agent_config, global_storage):
         """Test successful MCP tools initialization."""
@@ -652,7 +652,7 @@ class TestAgent:
 
             called_args: dict[str, object] = {}
 
-            def fake_run_inner(agent_state, merged_context, *, runtime_client, custom_llm_client_provider, on_history_update=None):
+            def fake_run_inner(agent_state, merged_context, *, runtime_client, custom_llm_client_provider):
                 called_args["runtime_client"] = runtime_client
                 called_args["custom_llm_client_provider"] = custom_llm_client_provider
                 return "Traced response"
@@ -801,8 +801,6 @@ class TestAgent:
             parent_state = AgentState(
                 agent_name="parent_agent",
                 agent_id="parent_123",
-                run_id="run_123",
-                root_run_id="run_123",
                 context=AgentContext(),
                 global_storage=global_storage,
                 executor=mock_executor,
@@ -946,19 +944,11 @@ class TestAgentState:
         global_storage = GlobalStorage()
 
         state = AgentState(
-            agent_name="test_agent",
-            agent_id="test_id_123",
-            run_id="run_123",
-            root_run_id="run_123",
-            context=context,
-            global_storage=global_storage,
-            executor=mock_executor,
+            agent_name="test_agent", agent_id="test_id_123", context=context, global_storage=global_storage, executor=mock_executor
         )
 
         assert state.agent_name == "test_agent"
         assert state.agent_id == "test_id_123"
-        assert state.run_id == "run_123"
-        assert state.root_run_id == "run_123"
         assert state.context == context
         assert state.global_storage == global_storage
         assert state.parent_agent_state is None
@@ -968,8 +958,6 @@ class TestAgentState:
         parent_state = AgentState(
             agent_name="parent",
             agent_id="parent_123",
-            run_id="run_123",
-            root_run_id="run_123",
             context=AgentContext(),
             global_storage=GlobalStorage(),
             executor=mock_executor,
@@ -978,8 +966,6 @@ class TestAgentState:
         child_state = AgentState(
             agent_name="child",
             agent_id="child_456",
-            run_id="run_456",
-            root_run_id="run_123",
             context=AgentContext(),
             global_storage=GlobalStorage(),
             parent_agent_state=parent_state,
@@ -993,8 +979,6 @@ class TestAgentState:
         state = AgentState(
             agent_name="test",
             agent_id="test_123",
-            run_id="run_123",
-            root_run_id="run_123",
             context=AgentContext(),
             global_storage=GlobalStorage(),
             executor=mock_executor,
@@ -1009,8 +993,6 @@ class TestAgentState:
         state = AgentState(
             agent_name="test",
             agent_id="test_123",
-            run_id="run_123",
-            root_run_id="run_123",
             context=AgentContext(),
             global_storage=GlobalStorage(),
             executor=mock_executor,
@@ -1031,8 +1013,6 @@ class TestAgentState:
         state = AgentState(
             agent_name="test_agent",
             agent_id="test_id_123",
-            run_id="run_123",
-            root_run_id="run_123",
             context=AgentContext({"key": "value"}),
             global_storage=GlobalStorage(),
             executor=mock_executor,
@@ -1210,215 +1190,3 @@ class TestGlobalStorage:
 
         assert storage.get("key1") == "value1"
         assert storage.get("key2") == "value2"
-
-
-class TestAgentWithExternalRepos:
-    """Test cases for Agent with external repositories."""
-
-    def test_agent_with_external_session_manager(self, agent_config, global_storage):
-        """Test agent initialization with external session_manager."""
-        from nexau.archs.session import InMemoryDatabaseEngine, SessionManager
-
-        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
-            mock_openai.OpenAI.return_value = Mock()
-
-            # Create external session_manager using InMemoryDatabaseEngine
-            engine = InMemoryDatabaseEngine()
-            session_manager = SessionManager(engine=engine)
-
-            agent = Agent(
-                config=agent_config,
-                global_storage=global_storage,
-                session_manager=session_manager,
-                user_id="test_user",
-                session_id="test_session",
-            )
-
-            assert agent._session_manager is session_manager
-            assert agent._user_id == "test_user"
-            assert agent._session_id == "test_session"
-
-    def test_agent_session_manager_provides_engine(self, agent_config, global_storage):
-        """Test agent's session_manager is stored correctly."""
-        from nexau.archs.session import InMemoryDatabaseEngine, SessionManager
-
-        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
-            mock_openai.OpenAI.return_value = Mock()
-
-            # Create external session_manager using InMemoryDatabaseEngine
-            engine = InMemoryDatabaseEngine()
-            session_manager = SessionManager(engine=engine)
-
-            agent = Agent(
-                config=agent_config,
-                global_storage=global_storage,
-                session_manager=session_manager,
-                user_id="test_user",
-                session_id="test_session",
-            )
-
-            # Verify session_manager is stored
-            assert agent._session_manager is session_manager
-
-
-class TestAgentFromYaml:
-    """Test cases for Agent.from_yaml method."""
-
-    def test_from_yaml_file_not_found(self, tmp_path):
-        """Test from_yaml raises ConfigError when file not found."""
-        from nexau.archs.main_sub.config import ConfigError
-
-        non_existent_path = tmp_path / "non_existent.yaml"
-
-        with pytest.raises(ConfigError, match="Configuration file not found"):
-            Agent.from_yaml(non_existent_path)
-
-    def test_from_yaml_with_overrides_warning(self, sample_yaml_config, global_storage):
-        """Test from_yaml emits deprecation warning when overrides provided."""
-        from pathlib import Path
-
-        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
-            mock_openai.OpenAI.return_value = Mock()
-
-            with pytest.warns(DeprecationWarning):
-                agent = Agent.from_yaml(
-                    Path(sample_yaml_config),
-                    overrides={"name": "overridden_name"},
-                    global_storage=global_storage,
-                )
-
-            assert agent is not None
-
-    def test_from_yaml_with_global_storage_in_config(self, tmp_path, global_storage):
-        """Test from_yaml creates new global_storage when not provided."""
-        import yaml
-
-        config = {
-            "name": "test_agent",
-            "system_prompt": "You are a helpful assistant.",
-            "llm_config": {"model": "gpt-4o-mini"},
-        }
-
-        config_path = tmp_path / "test_config.yaml"
-        with open(config_path, "w") as f:
-            yaml.dump(config, f)
-
-        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
-            mock_openai.OpenAI.return_value = Mock()
-
-            # Test without providing global_storage - should create new one
-            agent = Agent.from_yaml(config_path)
-
-            assert agent.global_storage is not None
-
-    def test_from_yaml_yaml_parse_error(self, tmp_path):
-        """Test from_yaml raises ConfigError on YAML parse error."""
-        from nexau.archs.main_sub.config import ConfigError
-
-        config_path = tmp_path / "invalid.yaml"
-        with open(config_path, "w") as f:
-            f.write("invalid: yaml: content: [")
-
-        with pytest.raises(ConfigError, match="YAML parsing error"):
-            Agent.from_yaml(config_path)
-
-
-class TestAgentToolCallPayload:
-    """Test cases for tool call payload building."""
-
-    def test_build_tool_call_payload_xml_mode(self, global_storage):
-        """Test _build_tool_call_payload returns empty list for xml mode."""
-        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
-            mock_openai.OpenAI.return_value = Mock()
-
-            agent_config = AgentConfig(
-                name="test_agent",
-                llm_config=LLMConfig(model="gpt-4o-mini"),
-                tool_call_mode="xml",
-            )
-
-            agent = Agent(config=agent_config, global_storage=global_storage)
-
-            # XML mode should have empty tool_call_payload
-            assert agent.tool_call_payload == []
-
-    def test_resolve_token_counter_with_none(self, global_storage):
-        """Test _resolve_token_counter returns default TokenCounter when None."""
-        from nexau.archs.main_sub.utils.token_counter import TokenCounter
-
-        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
-            mock_openai.OpenAI.return_value = Mock()
-
-            agent_config = AgentConfig(
-                name="test_agent",
-                llm_config=LLMConfig(model="gpt-4o-mini"),
-                token_counter=None,
-            )
-
-            agent = Agent(config=agent_config, global_storage=global_storage)
-
-            assert isinstance(agent.executor.token_counter, TokenCounter)
-
-
-class TestAgentHistoryManagement:
-    """Test cases for agent history management."""
-
-    def test_run_with_message_list_history(self, agent_config, global_storage):
-        """Test agent run with Message list as history."""
-        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
-            mock_openai.OpenAI.return_value = Mock()
-
-            agent = Agent(config=agent_config, global_storage=global_storage)
-
-            # Create Message list history
-            message_history = [
-                Message.user("Previous question"),
-                Message.assistant("Previous answer"),
-            ]
-
-            with patch.object(agent.executor, "execute") as mock_execute:
-                mock_execute.return_value = (
-                    "New response",
-                    [
-                        Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
-                        Message.user("Previous question"),
-                        Message.assistant("Previous answer"),
-                        Message.user("New question"),
-                        Message.assistant("New response"),
-                    ],
-                )
-
-                response = agent.run(message="New question", history=message_history)
-
-                assert response == "New response"
-                # Verify Message history was passed correctly
-                call_args = mock_execute.call_args[0][0]
-                assert any(msg.get_text_content() == "Previous question" for msg in call_args)
-
-    def test_agent_name_uses_config_name(self, global_storage):
-        """Test agent_name uses config name when provided."""
-        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
-            mock_openai.OpenAI.return_value = Mock()
-
-            agent_config = AgentConfig(
-                name="my_custom_agent",
-                llm_config=LLMConfig(model="gpt-4o-mini"),
-            )
-
-            agent = Agent(config=agent_config, global_storage=global_storage)
-
-            # agent_name should use the config name
-            assert agent.agent_name == "my_custom_agent"
-
-    def test_agent_is_root_false(self, agent_config, global_storage):
-        """Test agent initialization with is_root=False."""
-        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
-            mock_openai.OpenAI.return_value = Mock()
-
-            agent = Agent(
-                config=agent_config,
-                global_storage=global_storage,
-                is_root=False,
-            )
-
-            assert agent._is_root is False

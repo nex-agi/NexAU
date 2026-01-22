@@ -13,12 +13,11 @@ from __future__ import annotations
 
 import json
 import warnings
-from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Literal, TypedDict, cast
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_serializer, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class Role(str, Enum):
@@ -285,12 +284,6 @@ class Message(BaseModel):
     role: Role
     content: list[DiscriminatedBlock] = Field(default_factory=_empty_blocks)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime | None = Field(default=None)
-
-    @field_serializer("created_at")
-    @classmethod
-    def serialize_created_at(cls, v: datetime | None) -> str:
-        return (v or datetime.now()).isoformat()
 
     @classmethod
     def user(cls, text: str) -> Message:

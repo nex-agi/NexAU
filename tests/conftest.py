@@ -165,8 +165,6 @@ def agent_state(mock_llm_config, global_storage, agent_context, mock_executor):
     return AgentState(
         agent_name="test_agent",
         agent_id="test_agent_123",
-        run_id="run_123",
-        root_run_id="run_123",
         context=agent_context,
         global_storage=global_storage,
         executor=mock_executor,
@@ -445,13 +443,6 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "e2e: marks tests as end-to-end tests")
     config.addinivalue_line("markers", "external: marks tests that require external services")
     config.addinivalue_line("markers", "llm: marks tests that require LLM services")
-
-
-# Configure anyio to only use asyncio backend (trio is not installed)
-@pytest.fixture
-def anyio_backend():
-    """Configure anyio to use asyncio backend."""
-    return "asyncio"
 
 
 def pytest_collection_modifyitems(config, items):

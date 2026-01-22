@@ -58,8 +58,6 @@ def agent_state(mock_executor):
     return AgentState(
         agent_name="test_agent",
         agent_id="test_agent_id",
-        run_id="run_123",
-        root_run_id="run_123",
         context=context,
         global_storage=global_storage,
         executor=mock_executor,

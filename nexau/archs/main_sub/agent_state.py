@@ -35,11 +35,8 @@ class AgentState:
 
     def __init__(
         self,
-        *,
         agent_name: str,
         agent_id: str,
-        run_id: str,
-        root_run_id: str,
         context: AgentContext,
         global_storage: GlobalStorage,
         executor: "Executor",
@@ -50,8 +47,6 @@ class AgentState:
         Args:
             agent_name: The name of the agent
             agent_id: The unique identifier of the agent
-            run_id: The current run ID
-            root_run_id: The root run ID
             context: The AgentContext instance for runtime context management
             global_storage: The GlobalStorage instance
             parent_agent_state: Optional parent state when this is a sub-agent
@@ -59,8 +54,6 @@ class AgentState:
         """
         self.agent_name = agent_name
         self.agent_id = agent_id
-        self.run_id = run_id
-        self.root_run_id = root_run_id
         self.context = context
         self.global_storage = global_storage
         self.parent_agent_state = parent_agent_state

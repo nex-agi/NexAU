@@ -23,7 +23,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import copy_context
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from anthropic.types import ToolParam
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
@@ -66,9 +66,6 @@ from nexau.archs.tool.tool import Tool
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, coerce_tool_result_content
 
-if TYPE_CHECKING:
-    from nexau.archs.session import SessionManager
-
 logger = logging.getLogger(__name__)
 
 
@@ -98,9 +95,6 @@ class Executor:
         global_storage: Any = None,
         tool_call_mode: str = "openai",
         openai_tools: list[ChatCompletionToolParam] | list[ToolParam] | None = None,
-        session_manager: "SessionManager | None" = None,
-        user_id: str | None = None,
-        session_id: str | None = None,
     ):
         """Initialize executor.
 
@@ -125,9 +119,6 @@ class Executor:
             middlewares: Optional list of middleware objects applied to all phases
             tool_call_mode: Preferred tool call format ('xml', 'openai', or 'anthropic')
             openai_tools: Structured tool definitions for OpenAI/anthropic tool calls
-            session_manager: Optional SessionManager for unified data access
-            user_id: Optional user ID for persistence
-            session_id: Optional session ID for persistence
         """
         self.agent_name = agent_name
         self.agent_id = agent_id
@@ -153,9 +144,6 @@ class Executor:
             agent_name,
             sub_agents,
             global_storage,
-            session_manager=session_manager,
-            user_id=user_id,
-            session_id=session_id,
         )
         self.batch_processor = BatchProcessor(
             self.subagent_manager,

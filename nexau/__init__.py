@@ -12,14 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Nexau - A general-purpose agent framework.
-
-To use Nexau core functionality:
-    from nexau import Agent, AgentConfig, LLMConfig
-
-To use transports:
-    from nexau.transports import SSETransportServer, TransportConfig
-"""
 
 from .archs.llm import LLMConfig
 from .archs.main_sub.agent import Agent

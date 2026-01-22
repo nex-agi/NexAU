@@ -20,14 +20,13 @@ import uuid
 import warnings
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import anthropic
 import dotenv
 import openai
 import yaml
 from anthropic.types import ToolParam
-from asyncer import asyncify
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 
 from nexau.archs.llm.llm_config import LLMConfig
@@ -35,18 +34,14 @@ from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import AgentConfig, ConfigError, ExecutionConfig
 from nexau.archs.main_sub.execution.executor import Executor
-from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.prompt_builder import PromptBuilder
 from nexau.archs.main_sub.sub_agent_naming import build_sub_agent_tool_name
 from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
     normalize_tool_call_mode,
 )
-from nexau.archs.main_sub.utils import run_sync
 from nexau.archs.main_sub.utils.cleanup_manager import cleanup_manager
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
-from nexau.archs.session import AgentRunActionKey, SessionManager
-from nexau.archs.session.orm import InMemoryDatabaseEngine
 from nexau.archs.tool import Tool
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
@@ -55,6 +50,14 @@ from nexau.core.messages import Message, Role, TextBlock
 
 # Setup logger for agent execution
 logger = logging.getLogger(__name__)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 
 class Agent:
@@ -66,50 +69,17 @@ class Agent:
         config: AgentConfig,
         agent_id: str | None = None,
         global_storage: GlobalStorage | None = None,
-        session_manager: SessionManager | None = None,
-        user_id: str | None = None,
-        session_id: str | None = None,
-        is_root: bool = True,
     ):
         """Initialize agent with configuration.
 
         Args:
             config: Agent configuration
-            agent_id: Optional agent ID (auto-generated if not provided)
             global_storage: Optional global storage instance
-            session_manager: Optional SessionManager for unified data access. If None,
-                uses the shared in-memory SessionManager (via InMemoryDatabaseEngine.get_shared_instance()).
-            user_id: Optional user ID for persistence
-            session_id: Optional session ID for persistence
-            is_root: Whether this is the root agent (default True). Set to False for sub-agents.
         """
-        logger.info("Initializing Agent (%s)", config.name)
-
-        # Store basic config
-        self._is_root = is_root
         self.config: AgentConfig = config
-        self._user_id = user_id or f"local_user_{uuid.uuid4().hex[:8]}"
-        self._session_id = session_id or f"local_{uuid.uuid4().hex[:8]}"
-
-        # Initialize session_manager
-        if session_manager is not None:
-            self._session_manager = session_manager
-            logger.debug("Using provided SessionManager")
-        else:
-            default_engine = InMemoryDatabaseEngine.get_shared_instance()
-            self._session_manager = SessionManager(engine=default_engine)
-            logger.debug("Using shared in-memory SessionManager")
-
-        # Async initialization: load storage and register agent in one call
-        self.global_storage, self.agent_id = self._init_session_state(
-            provided_storage=global_storage,
-            proposed_agent_id=agent_id,
-        )
-        self.agent_name = self.config.name or self.agent_id
-
-        # Set tracer in global storage (with conflict check)
-        self._setup_tracer()
-
+        self.global_storage = global_storage if global_storage is not None else GlobalStorage()
+        if self.config.resolved_tracer is not None:
+            self.global_storage.set("tracer", self.config.resolved_tracer)
         # Prefer the tool_call_mode defined on AgentConfig when an ExecutionConfig
         # is not explicitly provided to keep Python-created agents consistent with
         # YAML-created ones.
@@ -119,7 +89,6 @@ class Agent:
         self.use_structured_tool_calls = self.tool_call_mode in STRUCTURED_TOOL_CALL_MODES
 
         # Initialize services
-        logger.info("Initializing LLM client (api_type=%s)", self.config.llm_config.api_type if self.config.llm_config else "default")
         self.openai_client = self._initialize_openai_client()
 
         # Initialize MCP tools if configured
@@ -128,9 +97,6 @@ class Agent:
 
         # Build tool payloads after all tools (including MCP) are loaded
         self.tool_call_payload = self._build_tool_call_payload() if self.use_structured_tool_calls else []
-        logger.info(
-            "Registered %d tools, %d sub_agents", len(self.config.tools), len(self.config.sub_agents) if self.config.sub_agents else 0
-        )
 
         # Build tool registry for quick lookup
         self.tool_registry = {tool.name: tool for tool in self.config.tools}
@@ -142,132 +108,20 @@ class Agent:
 
         # Initialize prompt builder
         self.prompt_builder = PromptBuilder()
+        self.agent_name = self.config.name or f"agent_{uuid.uuid4().hex}"
+        self.agent_id = agent_id or uuid.uuid4().hex[:8]
 
         # Initialize execution components
         self._initialize_execution_components()
 
-        # Conversation history (using HistoryList for automatic persistence)
-        self._history: HistoryList = HistoryList(
-            session_manager=self._session_manager,
-            history_key=AgentRunActionKey(
-                user_id=self._user_id,
-                session_id=self._session_id,
-                agent_id=self.agent_id,
-            ),
-            agent_name=self.agent_name,
-        )
+        # Conversation history
+        self.history: list[Message] = []
 
         # Queue for messages to be processed in the next execution cycle
         self.queued_messages: list[Message] = []
 
         # Register for cleanup
         cleanup_manager.register_agent(self)
-        logger.info("Agent '%s' initialized (agent_id=%s, session_id=%s)", self.agent_name, self.agent_id, self._session_id)
-
-    @property
-    def history(self) -> HistoryList:
-        """Get the conversation history."""
-        return self._history
-
-    @history.setter
-    def history(self, value: list[Message] | HistoryList) -> None:
-        """Set the conversation history with smart detection.
-
-        This setter intercepts direct assignment to agent.history and:
-        1. If value is already a HistoryList, use it directly
-        2. Otherwise, use replace_all() which intelligently detects append vs replace
-
-        Args:
-            value: New history (list of messages or HistoryList)
-        """
-        if isinstance(value, HistoryList):
-            self._history = value
-        else:
-            self._history.replace_all(value)
-
-    def _init_session_state(
-        self,
-        *,
-        provided_storage: GlobalStorage | None,
-        proposed_agent_id: str | None,
-    ) -> tuple[GlobalStorage, str]:
-        """Initialize session state: global_storage and agent_id.
-
-        This method consolidates all async session operations into a single call
-        to avoid multiple run_sync overhead.
-
-        Initialization logic:
-        1. Initialize database models
-        2. Register agent (which also creates/fetches session)
-        3. Determine global_storage:
-           - If user provides storage: use it directly (override mode)
-           - Otherwise: use session.storage directly (restore mode)
-
-        Args:
-            provided_storage: User-provided GlobalStorage, or None
-            proposed_agent_id: User-proposed agent ID, or None
-
-        Returns:
-            Tuple of (global_storage, agent_id)
-        """
-
-        async def _init() -> tuple[GlobalStorage, str]:
-            # Step 1: Initialize database models
-            await self._session_manager.setup_models()
-            logger.debug("Session models initialized")
-
-            # Step 2: Register agent - this also returns the session
-            # No separate get_session call needed, avoiding overlay
-            agent_id, session = await self._session_manager.register_agent(
-                user_id=self._user_id,
-                session_id=self._session_id,
-                agent_id=proposed_agent_id,
-                agent_name=self.config.name or "",
-                is_root=self._is_root,
-            )
-            logger.debug("Agent registered with id='%s'", agent_id)
-
-            # Step 3: Determine global_storage
-            if provided_storage is not None:
-                # Override mode: user explicitly provides storage
-                storage = provided_storage
-                logger.info(
-                    "Using user-provided global_storage (override mode, %d keys)",
-                    len(storage.to_dict()),
-                )
-            else:
-                # Restore mode: use session.storage directly (already a GlobalStorage)
-                storage = session.storage
-                storage_size = len(storage.to_dict())
-                if storage_size > 0:
-                    logger.info(
-                        "Restored global_storage from session '%s' (%d keys)",
-                        self._session_id,
-                        storage_size,
-                    )
-                else:
-                    logger.debug("Using empty GlobalStorage from session")
-
-            return storage, agent_id
-
-        return run_sync(_init(), timeout=10.0)
-
-    def _setup_tracer(self) -> None:
-        """Set up tracer in global_storage with conflict detection.
-
-        Raises:
-            ValueError: If both global_storage and config have conflicting tracers
-        """
-        existing_tracer = self.global_storage.get("tracer")
-        if existing_tracer is not None and self.config.resolved_tracer is not None:
-            raise ValueError(
-                "Conflicting tracers: global_storage already has a tracer, "
-                "but config.resolved_tracer is also provided. "
-                "For nested agents, do not set resolved_tracer in config."
-            )
-        if self.config.resolved_tracer is not None:
-            self.global_storage.set("tracer", self.config.resolved_tracer)
-            logger.debug("Tracer set from config.resolved_tracer")
 
     @classmethod
     def from_yaml(
@@ -341,7 +195,6 @@ class Agent:
     def _initialize_mcp_tools(self) -> None:
         """Initialize tools from MCP servers."""
         try:
-            # Import here to avoid circular imports and optional dependency
             from ..tool.builtin import sync_initialize_mcp_tools
 
             logger.info(
@@ -428,7 +281,7 @@ class Agent:
     def _initialize_execution_components(self) -> None:
         """Initialize execution components."""
         token_counter = self._resolve_token_counter()
-
+        # Initialize the Executor
         self.executor = Executor(
             agent_name=self.agent_name,
             agent_id=self.agent_id,
@@ -451,9 +304,6 @@ class Agent:
             global_storage=self.global_storage,
             tool_call_mode=self.tool_call_mode,
             openai_tools=self.tool_call_payload,
-            session_manager=self._session_manager,
-            user_id=self._user_id,
-            session_id=self._session_id,
         )
 
     def _resolve_token_counter(self) -> TokenCounter:
@@ -469,85 +319,18 @@ class Agent:
 
         return TokenCounter()
 
-    async def run_async(
+    def run(
         self,
         *,
         message: str | list[Message],
-        history: list[dict[str, Any]] | list[Message] | None = None,
+        history: list[dict[str, Any]] | None = None,
         context: dict[str, Any] | None = None,
         state: dict[str, Any] | None = None,
         config: dict[str, Any] | None = None,
         parent_agent_state: AgentState | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
     ) -> str | tuple[str, dict[str, Any]]:
-        """Run agent asynchronously with a message and return response.
-
-        This is the async version of run(). Use this when you're already in an async context.
-
-        The agent lock ensures only one execution per (session_id, agent_id) at a time.
-        If the agent is already running, this method fails immediately with TimeoutError.
-
-        Lock features:
-        - Short TTL (default 30s) with automatic heartbeat renewal
-        - Fast recovery: max 30s deadlock time even if release fails
-        - No waiting: fails immediately if agent is busy
-
-        Args:
-            message: User message or list of messages
-            history: Optional conversation history
-            context: Optional context dict
-            state: Optional state dict
-            config: Optional config dict
-            parent_agent_state: Optional parent agent state (for sub-agents)
-            custom_llm_client_provider: Optional custom LLM client provider
-
-        Returns:
-            Agent response string or tuple of (response, state)
-
-        Raises:
-            TimeoutError: If agent is already running
-        """
-        # Generate run_id before acquiring lock
-        from nexau.archs.session.id_generator import generate_run_id
-
-        run_id = generate_run_id()
-
-        async with self._session_manager.agent_lock.acquire(
-            session_id=self._session_id,
-            agent_id=self.agent_id,
-            user_id=self._user_id,
-            run_id=run_id,
-        ):
-            return await self._run_async_inner(
-                message=message,
-                history=history,
-                context=context,
-                state=state,
-                config=config,
-                parent_agent_state=parent_agent_state,
-                custom_llm_client_provider=custom_llm_client_provider,
-                run_id=run_id,
-            )
-
-    async def _run_async_inner(
-        self,
-        *,
-        message: str | list[Message],
-        history: list[dict[str, Any]] | list[Message] | None = None,
-        context: dict[str, Any] | None = None,
-        state: dict[str, Any] | None = None,
-        config: dict[str, Any] | None = None,
-        parent_agent_state: AgentState | None = None,
-        custom_llm_client_provider: Callable[[str], Any] | None = None,
-        run_id: str,
-    ) -> str | tuple[str, dict[str, Any]]:
-        """Inner implementation of run_async without lock handling.
-
-        This method contains the actual agent execution logic.
-
-        Args:
-            run_id: Run ID for this execution (generated by run_async)
-        """
+        """Run agent with a message and return response."""
         logger.info(f"🤖 Agent '{self.config.name}' starting execution")
         message_text_for_logs = (
             message
@@ -578,20 +361,6 @@ class Agent:
         # Determine span type based on whether this is a sub-agent
         span_type = SpanType.SUB_AGENT if parent_agent_state else SpanType.AGENT
 
-        # Update agent metadata if needed
-        agent_model = await self._session_manager.get_agent(
-            user_id=self._user_id,
-            session_id=self._session_id,
-            agent_id=self.agent_id,
-        )
-        if agent_model and agent_model.agent_name != self.agent_name:
-            await self._session_manager.update_agent_metadata(
-                user_id=self._user_id,
-                session_id=self._session_id,
-                agent_id=self.agent_id,
-                agent_name=self.agent_name,
-            )
-
         # Create agent context
         with AgentContext(context=merged_context) as ctx:
             runtime_client = self.openai_client
@@ -603,7 +372,7 @@ class Agent:
                 except Exception as exc:  # Defensive: user provided callable
                     logger.warning(f"⚠️ custom_llm_client_provider failed for '{self.agent_name}': {exc}")
 
-            # Build system prompt
+            # Build and add system prompt to history
             system_prompt = self.prompt_builder.build_system_prompt(
                 agent_config=self.config,
                 tools=self.config.tools,
@@ -611,69 +380,14 @@ class Agent:
                 runtime_context=merged_context,
                 include_tool_instructions=not self.use_structured_tool_calls,
             )
-
-            # Determine root_run_id and parent_run_id
-            if parent_agent_state:
-                root_run_id = parent_agent_state.root_run_id
-                parent_run_id = parent_agent_state.run_id
-            else:
-                root_run_id = run_id
-                parent_run_id = None
-
-            # Update HistoryList context with new run IDs
-            self._history.update_context(
-                run_id=run_id,
-                root_run_id=root_run_id,
-                parent_run_id=parent_run_id,
-            )
-
-            # Load history from storage if this is the first run (history is empty)
             if not self.history:
-                history_key = AgentRunActionKey(
-                    user_id=self._user_id,
-                    session_id=self._session_id,
-                    agent_id=self.agent_id,
-                )
-                stored_messages = await self._session_manager.agent_run_action.load_messages(key=history_key)
-                stored_non_system_messages = [msg for msg in stored_messages if msg.role != Role.SYSTEM]
+                self.history = [Message(role=Role.SYSTEM, content=[TextBlock(text=system_prompt)])]
 
-                if stored_non_system_messages:
-                    logger.info(f"📚 Restored {len(stored_non_system_messages)} messages from storage for agent '{self.config.name}'")
-                    # Initialize history with system prompt + stored messages
-                    # Use update_baseline=True since we're loading from storage
-                    self._history.replace_all(
-                        [Message(role=Role.SYSTEM, content=[TextBlock(text=system_prompt)])] + stored_non_system_messages,
-                        update_baseline=True,
-                    )
-                else:
-                    # Initialize with just system prompt
-                    # Use update_baseline=True since this is initial state
-                    self._history.replace_all(
-                        [Message(role=Role.SYSTEM, content=[TextBlock(text=system_prompt)])],
-                        update_baseline=True,
-                    )
-            else:
-                # Update system prompt for existing history
-                # Find and replace the system message
-                # Use update_baseline=True since we're resetting to known state
-                non_system_messages = [msg for msg in self.history if msg.role != Role.SYSTEM]
-                self._history.replace_all(
-                    [Message(role=Role.SYSTEM, content=[TextBlock(text=system_prompt)])] + non_system_messages,
-                    update_baseline=True,
-                )
-
-            # Add caller-provided history
             if history:
-                # Support both Message objects and legacy dict format
-                if history and isinstance(history[0], Message):
-                    self.history.extend(cast(list[Message], history))
-                else:
-                    self.history.extend(messages_from_legacy_openai_chat(cast(list[dict[str, Any]], history)))
+                self.history.extend(messages_from_legacy_openai_chat(history))
 
-            # Add user message (HistoryList will auto-persist)
             if isinstance(message, str):
-                user_message = Message.user(message)
-                self.history.append(user_message)
+                self.history.append(Message.user(message))
             else:
                 self.history.extend(message)
 
@@ -681,8 +395,6 @@ class Agent:
             agent_state = AgentState(
                 agent_name=self.agent_name,
                 agent_id=self.agent_id,
-                run_id=run_id,
-                root_run_id=root_run_id,
                 context=ctx,
                 global_storage=self.global_storage,
                 parent_agent_state=parent_agent_state,
@@ -690,78 +402,25 @@ class Agent:
             )
 
             # Execute with or without tracing
-            try:
-                if tracer:
-                    response = await self._run_with_tracing(
-                        tracer=tracer,
-                        span_type=span_type,
-                        message_text_for_logs=message_text_for_logs,
-                        agent_state=agent_state,
-                        merged_context=merged_context,
-                        runtime_client=runtime_client,
-                        custom_llm_client_provider=custom_llm_client_provider,
-                    )
-                else:
-                    response = await self._run_inner(
-                        agent_state,
-                        merged_context,
-                        runtime_client=runtime_client,
-                        custom_llm_client_provider=custom_llm_client_provider,
-                    )
+            if tracer:
+                return self._run_with_tracing(
+                    tracer=tracer,
+                    span_type=span_type,
+                    message_text_for_logs=message_text_for_logs,
+                    agent_state=agent_state,
+                    merged_context=merged_context,
+                    runtime_client=runtime_client,
+                    custom_llm_client_provider=custom_llm_client_provider,
+                )
+            else:
+                return self._run_inner(
+                    agent_state,
+                    merged_context,
+                    runtime_client=runtime_client,
+                    custom_llm_client_provider=custom_llm_client_provider,
+                )
 
-                # Persist context and storage to session
-                await self._persist_session_state(ctx.context)
-
-                logger.info(f"✅ Agent '{self.config.name}' completed execution")
-                return response
-
-            except Exception as e:
-                logger.error(f"❌ Agent '{self.config.name}' encountered error: {e}")
-                raise
-
-    def run(
-        self,
-        *,
-        message: str | list[Message],
-        history: list[dict[str, Any]] | list[Message] | None = None,
-        context: dict[str, Any] | None = None,
-        state: dict[str, Any] | None = None,
-        config: dict[str, Any] | None = None,
-        parent_agent_state: AgentState | None = None,
-        custom_llm_client_provider: Callable[[str], Any] | None = None,
-    ) -> str | tuple[str, dict[str, Any]]:
-        """Run agent with a message and return response.
-
-        This is the sync version that wraps run_async().
-
-        Args:
-            message: User message or list of messages
-            history: Optional conversation history
-            context: Optional context dict
-            state: Optional state dict
-            config: Optional config dict
-            parent_agent_state: Optional parent agent state (for sub-agents)
-            custom_llm_client_provider: Optional custom LLM client provider
-
-        Returns:
-            Agent response string or tuple of (response, state)
-
-        Raises:
-            TimeoutError: If agent is already running
-        """
-        return run_sync(
-            self.run_async(
-                message=message,
-                history=history,
-                context=context,
-                state=state,
-                config=config,
-                parent_agent_state=parent_agent_state,
-                custom_llm_client_provider=custom_llm_client_provider,
-            )
-        )
-
-    async def _run_with_tracing(
+    def _run_with_tracing(
         self,
         tracer: BaseTracer,
         span_type: SpanType,
@@ -771,7 +430,18 @@ class Agent:
         runtime_client: Any,
         custom_llm_client_provider: Callable[[str], Any] | None,
     ) -> str:
-        """Execute agent with tracing enabled."""
+        """Execute agent with tracing enabled.
+
+        Args:
+            tracer: The tracer instance to use
+            span_type: Type of span (AGENT or SUB_AGENT)
+            message: User message
+            agent_state: Agent state instance
+            merged_context: Merged context dictionary
+
+        Returns:
+            Agent response string
+        """
         span_name = f"Agent: {self.agent_name}"
         inputs = {
             "message": message_text_for_logs,
@@ -785,18 +455,20 @@ class Agent:
         trace_ctx = TraceContext(tracer, span_name, span_type, inputs, attributes)
         with trace_ctx:
             try:
-                response = await self._run_inner(
+                response = self._run_inner(
                     agent_state,
                     merged_context,
                     runtime_client=runtime_client,
                     custom_llm_client_provider=custom_llm_client_provider,
                 )
+                # Set outputs - TraceContext will handle ending the span
                 trace_ctx.set_outputs({"response": response})
                 return response
             except Exception:
+                # TraceContext will handle the error, but we still need to re-raise
                 raise
 
-    async def _run_inner(
+    def _run_inner(
         self,
         agent_state: AgentState,
         merged_context: dict[str, Any],
@@ -804,47 +476,46 @@ class Agent:
         runtime_client: Any,
         custom_llm_client_provider: Callable[[str], Any] | None,
     ) -> str:
-        """Inner execution logic without tracing wrapper."""
+        """Inner execution logic without tracing wrapper.
+
+        Args:
+            agent_state: Agent state instance
+            merged_context: Merged context dictionary
+
+        Returns:
+            Agent response string
+        """
         try:
-            # Execute using the executor in a thread pool to avoid blocking the event loop
-            # This allows streaming events to be processed in real-time
-            # Using asyncer.asyncify for cleaner async/sync conversion
-            response, updated_messages = await asyncify(self.executor.execute)(
+            # Execute using the executor
+            response, updated_messages = self.executor.execute(
                 self.history,
                 agent_state,
                 runtime_client=runtime_client,
                 custom_llm_client_provider=custom_llm_client_provider,
             )
-            # HistoryList will automatically persist any changes made by executor
             self.history = updated_messages
 
-            # Flush pending messages to persistence
-            self.history.flush()
-
+            logger.info(
+                f"✅ Agent '{self.config.name}' completed execution",
+            )
             return response
 
         except Exception as e:
+            logger.error(
+                f"❌ Agent '{self.config.name}' encountered error: {e}",
+            )
+
             if self.config.error_handler:
                 error_response = self.config.error_handler(
                     e,
                     self,
                     merged_context,
                 )
-                assistant_error_message = Message.assistant(error_response)
-                # HistoryList will automatically persist this message
-                self.history.append(assistant_error_message)
-
-                # Flush pending messages to persistence
-                self.history.flush()
-
+                self.history.append(Message.assistant(error_response))
                 return error_response
             else:
-                assistant_error = Message.assistant(f"Error: {str(e)}")
-                self.history.append(assistant_error)
-
-                # Flush pending messages to persistence
-                self.history.flush()
-
+                error_message = f"Error: {str(e)}"
+                self.history.append(Message.assistant(error_message))
                 raise
 
     def add_tool(self, tool: Tool) -> None:
@@ -852,32 +523,6 @@ class Agent:
         self.config.tools.append(tool)
         self.tool_registry[tool.name] = tool
         self.executor.add_tool(tool)
-
-    async def _persist_session_state(self, context: dict[str, Any]) -> None:
-        """Persist context and storage to session.
-
-        This method saves the current agent context and global_storage to the SessionModel
-        for persistence across requests. Non-serializable objects (like tracer, skill_registry)
-        are automatically filtered out by sanitize_for_serialization in the storage layer.
-
-        Args:
-            context: The current agent context to persist
-        """
-        try:
-            # Persist both context and storage in a single operation
-            await self._session_manager.update_session_state(
-                user_id=self._user_id,
-                session_id=self._session_id,
-                context=context,
-                storage=self.global_storage,
-            )
-            logger.debug(
-                "Persisted session state for session '%s', agent '%s'",
-                self._session_id,
-                self.agent_id,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to persist session state: {e}")
 
     def add_sub_agent(self, name: str, agent_config: AgentConfig) -> None:
         """Add a sub-agent config."""

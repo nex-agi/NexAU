@@ -14,16 +14,11 @@
 
 """Agent context manager for context management."""
 
-import logging
 import threading
 from collections.abc import Callable
 from contextlib import contextmanager
 from types import TracebackType
-from typing import Any, cast
-
-from pydantic_core import core_schema
-
-logger = logging.getLogger(__name__)
+from typing import Any
 
 
 class AgentContext:
@@ -158,43 +153,6 @@ class GlobalStorage:
         self._locks: dict[str, threading.RLock] = {}
         self._storage_lock = threading.RLock()
         self._locks_lock = threading.RLock()
-
-    def to_dict(self) -> dict[str, Any]:
-        return dict(self.items())
-
-    @classmethod
-    def _validate(cls, v: Any) -> "GlobalStorage":
-        if isinstance(v, GlobalStorage):
-            return v
-        if isinstance(v, dict):
-            gs = GlobalStorage()
-            gs.update(cast(dict[str, Any], v))
-            return gs
-        return GlobalStorage()
-
-    @classmethod
-    def _serialize(cls, v: Any) -> dict[str, Any]:
-        from nexau.archs.session.models.serialization_utils import sanitize_for_serialization
-
-        try:
-            if isinstance(v, GlobalStorage):
-                return sanitize_for_serialization(v.to_dict())
-            if isinstance(v, dict):
-                return sanitize_for_serialization(v)
-            return {}
-        except (RecursionError, ValueError, TypeError) as e:
-            # Return empty dict if serialization fails due to circular references
-            # or non-serializable objects
-            logger.warning("GlobalStorage serialization failed: %s", e)
-            return {}
-
-    @classmethod
-    def __get_pydantic_core_schema__(cls, source_type: Any, handler: Any) -> core_schema.CoreSchema:
-        return core_schema.json_or_python_schema(
-            json_schema=core_schema.no_info_plain_validator_function(cls._validate),
-            python_schema=core_schema.no_info_plain_validator_function(cls._validate),
-            serialization=core_schema.plain_serializer_function_ser_schema(cls._serialize, info_arg=False),
-        )
 
     def set(self, key: str, value: Any) -> None:
         """Set a value in global storage."""

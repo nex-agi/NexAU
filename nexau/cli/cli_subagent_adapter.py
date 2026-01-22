@@ -65,9 +65,7 @@ class CLIEnabledSubAgentManager(SubAgentManager):
         )
         # Preserve runtime state
         new_manager.running_sub_agents = manager.running_sub_agents
-        new_manager.session_manager = manager.session_manager
-        new_manager.user_id = manager.user_id
-        new_manager.session_id = manager.session_id
+        new_manager.finished_sub_agents = manager.finished_sub_agents
         if manager._shutdown_event.is_set():
             new_manager._shutdown_event.set()
         return new_manager
@@ -136,25 +134,29 @@ class CLIEnabledSubAgentManager(SubAgentManager):
         if self._shutdown_event.is_set():
             raise RuntimeError(f"Agent '{self.agent_name}' is shutting down")
 
-        if sub_agent_name not in self.sub_agents.keys():
-            raise ValueError(f"Sub-agent '{sub_agent_name}' not found")
+        sub_agent: Agent
+        # Recall finished sub-agent if requested.
+        if sub_agent_id is not None and sub_agent_id in self.finished_sub_agents:
+            sub_agent = self.finished_sub_agents[sub_agent_id]
+            if self.global_storage is not None:
+                sub_agent.global_storage = self.global_storage
+            self.finished_sub_agents.pop(sub_agent_id)
+        else:
+            if sub_agent_name not in self.sub_agents.keys():
+                raise ValueError(f"Sub-agent '{sub_agent_name}' not found")
 
-        sub_agent_config = self.sub_agents[sub_agent_name]
-        parent_agent_id = parent_agent_state.agent_id if parent_agent_state else None
+            sub_agent_config = self.sub_agents[sub_agent_name]
 
-        # Create sub-agent with optional recall by ID (uses agent_repo for persistence)
-        sub_agent = Agent(
-            agent_id=sub_agent_id,
-            config=sub_agent_config,
-            global_storage=self.global_storage,
-            session_manager=self.session_manager,
-            user_id=self.user_id,
-            session_id=self.session_id,
-        )
+            sub_agent = Agent(
+                config=sub_agent_config,
+                global_storage=self.global_storage,
+            )
 
         self.running_sub_agents[sub_agent.agent_id] = sub_agent
+
         self._inject_cli_hooks(sub_agent)
 
+        parent_agent_id = getattr(parent_agent_state, "agent_id", None) if parent_agent_state else None
         self._emit_event(
             "start",
             {
@@ -180,12 +182,10 @@ class CLIEnabledSubAgentManager(SubAgentManager):
                 parent_agent_state=parent_agent_state,
                 custom_llm_client_provider=custom_llm_client_provider,
             )
-            result_text = (
-                f"{result}\n"
-                f"Sub-agent finished (sub_agent_name: {sub_agent.agent_name}, "
-                f"sub_agent_id: {sub_agent.agent_id}. Recall this agent if needed)."
-            )
+            result = str(result) + f"Sub-agent finished (sub_agent_id: {sub_agent.agent_id}. Recall this agent if needed)."
+            result_text = result
 
+            self.finished_sub_agents[sub_agent.agent_id] = sub_agent
             self._emit_event(
                 "complete",
                 {
