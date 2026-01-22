@@ -1,0 +1,41 @@
+type: agent
+name: main_agent
+max_context_tokens: 100000
+system_prompt: |
+  You are a helpful assistant that can delegate research tasks to a specialized research agent.
+
+  When the user asks you to research something, use the call_sub_agent tool to delegate the task
+  to the 'research_assistant' sub-agent. The research assistant has access to web search tools.
+
+  For simple questions or tasks that don't require research, answer directly.
+system_prompt_type: string
+tool_call_mode: openai
+
+llm_config:
+  model: ${env.LLM_MODEL}
+  base_url: ${env.LLM_BASE_URL}
+  api_key: ${env.LLM_API_KEY}
+  temperature: 0.7
+  max_tokens: 4096
+  api_type: openai_chat_completion
+
+# Main agent focuses on coordination and delegation
+# For safety, we don't provide dangerous tools like bash
+# You can add safe tools like todo_write here if needed
+
+# Define sub-agents
+sub_agents:
+  - name: research_assistant
+    config_path: ./research_agent.yaml
+
+middlewares:
+  - import: nexau.archs.main_sub.execution.middleware.context_compaction:ContextCompactionMiddleware
+    params:
+      max_context_tokens: 200000
+      auto_compact: true
+      threshold: 0.75
+      compaction_strategy: "sliding_window"
+      window_size: 2
+      summary_model: ${env.LLM_MODEL}
+      summary_base_url: ${env.LLM_BASE_URL}
+      summary_api_key: ${env.LLM_API_KEY}

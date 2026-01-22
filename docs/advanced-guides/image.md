@@ -1,4 +1,4 @@
-# Multimodal Image Handling in NexAU
+# Image Handling
 
 This document explains how to use **Image Inputs** (sending images to an agent) and **Image Tool Results** (returning images from tools) within the NexAU framework.
 

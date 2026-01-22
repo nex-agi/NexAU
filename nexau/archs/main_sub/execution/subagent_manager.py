@@ -17,13 +17,16 @@
 import logging
 import threading
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import AgentConfig
 from nexau.archs.main_sub.utils.xml_utils import XMLParser
 
 from ..agent_context import GlobalStorage
+
+if TYPE_CHECKING:
+    from nexau.archs.session import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,9 @@ class SubAgentManager:
         agent_name: str,
         sub_agents: dict[str, AgentConfig],
         global_storage: GlobalStorage | None = None,
+        session_manager: "SessionManager | None" = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
     ):
         """Initialize sub-agent manager.
 
@@ -43,16 +49,21 @@ class SubAgentManager:
             agent_name: Name of the parent agent
             sub_agents: Dictionary mapping sub-agent names to AgentConfig objects
             global_storage: Optional global storage to share with sub-agents
+            session_manager: Optional SessionManager for unified data access
+            user_id: Optional user ID for persistence
+            session_id: Optional session ID for persistence
         """
         from nexau.archs.main_sub.agent import Agent
 
         self.agent_name = agent_name
         self.sub_agents: dict[str, AgentConfig] = sub_agents
         self.global_storage = global_storage
+        self.session_manager = session_manager
+        self.user_id = user_id
+        self.session_id = session_id
         self.xml_parser = XMLParser()
         self._shutdown_event = threading.Event()
         self.running_sub_agents: dict[str, Agent] = {}
-        self.finished_sub_agents: dict[str, Agent] = {}
 
     def call_sub_agent(
         self,
@@ -96,31 +107,33 @@ class SubAgentManager:
             logger.error(f"❌ {error_msg}")
             raise ValueError(error_msg)
 
-        # recall finished sub-agent
+        sub_agent_config = self.sub_agents[sub_agent_name]
+
+        # Recall existing sub-agent by ID (will restore history from agent_repo)
         if sub_agent_id is not None:
-            if sub_agent_id not in self.finished_sub_agents.keys():
-                available_ids = list(self.finished_sub_agents.keys())
-                raise ValueError(
-                    f"Invalid sub_agent_id: '{sub_agent_id}'. "
-                    f"This ID was not found in the finished sub-agents list. "
-                    f"Available IDs are: {available_ids}"
-                )
             logger.info(
-                f"🔄🤖 Recall finished sub-agent '{sub_agent_id}{sub_agent_name}' with message: {message}",
+                f"🔄🤖 Recall sub-agent '{sub_agent_name}' with id '{sub_agent_id}' - history will be restored from storage",
             )
-            sub_agent = self.finished_sub_agents[sub_agent_id]
-            self.finished_sub_agents.pop(sub_agent_id)
-
-            if self.global_storage is not None:
-                sub_agent.global_storage = self.global_storage
-
-        # elif
-        # Instantiate a new sub-agent
+            # Create new Agent instance with the same agent_id
+            # Agent.run() will restore history from agent_repo automatically
+            sub_agent = Agent(
+                agent_id=sub_agent_id,
+                config=sub_agent_config,
+                global_storage=self.global_storage,
+                session_manager=self.session_manager,
+                user_id=self.user_id,
+                session_id=self.session_id,
+                is_root=False,
+            )
         else:
-            sub_agent_config = self.sub_agents[sub_agent_name]
+            # Instantiate a new sub-agent (Agent.__init__ handles registration)
             sub_agent = Agent(
                 config=sub_agent_config,
                 global_storage=self.global_storage,
+                session_manager=self.session_manager,
+                user_id=self.user_id,
+                session_id=self.session_id,
+                is_root=False,
             )
 
         self.running_sub_agents[sub_agent.agent_id] = sub_agent
@@ -151,7 +164,7 @@ class SubAgentManager:
             logger.info(
                 f"✅ Sub-agent '{sub_agent_name}' returned result to agent '{self.agent_name}'",
             )
-            self.finished_sub_agents[sub_agent.agent_id] = sub_agent
+            # Sub-agent history is persisted via agent_repo, no need to keep in memory
             return str(result)
 
         except Exception as e:

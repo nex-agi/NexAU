@@ -13,3 +13,15 @@ coverage.xml
 htmlcov/
 .vscode/
 .mypy_cache/
+.hypothesis/
+
+# Nx
+.nx/
+dist/
+tmp/
+
+vite.config.*.timestamp*
+vitest.config.*.timestamp*
+
+# Generated LLM aggregator test data (from tests/scripts/generate_llm_aggregator_logging_data.py)
+tests/test_data/llm_aggregators/
