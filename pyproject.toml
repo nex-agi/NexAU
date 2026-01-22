@@ -7,8 +7,8 @@ dependencies = [
   "requests>=2.25.0",
   "jinja2>=3.0.0",
   "beautifulsoup4>=4.9.0",
-  "openai>=1.0.0",
-  "httpx>=0.25.0",
+  "openai>=2.14.0",
+  "httpx>=0.28.1",
   "mcp>=1.12.3",
   "lark_oapi>=1.4.0",
   "sqlmodel>=0.0.18",
@@ -26,6 +26,14 @@ dependencies = [
   "jupyter-client>=8.6.3",
   "ipykernel>=7.1.0",
   "json-repair>=0.55.0",
+  "ag-ui-protocol>=0.1.10",
+  # HTTP transport requires fastapi
+  "fastapi>=0.104.0",
+  "uvicorn[standard]>=0.24.0",
+  "python-dotenv>=1.0.0",
+  "redis>=7.1.0",
+  "asyncer>=0.0.12",
+  "python-ulid>=3.1.0",
 ]
 description = "A general-purpose agent framework"
 name = "nexau"
@@ -35,7 +43,16 @@ version = "0.3.5"
 
 [project.scripts]
 # Public entry point exposed via `pip install nexau`.
-nexau-cli = "nexau.cli_wrapper:main"
+nexau-cli = "nexau.cli_wrapper:main"  # Keep for backward compatibility (Node.js CLI)
+nexau = "nexau.cli.main:main"         # NEW unified Python CLI entry point
+
+[project.optional-dependencies]
+# Async database drivers for SQLDatabaseEngine
+async-db = [
+  "aiosqlite>=0.19.0",
+  "asyncpg>=0.29.0",
+  "aiomysql>=0.2.0",
+]
 
 [dependency-groups]
 # Local-only tooling deps used in lint/type/test workflows.
@@ -50,6 +67,9 @@ dev = [
   "types-jsonschema>=4.25.1.20251009",
   "pandas-stubs>=2.3.3.251201",
   "types-setuptools>=80.9.0.20250822",
+  "hypothesis>=6.100.0",
+  "aiosqlite>=0.19.0",  # For testing async SQLite
+  "greenlet>=3.0.0",    # Required for SQLAlchemy async operations
 ]
 
 [build-system]

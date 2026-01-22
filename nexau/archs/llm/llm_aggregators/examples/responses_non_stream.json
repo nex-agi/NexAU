@@ -1,0 +1,128 @@
+{
+  "id": "resp_0bd7354b50f1005401696e7108e1c88190ae2055dde315575c",
+  "created_at": 1768845576.0,
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "metadata": {},
+  "model": "gpt-5.2-high",
+  "object": "response",
+  "output": [
+    {
+      "id": "rs_0bd7354b50f1005401696e71094c7881909e0b16e0d160f1aa",
+      "summary": [],
+      "type": "reasoning",
+      "content": null,
+      "encrypted_content": null,
+      "status": null
+    },
+    {
+      "arguments": "{\"location\":\"Beijing, China\",\"unit\":\"celsius\"}",
+      "call_id": "call_0hQXqqnBtPwGBsokan3rEafQ",
+      "name": "get_weather",
+      "type": "function_call",
+      "id": "fc_0bd7354b50f1005401696e710cf8f08190bba97128b025cc82",
+      "status": "completed"
+    },
+    {
+      "arguments": "{\"expression\":\"25*47\"}",
+      "call_id": "call_eNu7oqQAxWnBlm1ZdHElzdUy",
+      "name": "calculate",
+      "type": "function_call",
+      "id": "fc_0bd7354b50f1005401696e710d3fc48190bb152a8993ea2234",
+      "status": "completed"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "temperature": 1.0,
+  "tool_choice": "auto",
+  "tools": [
+    {
+      "name": "get_weather",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "location": {
+            "description": "The city and state, e.g. San Francisco, CA",
+            "type": "string"
+          },
+          "unit": {
+            "enum": [
+              "celsius",
+              "fahrenheit"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "location",
+          "unit"
+        ],
+        "type": "object"
+      },
+      "strict": true,
+      "type": "function",
+      "description": "Get the current weather in a given location"
+    },
+    {
+      "name": "calculate",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "expression": {
+            "description": "The mathematical expression to evaluate, e.g. 2+2, 10*5",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expression"
+        ],
+        "type": "object"
+      },
+      "strict": true,
+      "type": "function",
+      "description": "Perform a basic mathematical calculation"
+    }
+  ],
+  "top_p": 0.98,
+  "background": false,
+  "conversation": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "previous_response_id": null,
+  "prompt": null,
+  "prompt_cache_key": "a3a5400b-a2a1-45cd-bcad-f63921d987e5",
+  "prompt_cache_retention": null,
+  "reasoning": {
+    "effort": "high",
+    "generate_summary": null,
+    "summary": "detailed"
+  },
+  "safety_identifier": "user-WMhEaoN62YJGF3e33y5vHuui",
+  "service_tier": "default",
+  "status": "completed",
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "top_logprobs": 0,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 1132,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 258,
+    "output_tokens_details": {
+      "reasoning_tokens": 199
+    },
+    "total_tokens": 1390
+  },
+  "user": null,
+  "completed_at": 1768845581,
+  "frequency_penalty": 0,
+  "presence_penalty": 0,
+  "store": false
+}

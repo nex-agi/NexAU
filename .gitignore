@@ -13,3 +13,12 @@ coverage.xml
 htmlcov/
 .vscode/
 .mypy_cache/
+.hypothesis/
+
+# Nx
+.nx/
+dist/
+tmp/
+
+vite.config.*.timestamp*
+vitest.config.*.timestamp*

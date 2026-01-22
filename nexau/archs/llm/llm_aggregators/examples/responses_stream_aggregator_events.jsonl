@@ -1,0 +1,114 @@
+{"type": "THINKING_TEXT_MESSAGE_START", "timestamp": 1768845591082, "raw_event": null, "parent_message_id": "resp_08ee7d2c6e2aca2301696e710ff83c819194a3a3182448ca2e", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f", "run_id": "example-run"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591082, "raw_event": null, "delta": "**Planning", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591082, "raw_event": null, "delta": " user", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591083, "raw_event": null, "delta": " interaction", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591083, "raw_event": null, "delta": "**\n\nI", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591083, "raw_event": null, "delta": " need", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591083, "raw_event": null, "delta": " to", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591083, "raw_event": null, "delta": " start", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591083, "raw_event": null, "delta": " with", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591084, "raw_event": null, "delta": " a", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591084, "raw_event": null, "delta": " greeting", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591084, "raw_event": null, "delta": " and", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591084, "raw_event": null, "delta": " ask", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591085, "raw_event": null, "delta": " about", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591085, "raw_event": null, "delta": " the", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591086, "raw_event": null, "delta": " user's", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591086, "raw_event": null, "delta": " favorite", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591086, "raw_event": null, "delta": " color", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591086, "raw_event": null, "delta": " along", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591091, "raw_event": null, "delta": " with", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591091, "raw_event": null, "delta": " the", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591092, "raw_event": null, "delta": " reasoning", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591093, "raw_event": null, "delta": " behind", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591093, "raw_event": null, "delta": " it", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591093, "raw_event": null, "delta": ".", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591093, "raw_event": null, "delta": " Then", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591093, "raw_event": null, "delta": " I'll", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591093, "raw_event": null, "delta": " check", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591094, "raw_event": null, "delta": " two", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591094, "raw_event": null, "delta": " tasks", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591094, "raw_event": null, "delta": ":", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591094, "raw_event": null, "delta": " the", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591094, "raw_event": null, "delta": " weather", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591094, "raw_event": null, "delta": " in", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591095, "raw_event": null, "delta": " Beijing", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591095, "raw_event": null, "delta": " today", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591095, "raw_event": null, "delta": " and", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591095, "raw_event": null, "delta": " perform", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591096, "raw_event": null, "delta": " a", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591096, "raw_event": null, "delta": " multiplication", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591096, "raw_event": null, "delta": " calculation", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591096, "raw_event": null, "delta": ".", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591096, "raw_event": null, "delta": " I'll", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591096, "raw_event": null, "delta": " use", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591097, "raw_event": null, "delta": " our", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591097, "raw_event": null, "delta": " tools", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591097, "raw_event": null, "delta": " to", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591097, "raw_event": null, "delta": " get", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591097, "raw_event": null, "delta": " the", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591097, "raw_event": null, "delta": " weather", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591098, "raw_event": null, "delta": " and", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591098, "raw_event": null, "delta": " compute", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591098, "raw_event": null, "delta": " the", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591098, "raw_event": null, "delta": " multiplication", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591098, "raw_event": null, "delta": " together", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591098, "raw_event": null, "delta": " in", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591099, "raw_event": null, "delta": " parallel", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591099, "raw_event": null, "delta": ".", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591099, "raw_event": null, "delta": " I", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591099, "raw_event": null, "delta": " must", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591099, "raw_event": null, "delta": " remember", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591099, "raw_event": null, "delta": " to", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591100, "raw_event": null, "delta": " follow", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591100, "raw_event": null, "delta": " the", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591100, "raw_event": null, "delta": " guidelines", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591100, "raw_event": null, "delta": " and", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591100, "raw_event": null, "delta": " avoid", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591100, "raw_event": null, "delta": " using", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591101, "raw_event": null, "delta": " emojis", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591101, "raw_event": null, "delta": ",", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591101, "raw_event": null, "delta": " while", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591101, "raw_event": null, "delta": " providing", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591101, "raw_event": null, "delta": " the", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591101, "raw_event": null, "delta": " summary", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591101, "raw_event": null, "delta": " in", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591102, "raw_event": null, "delta": " Chinese", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591102, "raw_event": null, "delta": ".", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591102, "raw_event": null, "delta": " Let's", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591102, "raw_event": null, "delta": " make", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591102, "raw_event": null, "delta": " sure", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591102, "raw_event": null, "delta": " to", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591102, "raw_event": null, "delta": " run", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591103, "raw_event": null, "delta": " the", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591103, "raw_event": null, "delta": " weather", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591103, "raw_event": null, "delta": " and", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591103, "raw_event": null, "delta": " calculation", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591103, "raw_event": null, "delta": " tools", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591103, "raw_event": null, "delta": " simultaneously", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_CONTENT", "timestamp": 1768845591103, "raw_event": null, "delta": "!", "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "THINKING_TEXT_MESSAGE_END", "timestamp": 1768845591104, "raw_event": null, "thinking_message_id": "rs_08ee7d2c6e2aca2301696e711063dc81919cbf459baa10b27f"}
+{"type": "TOOL_CALL_START", "timestamp": 1768845591108, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb", "tool_call_name": "get_weather", "parent_message_id": "resp_08ee7d2c6e2aca2301696e710ff83c819194a3a3182448ca2e"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591109, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb", "delta": "{"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591109, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb", "delta": "\"location"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591109, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb", "delta": "\":"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591109, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb", "delta": "\"Be"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591109, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb", "delta": "ijing"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591110, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb", "delta": ","}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591110, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb", "delta": " CN"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591110, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb", "delta": "\","}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591110, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb", "delta": "\"unit"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591111, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb", "delta": "\":"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591111, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb", "delta": "\"c"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591111, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb", "delta": "elsius"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591111, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb", "delta": "\"}"}
+{"type": "TOOL_CALL_END", "timestamp": 1768845591119, "raw_event": null, "tool_call_id": "call_3pYBKarZS0SBNiSA57vqoSOb"}
+{"type": "TOOL_CALL_START", "timestamp": 1768845591120, "raw_event": null, "tool_call_id": "call_8Yxpg06qDC4feTametDMGSHG", "tool_call_name": "calculate", "parent_message_id": "resp_08ee7d2c6e2aca2301696e710ff83c819194a3a3182448ca2e"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591120, "raw_event": null, "tool_call_id": "call_8Yxpg06qDC4feTametDMGSHG", "delta": "{"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591120, "raw_event": null, "tool_call_id": "call_8Yxpg06qDC4feTametDMGSHG", "delta": "\"expression"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591120, "raw_event": null, "tool_call_id": "call_8Yxpg06qDC4feTametDMGSHG", "delta": "\":"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591120, "raw_event": null, "tool_call_id": "call_8Yxpg06qDC4feTametDMGSHG", "delta": "\"25"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591120, "raw_event": null, "tool_call_id": "call_8Yxpg06qDC4feTametDMGSHG", "delta": "*"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591121, "raw_event": null, "tool_call_id": "call_8Yxpg06qDC4feTametDMGSHG", "delta": "47"}
+{"type": "TOOL_CALL_ARGS", "timestamp": 1768845591121, "raw_event": null, "tool_call_id": "call_8Yxpg06qDC4feTametDMGSHG", "delta": "\"}"}
+{"type": "TOOL_CALL_END", "timestamp": 1768845591121, "raw_event": null, "tool_call_id": "call_8Yxpg06qDC4feTametDMGSHG"}

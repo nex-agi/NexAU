@@ -1,0 +1,28 @@
+name: AI Code Reviewer
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v6
+
+      # - name: AI Code Reviewer
+      #   uses: china-qijizhifeng/ai-codereviewer@guxiang/refactor/modern-github-action
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   with:
+      #     OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+      #     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      #     OPENAI_API_MODEL: ${{ vars.OPENAI_API_MODEL }}
+      #     exclude: "**/*.json, **/*.md" # Optional: exclude patterns separated by commas
