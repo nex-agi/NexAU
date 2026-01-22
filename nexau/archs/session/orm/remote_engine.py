@@ -151,9 +151,10 @@ class RemoteDatabaseEngine(DatabaseEngine):
     async def create(self, model: T) -> T:
         client = await self._get_client()
         table = get_table_name(type(model))
+        # Use exclude_none=True to let database use default values for unset fields
         response = await client.post(
             f"/{table}/create",
-            json={"data": model.model_dump_json()},
+            json={"data": model.model_dump_json(exclude_none=True)},
         )
         response.raise_for_status()
         data = response.json().get("data")
@@ -164,9 +165,10 @@ class RemoteDatabaseEngine(DatabaseEngine):
             return []
         client = await self._get_client()
         table = get_table_name(type(models[0]))
+        # Use exclude_none=True to let database use default values for unset fields
         response = await client.post(
             f"/{table}/create_many",
-            json={"models": [m.model_dump_json() for m in models]},
+            json={"models": [m.model_dump_json(exclude_none=True) for m in models]},
         )
         response.raise_for_status()
         results = response.json().get("results", [])
@@ -175,9 +177,10 @@ class RemoteDatabaseEngine(DatabaseEngine):
     async def update(self, model: T) -> T:
         client = await self._get_client()
         table = get_table_name(type(model))
+        # Use exclude_none=True to avoid type conversion issues with NULL values
         response = await client.post(
             f"/{table}/update",
-            json={"data": model.model_dump_json()},
+            json={"data": model.model_dump_json(exclude_none=True)},
         )
         response.raise_for_status()
         data = response.json().get("data")
