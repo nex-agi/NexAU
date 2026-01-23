@@ -27,7 +27,7 @@ import dotenv
 import openai
 import yaml
 from anthropic.types import ToolParam
-from asyncer import asyncify
+from asyncer import asyncify, syncify
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 
 from nexau.archs.llm.llm_config import LLMConfig
@@ -42,7 +42,6 @@ from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
     normalize_tool_call_mode,
 )
-from nexau.archs.main_sub.utils import run_sync
 from nexau.archs.main_sub.utils.cleanup_manager import cleanup_manager
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
 from nexau.archs.session import AgentRunActionKey, SessionManager
@@ -250,7 +249,7 @@ class Agent:
 
             return storage, agent_id
 
-        return run_sync(_init(), timeout=10.0)
+        return syncify(_init, raise_sync_error=False)()
 
     def _setup_tracer(self) -> None:
         """Set up tracer in global_storage with conflict detection.
@@ -749,8 +748,9 @@ class Agent:
         Raises:
             TimeoutError: If agent is already running
         """
-        return run_sync(
-            self.run_async(
+
+        async def _run() -> str | tuple[str, dict[str, Any]]:
+            return await self.run_async(
                 message=message,
                 history=history,
                 context=context,
@@ -759,7 +759,8 @@ class Agent:
                 parent_agent_state=parent_agent_state,
                 custom_llm_client_provider=custom_llm_client_provider,
             )
-        )
+
+        return syncify(_run, raise_sync_error=False)()
 
     async def _run_with_tracing(
         self,

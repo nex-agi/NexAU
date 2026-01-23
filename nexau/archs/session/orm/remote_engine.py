@@ -12,11 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Remote database engine via HTTP API."""
+"""Remote database engine that communicates with a Session Manager via HTTP.
+
+This module provides a `RemoteDatabaseEngine` that implements the `DatabaseEngine`
+interface by making HTTP requests to a remote Session Manager service.
+
+Token Authentication:
+    Pass `api_key` at construction time. For request-level tokens, create a new
+    engine instance per request with the request's token.
+
+Example:
+    # Static token (for development)
+    engine = RemoteDatabaseEngine(
+        base_url="http://session-manager:8005/v1/sessions",
+        api_key="dev-token",
+    )
+
+    # Per-request token (for production)
+    async def handle_request(request_token: str):
+        engine = RemoteDatabaseEngine(
+            base_url="http://session-manager:8005/v1/sessions",
+            api_key=request_token,
+        )
+        # Use engine for this request only
+        ...
+        await engine.close()
+"""
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, TypeVar
 
 import httpx
@@ -29,10 +53,16 @@ T = TypeVar("T", bound=SQLModel)
 
 
 class RemoteDatabaseEngine(DatabaseEngine):
-    """Remote storage engine via HTTP API.
+    """Database engine that communicates with Session Manager via HTTP.
 
-    Provides the same interface as other DatabaseEngine implementations but
-    communicates with a remote storage service.
+    Uses httpx.AsyncClient for async HTTP operations.
+    For request-level token authentication, create a new engine instance
+    per request with the request's token as api_key.
+
+    Attributes:
+        _base_url: Base URL of the Session Manager API
+        _api_key: API key for authentication (optional)
+        _timeout: HTTP request timeout in seconds
     """
 
     def __init__(
@@ -41,16 +71,25 @@ class RemoteDatabaseEngine(DatabaseEngine):
         api_key: str | None = None,
         timeout: float = 30.0,
     ) -> None:
+        """Initialize the remote database engine.
+
+        Args:
+            base_url: Base URL of the Session Manager API
+            api_key: API key/token for authentication (optional)
+            timeout: HTTP request timeout in seconds
+        """
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
 
-    async def _get_client(self) -> httpx.AsyncClient:
+    def _get_client(self) -> httpx.AsyncClient:
+        """Get or create the async HTTP client."""
         if self._client is None:
-            headers: dict[str, str] = {"Content-Type": "application/json"}
+            headers = {"Content-Type": "application/json"}
             if self._api_key:
                 headers["Authorization"] = f"Bearer {self._api_key}"
+
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 headers=headers,
@@ -59,12 +98,13 @@ class RemoteDatabaseEngine(DatabaseEngine):
         return self._client
 
     async def close(self) -> None:
+        """Close the HTTP client."""
         if self._client is not None:
             await self._client.aclose()
             self._client = None
 
     async def __aenter__(self) -> RemoteDatabaseEngine:
-        await self._get_client()
+        self._get_client()
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -81,7 +121,8 @@ class RemoteDatabaseEngine(DatabaseEngine):
         return [self._parse_model(model_class, r) for r in results]
 
     async def setup_models(self, model_classes: list[type[SQLModel]]) -> None:
-        client = await self._get_client()
+        """Ensure tables exist for all model classes."""
+        client = self._get_client()
 
         async def ensure_table(model_class: type[SQLModel]) -> None:
             table = get_table_name(model_class)
@@ -99,6 +140,8 @@ class RemoteDatabaseEngine(DatabaseEngine):
             )
             response.raise_for_status()
 
+        import asyncio
+
         await asyncio.gather(*[ensure_table(mc) for mc in model_classes])
 
     async def find_first(
@@ -107,7 +150,8 @@ class RemoteDatabaseEngine(DatabaseEngine):
         *,
         filters: Filter,
     ) -> T | None:
-        client = await self._get_client()
+        """Find the first record matching the filters."""
+        client = self._get_client()
         table = get_table_name(model_class)
         response = await client.post(
             f"/{table}/find_first",
@@ -130,7 +174,8 @@ class RemoteDatabaseEngine(DatabaseEngine):
         offset: int | None = None,
         order_by: str | tuple[str, ...] | None = None,
     ) -> list[T]:
-        client = await self._get_client()
+        """Find all records matching the filters."""
+        client = self._get_client()
         table = get_table_name(model_class)
         order_by_data = None
         if order_by is not None:
@@ -149,9 +194,9 @@ class RemoteDatabaseEngine(DatabaseEngine):
         return self._parse_models(model_class, results)
 
     async def create(self, model: T) -> T:
-        client = await self._get_client()
+        """Create a new record."""
+        client = self._get_client()
         table = get_table_name(type(model))
-        # Use exclude_none=True to let database use default values for unset fields
         response = await client.post(
             f"/{table}/create",
             json={"data": model.model_dump_json(exclude_none=True)},
@@ -161,11 +206,12 @@ class RemoteDatabaseEngine(DatabaseEngine):
         return self._parse_model(type(model), data)
 
     async def create_many(self, models: list[T]) -> list[T]:
+        """Create multiple records."""
         if not models:
             return []
-        client = await self._get_client()
+
+        client = self._get_client()
         table = get_table_name(type(models[0]))
-        # Use exclude_none=True to let database use default values for unset fields
         response = await client.post(
             f"/{table}/create_many",
             json={"models": [m.model_dump_json(exclude_none=True) for m in models]},
@@ -175,9 +221,9 @@ class RemoteDatabaseEngine(DatabaseEngine):
         return self._parse_models(type(models[0]), results)
 
     async def update(self, model: T) -> T:
-        client = await self._get_client()
+        """Update an existing record."""
+        client = self._get_client()
         table = get_table_name(type(model))
-        # Use exclude_none=True to avoid type conversion issues with NULL values
         response = await client.post(
             f"/{table}/update",
             json={"data": model.model_dump_json(exclude_none=True)},
@@ -192,7 +238,8 @@ class RemoteDatabaseEngine(DatabaseEngine):
         *,
         filters: Filter,
     ) -> int:
-        client = await self._get_client()
+        """Delete records matching the filters."""
+        client = self._get_client()
         table = get_table_name(model_class)
         response = await client.post(
             f"/{table}/delete",
@@ -207,7 +254,8 @@ class RemoteDatabaseEngine(DatabaseEngine):
         *,
         filters: Filter | None = None,
     ) -> int:
-        client = await self._get_client()
+        """Count records matching the filters."""
+        client = self._get_client()
         table = get_table_name(model_class)
         response = await client.post(
             f"/{table}/count",

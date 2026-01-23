@@ -1,9 +1,6 @@
-import asyncio
-import concurrent.futures
 import importlib
 import os
 import re
-from collections.abc import Coroutine
 from typing import Any, cast
 
 import yaml
@@ -13,35 +10,6 @@ class ConfigError(Exception):
     """Exception raised for configuration errors."""
 
     pass
-
-
-def run_sync[T](coro: Coroutine[Any, Any, T], timeout: float | None = None) -> T:
-    """Run an async coroutine synchronously, handling event loop contexts.
-
-    This function safely runs async code from sync context, whether or not
-    an event loop is already running.
-
-    Args:
-        coro: The coroutine to run
-        timeout: Maximum time to wait in seconds. None means no timeout.
-
-    Returns:
-        The result of the coroutine
-
-    Raises:
-        TimeoutError: If the operation times out (when timeout is set)
-        Exception: Any exception raised by the coroutine
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        # No running loop - just run directly
-        return asyncio.run(coro)
-
-    # Has running loop - use thread pool to avoid deadlock
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(asyncio.run, coro)
-        return future.result(timeout=timeout)
 
 
 YamlValue = dict[str, Any] | list[Any] | str | int | float | bool | None

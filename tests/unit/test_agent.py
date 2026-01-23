@@ -16,6 +16,7 @@
 Unit tests for agent components.
 """
 
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -1422,3 +1423,93 @@ class TestAgentHistoryManagement:
             )
 
             assert agent._is_root is False
+
+
+class TestAgentAsyncSyncCompatibility:
+    """Test Agent initialization works in both sync and async contexts.
+
+    These tests verify that the syncify-based implementation works correctly
+    when Agent is created from:
+    1. Pure sync context (no event loop)
+    2. Async context via asyncify (simulates FastAPI + asyncify pattern)
+    """
+
+    def test_agent_init_from_sync_context(self, agent_config, global_storage):
+        """Test Agent initialization from pure sync context (no event loop)."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            # This runs without any event loop - syncify should use anyio.run()
+            agent = Agent(config=agent_config, global_storage=global_storage)
+
+            assert agent is not None
+            assert agent.config == agent_config
+            assert agent.global_storage is not None
+
+    def test_agent_init_from_asyncify_context(self, agent_config, global_storage):
+        """Test Agent initialization via asyncify (simulates FastAPI pattern)."""
+        import asyncio
+
+        from asyncer import asyncify
+
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            def create_agent() -> Agent:
+                # This runs in anyio worker thread - syncify uses anyio.from_thread.run()
+                return Agent(config=agent_config, global_storage=global_storage)
+
+            async def main() -> Agent:
+                return await asyncify(create_agent)()
+
+            agent = asyncio.run(main())
+
+            assert agent is not None
+            assert agent.config == agent_config
+            assert agent.global_storage is not None
+
+    def test_agent_run_from_sync_context(self, agent_config, global_storage):
+        """Test Agent.run() from pure sync context."""
+        with (
+            patch("nexau.archs.main_sub.agent.openai") as mock_openai,
+            patch.object(Agent, "run_async") as mock_run_async,
+        ):
+            mock_openai.OpenAI.return_value = Mock()
+
+            async def mock_run(*args, **kwargs):
+                return "sync response"
+
+            mock_run_async.side_effect = mock_run
+
+            agent = Agent(config=agent_config, global_storage=global_storage)
+            result = agent.run(message="test")
+
+            assert result == "sync response"
+
+    def test_agent_run_from_asyncify_context(self, agent_config, global_storage):
+        """Test Agent.run() via asyncify context."""
+        import asyncio
+
+        from asyncer import asyncify
+
+        with (
+            patch("nexau.archs.main_sub.agent.openai") as mock_openai,
+            patch.object(Agent, "run_async") as mock_run_async,
+        ):
+            mock_openai.OpenAI.return_value = Mock()
+
+            async def mock_run(*args, **kwargs):
+                return "asyncify response"
+
+            mock_run_async.side_effect = mock_run
+
+            def run_agent() -> str | tuple[str, dict[str, Any]]:
+                agent = Agent(config=agent_config, global_storage=global_storage)
+                return agent.run(message="test")
+
+            async def main() -> str | tuple[str, dict[str, Any]]:
+                return await asyncify(run_agent)()
+
+            result = asyncio.run(main())
+
+            assert result == "asyncify response"

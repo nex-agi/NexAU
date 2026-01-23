@@ -96,7 +96,7 @@ class TestRemoteDatabaseEngine:
         engine = RemoteDatabaseEngine(base_url="http://localhost:8000")
 
         async def run() -> None:
-            client = await engine._get_client()
+            client = engine._get_client()  # _get_client is sync now
             assert isinstance(client, httpx.AsyncClient)
             assert client is engine._client
             await engine.close()
@@ -111,7 +111,7 @@ class TestRemoteDatabaseEngine:
         )
 
         async def run() -> None:
-            client = await engine._get_client()
+            client = engine._get_client()  # _get_client is sync now
             assert "Authorization" in client.headers
             assert client.headers["Authorization"] == "Bearer test_key"
             await engine.close()
@@ -123,8 +123,8 @@ class TestRemoteDatabaseEngine:
         engine = RemoteDatabaseEngine(base_url="http://localhost:8000")
 
         async def run() -> None:
-            client1 = await engine._get_client()
-            client2 = await engine._get_client()
+            client1 = engine._get_client()  # _get_client is sync now
+            client2 = engine._get_client()
             assert client1 is client2
             await engine.close()
 
@@ -135,7 +135,7 @@ class TestRemoteDatabaseEngine:
         engine = RemoteDatabaseEngine(base_url="http://localhost:8000")
 
         async def run() -> None:
-            await engine._get_client()
+            engine._get_client()  # _get_client is sync now
             assert engine._client is not None
             await engine.close()
             assert engine._client is None
