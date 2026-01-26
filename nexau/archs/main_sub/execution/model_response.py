@@ -150,7 +150,7 @@ def _normalize_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
 
     # Handle reasoning tokens (for models that support it)
     try:
-        if "reasoning_tokens" in usage:
+        if "reasoning_tokens" in usage and usage["reasoning_tokens"] is not None:
             normalized["reasoning_tokens"] = usage["reasoning_tokens"]
         else:
             normalized["reasoning_tokens"] = 0
@@ -173,9 +173,15 @@ def _normalize_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
         if "total_tokens" in usage:
             normalized["total_tokens"] = usage["total_tokens"]
         else:
-            normalized["total_tokens"] = normalized["input_tokens"] + normalized["reasoning_tokens"] + normalized["completion_tokens"]
+            input_t = normalized["input_tokens"] or 0
+            reasoning_t = normalized["reasoning_tokens"] or 0
+            completion_t = normalized["completion_tokens"] or 0
+            normalized["total_tokens"] = input_t + reasoning_t + completion_t
     except Exception:
-        normalized["total_tokens"] = normalized["input_tokens"] + normalized["reasoning_tokens"] + normalized["completion_tokens"]
+        input_t = normalized.get("input_tokens") or 0
+        reasoning_t = normalized.get("reasoning_tokens") or 0
+        completion_t = normalized.get("completion_tokens") or 0
+        normalized["total_tokens"] = input_t + reasoning_t + completion_t
 
     return normalized
 
