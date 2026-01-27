@@ -1422,15 +1422,57 @@ class MCPManager:
         self.client.add_server(config)
 
     async def initialize_servers(self) -> dict[str, list[MCPTool]]:
-        """Initialize all configured servers and discover their tools."""
+        """Initialize all configured servers and discover their tools concurrently."""
         all_tools: dict[str, list[MCPTool]] = {}
+        server_names = list(self.client.servers.keys())
 
-        for server_name in self.client.servers.keys():
+        if not server_names:
+            logger.info("No MCP servers configured, skipping initialization")
+            return all_tools
+
+        logger.info(f"Initializing {len(server_names)} MCP servers in parallel: {server_names}")
+
+        async def init_server(server_name: str) -> tuple[str, list[MCPTool]]:
+            """Initialize a single server and discover its tools."""
             if await self.client.connect_to_server(server_name):
                 tools = await self.client.discover_tools(server_name)
-                all_tools[server_name] = tools
-            else:
-                all_tools[server_name] = []
+                return server_name, tools
+            return server_name, []
+
+        # Run all server initializations concurrently
+        results = await asyncio.gather(
+            *[init_server(name) for name in server_names],
+            return_exceptions=True,
+        )
+
+        # Process results
+        success_count = 0
+        failed_servers: list[str] = []
+
+        for i, result in enumerate(results):
+            server_name = server_names[i]
+            if isinstance(result, BaseException):
+                failed_servers.append(server_name)
+                logger.error(
+                    f"Failed to initialize MCP server '{server_name}': {result}",
+                )
+                logger.debug(f"Detailed error for server '{server_name}': {result!r}")
+                continue
+            server_name, tools = result
+            all_tools[server_name] = tools
+            success_count += 1
+
+        # Summary log
+        total_tools = sum(len(tools) for tools in all_tools.values())
+        if failed_servers:
+            logger.warning(
+                f"MCP initialization completed: {success_count}/{len(server_names)} servers succeeded, "
+                f"{len(failed_servers)} failed ({failed_servers}), {total_tools} tools discovered"
+            )
+        else:
+            logger.info(
+                f"MCP initialization completed: {success_count}/{len(server_names)} servers succeeded, {total_tools} tools discovered"
+            )
 
         return all_tools
 
