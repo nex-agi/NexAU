@@ -882,7 +882,13 @@ class AgentConfigBuilder:
 
         # Resolve YAML path
         if not Path(yaml_path).is_absolute():
-            yaml_path = base_path / yaml_path
+            if ":" in yaml_path:
+                res = yaml_path.split(":")
+                from importlib.resources import files
+
+                yaml_path = files(res[0]).joinpath(res[1])
+            else:
+                yaml_path = base_path / yaml_path
 
         # Create tool
         tool = Tool.from_yaml(str(yaml_path), binding, as_skill=as_skill, extra_kwargs=extra_kwargs, lazy=lazy)
