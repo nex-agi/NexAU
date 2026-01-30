@@ -20,6 +20,7 @@ import os
 import time
 from typing import Any
 
+from .file_format_validators import validate_csv_format
 from .file_state import update_file_timestamp, validate_file_read_state
 from .file_type_utils import is_binary_extension
 
@@ -191,6 +192,22 @@ def file_write_tool(
                 ensure_ascii=False,
             )
 
+        # CSV format validation
+        if file_path.endswith(".csv"):
+            is_valid, error_msg = validate_csv_format(content)
+            if not is_valid:
+                return json.dumps(
+                    {
+                        "error": error_msg,
+                        "hint": "Use pandas: df.to_csv('file.csv', index=False) or csv module",
+                        "file_path": file_path,
+                        "success": False,
+                        "duration_ms": int((time.time() - start_time) * 1000),
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+
         # Check if file exists
         file_exists = os.path.exists(file_path)
         operation_type = "update" if file_exists else "create"
@@ -202,8 +219,9 @@ def file_write_tool(
 
         if file_exists:
             # Validate file state
-            is_valid, error_msg = validate_file_read_state(file_path)
+            is_valid, error_msg_nullable = validate_file_read_state(file_path)
             if not is_valid:
+                error_msg = error_msg_nullable or "File state validation failed"
                 return json.dumps(
                     {
                         "error": error_msg,
