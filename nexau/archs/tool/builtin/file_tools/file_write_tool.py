@@ -21,6 +21,8 @@ import time
 from typing import Any
 
 from .file_format_validators import validate_csv_format
+from nexau.archs.sandbox import BaseSandbox, LocalSandbox, SandboxStatus
+
 from .file_state import update_file_timestamp, validate_file_read_state
 from .file_type_utils import is_binary_extension
 
@@ -31,26 +33,39 @@ MAX_LINES_TO_RENDER = 10
 MAX_LINES_TO_RENDER_FOR_ASSISTANT = 16000
 
 
-def _detect_file_encoding(file_path: str) -> str:
+def _detect_file_encoding(file_path: str, sandbox: Any) -> str:
     """Detect file encoding."""
     try:
         chardet = importlib.import_module("chardet")
-        with open(file_path, "rb") as f:
-            raw_data = f.read(10000)  # Read first 10KB for detection
-            result = chardet.detect(raw_data)
-            return result.get("encoding", "utf-8") or "utf-8"
+        result = sandbox.read_file(file_path, binary=True)
+        if result.status == SandboxStatus.SUCCESS and result.content:
+            if isinstance(result.content, bytes):
+                raw_data = result.content[:10000]
+            elif isinstance(result.content, str):
+                raw_data = result.content.encode()[:10000]
+            else:
+                return "utf-8"
+            detection = chardet.detect(raw_data)
+            return detection.get("encoding", "utf-8") or "utf-8"
     except ModuleNotFoundError:
-        return "utf-8"
+        pass
     except Exception:
-        # If chardet is unavailable or detection fails, default to utf-8
-        return "utf-8"
+        pass
+    # If chardet is unavailable or detection fails, default to utf-8
+    return "utf-8"
 
 
-def _detect_line_endings(file_path: str) -> str:
+def _detect_line_endings(file_path: str, sandbox: Any) -> str:
     """Detect file line endings."""
     try:
-        with open(file_path, "rb") as f:
-            content = f.read(1024)  # Read first 1KB
+        result = sandbox.read_file(file_path, binary=True)
+        if result.status == SandboxStatus.SUCCESS and result.content:
+            if isinstance(result.content, bytes):
+                content = result.content[:1024]
+            elif isinstance(result.content, str):
+                content = result.content.encode()[:1024]
+            else:
+                return "\n"
             if b"\r\n" in content:
                 return "\r\n"
             elif b"\n" in content:
@@ -62,24 +77,22 @@ def _detect_line_endings(file_path: str) -> str:
     return "\n"  # Default to \n
 
 
-def _has_write_permission(file_path: str) -> bool:
+def _has_write_permission(file_path: str, sandbox: Any) -> bool:
     """Check if we have write permission."""
     try:
+        # Check if file exists
+        if sandbox.file_exists(file_path):
+            file_info = sandbox.get_file_info(file_path)
+            return file_info.writable
+
         # Check if directory exists and is writable
         directory = os.path.dirname(file_path)
-        if not os.path.exists(directory):
-            # Check if we can create the directory
-            parent = os.path.dirname(directory)
-            while parent and not os.path.exists(parent):
-                parent = os.path.dirname(parent)
-            return os.access(parent, os.W_OK) if parent else False
+        if sandbox.file_exists(directory):
+            dir_info = sandbox.get_file_info(directory)
+            return dir_info.writable
 
-        # Check if file exists
-        if os.path.exists(file_path):
-            return os.access(file_path, os.W_OK)
-        else:
-            # Check if directory is writable
-            return os.access(directory, os.W_OK)
+        # Directory doesn't exist, assume we can create it
+        return True
     except Exception:
         return False
 
@@ -107,6 +120,7 @@ def _generate_diff(old_content: str, new_content: str, file_path: str) -> str:
 def _write_file_content(
     file_path: str,
     content: str,
+    sandbox: Any,
     encoding: str = "utf-8",
     line_ending: str = "\n",
 ) -> None:
@@ -115,19 +129,16 @@ def _write_file_content(
     if line_ending != "\n":
         content = content.replace("\n", line_ending)
 
-    # Create directory
-    directory = os.path.dirname(file_path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-
-    # Write file
-    with open(file_path, "w", encoding=encoding, newline="") as f:
-        f.write(content)
+    # Write file through sandbox
+    result = sandbox.write_file(file_path, content, encoding=encoding, binary=False, create_directories=True)
+    if result.status != SandboxStatus.SUCCESS:
+        raise Exception(result.error or "Failed to write file")
 
 
 def file_write_tool(
     file_path: str,
     content: str,
+    sandbox: BaseSandbox | None = None,
 ) -> str:
     """
     Write content to a file in the local file system. Overwrites if file exists.
@@ -152,6 +163,9 @@ def file_write_tool(
     start_time = time.time()
 
     try:
+        # Get sandbox instance
+        sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
+
         # Validate file path
         if not os.path.isabs(file_path):
             return json.dumps(
@@ -166,7 +180,7 @@ def file_write_tool(
             )
 
         # Check write permission
-        if not _has_write_permission(file_path):
+        if not _has_write_permission(file_path, sandbox):
             return json.dumps(
                 {
                     "error": f"No write permission: {file_path}",
@@ -209,7 +223,7 @@ def file_write_tool(
                 )
 
         # Check if file exists
-        file_exists = os.path.exists(file_path)
+        file_exists = sandbox.file_exists(file_path)
         operation_type = "update" if file_exists else "create"
 
         # Read original content and detect encoding
@@ -234,13 +248,20 @@ def file_write_tool(
                 )
 
             # Detect file encoding and line endings
-            encoding = _detect_file_encoding(file_path)
-            line_ending = _detect_line_endings(file_path)
+            encoding = _detect_file_encoding(file_path, sandbox)
+            line_ending = _detect_line_endings(file_path, sandbox)
 
             # Read original content
             try:
-                with open(file_path, encoding=encoding) as f:
-                    old_content = f.read()
+                read_result = sandbox.read_file(file_path, encoding=encoding)
+                if read_result.status != SandboxStatus.SUCCESS:
+                    raise Exception(read_result.error or "Failed to read file")
+                if isinstance(read_result.content, str):
+                    old_content = read_result.content
+                elif isinstance(read_result.content, bytes):
+                    old_content = read_result.content.decode(encoding)
+                else:
+                    old_content = ""
             except Exception as e:
                 logger.error(f"Failed to read original file: {e}")
                 return json.dumps(
@@ -256,7 +277,7 @@ def file_write_tool(
 
         # Write file
         try:
-            _write_file_content(file_path, content, encoding, line_ending)
+            _write_file_content(file_path, content, sandbox, encoding, line_ending)
         except Exception as e:
             logger.error(f"Failed to write file: {e}")
             return json.dumps(
@@ -271,7 +292,7 @@ def file_write_tool(
             )
 
         # Update timestamp cache
-        update_file_timestamp(file_path)
+        update_file_timestamp(file_path, sandbox)
 
         # Generate diff (for update operations)
         diff_content = ""
@@ -361,6 +382,7 @@ class FileWriteTool:
         max_lines_preview: int = MAX_LINES_TO_RENDER,
         auto_create_dirs: bool = True,
         check_permissions: bool = True,
+        sandbox: BaseSandbox | None = None,
     ):
         """
         Initialize file write tool.
@@ -369,10 +391,12 @@ class FileWriteTool:
             max_lines_preview: Maximum lines to show in preview.
             auto_create_dirs: Whether to auto-create directories.
             check_permissions: Whether to check permissions.
+            agent_state: Agent state for sandbox access.
         """
         self.max_lines_preview = max_lines_preview
         self.auto_create_dirs = auto_create_dirs
         self.check_permissions = check_permissions
+        self.sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
         self.logger = logging.getLogger(self.__class__.__name__)
 
     def write_file(
@@ -397,24 +421,27 @@ class FileWriteTool:
         start_time = time.time()
 
         try:
+            # Get sandbox instance
+            sandbox = self.sandbox
+
             # Validate path
             if not os.path.isabs(file_path):
                 raise ValueError("File path must be absolute")
 
             # Check permissions
-            if self.check_permissions and not _has_write_permission(file_path):
+            if self.check_permissions and not _has_write_permission(file_path, sandbox):
                 raise PermissionError(f"No write permission: {file_path}")
 
             # Check file state
-            file_exists = os.path.exists(file_path)
+            file_exists = sandbox.file_exists(file_path)
             operation_type = "update" if file_exists else "create"
 
             # Handle encoding and line endings
             if file_exists:
                 if encoding is None:
-                    encoding = _detect_file_encoding(file_path)
+                    encoding = _detect_file_encoding(file_path, sandbox)
                 if line_ending is None:
-                    line_ending = _detect_line_endings(file_path)
+                    line_ending = _detect_line_endings(file_path, sandbox)
             else:
                 encoding = encoding or "utf-8"
                 line_ending = line_ending or "\n"
@@ -422,14 +449,20 @@ class FileWriteTool:
             # Read original content
             old_content = ""
             if file_exists:
-                with open(file_path, encoding=encoding) as f:
-                    old_content = f.read()
+                read_result = sandbox.read_file(file_path, encoding=encoding)
+                if read_result.status == SandboxStatus.SUCCESS and read_result.content:
+                    if isinstance(read_result.content, str):
+                        old_content = read_result.content
+                    elif isinstance(read_result.content, bytes):
+                        old_content = read_result.content.decode(encoding)
+                    else:
+                        old_content = ""
 
             # Write file
-            _write_file_content(file_path, content, encoding, line_ending)
+            _write_file_content(file_path, content, sandbox, encoding, line_ending)
 
             # Update timestamp
-            update_file_timestamp(file_path)
+            update_file_timestamp(file_path, sandbox)
 
             # Generate result
             duration_ms = int((time.time() - start_time) * 1000)

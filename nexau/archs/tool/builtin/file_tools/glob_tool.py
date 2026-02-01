@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import glob as python_glob
 import json
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any
+
+from nexau.archs.sandbox import BaseSandbox, LocalSandbox
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,7 @@ def glob_tool(
     pattern: str,
     path: str | None = None,
     limit: int = 100,
+    sandbox: BaseSandbox | None = None,
 ) -> str:
     """
     Search for files using glob patterns. This tool allows you to find files that match
@@ -43,12 +46,15 @@ def glob_tool(
     """
     start_time = time.time()
 
-    # Determine the search directory
-    search_dir = path if path else os.getcwd()
+    # Get sandbox instance
+    sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
 
-    # Validate that the directory exists and is readable
+    # Determine the search directory
+    search_dir = path if path else str(Path.cwd())
+
+    # Validate that the directory exists
     try:
-        if not os.path.exists(search_dir):
+        if not sandbox.file_exists(search_dir):
             return json.dumps(
                 {
                     "error": f"Directory does not exist: {search_dir}",
@@ -60,7 +66,21 @@ def glob_tool(
                 indent=2,
             )
 
-        if not os.access(search_dir, os.R_OK):
+        # Get file info to check if it's a directory
+        file_info = sandbox.get_file_info(search_dir)
+        if not file_info.is_directory:
+            return json.dumps(
+                {
+                    "error": f"Path is not a directory: {search_dir}",
+                    "num_files": 0,
+                    "filenames": [],
+                    "duration_ms": int((time.time() - start_time) * 1000),
+                    "truncated": False,
+                },
+                indent=2,
+            )
+
+        if not file_info.readable:
             return json.dumps(
                 {
                     "error": f"No read permission for directory: {search_dir}",
@@ -84,21 +104,26 @@ def glob_tool(
             indent=2,
         )
 
-    original_cwd = os.getcwd()
-
     try:
-        # Change to the search directory to perform glob search
-        os.chdir(search_dir)
+        # Construct full pattern path
+        if Path(pattern).is_absolute():
+            full_pattern = pattern
+        else:
+            full_pattern = f"{search_dir}/{pattern}"
 
-        # Perform glob search
-        matches = python_glob.glob(pattern, recursive=True)
+        # Perform glob search through sandbox
+        matches = sandbox.glob(full_pattern, recursive=True)
 
-        # Convert to absolute paths and filter out directories
+        # Filter to only include files (not directories)
         files: list[str] = []
         for match in matches:
-            abs_path = os.path.abspath(match)
-            if os.path.isfile(abs_path):
-                files.append(abs_path)
+            try:
+                info = sandbox.get_file_info(match)
+                if info.is_file:
+                    files.append(match)
+            except Exception:
+                # Skip files we can't access
+                continue
 
         # Sort files for consistent output
         files.sort()
@@ -185,12 +210,3 @@ def glob_tool(
             },
             indent=2,
         )
-
-    finally:
-        # Always restore the original working directory
-        try:
-            os.chdir(original_cwd)
-        except Exception as e:
-            logger.warning(
-                f"Failed to restore original working directory: {e}",
-            )

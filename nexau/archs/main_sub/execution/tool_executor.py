@@ -25,6 +25,7 @@ from pydantic import BaseModel
 if TYPE_CHECKING:
     from ..agent_state import AgentState
 
+from nexau.archs.sandbox.base_sandbox import BaseSandbox
 from nexau.archs.tool.tool import Tool
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
@@ -66,6 +67,7 @@ class ToolExecutor:
     def execute_tool(
         self,
         agent_state: "AgentState",
+        sandbox: BaseSandbox | None,
         tool_name: str,
         parameters: dict[str, Any],
         tool_call_id: str,
@@ -95,6 +97,7 @@ class ToolExecutor:
         if self.middleware_manager:
             before_input = BeforeToolHookInput(
                 agent_state=agent_state,
+                sandbox=sandbox,
                 tool_name=tool_name,
                 tool_call_id=tool_call_id,
                 tool_input=tool_parameters,
@@ -112,6 +115,7 @@ class ToolExecutor:
             return self._execute_tool_with_tracing(
                 tracer=tracer,
                 agent_state=agent_state,
+                sandbox=sandbox,
                 tool=tool,
                 tool_name=tool_name,
                 tool_parameters=tool_parameters,
@@ -120,6 +124,7 @@ class ToolExecutor:
         else:
             return self._execute_tool_inner(
                 agent_state=agent_state,
+                sandbox=sandbox,
                 tool=tool,
                 tool_name=tool_name,
                 tool_parameters=tool_parameters,
@@ -130,6 +135,7 @@ class ToolExecutor:
         self,
         tracer: BaseTracer,
         agent_state: "AgentState",
+        sandbox: BaseSandbox | None,
         tool: Any,
         tool_name: str,
         tool_parameters: dict[str, Any],
@@ -163,6 +169,7 @@ class ToolExecutor:
             try:
                 result = self._execute_tool_inner(
                     agent_state=agent_state,
+                    sandbox=sandbox,
                     tool=tool,
                     tool_name=tool_name,
                     tool_parameters=tool_parameters,
@@ -178,6 +185,7 @@ class ToolExecutor:
     def _execute_tool_inner(
         self,
         agent_state: "AgentState",
+        sandbox: BaseSandbox | None,
         tool: Any,
         tool_name: str,
         tool_parameters: dict[str, Any],
@@ -197,9 +205,11 @@ class ToolExecutor:
         """
         execution_params: JsonDict = dict(tool_parameters)
         execution_params["agent_state"] = agent_state
+        execution_params["sandbox"] = sandbox
 
         call_params = ToolCallParams(
             agent_state=agent_state,
+            sandbox=sandbox,
             tool_name=tool_name,
             parameters=tool_parameters,
             tool_call_id=tool_call_id,
@@ -255,6 +265,7 @@ class ToolExecutor:
             try:
                 hook_input = AfterToolHookInput(
                     agent_state=agent_state,
+                    sandbox=sandbox,
                     tool_name=tool_name,
                     tool_input=tool_parameters,
                     tool_output=result_dict,

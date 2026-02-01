@@ -46,6 +46,7 @@ from nexau.archs.main_sub.execution.parse_structures import (
     ToolCall,
 )
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
+from nexau.archs.sandbox.local_sandbox import LocalSandbox
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock
 
@@ -347,6 +348,7 @@ class TestAfterToolHookInput:
             tool_call_id="call_123",
             tool_input={"param": "value"},
             tool_output="result",
+            sandbox=LocalSandbox(),
         )
 
         assert hook_input.agent_state == agent_state
@@ -495,6 +497,7 @@ class TestMiddlewareManager:
             tool_call_id="call_1",
             tool_input={},
             tool_output="base",
+            sandbox=LocalSandbox(),
         )
 
         result = manager.run_after_tool(hook_input, "base")
@@ -563,6 +566,7 @@ class TestMiddlewareManager:
             parameters={},
             tool_call_id="call_1",
             execution_params={},
+            sandbox=LocalSandbox(),
         )
 
         def base_call(_: ToolCallParams) -> dict[str, str]:
@@ -598,6 +602,7 @@ class TestMiddlewareManager:
             tool_name="demo",
             tool_call_id="call_1",
             tool_input={"initial": True},
+            sandbox=LocalSandbox(),
         )
 
         updated = manager.run_before_tool(hook_input)
@@ -686,6 +691,7 @@ class TestMiddlewareManager:
             tool_call_id="call_1",
             tool_input={"a": 1},
             tool_output="result text",
+            sandbox=LocalSandbox(),
         )
 
         middleware.after_tool(hook_input)
@@ -708,6 +714,7 @@ class TestMiddlewareManager:
             tool_call_id="call_1",
             tool_input={},
             tool_output="123456789",
+            sandbox=LocalSandbox(),
         )
 
         middleware.after_tool(hook_input)
@@ -764,6 +771,7 @@ class TestHookProtocols:
             tool_call_id="call_123",
             tool_input={"param": "value"},
             tool_output="result",
+            sandbox=LocalSandbox(),
         )
         result = my_hook(hook_input)
         assert isinstance(result, AfterToolHookResult)

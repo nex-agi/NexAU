@@ -73,5 +73,8 @@ class SessionModel(SQLModel, table=True):
     # Global storage for cross-agent data sharing
     storage: GlobalStorage = Field(default_factory=GlobalStorage, sa_column=Column(GlobalStorageJson()))
 
+    # Sandbox state for sandbox resuming
+    sandbox_state: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
     # Root agent ID (for quick access to main agent)
     root_agent_id: str | None = Field(default=None)

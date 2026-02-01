@@ -33,6 +33,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from nexau.archs.sandbox import BaseSandbox, LocalSandbox, SandboxStatus
+
 from .file_state import (
     clear_file_timestamps,
     get_file_timestamp,
@@ -290,6 +292,7 @@ def file_edit_tool(
     file_path: str,
     old_string: str,
     new_string: str,
+    sandbox: BaseSandbox | None = None,
 ) -> str:
     """
     A comprehensive file editing tool that safely modifies files with extensive validation.
@@ -344,6 +347,9 @@ def file_edit_tool(
                 indent=2,
             )
 
+        # Get sandbox instance
+        sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
+
         # Resolve absolute path
         abs_file_path = os.path.abspath(file_path)
 
@@ -356,7 +362,7 @@ def file_edit_tool(
             operation = "update"
 
         # Validate file existence based on operation
-        file_exists = os.path.exists(abs_file_path)
+        file_exists = sandbox.file_exists(abs_file_path)
 
         if operation == "create" and file_exists:
             return json.dumps(
@@ -411,10 +417,13 @@ def file_edit_tool(
                 # but we'll issue a warning
                 logger.warning(f"File {abs_file_path} has not been read yet")
             else:
-                # Check if file was modified since last read
+                # Check if file was modified since last read using sandbox
                 try:
-                    file_mtime = os.path.getmtime(abs_file_path)
-                    if file_mtime > read_timestamp:
+                    file_info = sandbox.get_file_info(abs_file_path)
+                    file_mtime = file_info.modified_time
+                    # Convert to float for comparison if it's a string
+                    mtime_float = float(file_mtime) if isinstance(file_mtime, str) else file_mtime
+                    if mtime_float and mtime_float > read_timestamp:
                         return json.dumps(
                             {
                                 "success": False,
@@ -428,22 +437,44 @@ def file_edit_tool(
                             },
                             indent=2,
                         )
-                except OSError as e:
+                except Exception as e:
                     logger.warning(
                         f"Could not check file modification time: {e}",
                     )
 
             # Validate string matching for update/remove_content operations
             if operation in ["update", "remove_content"]:
-                encoding = detect_file_encoding(abs_file_path)
+                # Read file through sandbox
                 try:
-                    with open(abs_file_path, encoding=encoding) as f:
-                        file_content = f.read()
-                except UnicodeDecodeError as e:
+                    read_result = sandbox.read_file(abs_file_path)
+                    if read_result.status != SandboxStatus.SUCCESS:
+                        return json.dumps(
+                            {
+                                "success": False,
+                                "error": read_result.error or "Failed to read file",
+                                "file_path": file_path,
+                                "operation": operation,
+                                "duration_ms": int((time.time() - start_time) * 1000),
+                            },
+                            indent=2,
+                        )
+
+                    # Get file content and ensure it's a string
+                    content = read_result.content
+                    if isinstance(content, bytes):
+                        file_content = content.decode("utf-8")
+                    elif isinstance(content, (bytearray, memoryview)):
+                        file_content = bytes(content).decode("utf-8")
+                    elif isinstance(content, str):
+                        file_content = content
+                    else:
+                        file_content = ""
+
+                except Exception as e:
                     return json.dumps(
                         {
                             "success": False,
-                            "error": (f"Cannot read file due to encoding issue: {str(e)}"),
+                            "error": f"Cannot read file: {str(e)}",
                             "file_path": file_path,
                             "operation": operation,
                             "duration_ms": int((time.time() - start_time) * 1000),
@@ -483,55 +514,48 @@ def file_edit_tool(
                         indent=2,
                     )
 
-        # Perform the edit operation
+        # Perform the edit operation through sandbox
         try:
-            # Create parent directories if needed
-            parent_dir = os.path.dirname(abs_file_path)
-            if parent_dir:
-                os.makedirs(parent_dir, exist_ok=True)
+            # Use sandbox edit_file method
+            edit_result = sandbox.edit_file(abs_file_path, old_string, new_string)
 
-            # Apply the edit
-            updated_content, diff_info = apply_edit(
-                abs_file_path,
-                old_string,
-                new_string,
-            )
-
-            # Detect or use default encoding and line endings
-            if file_exists:
-                encoding = detect_file_encoding(abs_file_path)
-                line_ending = detect_line_endings(abs_file_path)
-            else:
-                encoding = "utf-8"
-                line_ending = "LF"
-
-            # Write the updated content
-            write_text_content(
-                abs_file_path,
-                updated_content,
-                encoding,
-                line_ending,
-            )
+            if edit_result.status != SandboxStatus.SUCCESS:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": edit_result.error or "Edit operation failed",
+                        "file_path": file_path,
+                        "operation": operation,
+                        "duration_ms": int((time.time() - start_time) * 1000),
+                    },
+                    indent=2,
+                )
 
             # Update read timestamp
-            update_file_timestamp(abs_file_path)
+            update_file_timestamp(abs_file_path, sandbox)
+
+            # Get file info for encoding detection
+            file_info = sandbox.get_file_info(abs_file_path)
+            encoding = file_info.encoding or "utf-8"
+            line_ending = "LF"  # Default
+
+            # Read the updated file content to generate snippet
+            read_result = sandbox.read_file(abs_file_path)
+            if read_result.status == SandboxStatus.SUCCESS and read_result.content:
+                if isinstance(read_result.content, str):
+                    updated_content = read_result.content
+                elif isinstance(read_result.content, bytes):
+                    updated_content = read_result.content.decode(encoding)
+                else:
+                    updated_content = new_string
+            else:
+                updated_content = new_string
 
             # Generate result snippet
             original_content = ""
-            if file_exists:
-                try:
-                    with open(abs_file_path, encoding=encoding) as f:
-                        # Read the original content before our edit
-                        if old_string:
-                            original_content = updated_content.replace(
-                                new_string,
-                                old_string,
-                                1,
-                            )
-                        else:
-                            original_content = ""
-                except Exception:
-                    original_content = ""
+            if file_exists and old_string:
+                # Reconstruct original by reversing the edit
+                original_content = updated_content.replace(new_string, old_string, 1)
 
             snippet, start_line = get_snippet_with_context(
                 original_content,
@@ -568,9 +592,6 @@ def file_edit_tool(
                     "description": ("Here's the result of running `cat -n` on a snippet of the edited file:"),
                 },
             }
-
-            if diff_info:
-                result["diff"] = diff_info
 
             # Log successful operation
             logger.info(
@@ -631,15 +652,16 @@ def file_edit_tool(
 
 
 # Utility functions for external use
-def mark_file_as_read(file_path: str) -> None:
+def mark_file_as_read(file_path: str, sandbox: Any = None) -> None:
     """
     Mark a file as read by updating its read timestamp.
     This should be called whenever a file is read to enable proper conflict detection.
 
     Args:
         file_path: Path to the file that was read
+        sandbox: Optional sandbox instance for file operations
     """
-    update_file_timestamp(file_path)
+    update_file_timestamp(file_path, sandbox)
 
 
 def clear_read_timestamps() -> None:

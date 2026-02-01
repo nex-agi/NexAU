@@ -18,6 +18,7 @@ from typing import Any
 import yaml
 
 from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.tool import Tool
 
 
 class Skill:
@@ -107,3 +108,40 @@ def load_skill(skill_name: str, agent_state: "AgentState") -> str:
 <SkillDetail>{skill.detail}</SkillDetail>
 </SkillDetails>"""
     return response
+
+
+def generate_skill_tool_description(skills: list[Skill], tools: list[Tool]) -> str:
+    """Generate skill description."""
+    skill_description = "<Skills>\n"
+    for skill in skills:
+        skill_description += "<SkillBrief>\n"
+        skill_description += f"Skill Name: {skill.name}\n"
+        skill_description += f"Skill Folder: {skill.folder}\n"
+        skill_description += f"Skill Brief Description: {skill.description}\n\n"
+        skill_description += "</SkillBrief>\n"
+
+    for tool in tools:
+        if tool.as_skill:
+            skill_description += "<SkillBrief>\n"
+            skill_description += f"Skill: {tool.name}\n"
+            if not tool.skill_description:
+                raise ValueError(f"Tool {tool.name} has no skill description but is marked as a skill")
+            skill_description += f"Skill Brief Description: {tool.skill_description}\n\n"
+            skill_description += "</SkillBrief>\n"
+
+    skill_description += "</Skills>\n"
+    return skill_description
+
+
+def build_load_skill_tool(tools: list[Tool], skills: list[Skill]) -> Tool | None:
+    nexau_package_path = Path(__file__).parent.parent.parent
+    has_skilled_tools = any(tool.as_skill for tool in tools)
+    if has_skilled_tools or skills:
+        skill_tool = Tool.from_yaml(
+            str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "skill_tool.yaml"),
+            binding=load_skill,
+            as_skill=False,
+        )
+        skill_tool.description += generate_skill_tool_description(skills, tools)
+        return skill_tool
+    return None

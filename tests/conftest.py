@@ -71,7 +71,7 @@ def _load_nexau_dependencies():
 
 
 # Test configuration
-@pytest.fixture(scope="session")
+@pytest.fixture
 def test_config():
     """Global test configuration."""
     return {
@@ -82,7 +82,7 @@ def test_config():
     }
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(autouse=True)
 def setup_test_environment(test_config):
     """Set up test environment for all tests."""
     # Create test directories
@@ -326,7 +326,7 @@ def mock_agent(mock_llm_config, execution_config, global_storage):
 
 
 # Async Fixtures
-@pytest.fixture
+@pytest.fixture(scope="function")
 def event_loop():
     """Create an event loop for async tests."""
     loop = asyncio.new_event_loop()

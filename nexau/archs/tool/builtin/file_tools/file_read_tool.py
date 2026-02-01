@@ -35,7 +35,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .file_state import update_file_timestamp
+from nexau.archs.sandbox import BaseSandbox, LocalSandbox, SandboxStatus
+from nexau.archs.tool.builtin.file_tools.file_state import update_file_timestamp
 
 # Import file state management for read/write coordination
 
@@ -127,23 +128,30 @@ TEXT_EXTENSIONS = {
 }
 
 
-def detect_file_encoding(file_path: str) -> str:
+def detect_file_encoding(file_path: str, sandbox: BaseSandbox) -> str:
     """
     Detect file encoding with fallback to utf-8.
 
     Args:
         file_path: Path to the file
+        sandbox: Sandbox adaptor instance
 
     Returns:
         Detected encoding name
     """
     try:
         chardet = importlib.import_module("chardet")
-        with open(file_path, "rb") as f:
-            raw_data = f.read(10000)  # Read first 10KB for detection
-            result = chardet.detect(raw_data)
-            encoding = result["encoding"]
-            if encoding and result["confidence"] > 0.7:
+        result = sandbox.read_file(file_path, binary=True)
+        if result.status == SandboxStatus.SUCCESS and result.content:
+            if isinstance(result.content, bytes):
+                raw_data = result.content[:10000]
+            elif isinstance(result.content, str):
+                raw_data = result.content.encode()[:10000]
+            else:
+                return "utf-8"
+            detection = chardet.detect(raw_data)
+            encoding = detection["encoding"]
+            if encoding and detection["confidence"] > 0.7:
                 return encoding
     except ModuleNotFoundError:
         # chardet not available, use fallback
@@ -155,12 +163,13 @@ def detect_file_encoding(file_path: str) -> str:
     return "utf-8"
 
 
-def find_similar_file(file_path: str) -> str | None:
+def find_similar_file(file_path: str, sandbox: BaseSandbox) -> str | None:
     """
     Find a similar file with different extension if the original doesn't exist.
 
     Args:
         file_path: Path to the file that doesn't exist
+        sandbox: Sandbox adaptor instance
 
     Returns:
         Path to similar file if found, None otherwise
@@ -168,15 +177,21 @@ def find_similar_file(file_path: str) -> str | None:
     try:
         base_path = Path(file_path)
         base_name = base_path.stem
-        parent_dir = base_path.parent
+        parent_dir = str(base_path.parent)
 
-        if not parent_dir.exists():
+        # Check if parent directory exists
+        if not sandbox.file_exists(parent_dir):
             return None
 
         # Look for files with same base name but different extensions
-        for file in parent_dir.glob(f"{base_name}.*"):
-            if file.is_file() and str(file) != file_path:
-                return str(file)
+        try:
+            pattern = f"{base_name}.*"
+            matches = sandbox.glob(f"{parent_dir}/{pattern}", recursive=False)
+            for match in matches:
+                if match != file_path:
+                    return match
+        except Exception:
+            pass
 
         return None
     except Exception as e:
@@ -267,6 +282,7 @@ def get_file_language(file_path: str) -> str:
 
 def read_text_content(
     file_path: str,
+    sandbox: BaseSandbox,
     offset: int = 0,
     limit: int | None = None,
 ) -> tuple[str, int, int]:
@@ -275,17 +291,31 @@ def read_text_content(
 
     Args:
         file_path: Path to the file
+        sandbox: Sandbox adaptor instance
         offset: Line number to start reading from (0-based)
         limit: Number of lines to read (None for all remaining lines)
 
     Returns:
         Tuple of (content, lines_read, total_lines)
     """
-    encoding = detect_file_encoding(file_path)
+    encoding = detect_file_encoding(file_path, sandbox)
 
     try:
-        with open(file_path, encoding=encoding) as f:
-            lines = f.readlines()
+        result = sandbox.read_file(file_path, encoding=encoding, binary=False)
+        if result.status != SandboxStatus.SUCCESS:
+            raise Exception(result.error or "Failed to read file")
+
+        if result.content is None:
+            raise Exception("File content is None")
+
+        if isinstance(result.content, str):
+            content = result.content
+        elif isinstance(result.content, bytes):
+            content = result.content.decode(encoding)
+        else:
+            raise Exception(f"Unexpected content type: {type(result.content)}")
+
+        lines = content.splitlines(keepends=True)
 
         total_lines = len(lines)
 
@@ -315,8 +345,21 @@ def read_text_content(
         logger.error(f"Unicode decode error reading {file_path}: {e}")
         # Try with latin-1 as fallback
         try:
-            with open(file_path, encoding="latin-1") as f:
-                lines = f.readlines()
+            result = sandbox.read_file(file_path, encoding="latin-1", binary=False)
+            if result.status != SandboxStatus.SUCCESS:
+                raise Exception(result.error or "Failed to read file")
+
+            if result.content is None:
+                raise Exception("File content is None")
+
+            if isinstance(result.content, str):
+                content = result.content
+            elif isinstance(result.content, bytes):
+                content = result.content.decode("latin-1")
+            else:
+                raise Exception(f"Unexpected content type: {type(result.content)}")
+
+            lines = content.splitlines(keepends=True)
 
             total_lines = len(lines)
             if offset > 0:
@@ -332,26 +375,47 @@ def read_text_content(
             )
 
 
-def read_image_file(file_path: str) -> dict[str, Any]:
+def read_image_file(file_path: str, sandbox: BaseSandbox) -> dict[str, Any]:
     """
     Read and encode image file to base64.
 
     Args:
         file_path: Path to the image file
+        sandbox: Sandbox adaptor instance
 
     Returns:
         Dictionary with image data
     """
     try:
-        file_size = os.path.getsize(file_path)
+        file_info = sandbox.get_file_info(file_path)
+        file_size = file_info.size
 
         # Check file size limit
         if file_size > MAX_IMAGE_SIZE:
             # Try to compress with PIL if available
             try:
+                import io as io_module
+
                 from PIL import Image
 
-                with Image.open(file_path) as img:
+                # Read image data from sandbox
+                result = sandbox.read_file(file_path, binary=True)
+                if result.status != SandboxStatus.SUCCESS:
+                    return {"error": result.error or "Failed to read image file"}
+
+                if result.content is None:
+                    return {"error": "Image content is None"}
+
+                if isinstance(result.content, bytes):
+                    image_bytes = result.content
+                elif isinstance(result.content, str):
+                    image_bytes = result.content.encode()
+                else:
+                    return {"error": f"Unexpected content type: {type(result.content)}"}
+
+                img_io = io_module.BytesIO(image_bytes)
+
+                with Image.open(img_io) as img:
                     # Calculate new dimensions maintaining aspect ratio
                     max_dimension = 2000
                     width, height = img.size
@@ -389,9 +453,7 @@ def read_image_file(file_path: str) -> dict[str, Any]:
                         img = rgb_img
 
                     # Save to bytes
-                    import io
-
-                    img_bytes = io.BytesIO()
+                    img_bytes = io_module.BytesIO()
                     img.save(
                         img_bytes,
                         format="JPEG",
@@ -419,9 +481,20 @@ def read_image_file(file_path: str) -> dict[str, Any]:
                     "error": (f"Image file too large ({file_size} bytes > {MAX_IMAGE_SIZE} bytes) and compression failed: {str(e)}"),
                 }
 
-        # Read original file
-        with open(file_path, "rb") as f:
-            image_data = f.read()
+        # Read original file from sandbox
+        result = sandbox.read_file(file_path, binary=True)
+        if result.status != SandboxStatus.SUCCESS:
+            return {"error": result.error or "Failed to read image file"}
+
+        if result.content is None:
+            return {"error": "Image content is None"}
+
+        if isinstance(result.content, bytes):
+            image_data = result.content
+        elif isinstance(result.content, str):
+            image_data = result.content.encode()
+        else:
+            return {"error": f"Unexpected content type: {type(result.content)}"}
 
         # Determine MIME type
         mime_type, _ = mimetypes.guess_type(file_path)
@@ -480,6 +553,7 @@ def file_read_tool(
     file_path: str,
     offset: int | float | None = None,
     limit: int | float | None = None,
+    sandbox: BaseSandbox | None = None,
 ) -> str | dict[str, Any]:
     """
     Read a file from the local filesystem. Supports both text and image files.
@@ -510,12 +584,15 @@ def file_read_tool(
     start_time = time.time()
 
     try:
+        # Get sandbox instance
+        sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
+
         # Normalize file path
         file_path = os.path.abspath(file_path)
 
         # Check if file exists
-        if not os.path.exists(file_path):
-            similar_file = find_similar_file(file_path)
+        if not sandbox.file_exists(file_path):
+            similar_file = find_similar_file(file_path, sandbox)
             error_msg = f"File does not exist: {file_path}"
             if similar_file:
                 error_msg += f"\nDid you mean: {similar_file}?"
@@ -532,8 +609,11 @@ def file_read_tool(
                 ensure_ascii=False,
             )
 
+        # Get file info
+        file_info = sandbox.get_file_info(file_path)
+
         # Check if it's a directory
-        if os.path.isdir(file_path):
+        if file_info.is_directory:
             return json.dumps(
                 {
                     "error": f"Path is a directory, not a file: {file_path}",
@@ -546,7 +626,7 @@ def file_read_tool(
             )
 
         # Check read permissions
-        if not os.access(file_path, os.R_OK):
+        if not file_info.readable:
             return json.dumps(
                 {
                     "error": f"No read permission for file: {file_path}",
@@ -558,11 +638,11 @@ def file_read_tool(
             )
 
         # Get file size
-        file_size = os.path.getsize(file_path)
+        file_size = file_info.size
 
         # Handle image files
         if is_image_file(file_path):
-            image_result = read_image_file(file_path)
+            image_result = read_image_file(file_path, sandbox)
 
             if "error" in image_result:
                 return json.dumps(
@@ -609,6 +689,7 @@ def file_read_tool(
 
             content, lines_read, total_lines = read_text_content(
                 file_path,
+                sandbox,
                 internal_offset,
                 int_limit,
             )
@@ -639,7 +720,7 @@ def file_read_tool(
             content_with_lines = add_line_numbers(content, start_line_num)
 
             # Update timestamp cache for file_write_tool compatibility
-            update_file_timestamp(file_path)
+            update_file_timestamp(file_path, sandbox)
 
             duration_ms = int((time.time() - start_time) * 1000)
 
@@ -659,7 +740,7 @@ def file_read_tool(
                     "end_line": (start_line_num + lines_read - 1 if lines_read > 0 else start_line_num),
                     "truncated": truncated,
                     "language": get_file_language(file_path),
-                    "encoding": detect_file_encoding(file_path),
+                    "encoding": detect_file_encoding(file_path, sandbox),
                     "duration_ms": duration_ms,
                 },
                 indent=2,
@@ -696,7 +777,7 @@ def file_read_tool(
 # Usage example (for testing)
 def main():
     result = file_read_tool(
-        file_path="//users/chenlu//src/tools/file_tools/test.json",
+        file_path="./nexau/archs/tool/builtin/file_tools/file_read_tool.py",
         offset=20,
         limit=50,
     )

@@ -14,6 +14,9 @@
 
 """Skill tool for loading and managing skills."""
 
-from nexau.archs.main_sub.skill import load_skill
+from nexau.archs.main_sub.skill import generate_skill_tool_description, load_skill
 
-__all__ = ["load_skill"]
+__all__ = [
+    "load_skill",
+    "generate_skill_tool_description",
+]

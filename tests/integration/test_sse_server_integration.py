@@ -35,12 +35,12 @@ from nexau.archs.transports.http import HTTPConfig, SSETransportServer
 class TestSSEServerQueryIntegration:
     """Integration tests for /query endpoint."""
 
-    @pytest.fixture
+    @pytest.fixture(scope="function")
     def engine(self):
         """Create in-memory engine."""
         return InMemoryDatabaseEngine()
 
-    @pytest.fixture
+    @pytest.fixture(scope="function")
     def agent_config(self):
         """Create default agent config."""
         return AgentConfig(
@@ -49,7 +49,7 @@ class TestSSEServerQueryIntegration:
             llm_config=LLMConfig(model="gpt-4o-mini"),
         )
 
-    @pytest.fixture
+    @pytest.fixture(scope="function")
     def server(self, engine, agent_config):
         """Create SSE server instance."""
         return SSETransportServer(
@@ -107,12 +107,12 @@ class TestSSEServerQueryIntegration:
 class TestSSEServerStreamIntegration:
     """Integration tests for /stream endpoint."""
 
-    @pytest.fixture
+    @pytest.fixture(scope="function")
     def engine(self):
         """Create in-memory engine."""
         return InMemoryDatabaseEngine()
 
-    @pytest.fixture
+    @pytest.fixture(scope="function")
     def agent_config(self):
         """Create default agent config."""
         return AgentConfig(
@@ -121,7 +121,7 @@ class TestSSEServerStreamIntegration:
             llm_config=LLMConfig(model="gpt-4o-mini"),
         )
 
-    @pytest.fixture
+    @pytest.fixture(scope="function")
     def server(self, engine, agent_config):
         """Create SSE server instance."""
         return SSETransportServer(
@@ -220,12 +220,12 @@ class TestSSEServerStreamIntegration:
 class TestSSEServerRequestValidation:
     """Tests for request validation."""
 
-    @pytest.fixture
+    @pytest.fixture(scope="function")
     def engine(self):
         """Create in-memory engine."""
         return InMemoryDatabaseEngine()
 
-    @pytest.fixture
+    @pytest.fixture(scope="function")
     def agent_config(self):
         """Create default agent config."""
         return AgentConfig(
@@ -234,7 +234,7 @@ class TestSSEServerRequestValidation:
             llm_config=LLMConfig(model="gpt-4o-mini"),
         )
 
-    @pytest.fixture
+    @pytest.fixture(scope="function")
     def server(self, engine, agent_config):
         """Create SSE server instance."""
         return SSETransportServer(

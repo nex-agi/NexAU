@@ -41,6 +41,9 @@ def main():
         claude_code_agent = Agent.from_yaml(config_path=script_dir / "code_agent.yaml")
         print("✓ Agent loaded successfully from YAML")
 
+        sandbox = claude_code_agent.sandbox_manager.instance
+        print("✓ Sandbox constructed successfully: {}".format(sandbox.sandbox_id))
+
         print("\nTesting Code Agent...")
         user_message = input("Enter your task: ")
         # user_message = "read /Users/hanzhenhua/nexau/examples/code_agent/image.png and describe the image"
@@ -53,11 +56,11 @@ def main():
             context={
                 "date": get_date(),
                 "username": os.getenv("USER"),
-                "working_directory": os.getcwd(),
+                "working_directory": str(sandbox.work_dir if sandbox else os.getcwd()),
                 "env_content": {
                     "date": get_date(),
                     "username": os.getenv("USER"),
-                    "working_directory": os.getcwd(),
+                    "working_directory": str(sandbox.work_dir if sandbox else os.getcwd()),
                 },
             },
         )

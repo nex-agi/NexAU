@@ -17,7 +17,10 @@
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any, NotRequired, TypedDict
+
+from nexau.archs.sandbox import BaseSandbox, LocalSandbox, SandboxStatus
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,7 @@ class AppliedEditDetail(TypedDict):
 def multiedit_tool(
     file_path: str,
     edits: list[EditPayload],
+    sandbox: BaseSandbox | None = None,
 ) -> dict[str, Any]:
     """
     Make multiple edits to a single file in one operation.
@@ -75,8 +79,11 @@ def multiedit_tool(
     """
     start_time = time.time()
 
+    # Get sandbox instance
+    sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
+
     # Validate file path is absolute
-    if not os.path.isabs(file_path):
+    if not Path(file_path).is_absolute():
         return {
             "status": "error",
             "error": f"File path must be absolute, got relative path: {file_path}",
@@ -137,7 +144,7 @@ def multiedit_tool(
     is_new_file = False
     initial_content: str = ""
     if edit_operations[0].old_string == "":
-        if os.path.exists(file_path):
+        if sandbox.file_exists(file_path):
             return {
                 "status": "error",
                 "error": f"Cannot create new file - file already exists: {file_path}",
@@ -149,7 +156,7 @@ def multiedit_tool(
         edit_operations = edit_operations[1:]  # Remove the creation edit
     else:
         # Check if file exists for modification
-        if not os.path.exists(file_path):
+        if not sandbox.file_exists(file_path):
             return {
                 "status": "error",
                 "error": f"File does not exist: {file_path}",
@@ -158,18 +165,26 @@ def multiedit_tool(
             }
 
         # Check file permissions
-        if not os.access(file_path, os.R_OK):
+        try:
+            file_info = sandbox.get_file_info(file_path)
+            if not file_info.readable:
+                return {
+                    "status": "error",
+                    "error": f"No read permission for file: {file_path}",
+                    "file_path": file_path,
+                    "duration_ms": int((time.time() - start_time) * 1000),
+                }
+            if not file_info.writable:
+                return {
+                    "status": "error",
+                    "error": f"No write permission for file: {file_path}",
+                    "file_path": file_path,
+                    "duration_ms": int((time.time() - start_time) * 1000),
+                }
+        except Exception as e:
             return {
                 "status": "error",
-                "error": f"No read permission for file: {file_path}",
-                "file_path": file_path,
-                "duration_ms": int((time.time() - start_time) * 1000),
-            }
-
-        if not os.access(file_path, os.W_OK):
-            return {
-                "status": "error",
-                "error": f"No write permission for file: {file_path}",
+                "error": f"Failed to check file permissions: {str(e)}",
                 "file_path": file_path,
                 "duration_ms": int((time.time() - start_time) * 1000),
             }
@@ -180,8 +195,20 @@ def multiedit_tool(
             original_content = ""
             current_content: str = initial_content
         else:
-            with open(file_path, encoding="utf-8") as f:
-                original_content = f.read()
+            read_result = sandbox.read_file(file_path, encoding="utf-8")
+            if read_result.status != SandboxStatus.SUCCESS:
+                return {
+                    "status": "error",
+                    "error": f"Failed to read file: {read_result.error or 'Unknown error'}",
+                    "file_path": file_path,
+                    "duration_ms": int((time.time() - start_time) * 1000),
+                }
+            if isinstance(read_result.content, str):
+                original_content = read_result.content
+            elif isinstance(read_result.content, bytes):
+                original_content = read_result.content.decode("utf-8")
+            else:
+                original_content = ""
             current_content = original_content
 
         # Apply edits in sequence
@@ -223,13 +250,21 @@ def multiedit_tool(
                 },
             )
 
-        # Write the final content to file
-        # Create directory if it doesn't exist for new files
-        if is_new_file:
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(current_content)
+        # Write the final content to file through sandbox
+        write_result = sandbox.write_file(
+            file_path,
+            current_content,
+            encoding="utf-8",
+            binary=False,
+            create_directories=True,
+        )
+        if write_result.status != SandboxStatus.SUCCESS:
+            return {
+                "status": "error",
+                "error": f"Failed to write file: {write_result.error or 'Unknown error'}",
+                "file_path": file_path,
+                "duration_ms": int((time.time() - start_time) * 1000),
+            }
 
         duration_ms = int((time.time() - start_time) * 1000)
 

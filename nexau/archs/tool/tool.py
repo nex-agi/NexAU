@@ -269,9 +269,11 @@ class Tool:
                 if "global_storage" in sig.parameters:
                     agent_state = merged_params["agent_state"]
                     filtered_params["global_storage"] = agent_state.global_storage
+            if "sandbox" not in sig.parameters:
+                filtered_params.pop("sandbox", None)
 
         # Validate parameters (excluding agent_state and global_storage for schema validation)
-        validation_params = {k: v for k, v in filtered_params.items() if k not in ("agent_state", "global_storage")}
+        validation_params = {k: v for k, v in filtered_params.items() if k not in ("agent_state", "global_storage", "sandbox")}
         if not self.validate_params(validation_params):
             raise ValueError(
                 f"Invalid parameters for tool '{self.name}': {validation_params}",

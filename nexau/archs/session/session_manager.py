@@ -291,6 +291,18 @@ class SessionManager:
         session.updated_at = datetime.now()
         return await self._update_session(session)
 
+    async def update_session_sandbox(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        sandbox_state: dict[str, Any],
+    ) -> SessionModel:
+        session = await self._get_or_create_session(user_id=user_id, session_id=session_id)
+        session.sandbox_state = sandbox_state
+        session.updated_at = datetime.now()
+        return await self._update_session(session)
+
     async def update_session_state(
         self,
         *,

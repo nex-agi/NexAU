@@ -15,6 +15,7 @@
 """Refactored Agent implementation for the NexAU framework."""
 
 import logging
+import os
 import traceback
 import uuid
 import warnings
@@ -44,9 +45,16 @@ from nexau.archs.main_sub.tool_call_modes import (
 )
 from nexau.archs.main_sub.utils.cleanup_manager import cleanup_manager
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
+from nexau.archs.sandbox import (
+    BaseSandboxManager,
+    E2BSandboxManager,
+    LocalSandboxManager,
+    extract_dataclass_init_kwargs,
+)
 from nexau.archs.session import AgentRunActionKey, SessionManager
 from nexau.archs.session.orm import InMemoryDatabaseEngine
 from nexau.archs.tool import Tool
+from nexau.archs.tool.builtin.skill_tool import generate_skill_tool_description, load_skill
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
@@ -131,12 +139,29 @@ class Agent:
             "Registered %d tools, %d sub_agents", len(self.config.tools), len(self.config.sub_agents) if self.config.sub_agents else 0
         )
 
+        # Initialize sandbox
+        self._initialize_sandbox()
+
+        # Add skill tool for skill using
+        tools = self.config.tools
+        skills = self.config.skills
+        nexau_package_path = Path(__file__).parent.parent.parent
+        has_skilled_tools = any(tool.as_skill for tool in tools)
+        if has_skilled_tools or skills:
+            skill_tool = Tool.from_yaml(
+                str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "skill_tool.yaml"),
+                binding=load_skill,
+                as_skill=False,
+            )
+            skill_tool.description += generate_skill_tool_description(skills, tools)
+            tools.append(skill_tool)
+
         # Build tool registry for quick lookup
-        self.tool_registry = {tool.name: tool for tool in self.config.tools}
-        self.serial_tool_name = [tool.name for tool in self.config.tools if tool.disable_parallel]
+        self.tool_registry = {tool.name: tool for tool in tools}
+        self.serial_tool_name = [tool.name for tool in tools if tool.disable_parallel]
 
         # Build skill registry for quick lookup
-        self.skill_registry = {skill.name: skill for skill in self.config.skills}
+        self.skill_registry = {skill.name: skill for skill in skills}
         self.global_storage.set("skill_registry", self.skill_registry)
 
         # Initialize prompt builder
@@ -453,7 +478,45 @@ class Agent:
             session_manager=self._session_manager,
             user_id=self._user_id,
             session_id=self._session_id,
+            sandbox_manager=self.sandbox_manager,
         )
+
+    def _initialize_sandbox(self) -> None:
+        """Initialize sandbox."""
+        sandbox_config = self.config.sandbox_config
+        if sandbox_config is None:
+            sandbox_config = {}
+        sandbox_type = sandbox_config.get("type", "local")
+
+        sandbox_manager_cls: type[BaseSandboxManager[Any]]
+
+        if sandbox_type == "local":
+            sandbox_manager_cls = LocalSandboxManager
+        elif sandbox_type == "e2b":
+            sandbox_manager_cls = E2BSandboxManager
+        else:
+            raise ValueError(f"Unsupported sandbox type: {sandbox_type}")
+        sandbox_manager_kwargs = extract_dataclass_init_kwargs(sandbox_manager_cls, sandbox_config)
+        self.sandbox_manager = sandbox_manager_cls(**sandbox_manager_kwargs)
+
+        # Upload skill assets to sandbox
+        upload_assets: list[tuple[str, str]] = []
+        for i, skill in enumerate(self.config.skills):
+            if skill.folder:
+                local_folder = skill.folder
+                skill.folder = os.path.join(self.sandbox_manager.work_dir, ".skills", os.path.basename(local_folder))
+                self.config.skills[i] = skill
+                upload_assets.append((local_folder, skill.folder))
+
+        self.sandbox_manager.start_no_wait(
+            session_manager=self._session_manager,
+            user_id=self._user_id,
+            session_id=self._session_id,
+            sandbox_config=sandbox_config,
+            upload_assets=upload_assets,
+        )
+
+        cleanup_manager.register_sandbox_manager(self.sandbox_manager)
 
     def _resolve_token_counter(self) -> TokenCounter:
         """Cast configured token counter to TokenCounter instance."""
@@ -611,6 +674,8 @@ class Agent:
                 include_tool_instructions=not self.use_structured_tool_calls,
             )
 
+            parent_run_id: str | None
+
             # Determine root_run_id and parent_run_id
             if parent_agent_state:
                 root_run_id = parent_agent_state.root_run_id
@@ -710,6 +775,12 @@ class Agent:
 
                 # Persist context and storage to session
                 await self._persist_session_state(ctx.context)
+
+                # Pause sandbox after agent execution if persistence is enabled
+                if self.config.sandbox_config and self.config.sandbox_config.get("persist_sandbox", True):
+                    self.sandbox_manager.pause_no_wait()
+                else:
+                    self.sandbox_manager.stop()
 
                 logger.info(f"✅ Agent '{self.config.name}' completed execution")
                 return response

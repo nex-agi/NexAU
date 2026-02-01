@@ -24,7 +24,7 @@ For SQLite-based in-memory storage, use SQLDatabaseEngine with sqlite:///:memory
 
 from __future__ import annotations
 
-import asyncio
+import threading
 from typing import TypeVar
 
 from sqlmodel import SQLModel
@@ -72,7 +72,7 @@ class InMemoryDatabaseEngine(DatabaseEngine):
         self._storage: dict[str, dict[tuple[object, ...], SQLModel]] = {}
         self._initialized_models: set[type[SQLModel]] = set()
         # Lock for thread-safe operations
-        self._lock = asyncio.Lock()
+        self._lock = threading.RLock()
 
     @staticmethod
     def get_shared_instance() -> InMemoryDatabaseEngine:
@@ -96,7 +96,7 @@ class InMemoryDatabaseEngine(DatabaseEngine):
         Args:
             model_classes: List of SQLModel classes to initialize storage for.
         """
-        async with self._lock:
+        with self._lock:
             for model_class in model_classes:
                 table_name = get_table_name(model_class)
                 if table_name not in self._storage:
@@ -130,7 +130,7 @@ class InMemoryDatabaseEngine(DatabaseEngine):
         Returns:
             The first matching record, or None if no match found
         """
-        async with self._lock:
+        with self._lock:
             table = self._get_table(model_class)
             for model in table.values():
                 if evaluate(filters, model):
@@ -158,7 +158,7 @@ class InMemoryDatabaseEngine(DatabaseEngine):
         Returns:
             List of matching records
         """
-        async with self._lock:
+        with self._lock:
             table = self._get_table(model_class)
 
             # Filter
@@ -198,7 +198,7 @@ class InMemoryDatabaseEngine(DatabaseEngine):
         Raises:
             ValueError: If a record with the same primary key already exists
         """
-        async with self._lock:
+        with self._lock:
             table = self._get_table(type(model))
             pk = self._get_pk_tuple(model)
 
@@ -220,7 +220,7 @@ class InMemoryDatabaseEngine(DatabaseEngine):
         Returns:
             List of created models
         """
-        async with self._lock:
+        with self._lock:
             for model in models:
                 table = self._get_table(type(model))
                 pk = self._get_pk_tuple(model)
@@ -243,7 +243,7 @@ class InMemoryDatabaseEngine(DatabaseEngine):
         Returns:
             The updated model
         """
-        async with self._lock:
+        with self._lock:
             table = self._get_table(type(model))
             pk = self._get_pk_tuple(model)
             table[pk] = model
@@ -264,7 +264,7 @@ class InMemoryDatabaseEngine(DatabaseEngine):
         Returns:
             Number of records deleted
         """
-        async with self._lock:
+        with self._lock:
             table = self._get_table(model_class)
             to_delete = [pk for pk, model in table.items() if evaluate(filters, model)]
             for pk in to_delete:
@@ -286,7 +286,7 @@ class InMemoryDatabaseEngine(DatabaseEngine):
         Returns:
             Number of matching records
         """
-        async with self._lock:
+        with self._lock:
             table = self._get_table(model_class)
             if filters is None:
                 return len(table)

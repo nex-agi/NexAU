@@ -90,6 +90,7 @@ class AgentConfigSchema(
     """Top-level schema for agent YAML files."""
 
     llm_config: dict[str, Any] | None = None
+    sandbox_config: dict[str, Any] | None = None
     mcp_servers: list[MCPServerConfig] = Field(default_factory=_empty_mcp_server_list)
     global_storage: dict[str, Any] = Field(default_factory=dict)
     after_model_hooks: list[HookDefinition] | None = None

@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from nexau.archs.sandbox import BaseSandbox, LocalSandbox
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,58 +59,10 @@ def _match_ignore_patterns(path: str, ignore_patterns: list[str]) -> bool:
     return False
 
 
-def _get_file_info(path: str) -> dict[str, Any]:
-    """
-    Get detailed information about a file or directory.
-
-    Args:
-        path: Path to the file or directory
-
-    Returns:
-        Dict containing file information
-    """
-    try:
-        stat_info = os.stat(path)
-        path_obj = Path(path)
-
-        info: dict[str, Any] = {
-            "name": path_obj.name,
-            "path": str(path_obj.absolute()),
-            "is_file": path_obj.is_file(),
-            "is_dir": path_obj.is_dir(),
-            "size": stat_info.st_size if path_obj.is_file() else None,
-            "modified_time": stat_info.st_mtime,
-            "permissions": oct(stat_info.st_mode)[-3:],
-        }
-
-        # Add additional info for files
-        if path_obj.is_file():
-            info["extension"] = path_obj.suffix.lower()
-
-        # Add item count for directories
-        if path_obj.is_dir():
-            try:
-                items = list(path_obj.iterdir())
-                info["item_count"] = len(items)
-            except (OSError, PermissionError):
-                info["item_count"] = None
-
-        return info
-
-    except (OSError, PermissionError) as e:
-        logger.warning(f"Could not get info for {path}: {e}")
-        return {
-            "name": Path(path).name,
-            "path": str(Path(path).absolute()),
-            "error": str(e),
-            "is_file": False,
-            "is_dir": False,
-        }
-
-
 def ls_tool(
     path: str,
     ignore: list[str] | None = None,
+    sandbox: BaseSandbox | None = None,
 ) -> str:
     """
     List files and directories in a given path.
@@ -122,8 +76,11 @@ def ls_tool(
     """
     start_time = time.time()
 
+    # Get sandbox instance
+    sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
+
     # Validate path is absolute
-    if not os.path.isabs(path):
+    if not Path(path).is_absolute():
         return _to_json(
             {
                 "status": "error",
@@ -134,7 +91,7 @@ def ls_tool(
         )
 
     # Check if path exists
-    if not os.path.exists(path):
+    if not sandbox.file_exists(path):
         return _to_json(
             {
                 "status": "error",
@@ -144,8 +101,20 @@ def ls_tool(
             },
         )
 
+    # Get file info to check if it's a directory
+    try:
+        file_info = sandbox.get_file_info(path)
+    except Exception as e:
+        return _to_json(
+            {
+                "status": "error",
+                "error": f"Failed to get file info: {str(e)}",
+                "path": path,
+                "duration_ms": int((time.time() - start_time) * 1000),
+            },
+        )
     # Check if it's a directory
-    if not os.path.isdir(path):
+    if not file_info.is_directory:
         return _to_json(
             {
                 "status": "error",
@@ -155,39 +124,33 @@ def ls_tool(
             },
         )
 
-    # Check permissions
-    if not os.access(path, os.R_OK):
-        return _to_json(
-            {
-                "status": "error",
-                "error": f"No read permission for directory: {path}",
-                "path": path,
-                "duration_ms": int((time.time() - start_time) * 1000),
-            },
-        )
-
     try:
-        # Get directory contents
+        # Get directory contents through sandbox
+        file_infos = sandbox.list_files(path, recursive=False)
+
         items: list[dict[str, Any]] = []
         files: list[dict[str, Any]] = []
         directories: list[dict[str, Any]] = []
         ignored_count = 0
         error_count = 0
 
-        path_obj = Path(path)
-
-        for item_path in path_obj.iterdir():
+        for file_info in file_infos:
             try:
                 # Check if item should be ignored
-                if ignore and _match_ignore_patterns(str(item_path), ignore):
+                if ignore and _match_ignore_patterns(file_info.path, ignore):
                     ignored_count += 1
                     continue
 
-                # Get file info
-                info = _get_file_info(str(item_path))
-
-                if "error" in info:
-                    error_count += 1
+                # Convert FileInfo to dict format
+                info: dict[str, Any] = {
+                    "name": Path(file_info.path).name,
+                    "path": file_info.path,
+                    "is_file": file_info.is_file,
+                    "is_dir": file_info.is_directory,
+                    "size": file_info.size if file_info.is_file else None,
+                    "modified_time": file_info.modified_time,
+                    "permissions": file_info.permissions,
+                }
 
                 items.append(info)
 
@@ -197,8 +160,8 @@ def ls_tool(
                 elif info.get("is_dir"):
                     directories.append(info)
 
-            except (OSError, PermissionError) as e:
-                logger.warning(f"Could not access item in {path}: {e}")
+            except Exception as e:
+                logger.warning(f"Could not process item in {path}: {e}")
                 error_count += 1
                 continue
 

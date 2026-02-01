@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from anthropic.types import ToolParam
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 
+from nexau.archs.sandbox.base_sandbox import BaseSandbox
 from nexau.core.messages import Message
 
 from .model_response import ModelResponse
@@ -177,6 +178,7 @@ class BeforeToolHookInput:
     """Input data passed to before_tool hooks."""
 
     agent_state: AgentState
+    sandbox: BaseSandbox | None
     tool_name: str
     tool_call_id: str
     tool_input: dict[str, Any]
@@ -235,6 +237,7 @@ class ToolCallParams:
     """Context passed to middleware wrapping tool calls."""
 
     agent_state: AgentState
+    sandbox: BaseSandbox | None
     tool_name: str
     parameters: dict[str, Any]
     tool_call_id: str

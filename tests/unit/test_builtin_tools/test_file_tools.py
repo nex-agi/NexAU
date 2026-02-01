@@ -38,7 +38,7 @@ class TestFileEditTool:
         old_string = ""
         new_string = 'print("Hello, World!")'
 
-        result = file_edit_tool(file_path, old_string, new_string)
+        result = file_edit_tool(file_path, old_string, new_string, sandbox=None)
 
         # Parse JSON result
         result_data = json.loads(result)
@@ -60,7 +60,7 @@ class TestFileEditTool:
         old_content = "test content"  # This is what the fixture writes
         new_content = 'print("Hello, Python!")'
 
-        result = file_edit_tool(temp_file, old_content, new_content)
+        result = file_edit_tool(temp_file, old_content, new_content, sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["success"] is True
@@ -73,16 +73,18 @@ class TestFileEditTool:
 
     def test_remove_content(self, temp_file):
         """Test removing content from file."""
+        from nexau.archs.sandbox import LocalSandbox
         from nexau.archs.tool.builtin.file_tools.file_edit_tool import mark_file_as_read
 
         original_content = "line1\nline2\nline3"
         with open(temp_file, "w") as f:
             f.write(original_content)
 
-        # Mark file as read after modification
-        mark_file_as_read(temp_file)
+        # Get sandbox and mark file as read after modification
+        sandbox = LocalSandbox()
+        mark_file_as_read(temp_file, sandbox)
 
-        result = file_edit_tool(temp_file, "line2\n", "")
+        result = file_edit_tool(temp_file, "line2\n", "", sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["success"] is True
@@ -94,7 +96,7 @@ class TestFileEditTool:
 
     def test_relative_path_error(self):
         """Test error handling for relative paths."""
-        result = file_edit_tool("relative/path.py", "", "content")
+        result = file_edit_tool("relative/path.py", "", "content", sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["success"] is False
@@ -103,7 +105,7 @@ class TestFileEditTool:
     def test_nonexistent_file_error(self):
         """Test error handling for nonexistent files."""
         nonexistent_path = "/tmp/nonexistent_file_12345.py"
-        result = file_edit_tool(nonexistent_path, "old", "new")
+        result = file_edit_tool(nonexistent_path, "old", "new", sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["success"] is False
@@ -111,7 +113,7 @@ class TestFileEditTool:
 
     def test_create_existing_file_error(self, temp_file):
         """Test error when trying to create existing file."""
-        result = file_edit_tool(temp_file, "", "content")
+        result = file_edit_tool(temp_file, "", "content", sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["success"] is False
@@ -119,16 +121,18 @@ class TestFileEditTool:
 
     def test_multiple_matches_error(self, temp_file):
         """Test error when old_string matches multiple times."""
+        from nexau.archs.sandbox import LocalSandbox
         from nexau.archs.tool.builtin.file_tools.file_edit_tool import mark_file_as_read
 
         content = "line\nline\nline"
         with open(temp_file, "w") as f:
             f.write(content)
 
-        # Mark file as read after modification
-        mark_file_as_read(temp_file)
+        # Get sandbox and mark file as read after modification
+        sandbox = LocalSandbox()
+        mark_file_as_read(temp_file, sandbox)
 
-        result = file_edit_tool(temp_file, "line", "replacement")
+        result = file_edit_tool(temp_file, "line", "replacement", sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["success"] is False
@@ -142,7 +146,7 @@ class TestFileEditTool:
         with open(temp_file, "w") as f:
             f.write(content)
 
-        result = file_edit_tool(temp_file, content, content)
+        result = file_edit_tool(temp_file, content, content, sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["success"] is False
@@ -171,7 +175,7 @@ class TestFileReadTool:
         with open(temp_file, "w") as f:
             f.write(content)
 
-        result = file_read_tool(temp_file, offset=3, limit=5)
+        result = file_read_tool(temp_file, offset=3, limit=5, sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["start_line"] == 3
@@ -182,7 +186,7 @@ class TestFileReadTool:
 
     def test_read_nonexistent_file(self):
         """Test reading nonexistent file."""
-        result = file_read_tool("/tmp/nonexistent_file_12345.py")
+        result = file_read_tool("/tmp/nonexistent_file_12345.py", sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["error"] is not None
@@ -190,7 +194,7 @@ class TestFileReadTool:
 
     def test_read_directory_error(self, temp_dir):
         """Test error when trying to read directory."""
-        result = file_read_tool(temp_dir)
+        result = file_read_tool(temp_dir, sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["error"] is not None
@@ -203,7 +207,7 @@ class TestFileReadTool:
         with open(temp_file, "w") as f:
             f.write(large_content)
 
-        result = file_read_tool(temp_file)
+        result = file_read_tool(temp_file, sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["error"] is not None
@@ -218,7 +222,7 @@ class TestFileWriteTool:
         file_path = os.path.join(temp_dir, "new_file.txt")
         content = "This is new content\nwith multiple lines"
 
-        result = file_write_tool(file_path, content)
+        result = file_write_tool(file_path, content, sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["success"] is True
@@ -233,6 +237,7 @@ class TestFileWriteTool:
 
     def test_write_existing_file(self, temp_file):
         """Test writing to existing file."""
+        from nexau.archs.sandbox import LocalSandbox
         from nexau.archs.tool.builtin.file_tools.file_edit_tool import mark_file_as_read
 
         original_content = "original content"
@@ -242,10 +247,11 @@ class TestFileWriteTool:
         with open(temp_file, "w") as f:
             f.write(original_content)
 
-        # Mark file as read after modification
-        mark_file_as_read(temp_file)
+        # Get sandbox and mark file as read after modification
+        sandbox = LocalSandbox()
+        mark_file_as_read(temp_file, sandbox)
 
-        result = file_write_tool(temp_file, new_content)
+        result = file_write_tool(temp_file, new_content, sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["success"] is True
@@ -259,16 +265,18 @@ class TestFileWriteTool:
 
     def test_write_no_changes(self, temp_file):
         """Test writing identical content."""
+        from nexau.archs.sandbox import LocalSandbox
         from nexau.archs.tool.builtin.file_tools.file_edit_tool import mark_file_as_read
 
         content = "same content"
         with open(temp_file, "w") as f:
             f.write(content)
 
-        # Mark file as read after modification
-        mark_file_as_read(temp_file)
+        # Get sandbox and mark file as read after modification
+        sandbox = LocalSandbox()
+        mark_file_as_read(temp_file, sandbox)
 
-        result = file_write_tool(temp_file, content)
+        result = file_write_tool(temp_file, content, sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["success"] is True
@@ -287,7 +295,7 @@ class TestGlobTool:
             with open(file_path, "w") as f:
                 f.write(f"content of {filename}")
 
-        result = glob_tool("*.py", temp_dir)
+        result = glob_tool("*.py", temp_dir, sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["num_files"] == 2
@@ -303,7 +311,7 @@ class TestGlobTool:
             with open(file_path, "w") as f:
                 f.write(f"content {i}")
 
-        result = glob_tool("*.txt", temp_dir, limit=3)
+        result = glob_tool("*.txt", temp_dir, limit=3, sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["num_files"] == 3
@@ -311,7 +319,7 @@ class TestGlobTool:
 
     def test_glob_nonexistent_directory(self):
         """Test globbing in nonexistent directory."""
-        result = glob_tool("*.py", "/nonexistent/directory")
+        result = glob_tool("*.py", "/nonexistent/directory", sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["error"] is not None
@@ -332,7 +340,7 @@ class TestLSTool:
             with open(item_path, "w") as f:
                 f.write(f"content of {item}")
 
-        result = ls_tool(temp_dir)
+        result = ls_tool(temp_dir, sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["status"] == "success"
@@ -349,7 +357,7 @@ class TestLSTool:
             with open(file_path, "w") as f:
                 f.write(f"content of {filename}")
 
-        result = ls_tool(temp_dir, ignore=["*.pyc", ".hidden"])
+        result = ls_tool(temp_dir, ignore=["*.pyc", ".hidden"], sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["status"] == "success"
@@ -358,7 +366,7 @@ class TestLSTool:
 
     def test_ls_nonexistent_directory(self):
         """Test listing nonexistent directory."""
-        result = ls_tool("/nonexistent/directory")
+        result = ls_tool("/nonexistent/directory", sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["status"] == "error"
@@ -366,7 +374,7 @@ class TestLSTool:
 
     def test_ls_file_instead_of_directory(self, temp_file):
         """Test listing file instead of directory."""
-        result = ls_tool(temp_file)
+        result = ls_tool(temp_file, sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["status"] == "error"
@@ -390,7 +398,7 @@ class TestGrepTool:
             with open(file_path, "w") as f:
                 f.write(content)
 
-        result = grep_tool("import", temp_dir)
+        result = grep_tool("import", temp_dir, sandbox=None)
         result_data = json.loads(result)
 
         # Skip test if ripgrep is not installed
@@ -414,7 +422,7 @@ class TestGrepTool:
             with open(file_path, "w") as f:
                 f.write(content)
 
-        result = grep_tool("print", temp_dir, glob="*.py")
+        result = grep_tool("print", temp_dir, glob="*.py", sandbox=None)
         result_data = json.loads(result)
 
         # Skip test if ripgrep is not installed
@@ -431,7 +439,7 @@ class TestGrepTool:
         with open(file_path, "w") as f:
             f.write("some content")
 
-        result = grep_tool("nonexistent_pattern", temp_dir)
+        result = grep_tool("nonexistent_pattern", temp_dir, sandbox=None)
         result_data = json.loads(result)
 
         assert result_data["num_files"] == 0
@@ -451,12 +459,12 @@ class TestFileToolsIntegration:
             f.write(initial_content)
 
         # Read file
-        read_result = file_read_tool(file_path)
+        read_result = file_read_tool(file_path, sandbox=None)
         read_data = json.loads(read_result)
         assert read_data["type"] == "text"
 
         # Edit file
-        edit_result = file_edit_tool(file_path, "old_function", "new_function")
+        edit_result = file_edit_tool(file_path, "old_function", "new_function", sandbox=None)
         edit_data = json.loads(edit_result)
         assert edit_data["success"] is True
 
@@ -469,11 +477,18 @@ class TestFileToolsIntegration:
 
     def test_file_operations_with_metadata(self, temp_file):
         """Test file operations preserve metadata."""
+        from nexau.archs.sandbox import LocalSandbox
+        from nexau.archs.tool.builtin.file_tools.file_edit_tool import mark_file_as_read
+
         initial_stat = os.stat(temp_file)
+
+        # Mark file as read first (temp_file fixture creates a file with content)
+        sandbox = LocalSandbox()
+        mark_file_as_read(temp_file, sandbox)
 
         # Write content
         new_content = "new content with\nmultiple lines"
-        write_result = file_write_tool(temp_file, new_content)
+        write_result = file_write_tool(temp_file, new_content, sandbox=None)
         write_data = json.loads(write_result)
         assert write_data["success"] is True
 
@@ -501,7 +516,7 @@ class TestFileToolsPerformance:
             f.write(large_content)
 
         # Test reading with limits
-        result = file_read_tool(file_path, offset=1, limit=10)
+        result = file_read_tool(file_path, offset=1, limit=10, sandbox=None)
         result_data = json.loads(result)
 
         # Should handle large files gracefully

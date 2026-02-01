@@ -33,7 +33,6 @@ from nexau.archs.main_sub.skill import Skill
 from nexau.archs.main_sub.tool_call_modes import normalize_tool_call_mode
 from nexau.archs.main_sub.utils import import_from_string
 from nexau.archs.tool import Tool
-from nexau.archs.tool.builtin.skill_tool import load_skill
 from nexau.archs.tracer.composite import CompositeTracer
 from nexau.archs.tracer.core import BaseTracer
 
@@ -103,6 +102,7 @@ class AgentConfig(
     skills: list[Skill] = Field(default_factory=_empty_skill_list)
     sub_agents: dict[str, AgentConfig] | None = None
     llm_config: LLMConfig | None = None
+    sandbox_config: dict[str, Any] | None = Field(default=None)
     mcp_servers: list[dict[str, Any]] = Field(default_factory=_empty_dict_list)
     after_model_hooks: list[Callable[..., Any]] | None = None
     after_tool_hooks: list[Callable[..., Any]] | None = None
@@ -159,6 +159,7 @@ class AgentConfig(
             .build_sub_agents()
             .build_skills()
             .build_system_prompt_path()
+            .build_sandbox()
             .get_agent_config()
         )
 
@@ -222,15 +223,6 @@ class AgentConfig(
                 binding=recall_sub_agent,
             )
             self.tools.append(recall_subagent_tool)
-        has_skilled_tools = any(tool.as_skill for tool in self.tools)
-        if has_skilled_tools or self.skills:
-            skill_tool = Tool.from_yaml(
-                str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "skill_tool.yaml"),
-                binding=load_skill,
-                as_skill=False,
-            )
-            skill_tool.description += self._generate_skill_description()
-            self.tools.append(skill_tool)
 
         # Ensure stop_tools is a set for faster lookup
         if isinstance(self.stop_tools, list):
@@ -256,28 +248,6 @@ class AgentConfig(
 
         self._is_finalized = True
         return self
-
-    def _generate_skill_description(self) -> str:
-        """Generate skill description."""
-        skill_description = "<Skills>\n"
-        for skill in self.skills:
-            skill_description += "<SkillBrief>\n"
-            skill_description += f"Skill Name: {skill.name}\n"
-            skill_description += f"Skill Folder: {skill.folder}\n"
-            skill_description += f"Skill Brief Description: {skill.description}\n\n"
-            skill_description += "</SkillBrief>\n"
-
-        for tool in self.tools:
-            if tool.as_skill:
-                skill_description += "<SkillBrief>\n"
-                skill_description += f"Skill: {tool.name}\n"
-                if not tool.skill_description:
-                    raise ValueError(f"Tool {tool.name} has no skill description but is marked as a skill")
-                skill_description += f"Skill Brief Description: {tool.skill_description}\n\n"
-                skill_description += "</SkillBrief>\n"
-
-        skill_description += "</Skills>\n"
-        return skill_description
 
 
 @dataclass
@@ -820,6 +790,16 @@ class AgentConfigBuilder:
                 )
             self.agent_params["system_prompt"] = str(system_prompt)
 
+        return self
+
+    def build_sandbox(self):
+        """Build sandbox configuration.
+
+        Returns:
+            Self for method chaining
+        """
+        sandbox_config = self.config.get("sandbox_config", None)
+        self.agent_params["sandbox_config"] = sandbox_config
         return self
 
     def set_overrides(self, overrides: dict[str, Any] | None) -> AgentConfigBuilder:

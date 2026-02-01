@@ -15,9 +15,11 @@
 import json
 import logging
 import os
-import subprocess
 import time
+from pathlib import Path
 from typing import Any
+
+from nexau.archs.sandbox import BaseSandbox, LocalSandbox, SandboxStatus
 
 logger = logging.getLogger(__name__)
 
@@ -25,18 +27,19 @@ logger = logging.getLogger(__name__)
 MAX_RESULTS = 100
 
 
-def _check_ripgrep_available() -> bool:
+def _check_ripgrep_available(sandbox: Any) -> bool:
     """Check if ripgrep (rg) is available in the system."""
     try:
-        subprocess.run(["rg", "--version"], capture_output=True, check=True)
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        result = sandbox.execute_bash("rg --version", timeout=5000)
+        return result.status == SandboxStatus.SUCCESS
+    except Exception:
         return False
 
 
 def _run_ripgrep(
     pattern: str,
     search_path: str,
+    sandbox: Any,
     glob_pattern: str | None = None,
     output_mode: str = "files_with_matches",
     context_before: int | None = None,
@@ -68,7 +71,6 @@ def _run_ripgrep(
     Returns:
         Tuple of (results, duration_ms)
     """
-    start_time = time.time()
 
     # Build ripgrep command
     cmd = ["rg"]
@@ -114,17 +116,14 @@ def _run_ripgrep(
     cmd.append(search_path)
 
     try:
-        # Run ripgrep command
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,  # Don't raise exception on non-zero exit
-            cwd=search_path,
-        )
+        # Build command string
+        cmd_str = " ".join(cmd)
+
+        # Run ripgrep command through sandbox
+        result = sandbox.execute_bash(cmd_str, timeout=60000)  # 60 second timeout
 
         # Parse output
-        if result.returncode == 0:
+        if result.status == SandboxStatus.SUCCESS and result.exit_code == 0:
             # Found matches
             output_lines = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
 
@@ -132,21 +131,17 @@ def _run_ripgrep(
             if head_limit and len(output_lines) > head_limit:
                 output_lines = output_lines[:head_limit]
 
-        elif result.returncode == 1:
+        elif result.exit_code == 1:
             # No matches found (this is normal)
             output_lines = []
         else:
             # Error occurred
             logger.error(
-                f"Ripgrep error (code {result.returncode}): {result.stderr}",
+                f"Ripgrep error (code {result.exit_code}): {result.stderr}",
             )
-            raise subprocess.CalledProcessError(
-                result.returncode,
-                cmd,
-                result.stderr,
-            )
+            raise Exception(f"Ripgrep failed with exit code {result.exit_code}: {result.stderr}")
 
-        duration_ms = int((time.time() - start_time) * 1000)
+        duration_ms = result.duration_ms
         return output_lines, duration_ms
 
     except Exception as e:
@@ -157,6 +152,7 @@ def _run_ripgrep(
 def _sort_files_by_modification_time(
     filenames: list[str],
     search_path: str,
+    sandbox: BaseSandbox,
 ) -> list[str]:
     """
     Sort files by modification time (newest first), with filename as tiebreaker.
@@ -168,29 +164,39 @@ def _sort_files_by_modification_time(
     Returns:
         Sorted list of absolute filenames
     """
-    files_with_mtime: list[tuple[str, float]] = []
+    files_with_mtime: list[tuple[str, str | None]] = []
 
     for filename in filenames:
         try:
             # Convert to absolute path
-            abs_path = os.path.abspath(os.path.join(search_path, filename))
-            # Get modification time
-            mtime = os.path.getmtime(abs_path)
+            abs_path = str(Path(search_path) / filename)
+            # Get modification time through sandbox
+            file_info = sandbox.get_file_info(abs_path)
+            mtime = file_info.modified_time
             files_with_mtime.append((abs_path, mtime))
-        except OSError as e:
+        except Exception as e:
             logger.warning(f"Could not get mtime for {filename}: {e}")
             # Still include the file but with mtime 0
-            abs_path = os.path.abspath(os.path.join(search_path, filename))
-            files_with_mtime.append((abs_path, 0))
+            abs_path = str(Path(search_path) / filename)
+            files_with_mtime.append((abs_path, "unknown"))
 
     # Sort by modification time (newest first), then by filename
 
-    def _mtime_sort_key(item: tuple[str, float]) -> tuple[float, str]:
-        return (-item[1], item[0])
+    def _mtime_sort_key(item: tuple[str, str]) -> tuple[str, str]:
+        return (item[1], item[0])
 
-    files_with_mtime.sort(key=_mtime_sort_key)
+    non_empty_files_with_mtime: list[tuple[str, str]] = []
+    empty_files_with_mtime: list[tuple[str, None]] = []
 
-    return [filepath for filepath, _ in files_with_mtime]
+    for file, mtime in files_with_mtime:
+        if mtime is not None:
+            non_empty_files_with_mtime.append((file, mtime))
+        else:
+            empty_files_with_mtime.append((file, mtime))
+    non_empty_files_with_mtime.sort(key=_mtime_sort_key)
+    empty_files_with_mtime.sort(key=lambda x: x[0])
+
+    return [filepath for filepath, _ in non_empty_files_with_mtime + empty_files_with_mtime]
 
 
 def grep_tool(
@@ -198,6 +204,7 @@ def grep_tool(
     path: str | None = None,
     glob: str | None = None,
     output_mode: str = "files_with_matches",
+    sandbox: BaseSandbox | None = None,
     **kwargs: Any,
 ) -> str:
     """
@@ -220,12 +227,15 @@ def grep_tool(
     """
     start_time = time.time()
 
+    # Get sandbox instance
+    sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
+
     # Determine search directory
-    search_dir = path if path else os.getcwd()
+    search_dir = path if path else str(Path.cwd())
 
     try:
         # Check if ripgrep is available
-        if not _check_ripgrep_available():
+        if not _check_ripgrep_available(sandbox):
             return json.dumps(
                 {
                     "error": ("ripgrep (rg) is not installed or not available in PATH. Please install ripgrep to use this tool."),
@@ -238,7 +248,7 @@ def grep_tool(
             )
 
         # Validate search path (can be file or directory)
-        if not os.path.exists(search_dir):
+        if not sandbox.file_exists(search_dir):
             return json.dumps(
                 {
                     "error": f"Path does not exist: {search_dir}",
@@ -250,29 +260,13 @@ def grep_tool(
                 indent=2,
             )
 
-        if not os.access(search_dir, os.R_OK):
-            return json.dumps(
-                {
-                    "error": f"No read permission for path: {search_dir}",
-                    "num_files": 0,
-                    "filenames": [],
-                    "duration_ms": int((time.time() - start_time) * 1000),
-                    "truncated": False,
-                },
-                indent=2,
-            )
-
-        # Handle file vs directory
-        if os.path.isfile(search_dir):
-            # If it's a file, search in its parent directory but only in that file
-            file_dir = os.path.dirname(search_dir)
-            file_name = os.path.basename(search_dir)
-            # Use the file as a glob pattern to restrict search to just this file
-            if glob:
-                # If glob is already specified, we can't search a single file
+        # Check read permission and handle file vs directory
+        try:
+            file_info = sandbox.get_file_info(search_dir)
+            if not file_info.readable:
                 return json.dumps(
                     {
-                        "error": f"Cannot use glob pattern when searching a specific file: {search_dir}",
+                        "error": f"No read permission for path: {search_dir}",
                         "num_files": 0,
                         "filenames": [],
                         "duration_ms": int((time.time() - start_time) * 1000),
@@ -280,8 +274,37 @@ def grep_tool(
                     },
                     indent=2,
                 )
-            glob = file_name
-            search_dir = file_dir
+
+            # If it's a file, search in its parent directory but only in that file
+            if file_info.is_file:
+                file_dir = str(Path(search_dir).parent)
+                file_name = Path(search_dir).name
+                # Use the file as a glob pattern to restrict search to just this file
+                if glob:
+                    # If glob is already specified, we can't search a single file
+                    return json.dumps(
+                        {
+                            "error": f"Cannot use glob pattern when searching a specific file: {search_dir}",
+                            "num_files": 0,
+                            "filenames": [],
+                            "duration_ms": int((time.time() - start_time) * 1000),
+                            "truncated": False,
+                        },
+                        indent=2,
+                    )
+                glob = file_name
+                search_dir = file_dir
+        except Exception as e:
+            return json.dumps(
+                {
+                    "error": f"Failed to access path: {str(e)}",
+                    "num_files": 0,
+                    "filenames": [],
+                    "duration_ms": int((time.time() - start_time) * 1000),
+                    "truncated": False,
+                },
+                indent=2,
+            )
 
         # Extract additional parameters (support both old and new parameter names)
         context_before = kwargs.get("context_before") or kwargs.get("-B")
@@ -317,6 +340,7 @@ def grep_tool(
             results, _search_duration_ms = _run_ripgrep(
                 pattern=pattern,
                 search_path=search_dir,
+                sandbox=sandbox,
                 glob_pattern=glob,
                 output_mode=output_mode,
                 context_before=context_before,
@@ -328,7 +352,7 @@ def grep_tool(
                 head_limit=head_limit,
                 multiline=multiline,
             )
-        except subprocess.CalledProcessError as e:
+        except Exception as e:
             return json.dumps(
                 {
                     "error": f"Ripgrep search failed: {str(e)}",
@@ -354,11 +378,12 @@ def grep_tool(
                     final_results = _sort_files_by_modification_time(
                         results,
                         search_dir,
+                        sandbox,
                     )
                 except Exception as e:
                     logger.warning(f"Failed to sort by modification time: {e}")
                     # Fallback to alphabetical sort with absolute paths
-                    final_results = [os.path.abspath(os.path.join(search_dir, f)) for f in sorted(results)]
+                    final_results = [str(Path(search_dir) / f) for f in sorted(results)]
             else:
                 final_results = []
 
@@ -550,9 +575,15 @@ class GrepSearchTool:
     Provides additional configuration options and better error handling.
     """
 
-    def __init__(self, max_results: int = MAX_RESULTS, case_sensitive: bool = False):
+    def __init__(
+        self,
+        max_results: int = MAX_RESULTS,
+        case_sensitive: bool = False,
+        sandbox: BaseSandbox | None = None,
+    ):
         self.max_results = max_results
         self.case_sensitive = case_sensitive
+        self.sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
         self.logger = logging.getLogger(self.__class__.__name__)
 
     def search(
@@ -575,23 +606,27 @@ class GrepSearchTool:
             Dictionary containing search results
         """
         start_time = time.time()
-        search_dir = path if path else os.getcwd()
+        search_dir = path if path else str(Path.cwd())
         limit = max_results if max_results is not None else self.max_results
 
         try:
+            # Get sandbox instance
+            sandbox = self.sandbox
+
             # Check ripgrep availability
-            if not _check_ripgrep_available():
+            if not _check_ripgrep_available(sandbox):
                 raise RuntimeError(
                     "ripgrep (rg) is not installed or not available in PATH",
                 )
 
             # Validate directory
-            if not os.path.exists(search_dir):
+            if not sandbox.file_exists(search_dir):
                 raise FileNotFoundError(
                     f"Directory does not exist: {search_dir}",
                 )
 
-            if not os.access(search_dir, os.R_OK):
+            file_info = sandbox.get_file_info(search_dir)
+            if not file_info.readable:
                 raise PermissionError(
                     f"No read permission for directory: {search_dir}",
                 )
@@ -600,6 +635,7 @@ class GrepSearchTool:
             results, search_duration = _run_ripgrep(
                 pattern=pattern,
                 search_path=search_dir,
+                sandbox=sandbox,
                 glob_pattern=include_pattern,
                 output_mode="files_with_matches",
                 case_insensitive=not self.case_sensitive,
@@ -610,6 +646,7 @@ class GrepSearchTool:
                 sorted_filenames = _sort_files_by_modification_time(
                     results,
                     search_dir,
+                    sandbox,
                 )
             else:
                 sorted_filenames = []
@@ -651,13 +688,16 @@ def main():
     Test function to demonstrate and validate the grep_tool functionality.
     """
     import json
+    from pathlib import Path
+
+    sandbox = LocalSandbox(_work_dir=str(Path.cwd()))
 
     print("🔍 GrepTool 测试开始...")
     print("=" * 50)
 
     # Test 1: Check ripgrep availability
     print("\n📋 测试 1: 检查 ripgrep 可用性")
-    if _check_ripgrep_available():
+    if _check_ripgrep_available(sandbox):
         print("✅ ripgrep (rg) 已安装并可用")
     else:
         print("❌ ripgrep (rg) 未安装或不可用")

@@ -298,6 +298,7 @@ def main():
                 .build_sub_agents()
                 .build_skills()
                 .build_system_prompt_path()
+                .build_sandbox()
                 .get_agent_config()
             )
             return Agent(config=agent_config)
@@ -342,17 +343,19 @@ def main():
 
                     send_message("step", "Processing request...", metadata={"type": "start"})
 
+                    sandbox = agent.sandbox_manager.instance
+
                     # Run the agent
                     response = agent.run(
                         message=user_message,
                         context={
                             "date": get_date(),
                             "username": os.getenv("USER", "user"),
-                            "working_directory": os.getcwd(),
+                            "working_directory": str(sandbox.work_dir if sandbox else os.getcwd()),
                             "env_content": {
                                 "date": get_date(),
                                 "username": os.getenv("USER", "user"),
-                                "working_directory": os.getcwd(),
+                                "working_directory": str(sandbox.work_dir if sandbox else os.getcwd()),
                             },
                         },
                     )

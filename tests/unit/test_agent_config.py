@@ -97,8 +97,6 @@ class TestAgentConfigSkills:
 
         assert len(config.skills) == 1
         assert config.skills[0].name == "test-skill"
-        # Should have added skill_tool
-        assert any(tool.name == "LoadSkill" for tool in config.tools)
 
     def test_agent_config_with_multiple_skills(self):
         """Test AgentConfig with multiple skills."""
@@ -107,9 +105,6 @@ class TestAgentConfigSkills:
         config = AgentConfig(name="test_agent", llm_config=make_llm_config(), skills=skills)
 
         assert len(config.skills) == 3
-        # Should have added skill_tool
-        skill_tools = [tool for tool in config.tools if tool.name == "LoadSkill"]
-        assert len(skill_tools) == 1
 
     def test_agent_config_with_tool_as_skill(self):
         """Test AgentConfig with a tool marked as skill."""
@@ -124,9 +119,6 @@ class TestAgentConfigSkills:
 
         config = AgentConfig(name="test_agent", llm_config=make_llm_config(), tools=[tool])
 
-        # Should have added skill_tool because there's a tool with as_skill=True
-        skill_tools = [t for t in config.tools if t.name == "LoadSkill"]
-        assert len(skill_tools) == 1
         # Original tool should still be there
         assert any(t.name == "tool_skill" for t in config.tools)
 
@@ -146,9 +138,6 @@ class TestAgentConfigSkills:
 
         config = AgentConfig(name="test_agent", llm_config=make_llm_config(), tools=tools)
 
-        # Should have added skill_tool once
-        skill_tools = [t for t in config.tools if t.name == "LoadSkill"]
-        assert len(skill_tools) == 1
         # All original tools should still be there
         assert len([t for t in config.tools if "skill_tool_" in t.name]) == 3
 
@@ -168,22 +157,8 @@ class TestAgentConfigSkills:
         config = AgentConfig(name="test_agent", llm_config=make_llm_config(), skills=[skill], tools=[tool])
 
         assert len(config.skills) == 1
-        # Should have skill_tool and the original tool
-        skill_tools = [t for t in config.tools if t.name == "LoadSkill"]
-        assert len(skill_tools) == 1
+        # Should have the original tool
         assert any(t.name == "tool_skill" for t in config.tools)
-
-    def test_agent_config_without_skills_or_skilled_tools(self):
-        """Test AgentConfig without skills or skilled tools."""
-        tool = Tool(
-            name="regular_tool", description="A regular tool", input_schema={"type": "object"}, implementation=lambda: None, as_skill=False
-        )
-
-        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), tools=[tool])
-
-        # Should NOT have added skill_tool
-        skill_tools = [t for t in config.tools if t.name == "LoadSkill"]
-        assert len(skill_tools) == 0
 
     def test_agent_config_empty_tools_and_skills(self):
         """Test AgentConfig with empty tools and skills."""
@@ -216,126 +191,6 @@ class TestAgentConfigTracing:
     def test_agent_config_rejects_invalid_tracer_entries(self):
         with pytest.raises(ValueError):
             AgentConfig(name="test_agent", llm_config=make_llm_config(), tracers=["not-a-tracer"])
-
-
-class TestGenerateSkillDescription:
-    """Test cases for _generate_skill_description method."""
-
-    def test_generate_skill_description_with_skills(self):
-        """Test _generate_skill_description with regular skills."""
-        skills = [
-            Skill(name="skill-1", description="First skill", detail="Detail 1", folder="/path/1"),
-            Skill(name="skill-2", description="Second skill", detail="Detail 2", folder="/path/2"),
-        ]
-
-        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), skills=skills)
-
-        description = config._generate_skill_description()
-
-        assert "<Skills>" in description
-        assert "</Skills>" in description
-        assert "<SkillBrief>" in description
-        assert "</SkillBrief>" in description
-        assert "Skill Name: skill-1" in description
-        assert "Skill Folder: /path/1" in description
-        assert "Skill Brief Description: First skill" in description
-        assert "Skill Name: skill-2" in description
-        assert "Skill Folder: /path/2" in description
-        assert "Skill Brief Description: Second skill" in description
-
-    def test_generate_skill_description_with_tool_skills(self):
-        """Test _generate_skill_description with tool-based skills."""
-        tools = [
-            Tool(
-                name="tool_skill_1",
-                description="Tool 1",
-                input_schema={"type": "object"},
-                implementation=lambda: None,
-                as_skill=True,
-                skill_description="Tool skill 1 description",
-            ),
-            Tool(
-                name="tool_skill_2",
-                description="Tool 2",
-                input_schema={"type": "object"},
-                implementation=lambda: None,
-                as_skill=True,
-                skill_description="Tool skill 2 description",
-            ),
-        ]
-
-        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), tools=tools)
-
-        description = config._generate_skill_description()
-
-        assert "Skill: tool_skill_1" in description
-        assert "Skill Brief Description: Tool skill 1 description" in description
-        assert "Skill: tool_skill_2" in description
-        assert "Skill Brief Description: Tool skill 2 description" in description
-
-    def test_generate_skill_description_mixed(self):
-        """Test _generate_skill_description with both skills and tool skills."""
-        skill = Skill(name="folder-skill", description="Folder skill", detail="Details", folder="/folder")
-
-        tool = Tool(
-            name="tool_skill",
-            description="Tool skill",
-            input_schema={"type": "object"},
-            implementation=lambda: None,
-            as_skill=True,
-            skill_description="Tool skill description",
-        )
-
-        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), skills=[skill], tools=[tool])
-
-        description = config._generate_skill_description()
-
-        # Should have both skill types
-        assert "Skill Name: folder-skill" in description
-        assert "Skill: tool_skill" in description
-
-    def test_generate_skill_description_tool_without_skill_description(self):
-        """Test that tool marked as skill without skill_description raises error."""
-        tool = Tool(
-            name="bad_tool",
-            description="A tool without skill description",
-            input_schema={"type": "object"},
-            implementation=lambda: None,
-            as_skill=True,
-            skill_description=None,  # Missing skill description
-        )
-
-        with pytest.raises(ValueError, match="Tool bad_tool has no skill description"):
-            AgentConfig(name="test_agent", llm_config=make_llm_config(), tools=[tool])
-
-    def test_generate_skill_description_empty_skill_description(self):
-        """Test that tool with empty skill_description raises error."""
-        tool = Tool(
-            name="bad_tool",
-            description="A tool with empty skill description",
-            input_schema={"type": "object"},
-            implementation=lambda: None,
-            as_skill=True,
-            skill_description="",  # Empty skill description
-        )
-
-        with pytest.raises(ValueError, match="Tool bad_tool has no skill description"):
-            AgentConfig(name="test_agent", llm_config=make_llm_config(), tools=[tool])
-
-    def test_skill_tool_description_includes_generated_description(self):
-        """Test that the skill_tool has the generated description appended."""
-        skill = Skill(name="test-skill", description="Test skill", detail="Details", folder="/path")
-
-        config = AgentConfig(name="test_agent", llm_config=make_llm_config(), skills=[skill])
-
-        # Find the skill_tool
-        skill_tools = [t for t in config.tools if t.name == "LoadSkill"]
-        assert len(skill_tools) == 1
-
-        skill_tool = skill_tools[0]
-        # The description should include the generated skill description
-        assert "test-skill" in skill_tool.description
-        assert "<Skills>" in skill_tool.description
 
 
 class TestAgentConfigPostInit:
@@ -446,16 +301,7 @@ class TestAgentConfigIntegration:
         assert len(config.skills) == 2
 
         # Verify tools include skill_tool, tool_skill, and regular_tool
-        assert len(config.tools) == 3
+        assert len(config.tools) == 2
         tool_names = [t.name for t in config.tools]
-        assert "LoadSkill" in tool_names
         assert "code_skill" in tool_names
         assert "calculator" in tool_names
-
-        # Verify skill description generation
-        description = config._generate_skill_description()
-        assert "analysis-skill" in description
-        assert "reporting-skill" in description
-        assert "code_skill" in description
-        # Regular tool should not be in skill description
-        assert "calculator" not in description or "Skill: calculator" not in description

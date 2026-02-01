@@ -21,7 +21,10 @@ import signal
 import threading
 import weakref
 from types import FrameType
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from nexau.archs.sandbox import BaseSandboxManager
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +52,16 @@ class CleanupManager:
         self._cleanup_registered = False
         self._cleanup_lock = threading.Lock()
         self._initialized = True
+        self._sandbox_manager: BaseSandboxManager[Any] | None = None
 
     def register_agent(self, agent: Any) -> None:
         """Register an agent for cleanup tracking."""
         self._active_agents.add(agent)
+        self._register_cleanup_handlers()
+
+    def register_sandbox_manager(self, sandbox_manager: Any) -> None:
+        """Register a sandbox manager for cleanup tracking."""
+        self._sandbox_manager = sandbox_manager
         self._register_cleanup_handlers()
 
     def _register_cleanup_handlers(self) -> None:
@@ -74,6 +83,7 @@ class CleanupManager:
             )
 
             # Register atexit handler as fallback
+            atexit.register(self._cleanup_sandbox)
             atexit.register(self._cleanup_all_agents)
 
             self._cleanup_registered = True
@@ -94,9 +104,26 @@ class CleanupManager:
 
         logger.info("✅ Agent cleanup completed")
 
+    def _cleanup_sandbox(self) -> None:
+        """Clean up active sandbox."""
+        logger.info("🧹 Cleaning up active sandbox...")
+
+        if self._sandbox_manager is None:
+            return
+
+        try:
+            self._sandbox_manager.stop()
+        except Exception as e:
+            logger.error(
+                f"❌ Error cleaning up sandbox {getattr(self._sandbox_manager.instance, 'sandbox_id', 'unknown')}: {e}",
+            )
+
+        logger.info("✅ Sandbox cleanup completed")
+
     def _signal_handler(self, signum: int, frame: FrameType | None) -> None:
         """Handle termination signals by cleaning up agents."""
         logger.info(f"🚨 Received signal {signum}, initiating cleanup...")
+        self._cleanup_sandbox()
         self._cleanup_all_agents()
         # Re-raise the signal with default handler to ensure proper termination
         signal.signal(signum, signal.SIG_DFL)

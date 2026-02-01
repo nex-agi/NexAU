@@ -156,6 +156,7 @@ class TestAgentEventsMiddleware:
             tool_call_id="call_123",
             tool_input={"param": "value"},
             tool_output={"result": "success", "data": [1, 2, 3]},
+            sandbox=Mock(),
         )
 
         result = middleware.after_tool(hook_input)

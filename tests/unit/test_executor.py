@@ -38,6 +38,7 @@ from nexau.archs.main_sub.execution.parse_structures import (
     SubAgentCall,
     ToolCall,
 )
+from nexau.archs.sandbox.local_sandbox import LocalSandboxManager
 from nexau.archs.tool.tool import Tool
 from nexau.core.messages import ImageBlock, Role, TextBlock, ToolOutputImage, ToolResultBlock
 
@@ -55,6 +56,7 @@ class TestExecutorInitialization:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         assert executor.agent_name == "test_agent"
@@ -80,6 +82,7 @@ class TestExecutorInitialization:
             max_running_subagents=3,
             retry_attempts=3,
             serial_tool_name=["serial_tool"],
+            sandbox_manager=LocalSandboxManager(),
         )
 
         assert executor.max_iterations == 50
@@ -106,6 +109,7 @@ class TestExecutorInitialization:
             after_model_hooks=[after_hook],
             after_tool_hooks=[tool_hook],
             before_tool_hooks=[before_tool_hook],
+            sandbox_manager=LocalSandboxManager(),
         )
 
         assert executor.middleware_manager is not None
@@ -123,6 +127,7 @@ class TestExecutorInitialization:
             openai_client=Mock(),
             llm_config=mock_llm_config,
             token_counter=mock_token_counter,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         assert executor.token_counter == mock_token_counter
@@ -141,6 +146,7 @@ class TestExecutorMessageEnqueueing:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         message = {"role": "user", "content": "Test message"}
@@ -160,6 +166,7 @@ class TestExecutorMessageEnqueueing:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         messages = [
@@ -199,6 +206,7 @@ class TestExecutorExecution:
             openai_client=Mock(),
             llm_config=mock_llm_config,
             middlewares=[middleware],
+            sandbox_manager=LocalSandboxManager(),
         )
         middleware.executor = executor
 
@@ -241,6 +249,7 @@ class TestExecutorExecution:
             openai_client=Mock(),
             llm_config=mock_llm_config,
             middlewares=[middleware],
+            sandbox_manager=LocalSandboxManager(),
         )
         middleware.executor = executor
 
@@ -286,6 +295,7 @@ class TestExecutorExecution:
             llm_config=mock_llm_config,
             max_iterations=1,
             middlewares=[lifecycle_middleware],
+            sandbox_manager=LocalSandboxManager(),
         )
 
         history = [
@@ -353,6 +363,7 @@ class TestExecutorExecution:
             max_iterations=2,
             tool_call_mode="openai",
             openai_tools=openai_tools,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         history = [
@@ -438,6 +449,7 @@ class TestExecutorExecution:
             max_iterations=2,
             tool_call_mode="openai",
             openai_tools=openai_tools,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         history = [
@@ -510,6 +522,7 @@ class TestExecutorExecution:
             max_iterations=2,
             tool_call_mode="openai",
             openai_tools=openai_tools,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         history = [
@@ -558,6 +571,7 @@ class TestExecutorExecution:
             openai_client=mock_client,
             llm_config=mock_llm_config,
             max_iterations=2,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         # Mock the LLM caller to return simple responses
@@ -594,6 +608,7 @@ class TestExecutorExecution:
             openai_client=Mock(),
             llm_config=mock_llm_config,
             max_iterations=2,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         # Enqueue a message before execution
@@ -635,6 +650,7 @@ class TestExecutorExecution:
             openai_client=Mock(),
             llm_config=mock_llm_config,
             max_context_tokens=100,  # Very low limit
+            sandbox_manager=LocalSandboxManager(),
         )
 
         # Mock token counter to return high count
@@ -664,6 +680,7 @@ class TestExecutorExecution:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         # Mock the LLM caller to raise an exception
@@ -694,6 +711,7 @@ class TestExecutorXMLCallProcessing:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         from nexau.archs.main_sub.execution.hooks import AfterModelHookInput
@@ -746,6 +764,7 @@ class TestExecutorXMLCallProcessing:
             openai_client=Mock(),
             llm_config=mock_llm_config,
             serial_tool_name=[],  # Empty list to avoid None check issues
+            sandbox_manager=LocalSandboxManager(),
         )
 
         from nexau.archs.main_sub.execution.hooks import AfterModelHookInput
@@ -803,6 +822,7 @@ class TestExecutorXMLCallProcessing:
             openai_client=Mock(),
             llm_config=mock_llm_config,
             serial_tool_name=[],  # Empty list to avoid None check issues
+            sandbox_manager=LocalSandboxManager(),
         )
 
         from nexau.archs.main_sub.execution.hooks import AfterModelHookInput
@@ -874,6 +894,7 @@ class TestExecutorToolExecution:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         tool_call = ToolCall(
@@ -913,6 +934,7 @@ class TestExecutorToolExecution:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         tool_call = ToolCall(
@@ -943,6 +965,7 @@ class TestExecutorSubAgentExecution:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         sub_agent_call = SubAgentCall(
@@ -973,6 +996,7 @@ class TestExecutorSubAgentExecution:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         sub_agent_call = SubAgentCall(
@@ -1006,6 +1030,7 @@ class TestExecutorCleanup:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         executor.cleanup()
@@ -1023,6 +1048,7 @@ class TestExecutorCleanup:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         # Add mock executors to running_executors
@@ -1054,6 +1080,7 @@ class TestExecutorHelperMethods:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         tool = Tool(
@@ -1078,6 +1105,7 @@ class TestExecutorHelperMethods:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         new_config = agent_config.model_copy(update={"name": "new_sub_agent", "agent_id": "new_sub_agent_123"})
@@ -1113,6 +1141,7 @@ class TestExecutorStopToolHandling:
             openai_client=Mock(),
             llm_config=mock_llm_config,
             serial_tool_name=[],  # Empty list to avoid None check issues
+            sandbox_manager=LocalSandboxManager(),
         )
 
         tool_call = ToolCall(
@@ -1178,6 +1207,7 @@ class TestExecutorParallelExecution:
             openai_client=Mock(),
             llm_config=mock_llm_config,
             serial_tool_name=[],  # Empty list to avoid None check issues
+            sandbox_manager=LocalSandboxManager(),
         )
 
         tool_call1 = ToolCall(
@@ -1234,6 +1264,7 @@ class TestExecutorParallelExecution:
             openai_client=Mock(),
             llm_config=mock_llm_config,
             serial_tool_name=[],  # Empty list to avoid None check issues
+            sandbox_manager=LocalSandboxManager(),
         )
 
         # Create tool calls with duplicate IDs
@@ -1296,6 +1327,7 @@ class TestExecutorWithHooks:
             llm_config=mock_llm_config,
             before_model_hooks=[hook],
             max_iterations=1,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         # Mock LLM caller
@@ -1336,6 +1368,7 @@ class TestExecutorEdgeCases:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         executor._shutdown_event.set()
@@ -1371,6 +1404,7 @@ class TestExecutorEdgeCases:
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            sandbox_manager=LocalSandboxManager(),
         )
 
         # Create test data file

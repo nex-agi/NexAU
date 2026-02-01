@@ -19,7 +19,7 @@ including timestamp tracking for read/write coordination.
 """
 
 import logging
-import os
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 _file_timestamps: dict[str, float] = {}
 
 
-def update_file_timestamp(file_path: str) -> None:
+def update_file_timestamp(file_path: str, sandbox: Any = None) -> None:
     """
     Update file timestamp cache for read/write coordination.
 
@@ -36,19 +36,22 @@ def update_file_timestamp(file_path: str) -> None:
 
     Args:
         file_path: Absolute path to the file
+        sandbox: Optional sandbox instance for file operations
     """
     global _file_timestamps
     try:
-        if os.path.exists(file_path):
-            _file_timestamps[file_path] = os.path.getmtime(file_path)
-            logger.debug(f"Updated timestamp cache for: {file_path}")
-        elif file_path in _file_timestamps:
-            # Remove from cache if file doesn't exist
-            del _file_timestamps[file_path]
-        # If file doesn't exist and isn't in cache, no action needed
+        if sandbox:
+            if sandbox.file_exists(file_path):
+                file_info = sandbox.get_file_info(file_path)
+                _file_timestamps[file_path] = file_info.modified_time
+                logger.debug(f"Updated timestamp cache for: {file_path}")
+            elif file_path in _file_timestamps:
+                # Remove from cache if file doesn't exist
+                del _file_timestamps[file_path]
+        else:
+            # Fallback: just mark as accessed without actual timestamp
+            _file_timestamps[file_path] = 0.0
     except Exception as e:
-        # Ensure we always touch the global variable, even on error
-        _file_timestamps = _file_timestamps  # No-op assignment to satisfy flake8
         logger.warning(f"Failed to update file timestamp for {file_path}: {e}")
 
 
@@ -78,7 +81,7 @@ def has_file_timestamp(file_path: str) -> bool:
     return file_path in _file_timestamps
 
 
-def validate_file_read_state(file_path: str) -> tuple[bool, str | None]:
+def validate_file_read_state(file_path: str, sandbox: Any = None) -> tuple[bool, str | None]:
     """
     Validate if file is in a safe state for writing.
 
@@ -90,11 +93,16 @@ def validate_file_read_state(file_path: str) -> tuple[bool, str | None]:
 
     Args:
         file_path: Absolute path to the file
+        sandbox: Optional sandbox instance for file operations
 
     Returns:
         Tuple of (is_valid, error_message)
     """
-    if not os.path.exists(file_path):
+    if sandbox:
+        if not sandbox.file_exists(file_path):
+            return True, None
+    else:
+        # If no sandbox, assume file state is valid
         return True, None
 
     # Check if file has been read
@@ -104,7 +112,8 @@ def validate_file_read_state(file_path: str) -> tuple[bool, str | None]:
 
     # Check if file was modified after last read
     try:
-        current_mtime = os.path.getmtime(file_path)
+        file_info = sandbox.get_file_info(file_path)
+        current_mtime = file_info.modified_time
         if current_mtime > cached_timestamp:
             return (
                 False,

@@ -16,18 +16,14 @@
 
 import logging
 import os
-import subprocess
 import time
 from typing import (
-    TYPE_CHECKING,
     Literal,
     NotRequired,
-    Optional,
     TypedDict,
 )
 
-if TYPE_CHECKING:
-    from ...main_sub.agent_state import AgentState
+from nexau.archs.sandbox import BaseSandbox, LocalSandbox, SandboxStatus
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +54,7 @@ def bash_tool(
     command: str,
     timeout: int | None = None,
     description: str | None = None,
-    agent_state: Optional["AgentState"] = None,
+    sandbox: BaseSandbox | None = None,
 ) -> BashResult:
     """
     Execute a bash command in a persistent shell session with proper handling and security measures.
@@ -74,10 +70,6 @@ def bash_tool(
     """
     start_time = time.time()
 
-    workspace = None
-    if agent_state:
-        workspace = agent_state.get_global_value("workspace", None)
-
     # Validate timeout
     if timeout is None:
         timeout = DEFAULT_TIMEOUT
@@ -88,9 +80,6 @@ def bash_tool(
             "command": command,
             "duration_ms": 0,
         }
-
-    # Convert timeout to seconds for subprocess
-    timeout_seconds = timeout / 1000.0
 
     # Validate command
     if not command or not command.strip():
@@ -130,95 +119,66 @@ def bash_tool(
             }
 
     try:
-        # Execute the command
-        process = subprocess.Popen(
-            command,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=workspace or os.getcwd(),
-            env=os.environ.copy(),
-        )
+        # Get sandbox instance
+        sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
 
-        try:
-            stdout, stderr = process.communicate(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            stdout, stderr = process.communicate()
-            duration_ms = int((time.time() - start_time) * 1000)
-            return {
-                "status": "timeout",
-                "error": f"Command timed out after {timeout}ms",
-                "command": command,
-                "duration_ms": duration_ms,
-                "stdout": stdout[:MAX_OUTPUT_LENGTH] if stdout else "",
-                "stderr": stderr[:MAX_OUTPUT_LENGTH] if stderr else "",
-                "exit_code": process.returncode,
-            }
+        # Execute command through sandbox
+        cmd_result = sandbox.execute_bash(command, timeout)
 
-        duration_ms = int((time.time() - start_time) * 1000)
+        duration_ms = cmd_result.duration_ms
+
+        # Determine status
+        status: Literal["success", "error", "timeout"]
+        if cmd_result.status == SandboxStatus.TIMEOUT:
+            status = "timeout"
+        elif cmd_result.status == SandboxStatus.SUCCESS:
+            status = "success"
+        else:
+            status = "error"
 
         # Prepare output
         result: BashResult = {
-            "status": "success" if process.returncode == 0 else "error",
+            "status": status,
             "command": command,
-            "exit_code": process.returncode,
+            "exit_code": cmd_result.exit_code,
             "duration_ms": duration_ms,
-            "working_directory": workspace or os.getcwd(),
+            "working_directory": str(sandbox.work_dir),
         }
 
         # Add description if provided
         if description:
             result["description"] = description
 
-        # Truncate output if too long
-        if stdout:
-            if len(stdout) > MAX_OUTPUT_LENGTH:
-                result["stdout"] = stdout[:MAX_OUTPUT_LENGTH]
-                result["stdout_truncated"] = True
-                result["stdout_original_length"] = len(stdout)
-            else:
-                result["stdout"] = stdout
-                result["stdout_truncated"] = False
+        # Handle stdout
+        if cmd_result.stdout:
+            result["stdout"] = cmd_result.stdout
+            result["stdout_truncated"] = cmd_result.truncated and cmd_result.original_stdout_length is not None
+            if result["stdout_truncated"] and cmd_result.original_stdout_length is not None:
+                result["stdout_original_length"] = cmd_result.original_stdout_length
         else:
             result["stdout"] = ""
             result["stdout_truncated"] = False
 
-        if stderr:
-            if len(stderr) > MAX_OUTPUT_LENGTH:
-                result["stderr"] = stderr[:MAX_OUTPUT_LENGTH]
-                result["stderr_truncated"] = True
-                result["stderr_original_length"] = len(stderr)
-            else:
-                result["stderr"] = stderr
-                result["stderr_truncated"] = False
+        # Handle stderr
+        if cmd_result.stderr:
+            result["stderr"] = cmd_result.stderr
+            result["stderr_truncated"] = cmd_result.truncated and cmd_result.original_stderr_length is not None
+            if result["stderr_truncated"] and cmd_result.original_stderr_length is not None:
+                result["stderr_original_length"] = cmd_result.original_stderr_length
         else:
             result["stderr"] = ""
             result["stderr_truncated"] = False
 
+        # Add error message if present
+        if cmd_result.error:
+            result["error"] = cmd_result.error
+
         # Log execution
         logger.info(
-            f"Bash command executed: '{command}' (exit_code={process.returncode}, duration={duration_ms}ms)",
+            f"Bash command executed: '{command}' (exit_code={cmd_result.exit_code}, duration={duration_ms}ms)",
         )
 
         return result
-
-    except FileNotFoundError:
-        return {
-            "status": "error",
-            "error": "Shell not found. Bash may not be available on this system.",
-            "command": command,
-            "duration_ms": int((time.time() - start_time) * 1000),
-        }
-
-    except PermissionError as e:
-        return {
-            "status": "error",
-            "error": f"Permission denied: {str(e)}",
-            "command": command,
-            "duration_ms": int((time.time() - start_time) * 1000),
-        }
 
     except Exception as e:
         return {
@@ -245,7 +205,6 @@ class BashTool:
         self.max_output_length = max_output_length
         self.default_timeout = default_timeout
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.session_env = os.environ.copy()
 
     def execute(
         self,
@@ -270,21 +229,10 @@ class BashTool:
         if timeout is None:
             timeout = self.default_timeout
 
-        # Set working directory
-        if cwd and os.path.exists(cwd):
-            original_cwd = os.getcwd()
-            os.chdir(cwd)
-        else:
-            original_cwd = None
-
-        try:
-            result = bash_tool(command, timeout, description)
-            return result
-
-        finally:
-            # Restore original working directory
-            if original_cwd:
-                os.chdir(original_cwd)
+        # Note: cwd is not directly supported in the refactored version
+        # The sandbox adaptor manages its own working directory
+        result = bash_tool(command, timeout, description)
+        return result
 
     def execute_multiple(
         self,
