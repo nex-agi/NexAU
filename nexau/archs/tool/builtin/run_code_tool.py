@@ -75,7 +75,7 @@ def run_code_tool(
     # Validate timeout
     if timeout is None:
         timeout = DEFAULT_TIMEOUT
-    elif timeout > MAX_TIMEOUT:
+    if timeout > MAX_TIMEOUT:
         return {
             "status": "error",
             "error": f"Timeout cannot exceed {MAX_TIMEOUT}ms (10 minutes)",
