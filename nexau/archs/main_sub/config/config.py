@@ -665,26 +665,34 @@ class AgentConfigBuilder:
         sub_agent_configs = self.config.get("sub_agents", [])
         for sub_config in sub_agent_configs:
             try:
-                sub_agent_config_path = sub_config.get("config_path", None)
-
-                sub_agent_config_path = self.base_path / sub_agent_config_path
-
                 sub_agent_name = sub_config.get("name", None)
 
+                overrides: dict[str, Any] | None = None
                 if self.overrides:
-                    sub_agent_overrides = self.overrides.copy()
+                    overrides = self.overrides.copy()
                     if sub_agent_name:
-                        sub_agent_overrides["name"] = sub_agent_name
-                    # TODO: raise error when there is circular reference YAML files
-                    # (Agent A has sub-agent B, Agent B has sub-agent A) will cause a
-                    # recursion error.
-                    sub_agent_config = AgentConfig.from_yaml(
-                        sub_agent_config_path,
-                        sub_agent_overrides,
-                    )
+                        overrides["name"] = sub_agent_name
 
+                sub_agent_config_path_raw = sub_config.get("config_path", None)
+                if not isinstance(sub_agent_config_path_raw, str) or not sub_agent_config_path_raw:
+                    raise ConfigError("Sub-agent configuration missing 'config_path' field")
+
+                # Support both filesystem paths and importlib resources:
+                #   - "some_package:relative/path.yaml"
+                #   - "/abs/path.yaml" or "relative/path.yaml"
+                if ":" in sub_agent_config_path_raw:
+                    pkg, resource_path = sub_agent_config_path_raw.split(":", 1)
+                    from importlib.resources import as_file, files
+
+                    resource = files(pkg).joinpath(resource_path)
+                    with as_file(resource) as config_path:
+                        sub_agent_config = AgentConfig.from_yaml(config_path, overrides)
                 else:
-                    sub_agent_config = AgentConfig.from_yaml(sub_agent_config_path)
+                    config_path = Path(sub_agent_config_path_raw)
+                    if not config_path.is_absolute():
+                        config_path = self.base_path / config_path
+                    sub_agent_config = AgentConfig.from_yaml(config_path, overrides)
+
                 if sub_agent_config.name is None:
                     raise ConfigError(
                         "Sub-agent configuration must have a name",
