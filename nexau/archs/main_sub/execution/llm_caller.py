@@ -1211,6 +1211,11 @@ class AnthropicStreamAggregator:
         elif event_type == "content_block_stop":
             self._finalize_block(payload.get("index"))
         elif event_type == "message_stop":
+            # Extract final usage information from message_stop event
+            message = _to_serializable_dict(payload.get("message", {}))
+            usage_data = message.get("usage")
+            if usage_data:
+                self.usage = _to_serializable_dict(usage_data)
             self._flush_active_blocks()
 
     def finalize(self) -> dict[str, Any]:
