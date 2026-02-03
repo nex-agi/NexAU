@@ -186,13 +186,17 @@ class TransportBase[TTransportConfig](ABC):
             events_mw,
         )
 
-        # Create agent - Agent.__init__ handles all session/agent initialization
-        agent = Agent(
-            config=config_with_middlewares,
-            session_manager=self._session_manager,
-            user_id=user_id,
-            session_id=session_id,
-        )
+        # Create agent in thread pool (Agent.__init__ does blocking/sync session init
+        # via asyncio.run in that thread; avoids event-loop nesting in async handler)
+        def create_agent() -> Agent:
+            return Agent(
+                config=config_with_middlewares,
+                session_manager=self._session_manager,
+                user_id=user_id,
+                session_id=session_id,
+            )
+
+        agent: Agent = await asyncio.to_thread(create_agent)
 
         # Run agent (agent handles locking and persistence internally)
         response = cast(str, await agent.run_async(message=message, context=context))
@@ -246,13 +250,17 @@ class TransportBase[TTransportConfig](ABC):
             enable_stream=True,
         )
 
-        # Create agent - Agent.__init__ handles all session/agent initialization
-        agent = Agent(
-            config=config_with_middlewares,
-            session_manager=self._session_manager,
-            user_id=user_id,
-            session_id=session_id,
-        )
+        # Create agent in thread pool (Agent.__init__ does blocking/sync session init
+        # via asyncio.run in that thread; avoids event-loop nesting in async handler)
+        def create_agent() -> Agent:
+            return Agent(
+                config=config_with_middlewares,
+                session_manager=self._session_manager,
+                user_id=user_id,
+                session_id=session_id,
+            )
+
+        agent: Agent = await asyncio.to_thread(create_agent)
 
         async def run_agent() -> str:
             return cast(str, await agent.run_async(message=message, context=context))
