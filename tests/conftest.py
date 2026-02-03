@@ -28,10 +28,15 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import Mock, patch
 
+import dotenv
 import pytest
 import yaml
 
-from nexau.archs.main_sub.execution.executor import Executor
+# Load .env BEFORE importing nexau modules (they may read env vars during init)
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+dotenv.load_dotenv(os.path.join(_project_root, ".env"), override=True)
+
+from nexau.archs.main_sub.execution.executor import Executor  # noqa: E402
 
 # Provide a lightweight anthropic stub for environments without the package
 
@@ -83,17 +88,18 @@ def test_config():
 
 
 @pytest.fixture(autouse=True)
-def setup_test_environment(test_config):
+def setup_test_environment(test_config, request):
     """Set up test environment for all tests."""
     # Create test directories
     test_config["test_data_dir"].mkdir(exist_ok=True)
     test_config["temp_dir"].mkdir(exist_ok=True)
 
-    # Set environment variables for testing
+    # Set environment variables for testing (skip LLM_* defaults for tests marked llm - they use .env)
     os.environ.setdefault("TESTING", "true")
-    os.environ.setdefault("LLM_MODEL", "gpt-4o-mini")  # Use smaller model for tests
-    os.environ.setdefault("LLM_BASE_URL", "https://api.openai.com/v1")
-    os.environ.setdefault("LLM_API_KEY", "test-key-not-used")
+    if request.node.get_closest_marker("llm") is None:
+        os.environ.setdefault("LLM_MODEL", "gpt-4o-mini")
+        os.environ.setdefault("LLM_BASE_URL", "https://api.openai.com/v1")
+        os.environ.setdefault("LLM_API_KEY", "test-key-not-used")
 
     yield
 
@@ -336,21 +342,46 @@ def event_loop():
 
 # Environment Variables for Testing
 @pytest.fixture(autouse=True)
-def mock_env_vars():
-    """Mock environment variables for consistent testing."""
-    with patch.dict(
-        os.environ,
-        {
-            "TESTING": "true",
-            "LLM_MODEL": "gpt-4o-mini",
-            "LLM_BASE_URL": "https://api.openai.com/v1",
-            "LLM_API_KEY": "test-key-not-used",
-            "SERPER_API_KEY": "test-serper-key",
-            "FEISHU_APP_ID": "test-feishu-app-id",
-            "FEISHU_APP_SECRET": "test-feishu-secret",
-        },
-    ):
-        yield
+def mock_env_vars(request):
+    """Mock environment variables for consistent testing.
+
+    For @pytest.mark.llm tests:
+    - Skip if no real LLM_API_KEY is available (CI without secrets)
+    - Otherwise use real .env values
+
+    For other tests: mock all env vars including LLM.
+    """
+    if request.node.get_closest_marker("llm") is not None:
+        # Check if real LLM credentials are available
+        real_api_key = os.environ.get("LLM_API_KEY", "")
+        if not real_api_key or real_api_key == "test-key-not-used":
+            pytest.skip("Skipping @pytest.mark.llm test: no real LLM_API_KEY available")
+        # For @pytest.mark.llm tests with real credentials, only mock non-LLM env vars
+        with patch.dict(
+            os.environ,
+            {
+                "TESTING": "true",
+                "SERPER_API_KEY": "test-serper-key",
+                "FEISHU_APP_ID": "test-feishu-app-id",
+                "FEISHU_APP_SECRET": "test-feishu-secret",
+            },
+        ):
+            yield
+    else:
+        # For other tests, mock all env vars including LLM
+        with patch.dict(
+            os.environ,
+            {
+                "TESTING": "true",
+                "LLM_MODEL": "gpt-4o-mini",
+                "LLM_BASE_URL": "https://api.openai.com/v1",
+                "LLM_API_KEY": "test-key-not-used",
+                "SERPER_API_KEY": "test-serper-key",
+                "FEISHU_APP_ID": "test-feishu-app-id",
+                "FEISHU_APP_SECRET": "test-feishu-secret",
+            },
+        ):
+            yield
 
 
 # Test Data Fixtures
