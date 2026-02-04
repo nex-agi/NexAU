@@ -33,7 +33,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from nexau.archs.sandbox import BaseSandbox, LocalSandbox, SandboxStatus
+from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.sandbox import BaseSandbox, SandboxStatus
 
 from .file_state import (
     clear_file_timestamps,
@@ -292,7 +293,7 @@ def file_edit_tool(
     file_path: str,
     old_string: str,
     new_string: str,
-    sandbox: BaseSandbox | None = None,
+    agent_state: AgentState,
 ) -> str:
     """
     A comprehensive file editing tool that safely modifies files with extensive validation.
@@ -348,7 +349,8 @@ def file_edit_tool(
             )
 
         # Get sandbox instance
-        sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
+        sandbox: BaseSandbox | None = agent_state.get_sandbox()
+        assert sandbox is not None, "File operation tool invoked, but sandbox is not initialized."
 
         # Resolve absolute path
         abs_file_path = os.path.abspath(file_path)

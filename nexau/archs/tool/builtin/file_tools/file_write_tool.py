@@ -20,9 +20,10 @@ import os
 import time
 from typing import Any
 
-from .file_format_validators import validate_csv_format
-from nexau.archs.sandbox import BaseSandbox, LocalSandbox, SandboxStatus
+from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.sandbox import BaseSandbox, SandboxStatus
 
+from .file_format_validators import validate_csv_format
 from .file_state import update_file_timestamp, validate_file_read_state
 from .file_type_utils import is_binary_extension
 
@@ -138,7 +139,7 @@ def _write_file_content(
 def file_write_tool(
     file_path: str,
     content: str,
-    sandbox: BaseSandbox | None = None,
+    agent_state: AgentState,
 ) -> str:
     """
     Write content to a file in the local file system. Overwrites if file exists.
@@ -162,10 +163,11 @@ def file_write_tool(
     """
     start_time = time.time()
 
-    try:
-        # Get sandbox instance
-        sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
+    # Get sandbox instance
+    sandbox: BaseSandbox | None = agent_state.get_sandbox()
+    assert sandbox is not None, "File operation tool invoked, but sandbox is not initialized."
 
+    try:
         # Validate file path
         if not os.path.isabs(file_path):
             return json.dumps(
@@ -369,151 +371,3 @@ def file_write_tool(
             indent=2,
             ensure_ascii=False,
         )
-
-
-# Class implementation for advanced usage
-class FileWriteTool:
-    """
-    Class implementation of file write tool with advanced features and config options.
-    """
-
-    def __init__(
-        self,
-        max_lines_preview: int = MAX_LINES_TO_RENDER,
-        auto_create_dirs: bool = True,
-        check_permissions: bool = True,
-        sandbox: BaseSandbox | None = None,
-    ):
-        """
-        Initialize file write tool.
-
-        Args:
-            max_lines_preview: Maximum lines to show in preview.
-            auto_create_dirs: Whether to auto-create directories.
-            check_permissions: Whether to check permissions.
-            agent_state: Agent state for sandbox access.
-        """
-        self.max_lines_preview = max_lines_preview
-        self.auto_create_dirs = auto_create_dirs
-        self.check_permissions = check_permissions
-        self.sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
-        self.logger = logging.getLogger(self.__class__.__name__)
-
-    def write_file(
-        self,
-        file_path: str,
-        content: str,
-        encoding: str | None = None,
-        line_ending: str | None = None,
-    ) -> dict[str, Any]:
-        """
-        Write file and return structured result.
-
-        Args:
-            file_path: File path.
-            content: File content.
-            encoding: Encoding (optional).
-            line_ending: Line ending (optional).
-
-        Returns:
-            Dict containing operation result.
-        """
-        start_time = time.time()
-
-        try:
-            # Get sandbox instance
-            sandbox = self.sandbox
-
-            # Validate path
-            if not os.path.isabs(file_path):
-                raise ValueError("File path must be absolute")
-
-            # Check permissions
-            if self.check_permissions and not _has_write_permission(file_path, sandbox):
-                raise PermissionError(f"No write permission: {file_path}")
-
-            # Check file state
-            file_exists = sandbox.file_exists(file_path)
-            operation_type = "update" if file_exists else "create"
-
-            # Handle encoding and line endings
-            if file_exists:
-                if encoding is None:
-                    encoding = _detect_file_encoding(file_path, sandbox)
-                if line_ending is None:
-                    line_ending = _detect_line_endings(file_path, sandbox)
-            else:
-                encoding = encoding or "utf-8"
-                line_ending = line_ending or "\n"
-
-            # Read original content
-            old_content = ""
-            if file_exists:
-                read_result = sandbox.read_file(file_path, encoding=encoding)
-                if read_result.status == SandboxStatus.SUCCESS and read_result.content:
-                    if isinstance(read_result.content, str):
-                        old_content = read_result.content
-                    elif isinstance(read_result.content, bytes):
-                        old_content = read_result.content.decode(encoding)
-                    else:
-                        old_content = ""
-
-            # Write file
-            _write_file_content(file_path, content, sandbox, encoding, line_ending)
-
-            # Update timestamp
-            update_file_timestamp(file_path, sandbox)
-
-            # Generate result
-            duration_ms = int((time.time() - start_time) * 1000)
-
-            return {
-                "success": True,
-                "operation_type": operation_type,
-                "file_path": file_path,
-                "num_lines": len(content.split("\n")),
-                "encoding": encoding,
-                "line_ending": line_ending,
-                "duration_ms": duration_ms,
-                "has_changes": old_content != content if file_exists else True,
-            }
-
-        except Exception as e:
-            self.logger.error(f"File write failed: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "file_path": file_path,
-                "duration_ms": int((time.time() - start_time) * 1000),
-            }
-
-
-def main():
-    """Test function."""
-    # Test create file
-    test_file = "//users/chenlu//src/tools/file_tools/test_file_write.txt"
-    test_content = "Hello, World!\nThis is a test file.\nLine 3"
-
-    result = file_write_tool(file_path=test_file, content=test_content)
-    print("Create file test:")
-    print(result)
-    print()
-
-    # Update file timestamp (simulate read)
-    update_file_timestamp(test_file)
-
-    # Test update file
-    updated_content = "Hello, World!\nThis is an updated test file.\nLine 3\nNew line 4"
-    result = file_write_tool(file_path=test_file, content=updated_content)
-    print("Update file test:")
-    print(result)
-
-    # Cleanup test file
-    try:
-        os.remove(test_file)
-    except Exception:
-        pass
-
-
-if __name__ == "__main__":
-    main()

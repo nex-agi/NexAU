@@ -430,9 +430,13 @@ Tools can access the sandbox instance to perform secure file operations and code
 
 ```python
 from nexau.archs.sandbox import BaseSandbox
+from nexau.archs.main_sub.agent_state import AgentState
 
-def file_analyzer(file_path: str, sandbox: BaseSandbox) -> dict:
+def file_analyzer(file_path: str, agent_state: AgentState) -> dict:
     """Analyze a file in the sandbox."""
+
+    # Get sandbox instance from agent_state
+    sandbox: BaseSandbox | None = agent_state.get_sandbox()
 
     # Check if file exists
     if not sandbox.file_exists(file_path):
@@ -458,9 +462,13 @@ def file_analyzer(file_path: str, sandbox: BaseSandbox) -> dict:
 
 ```python
 from nexau.archs.sandbox import BaseSandbox, SandboxStatus
+from nexau.archs.main_sub.agent_state import AgentState
 
-def process_data(input_file: str, output_file: str, sandbox: BaseSandbox) -> str:
+def process_data(input_file: str, output_file: str, agent_state: AgentState) -> str:
     """Process data file in sandbox."""
+
+    # Get sandbox instance from agent_state
+    sandbox: BaseSandbox | None = agent_state.get_sandbox()
 
     # Read input file
     read_result = sandbox.read_file(input_file)
@@ -488,9 +496,13 @@ def process_data(input_file: str, output_file: str, sandbox: BaseSandbox) -> str
 
 ```python
 from nexau.archs.sandbox import BaseSandbox, CodeLanguage
+from nexau.archs.main_sub.agent_state import AgentState
 
-def run_analysis(data: dict, sandbox: BaseSandbox) -> dict:
+def run_analysis(data: dict, agent_state: AgentState) -> dict:
     """Run Python analysis in sandbox."""
+
+    # Get sandbox instance from agent_state
+    sandbox: BaseSandbox | None = agent_state.get_sandbox()
 
     # Generate Python code
     code = f"""
@@ -524,13 +536,17 @@ print(json.dumps(result))
 ```python
 from nexau.archs.sandbox import BaseSandbox, SandboxStatus
 from pathlib import Path
+from nexau.archs.main_sub.agent_state import AgentState
 
 def project_builder(
     project_name: str,
     files: dict[str, str],
-    sandbox: BaseSandbox
+    agent_state: AgentState
 ) -> dict:
     """Build a project structure in sandbox."""
+
+    # Get sandbox instance from agent_state
+    sandbox: BaseSandbox | None = agent_state.get_sandbox()
 
     project_dir = f"/home/user/projects/{project_name}"
 

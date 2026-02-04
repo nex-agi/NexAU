@@ -35,7 +35,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from nexau.archs.sandbox import BaseSandbox, LocalSandbox, SandboxStatus
+from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.sandbox import BaseSandbox, SandboxStatus
 from nexau.archs.tool.builtin.file_tools.file_state import update_file_timestamp
 
 # Import file state management for read/write coordination
@@ -553,7 +554,7 @@ def file_read_tool(
     file_path: str,
     offset: int | float | None = None,
     limit: int | float | None = None,
-    sandbox: BaseSandbox | None = None,
+    agent_state: AgentState | None = None,
 ) -> str | dict[str, Any]:
     """
     Read a file from the local filesystem. Supports both text and image files.
@@ -583,10 +584,12 @@ def file_read_tool(
     """
     start_time = time.time()
 
-    try:
-        # Get sandbox instance
-        sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
+    # Get sandbox instance
+    assert agent_state is not None, "File operation tool invoked, but agent_state is not passed. We need sandbox instance in agent_state."
+    sandbox: BaseSandbox | None = agent_state.get_sandbox()
+    assert sandbox is not None, "File operation tool invoked, but sandbox is not initialized."
 
+    try:
         # Normalize file path
         file_path = os.path.abspath(file_path)
 
@@ -772,17 +775,3 @@ def file_read_tool(
             indent=2,
             ensure_ascii=False,
         )
-
-
-# Usage example (for testing)
-def main():
-    result = file_read_tool(
-        file_path="./nexau/archs/tool/builtin/file_tools/file_read_tool.py",
-        offset=20,
-        limit=50,
-    )
-    print(result)
-
-
-if __name__ == "__main__":
-    main()

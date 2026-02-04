@@ -14,12 +14,12 @@
 
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any
 
-from nexau.archs.sandbox import BaseSandbox, LocalSandbox
+from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.sandbox import BaseSandbox
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ def glob_tool(
     pattern: str,
     path: str | None = None,
     limit: int = 100,
-    sandbox: BaseSandbox | None = None,
+    agent_state: AgentState | None = None,
 ) -> str:
     """
     Search for files using glob patterns. This tool allows you to find files that match
@@ -47,7 +47,9 @@ def glob_tool(
     start_time = time.time()
 
     # Get sandbox instance
-    sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
+    assert agent_state is not None, "File operation tool invoked, but agent_state is not passed. We need sandbox instance in agent_state."
+    sandbox: BaseSandbox | None = agent_state.get_sandbox()
+    assert sandbox is not None, "File operation tool invoked, but sandbox is not initialized."
 
     # Determine the search directory
     search_dir = path if path else str(Path.cwd())

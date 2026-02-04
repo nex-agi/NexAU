@@ -17,12 +17,12 @@
 import fnmatch
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any
 
-from nexau.archs.sandbox import BaseSandbox, LocalSandbox
+from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.sandbox import BaseSandbox
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ def _match_ignore_patterns(path: str, ignore_patterns: list[str]) -> bool:
 def ls_tool(
     path: str,
     ignore: list[str] | None = None,
-    sandbox: BaseSandbox | None = None,
+    agent_state: AgentState | None = None,
 ) -> str:
     """
     List files and directories in a given path.
@@ -77,7 +77,9 @@ def ls_tool(
     start_time = time.time()
 
     # Get sandbox instance
-    sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
+    assert agent_state is not None, "File operation tool invoked, but agent_state is not passed. We need sandbox instance in agent_state."
+    sandbox: BaseSandbox | None = agent_state.get_sandbox()
+    assert sandbox is not None, "File operation tool invoked, but sandbox is not initialized."
 
     # Validate path is absolute
     if not Path(path).is_absolute():

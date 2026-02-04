@@ -36,7 +36,6 @@ from nexau.archs.main_sub.execution.hooks import (
     MiddlewareManager,
 )
 from nexau.archs.main_sub.execution.tool_executor import ToolExecutor
-from nexau.archs.sandbox.local_sandbox import LocalSandbox
 from nexau.archs.tool.tool import ConfigError as ToolConfigError
 from nexau.archs.tool.tool import Tool
 
@@ -116,7 +115,6 @@ class TestToolExecutorExecution:
             tool_name="simple_tool",
             parameters={"message": "test"},
             tool_call_id="call_123",
-            sandbox=LocalSandbox(),
         )
 
         assert "result" in result
@@ -135,7 +133,6 @@ class TestToolExecutorExecution:
                 tool_name="non_existent",
                 parameters={},
                 tool_call_id="call_123",
-                sandbox=LocalSandbox(),
             )
 
         assert "not found" in str(exc_info.value)
@@ -165,7 +162,6 @@ class TestToolExecutorExecution:
             tool_name="error_tool",
             parameters={},
             tool_call_id="call_123",
-            sandbox=LocalSandbox(),
         )
 
         # Verify error information is in the result
@@ -199,7 +195,6 @@ class TestToolExecutorExecution:
             tool_name="state_tool",
             parameters={"value": 5},
             tool_call_id="call_123",
-            sandbox=LocalSandbox(),
         )
 
         assert received_state is agent_state
@@ -230,7 +225,6 @@ class TestToolExecutorExtraKwargs:
             tool_name="with_extra",
             parameters={"b": 99, "c": 3},
             tool_call_id="call_extra",
-            sandbox=LocalSandbox(),
         )
 
         assert result["a"] == 1  # from extra_kwargs
@@ -269,7 +263,6 @@ class TestToolExecutorExtraKwargs:
             tool_name="unknown_field",
             parameters={"a": 5},
             tool_call_id="call_unknown",
-            sandbox=LocalSandbox(),
         )
 
         assert result["error_type"] == "TypeError"
@@ -296,7 +289,6 @@ class TestToolExecutorExtraKwargs:
             tool_name="required_from_extra",
             parameters={},
             tool_call_id="call_required",
-            sandbox=LocalSandbox(),
         )
 
         assert result["a"] == 10
@@ -322,7 +314,6 @@ class TestToolExecutorExtraKwargs:
             tool_name="unknown_ok",
             parameters={"a": 5},
             tool_call_id="call_unknown_ok",
-            sandbox=LocalSandbox(),
         )
 
         assert result["a"] == 5
@@ -365,7 +356,6 @@ class TestToolExecutorHooks:
             tool_name="simple_tool",
             parameters={"x": 5},
             tool_call_id="call_123",
-            sandbox=LocalSandbox(),
         )
 
         hook.assert_called_once()
@@ -399,7 +389,6 @@ class TestToolExecutorHooks:
             tool_name="simple_tool",
             parameters={"x": 5},
             tool_call_id="call_123",
-            sandbox=LocalSandbox(),
         )
 
         # Result should not be modified
@@ -439,7 +428,6 @@ class TestToolExecutorHooks:
             tool_name="multiplier_tool",
             parameters={"x": 1},
             tool_call_id="call_321",
-            sandbox=LocalSandbox(),
         )
 
         assert result["result"] == 20
@@ -471,7 +459,6 @@ class TestToolExecutorStopTools:
             tool_name="stop_tool",
             parameters={},
             tool_call_id="call_123",
-            sandbox=LocalSandbox(),
         )
 
         assert result["_is_stop_tool"] is True
@@ -500,7 +487,6 @@ class TestToolExecutorStopTools:
             tool_name="stop_tool",
             parameters={},
             tool_call_id="call_123",
-            sandbox=LocalSandbox(),
         )
 
         # Non-dict results should be wrapped
@@ -530,7 +516,6 @@ class TestToolExecutorStopTools:
             tool_name="stop_tool",
             parameters={},
             tool_call_id="call_123",
-            sandbox=LocalSandbox(),
         )
 
         # Error status should clear the stop tool flag
@@ -560,7 +545,6 @@ class TestToolExecutorStopTools:
             tool_name="normal_tool",
             parameters={},
             tool_call_id="call_123",
-            sandbox=LocalSandbox(),
         )
 
         # Should not have stop tool marker
@@ -921,7 +905,6 @@ class TestToolExecutorEdgeCases:
             tool_name="complex_tool",
             parameters={"config": {"nested": {"key": "value"}}, "items": [1, 2, 3]},
             tool_call_id="call_123",
-            sandbox=LocalSandbox(),
         )
 
         assert result["config"] == {"nested": {"key": "value"}}
@@ -950,7 +933,6 @@ class TestToolExecutorEdgeCases:
             tool_name="no_param_tool",
             parameters={},
             tool_call_id="call_123",
-            sandbox=LocalSandbox(),
         )
 
         assert result["result"] == "success"
@@ -979,7 +961,6 @@ class TestToolExecutorEdgeCases:
                 tool_name="simple_tool",
                 parameters={"x": 5},
                 tool_call_id="call_123",
-                sandbox=LocalSandbox(),
             )
 
         # Check for expected log messages
@@ -1010,7 +991,6 @@ class TestToolExecutorEdgeCases:
                 tool_name="stop_tool",
                 parameters={},
                 tool_call_id="call_123",
-                sandbox=LocalSandbox(),
             )
 
         # Check for stop tool log message
@@ -1051,7 +1031,6 @@ class TestToolExecutorIntegration:
             tool_name="stop_tool",
             parameters={"x": 5},
             tool_call_id="call_123",
-            sandbox=LocalSandbox(),
         )
 
         # Verify all features worked

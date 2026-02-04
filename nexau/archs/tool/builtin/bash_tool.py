@@ -15,7 +15,6 @@
 """Bash command execution tool implementation."""
 
 import logging
-import os
 import time
 from typing import (
     Literal,
@@ -23,7 +22,8 @@ from typing import (
     TypedDict,
 )
 
-from nexau.archs.sandbox import BaseSandbox, LocalSandbox, SandboxStatus
+from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.sandbox import BaseSandbox, SandboxStatus
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def bash_tool(
     command: str,
     timeout: int | None = None,
     description: str | None = None,
-    sandbox: BaseSandbox | None = None,
+    agent_state: AgentState | None = None,
 ) -> BashResult:
     """
     Execute a bash command in a persistent shell session with proper handling and security measures.
@@ -69,6 +69,11 @@ def bash_tool(
         Dict containing execution results
     """
     start_time = time.time()
+
+    # Get sandbox instance
+    assert agent_state is not None, "File operation tool invoked, but agent_state is not passed. We need sandbox instance in agent_state."
+    sandbox: BaseSandbox | None = agent_state.get_sandbox()
+    assert sandbox is not None, "System operation tool invoked, but sandbox is not initialized."
 
     # Validate timeout
     if timeout is None:
@@ -119,9 +124,6 @@ def bash_tool(
             }
 
     try:
-        # Get sandbox instance
-        sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
-
         # Execute command through sandbox
         cmd_result = sandbox.execute_bash(command, timeout)
 
@@ -188,185 +190,3 @@ def bash_tool(
             "command": command,
             "duration_ms": int((time.time() - start_time) * 1000),
         }
-
-
-# Alternative class-based implementation for more advanced usage
-class BashTool:
-    """
-    A class-based implementation of the bash tool for more advanced usage.
-    Provides session persistence and better error handling.
-    """
-
-    def __init__(
-        self,
-        max_output_length: int = MAX_OUTPUT_LENGTH,
-        default_timeout: int = DEFAULT_TIMEOUT,
-    ):
-        self.max_output_length = max_output_length
-        self.default_timeout = default_timeout
-        self.logger = logging.getLogger(self.__class__.__name__)
-
-    def execute(
-        self,
-        command: str,
-        timeout: int | None = None,
-        description: str | None = None,
-        cwd: str | None = None,
-    ) -> BashResult:
-        """
-        Execute a bash command with enhanced features.
-
-        Args:
-            command: The bash command to execute
-            timeout: Optional timeout in milliseconds
-            description: Description of what the command does
-            cwd: Working directory for the command
-
-        Returns:
-            Dict containing execution results
-        """
-        # Use default timeout if not specified
-        if timeout is None:
-            timeout = self.default_timeout
-
-        # Note: cwd is not directly supported in the refactored version
-        # The sandbox adaptor manages its own working directory
-        result = bash_tool(command, timeout, description)
-        return result
-
-    def execute_multiple(
-        self,
-        commands: list[str],
-        timeout: int | None = None,
-    ) -> list[BashResult]:
-        """
-        Execute multiple commands in sequence.
-
-        Args:
-            commands: List of commands to execute
-            timeout: Optional timeout for each command
-
-        Returns:
-            List of execution results
-        """
-        results: list[BashResult] = []
-        for command in commands:
-            result = self.execute(command, timeout)
-            results.append(result)
-
-            # Stop execution if a command fails
-            if result["status"] != "success":
-                break
-
-        return results
-
-
-def main():
-    """Test function to demonstrate and validate the bash_tool functionality."""
-    print("🔧 BashTool 测试开始...")
-    print("=" * 50)
-
-    # Test 1: Basic command execution
-    print("\n📋 测试 1: 基本命令执行")
-    try:
-        result = bash_tool(
-            "echo 'Hello, World!'",
-            description="Print hello message",
-        )
-        print("✅ 命令执行成功")
-        print(f"⏱️  执行时间: {result['duration_ms']}ms")
-        print(f"📤 输出: {result.get('stdout', '').strip()}")
-        print(f"🚪 退出码: {result.get('exit_code')}")
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
-
-    # Test 2: Command with error
-    print("\n📋 测试 2: 错误命令测试")
-    try:
-        result = bash_tool(
-            "ls /nonexistent_directory_12345",
-            description="List non-existent directory",
-        )
-        if result["status"] != "success":
-            print("✅ 正确处理了错误命令")
-            print(f"🚪 退出码: {result.get('exit_code')}")
-            print(f"⚠️  错误输出: {result.get('stderr', '').strip()}")
-        else:
-            print("⚠️  意外成功了")
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
-
-    # Test 3: Timeout test
-    print("\n📋 测试 3: 超时测试")
-    try:
-        result = bash_tool(
-            "sleep 1",
-            timeout=500,
-            description="Sleep with short timeout",
-        )
-        if result["status"] == "timeout":
-            print("✅ 正确处理了超时")
-            print(f"⏱️  执行时间: {result['duration_ms']}ms")
-        else:
-            print("⚠️  超时测试可能有问题")
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
-
-    # Test 4: Security check
-    print("\n📋 测试 4: 安全检查")
-    try:
-        result = bash_tool("rm -rf /", description="Dangerous command test")
-        if result["status"] == "error" and "dangerous" in result.get("error", "").lower():
-            print("✅ 正确阻止了危险命令")
-            print(f"⚠️  错误信息: {result.get('error', '')}")
-        else:
-            print("⚠️  安全检查可能有问题")
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
-
-    # Test 5: Class-based implementation
-    print("\n📋 测试 5: 类实现测试")
-    try:
-        bash_tool_instance = BashTool()
-        result = bash_tool_instance.execute(
-            "pwd",
-            description="Print working directory",
-        )
-        if result["status"] == "success":
-            print("✅ 类实现工作正常")
-            print(f"📁 当前目录: {result.get('stdout', '').strip()}")
-        else:
-            print("❌ 类实现失败")
-    except Exception as e:
-        print(f"❌ 类实现测试失败: {e}")
-
-    # Test 6: Multiple commands
-    print("\n📋 测试 6: 多命令执行")
-    try:
-        bash_tool_instance = BashTool()
-        commands = ["echo 'Command 1'", "echo 'Command 2'", "pwd"]
-        results = bash_tool_instance.execute_multiple(commands)
-
-        if all(r["status"] == "success" for r in results):
-            print("✅ 多命令执行成功")
-            for i, result in enumerate(results, 1):
-                print(f"   命令 {i}: {result.get('stdout', '').strip()}")
-        else:
-            print("⚠️  部分命令执行失败")
-    except Exception as e:
-        print(f"❌ 多命令测试失败: {e}")
-
-    print("\n" + "=" * 50)
-    print("🎉 BashTool 测试完成!")
-
-    # Usage tips
-    print("\n💡 使用提示:")
-    print("  • 总是使用双引号包围含有空格的路径")
-    print("  • 避免使用危险命令如 'rm -rf /'")
-    print("  • 使用绝对路径避免 'cd' 命令")
-    print("  • 设置合适的超时时间避免长时间阻塞")
-    print("  • 检查退出码判断命令是否成功执行")
-
-
-if __name__ == "__main__":
-    main()

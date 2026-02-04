@@ -53,20 +53,22 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from e2b import Sandbox as TSandbox  # type: ignore
-    from e2b.sandbox.filesystem.filesystem import FileType as TFileType  # type: ignore
 else:
     TSandbox = Any
-    TFileType = Any
 
 try:
     from e2b import Sandbox  # type: ignore
+    from e2b.exceptions import TimeoutException  # type: ignore
+    from e2b.sandbox.commands.command_handle import CommandExitException  # type: ignore
     from e2b.sandbox.filesystem.filesystem import FileType  # type: ignore
 
     E2B_AVAILABLE = True
-except ImportError:
+except (ImportError, ModuleNotFoundError):
     logger.warning("E2B SDK not installed. Install it with: pip install e2b")
     Sandbox = None
     FileType = None
+    TimeoutException = None
+    CommandExitException = None
     E2B_AVAILABLE = False  # type: ignore
 
 
@@ -125,7 +127,8 @@ class E2BSandbox(BaseSandbox):
         max_output_size = 30000  # Default: 30000 characters
 
         try:
-            # Execute command using E2B's commands.run
+            # Execute command directly (not in background)
+            # E2B SDK will raise exception on non-zero exit code
             result = self._sandbox.commands.run(
                 cmd=command,
                 timeout=int(timeout_seconds),
@@ -136,6 +139,7 @@ class E2BSandbox(BaseSandbox):
 
             stdout = result.stdout or ""
             stderr = result.stderr or ""
+            exit_code = result.exit_code
 
             stdout_truncated = len(stdout) > max_output_size
             stderr_truncated = len(stderr) > max_output_size
@@ -143,55 +147,61 @@ class E2BSandbox(BaseSandbox):
             original_stdout_len = len(stdout) if stdout_truncated else None
             original_stderr_len = len(stderr) if stderr_truncated else None
 
-            # Preserve the actual exit code from the command
-            actual_exit_code = result.exit_code
-
             return CommandResult(
-                status=SandboxStatus.SUCCESS if actual_exit_code == 0 else SandboxStatus.ERROR,
+                status=SandboxStatus.SUCCESS if exit_code == 0 else SandboxStatus.ERROR,
                 stdout=stdout[:max_output_size],
                 stderr=stderr[:max_output_size],
-                exit_code=actual_exit_code,
+                exit_code=exit_code,
                 duration_ms=duration_ms,
-                error=None if actual_exit_code == 0 else f"Command failed with exit code {actual_exit_code}",
+                error=None if exit_code == 0 else f"Command failed with exit code {exit_code}",
                 truncated=stdout_truncated or stderr_truncated,
                 original_stdout_length=original_stdout_len,
                 original_stderr_length=original_stderr_len,
             )
 
-        except Exception as e:
+        except TimeoutException:  # type: ignore
             duration_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"Failed to execute bash command: {e}")
+            return CommandResult(
+                status=SandboxStatus.TIMEOUT,
+                stdout="",
+                stderr="",
+                exit_code=-1,
+                duration_ms=duration_ms,
+                error=f"Command timed out after {timeout}ms",
+                truncated=False,
+            )
 
-            # Check if it's a timeout error
-            if "timeout" in str(e).lower():
-                return CommandResult(
-                    status=SandboxStatus.TIMEOUT,
-                    stdout="",
-                    stderr="",
-                    exit_code=-1,
-                    duration_ms=duration_ms,
-                    error=f"Command timed out after {timeout}ms",
-                    truncated=False,
-                )
+        except CommandExitException as e:  # type: ignore
+            # CommandExitException has stdout, stderr, exit_code attributes
+            duration_ms = int((time.time() - start_time) * 1000)
 
-            # Try to extract exit code from E2B exception message
-            # E2B raises exceptions like "Command exited with code 1 and error:\n"
-            exit_code = -1
-            error_str = str(e)
-            if "exited with code" in error_str.lower():
-                import re
+            stdout = getattr(e, "stdout", "") or ""
+            stderr = getattr(e, "stderr", "") or ""
+            exit_code = getattr(e, "exit_code", -1)
 
-                match = re.search(r"code (\d+)", error_str)
-                if match:
-                    exit_code = int(match.group(1))
+            stdout_truncated = len(stdout) > max_output_size
+            stderr_truncated = len(stderr) > max_output_size
 
             return CommandResult(
                 status=SandboxStatus.ERROR,
-                stdout="",
-                stderr="",
+                stdout=stdout[:max_output_size],
+                stderr=stderr[:max_output_size],
                 exit_code=exit_code,
                 duration_ms=duration_ms,
-                error=f"Execution failed: {str(e)}",
+                error=f"Command failed with exit code {exit_code}",
+                truncated=stdout_truncated or stderr_truncated,
+            )
+
+        except Exception as e:
+            # Other unexpected exceptions
+            duration_ms = int((time.time() - start_time) * 1000)
+            return CommandResult(
+                status=SandboxStatus.ERROR,
+                stdout="",
+                stderr=str(e),
+                exit_code=-1,
+                duration_ms=duration_ms,
+                error=f"Command execution error: {str(e)[:200]}",
                 truncated=False,
             )
 
@@ -1141,7 +1151,7 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
         e2b_sandbox = Sandbox.beta_create(**create_opts)  # type: ignore
 
         sandbox_kwargs = extract_dataclass_init_kwargs(E2BSandbox, sandbox_config)
-        if "work_dir" not in sandbox_kwargs:
+        if "_work_dir" not in sandbox_kwargs:
             sandbox_kwargs["_work_dir"] = "/home/user"
 
         # Create our wrapper instance

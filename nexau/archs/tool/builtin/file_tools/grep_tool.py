@@ -14,12 +14,12 @@
 
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any
 
-from nexau.archs.sandbox import BaseSandbox, LocalSandbox, SandboxStatus
+from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.sandbox import BaseSandbox, SandboxStatus
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +204,7 @@ def grep_tool(
     path: str | None = None,
     glob: str | None = None,
     output_mode: str = "files_with_matches",
-    sandbox: BaseSandbox | None = None,
+    agent_state: AgentState | None = None,
     **kwargs: Any,
 ) -> str:
     """
@@ -228,7 +228,9 @@ def grep_tool(
     start_time = time.time()
 
     # Get sandbox instance
-    sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
+    assert agent_state is not None, "File operation tool invoked, but agent_state is not passed. We need sandbox instance in agent_state."
+    sandbox: BaseSandbox | None = agent_state.get_sandbox()
+    assert sandbox is not None, "File operation tool invoked, but sandbox is not initialized."
 
     # Determine search directory
     search_dir = path if path else str(Path.cwd())
@@ -566,252 +568,3 @@ def grep_tool(
             },
             indent=2,
         )
-
-
-# Alternative class-based implementation for advanced usage
-class GrepSearchTool:
-    """
-    A class-based implementation of the grep search tool for more advanced usage.
-    Provides additional configuration options and better error handling.
-    """
-
-    def __init__(
-        self,
-        max_results: int = MAX_RESULTS,
-        case_sensitive: bool = False,
-        sandbox: BaseSandbox | None = None,
-    ):
-        self.max_results = max_results
-        self.case_sensitive = case_sensitive
-        self.sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
-        self.logger = logging.getLogger(self.__class__.__name__)
-
-    def search(
-        self,
-        pattern: str,
-        path: str | None = None,
-        include_pattern: str | None = None,
-        max_results: int | None = None,
-    ) -> dict[str, Any]:
-        """
-        Perform a grep search and return structured results.
-
-        Args:
-            pattern: Regular expression pattern to search for
-            path: Directory to search in (defaults to current working directory)
-            include_pattern: File pattern to include in search
-            max_results: Maximum number of files to return (overrides instance default)
-
-        Returns:
-            Dictionary containing search results
-        """
-        start_time = time.time()
-        search_dir = path if path else str(Path.cwd())
-        limit = max_results if max_results is not None else self.max_results
-
-        try:
-            # Get sandbox instance
-            sandbox = self.sandbox
-
-            # Check ripgrep availability
-            if not _check_ripgrep_available(sandbox):
-                raise RuntimeError(
-                    "ripgrep (rg) is not installed or not available in PATH",
-                )
-
-            # Validate directory
-            if not sandbox.file_exists(search_dir):
-                raise FileNotFoundError(
-                    f"Directory does not exist: {search_dir}",
-                )
-
-            file_info = sandbox.get_file_info(search_dir)
-            if not file_info.readable:
-                raise PermissionError(
-                    f"No read permission for directory: {search_dir}",
-                )
-
-            # Perform search
-            results, search_duration = _run_ripgrep(
-                pattern=pattern,
-                search_path=search_dir,
-                sandbox=sandbox,
-                glob_pattern=include_pattern,
-                output_mode="files_with_matches",
-                case_insensitive=not self.case_sensitive,
-            )
-
-            # Sort results
-            if results:
-                sorted_filenames = _sort_files_by_modification_time(
-                    results,
-                    search_dir,
-                    sandbox,
-                )
-            else:
-                sorted_filenames = []
-
-            # Apply limit
-            truncated = len(sorted_filenames) > limit
-            if truncated:
-                sorted_filenames = sorted_filenames[:limit]
-
-            duration_ms = int((time.time() - start_time) * 1000)
-
-            return {
-                "success": True,
-                "num_files": len(sorted_filenames),
-                "filenames": sorted_filenames,
-                "duration_ms": duration_ms,
-                "search_duration_ms": search_duration,
-                "truncated": truncated,
-                "search_directory": search_dir,
-                "pattern": pattern,
-                "include_pattern": include_pattern,
-                "case_sensitive": self.case_sensitive,
-            }
-
-        except Exception as e:
-            self.logger.error(f"Grep search failed: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "num_files": 0,
-                "filenames": [],
-                "duration_ms": int((time.time() - start_time) * 1000),
-                "truncated": False,
-            }
-
-
-def main():
-    """
-    Test function to demonstrate and validate the grep_tool functionality.
-    """
-    import json
-    from pathlib import Path
-
-    sandbox = LocalSandbox(_work_dir=str(Path.cwd()))
-
-    print("🔍 GrepTool 测试开始...")
-    print("=" * 50)
-
-    # Test 1: Check ripgrep availability
-    print("\n📋 测试 1: 检查 ripgrep 可用性")
-    if _check_ripgrep_available(sandbox):
-        print("✅ ripgrep (rg) 已安装并可用")
-    else:
-        print("❌ ripgrep (rg) 未安装或不可用")
-        print("请先安装 ripgrep:")
-        print("  conda install -c conda-forge ripgrep")
-        print("  或者 sudo apt install ripgrep")
-        return
-
-    # Test 2: Basic search test
-    print("\n📋 测试 2: 基本搜索测试")
-    try:
-        result = grep_tool(pattern="import", path=".")
-        result_dict = json.loads(result)
-
-        if "error" in result_dict:
-            print(f"❌ 搜索失败: {result_dict['error']}")
-        else:
-            print(f"✅ 找到 {result_dict['num_files']} 个包含 'import' 的文件")
-            print(f"⏱️  搜索耗时: {result_dict['duration_ms']}ms")
-            if result_dict["num_files"] > 0:
-                print("📁 前5个匹配文件:")
-                for i, filename in enumerate(result_dict["filenames"][:5]):
-                    print(f"   {i + 1}. {filename}")
-                if len(result_dict["filenames"]) > 5:
-                    print(f"   ... 还有 {len(result_dict['filenames']) - 5} 个文件")
-
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
-
-    # Test 3: Search with file type filter
-    print("\n📋 测试 3: 带文件类型过滤的搜索")
-    try:
-        result = grep_tool(pattern="def ", path=".", glob="*.py")
-        result_dict = json.loads(result)
-
-        if "error" in result_dict:
-            print(f"❌ 搜索失败: {result_dict['error']}")
-        else:
-            print(
-                f"✅ 在 Python 文件中找到 {result_dict['num_files']} 个包含函数定义的文件",
-            )
-            print(f"⏱️  搜索耗时: {result_dict['duration_ms']}ms")
-            if result_dict["num_files"] > 0:
-                print("📁 匹配的 Python 文件:")
-                for i, filename in enumerate(result_dict["filenames"][:3]):
-                    print(f"   {i + 1}. {filename}")
-
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
-
-    # Test 4: Search for non-existent pattern
-    print("\n📋 测试 4: 搜索不存在的模式")
-    try:
-        result = grep_tool(
-            pattern="this_pattern_should_never_exist_12345_xyz",
-            path=".",
-        )
-        result_dict = json.loads(result)
-
-        if result_dict["num_files"] == 0:
-            print("✅ 正确处理了空搜索结果")
-            print(f"💬 消息: {result_dict['message']}")
-        else:
-            print(f"⚠️  意外找到了 {result_dict['num_files']} 个文件")
-
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
-
-    # Test 5: Test class-based implementation
-    print("\n📋 测试 5: 类基础实现测试")
-    try:
-        grep_search = GrepSearchTool(max_results=5)
-        result = grep_search.search(
-            pattern="class",
-            path=".",
-            include_pattern="*.py",
-        )
-
-        if result["success"]:
-            print(f"✅ 类实现工作正常，找到 {result['num_files']} 个文件")
-            print(f"⏱️  搜索耗时: {result['duration_ms']}ms")
-        else:
-            print(f"❌ 类实现失败: {result['error']}")
-
-    except Exception as e:
-        print(f"❌ 类实现测试失败: {e}")
-
-    # Test 6: Test invalid directory
-    print("\n📋 测试 6: 无效目录测试")
-    try:
-        result = grep_tool(
-            pattern="test",
-            path="/this/directory/does/not/exist",
-        )
-        result_dict = json.loads(result)
-
-        if "error" in result_dict and "does not exist" in result_dict["error"]:
-            print("✅ 正确处理了无效目录")
-        else:
-            print("⚠️  无效目录处理可能有问题")
-
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
-
-    print("\n" + "=" * 50)
-    print("🎉 GrepTool 测试完成!")
-
-    # Performance tip
-    print("\n💡 使用提示:")
-    print("  • 使用正则表达式进行精确搜索: 'function\\s+\\w+'")
-    print("  • 使用文件过滤器提高效率: include='*.{js,ts,tsx}'")
-    print("  • 搜索错误模式: 'error|Error|ERROR'")
-    print("  • 搜索 TODO 注释: 'TODO|FIXME|XXX'")
-
-
-if __name__ == "__main__":
-    main()

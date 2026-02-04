@@ -15,12 +15,12 @@
 """MultiEdit tool implementation for making multiple edits to a single file."""
 
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
-from nexau.archs.sandbox import BaseSandbox, LocalSandbox, SandboxStatus
+from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.sandbox import BaseSandbox, SandboxStatus
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ class AppliedEditDetail(TypedDict):
 def multiedit_tool(
     file_path: str,
     edits: list[EditPayload],
-    sandbox: BaseSandbox | None = None,
+    agent_state: AgentState,
 ) -> dict[str, Any]:
     """
     Make multiple edits to a single file in one operation.
@@ -80,7 +80,8 @@ def multiedit_tool(
     start_time = time.time()
 
     # Get sandbox instance
-    sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
+    sandbox: BaseSandbox | None = agent_state.get_sandbox()
+    assert sandbox is not None, "File operation tool invoked, but sandbox is not initialized."
 
     # Validate file path is absolute
     if not Path(file_path).is_absolute():
@@ -325,257 +326,3 @@ def multiedit_tool(
             "file_path": file_path,
             "duration_ms": int((time.time() - start_time) * 1000),
         }
-
-
-# Alternative class-based implementation for more advanced usage
-class MultiEditTool:
-    """
-    A class-based implementation of the multiedit tool for more advanced usage.
-    Provides additional features like backup, validation, and dry-run mode.
-    """
-
-    def __init__(self, create_backup: bool = True, validate_syntax: bool = False):
-        self.create_backup = create_backup
-        self.validate_syntax = validate_syntax
-        self.logger = logging.getLogger(self.__class__.__name__)
-
-    def edit_file(
-        self,
-        file_path: str,
-        edits: list[EditPayload],
-    ) -> dict[str, Any]:
-        """
-        Edit a file with advanced options.
-
-        Args:
-            file_path: Absolute path to the file to edit
-            edits: List of edit operations
-            dry_run: If True, simulate edits without actually modifying the file
-
-        Returns:
-            Dict containing operation results
-        """
-
-        # Create backup if enabled
-        backup_path: str | None = None
-        if self.create_backup and os.path.exists(file_path):
-            backup_path = self._create_backup(file_path)
-
-        try:
-            result = multiedit_tool(file_path, edits)
-
-            if result["status"] == "success" and backup_path:
-                result["backup_created"] = backup_path
-
-            return result
-
-        except Exception as e:
-            # Restore from backup if something went wrong
-            if backup_path and os.path.exists(backup_path):
-                try:
-                    os.rename(backup_path, file_path)
-                    self.logger.info(
-                        f"Restored file from backup: {backup_path}",
-                    )
-                except Exception as backup_error:
-                    self.logger.error(
-                        f"Failed to restore backup: {backup_error}",
-                    )
-
-            raise e
-
-    def _create_backup(self, file_path: str) -> str:
-        """Create a backup of the file before editing."""
-        import shutil
-
-        timestamp = int(time.time())
-        backup_path = f"{file_path}.backup.{timestamp}"
-        shutil.copy2(file_path, backup_path)
-        self.logger.info(f"Created backup: {backup_path}")
-        return backup_path
-
-    def batch_edit_files(
-        self,
-        file_edits: list[FileEditPayload],
-        stop_on_error: bool = True,
-    ) -> list[dict[str, Any]]:
-        """
-        Edit multiple files with their respective edits.
-
-        Args:
-            file_edits: List of dicts, each containing 'file_path' and 'edits'
-            stop_on_error: If True, stop processing on first error
-
-        Returns:
-            List of results for each file
-        """
-        results: list[dict[str, Any]] = []
-
-        for file_edit in file_edits:
-            file_path = file_edit.get("file_path")
-            edits = file_edit.get("edits", [])
-
-            if not file_path or not edits:
-                result = {
-                    "status": "error",
-                    "error": "Invalid file_edit entry - missing file_path or edits",
-                    "file_path": file_path,
-                }
-            else:
-                result = self.edit_file(file_path, edits)
-
-            results.append(result)
-
-            if stop_on_error and result["status"] != "success":
-                break
-
-        return results
-
-
-def main():
-    """Test function to demonstrate and validate the multiedit_tool functionality."""
-    print("✏️  MultiEditTool 测试开始...")
-    print("=" * 50)
-
-    # Create a test file for demonstrations
-    test_file_path = "/tmp/multiedit_test.txt"
-    test_content = """Hello World!
-This is line 2.
-This is line 3 with some text.
-Final line here."""
-
-    # Test 1: Create a new file
-    print("\n📋 测试 1: 创建新文件")
-    try:
-        edits: list[EditPayload] = [
-            {"old_string": "", "new_string": test_content},
-        ]
-        result = multiedit_tool(test_file_path, edits)
-
-        if result["status"] == "success":
-            print("✅ 新文件创建成功")
-            print(f"📄 文件路径: {result['file_path']}")
-            print(f"📊 文件大小: {result['final_size']} 字节")
-            print(f"⏱️  执行时间: {result['duration_ms']}ms")
-        else:
-            print(f"❌ 新文件创建失败: {result['error']}")
-
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
-
-    # Test 2: Multiple edits on existing file
-    print("\n📋 测试 2: 多重编辑")
-    try:
-        edits: list[EditPayload] = [
-            {"old_string": "Hello World!", "new_string": "Hello MultiEdit!"},
-            {"old_string": "line 2", "new_string": "second line"},
-            {"old_string": "This is", "new_string": "Here is", "replace_all": True},
-        ]
-        result = multiedit_tool(test_file_path, edits)
-
-        if result["status"] == "success":
-            print("✅ 多重编辑成功")
-            print(f"📝 应用编辑: {result['applied_edits']}/{result['total_edits']}")
-            print(f"🔄 总替换次数: {result['total_replacements']}")
-            print(f"📏 大小变化: {result['size_change']} 字节")
-            print(f"⏱️  执行时间: {result['duration_ms']}ms")
-
-            # Verify the changes
-            with open(test_file_path) as f:
-                new_content = f.read()
-            print(f"📄 编辑后内容:\n{new_content}")
-
-        else:
-            print(f"❌ 多重编辑失败: {result['error']}")
-
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
-
-    # Test 3: Edit with non-existent old_string (should fail)
-    print("\n📋 测试 3: 无效编辑（不存在的字符串）")
-    try:
-        edits: list[EditPayload] = [
-            {
-                "old_string": "This string does not exist",
-                "new_string": "replacement",
-            },
-        ]
-        result = multiedit_tool(test_file_path, edits)
-
-        if result["status"] == "error" and "not found" in result["error"]:
-            print("✅ 正确处理了不存在的字符串")
-            print(f"⚠️  错误信息: {result['error']}")
-        else:
-            print("⚠️  错误处理可能有问题")
-
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
-
-    # Test 4: Class-based implementation with backup
-    print("\n📋 测试 4: 类实现（带备份）")
-    try:
-        multiedit_instance = MultiEditTool(create_backup=True)
-        edits: list[EditPayload] = [
-            {"old_string": "MultiEdit", "new_string": "AdvancedEdit"},
-        ]
-        result = multiedit_instance.edit_file(test_file_path, edits)
-
-        if result["status"] == "success":
-            print("✅ 类实现编辑成功")
-            print(f"💾 备份文件: {result.get('backup_created', 'None')}")
-            print(f"📝 应用编辑: {result['applied_edits']}")
-        else:
-            print("❌ 类实现编辑失败")
-
-    except Exception as e:
-        print(f"❌ 类实现测试失败: {e}")
-
-    # Test 5: Relative path (should fail)
-    print("\n📋 测试 5: 相对路径测试")
-    try:
-        edits: list[EditPayload] = [
-            {"old_string": "test", "new_string": "replacement"},
-        ]
-        result = multiedit_tool("./test.txt", edits)
-
-        if result["status"] == "error" and "absolute" in result["error"]:
-            print("✅ 正确拒绝了相对路径")
-            print(f"⚠️  错误信息: {result['error']}")
-        else:
-            print("⚠️  相对路径处理可能有问题")
-
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
-
-    # Clean up test file
-    try:
-        if os.path.exists(test_file_path):
-            os.remove(test_file_path)
-            print(f"\n🧹 清理测试文件: {test_file_path}")
-
-        # Also clean up backup files
-        import glob
-
-        backup_files = glob.glob(f"{test_file_path}.backup.*")
-        for backup_file in backup_files:
-            os.remove(backup_file)
-            print(f"🧹 清理备份文件: {backup_file}")
-
-    except Exception as e:
-        print(f"⚠️  清理文件时出错: {e}")
-
-    print("\n" + "=" * 50)
-    print("🎉 MultiEditTool 测试完成!")
-
-    # Usage tips
-    print("\n💡 使用提示:")
-    print("  • 编辑按顺序应用，每个编辑基于前一个的结果")
-    print("  • 使用绝对路径，不支持相对路径")
-    print("  • old_string 必须精确匹配文件内容（包括空格）")
-    print("  • 使用 replace_all=True 替换所有出现的字符串")
-    print("  • 操作是原子性的：要么全部成功，要么全部失败")
-    print("  • 创建新文件时第一个编辑的 old_string 应为空字符串")
-
-
-if __name__ == "__main__":
-    main()

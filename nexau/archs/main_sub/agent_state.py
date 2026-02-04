@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from nexau.archs.main_sub.execution.executor import Executor
+    from nexau.archs.sandbox.base_sandbox import BaseSandbox
     from nexau.archs.tool.tool import Tool
 
 from .agent_context import AgentContext, GlobalStorage
@@ -44,6 +45,7 @@ class AgentState:
         global_storage: GlobalStorage,
         executor: "Executor",
         parent_agent_state: Optional["AgentState"] = None,
+        sandbox: Optional["BaseSandbox"] = None,
     ):
         """Initialize agent state.
 
@@ -65,6 +67,7 @@ class AgentState:
         self.global_storage = global_storage
         self.parent_agent_state = parent_agent_state
         self._executor = executor
+        self._sandbox = sandbox
 
     def get_context_value(self, key: str, default: Any = None) -> Any:
         """Get a value from the context.
@@ -107,6 +110,14 @@ class AgentState:
             value: The value to set
         """
         self.global_storage.set(key, value)
+
+    def get_sandbox(self) -> Optional["BaseSandbox"]:
+        """Get the sandbox associated with the agent state."""
+        return self._sandbox
+
+    def set_sandbox(self, sandbox: "BaseSandbox") -> None:
+        """Set the sandbox associated with the agent state."""
+        self._sandbox = sandbox
 
     def add_tool(self, tool: "Tool") -> None:
         """Dynamically add a tool into the current execution context.

@@ -20,33 +20,42 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
+from nexau.archs.sandbox import LocalSandbox
 from nexau.archs.tool.builtin.bash_tool import bash_tool
 from nexau.archs.tool.builtin.file_tools.file_edit_tool import file_edit_tool
 from nexau.archs.tool.builtin.file_tools.file_read_tool import file_read_tool
 from nexau.archs.tool.builtin.file_tools.file_write_tool import file_write_tool
 
 
+@pytest.fixture
+def agent_state():
+    agent_state = Mock()
+    agent_state.get_sandbox = lambda: LocalSandbox()
+    return agent_state
+
+
 class TestToolChainIntegration:
     """Integration tests for chaining multiple tools together."""
 
     @pytest.mark.integration
-    def test_file_write_read_chain(self):
+    def test_file_write_read_chain(self, agent_state):
         """Test writing and reading a file in sequence."""
         with tempfile.TemporaryDirectory() as temp_dir:
             file_path = os.path.join(temp_dir, "test.txt")
             content = "Hello, World!\nThis is a test."
 
             # Write file - returns JSON string
-            write_result_str = file_write_tool(file_path, content)
+            write_result_str = file_write_tool(file_path, content, agent_state=agent_state)
             write_result = json.loads(write_result_str)
             assert write_result["success"]
             assert write_result["file_path"] == file_path
 
             # Read file back - returns JSON string
-            read_result_str = file_read_tool(file_path)
+            read_result_str = file_read_tool(file_path, agent_state=agent_state)
             read_result = json.loads(read_result_str)
             assert "content" in read_result
             # Content includes line numbers, so check for the actual text
@@ -54,44 +63,44 @@ class TestToolChainIntegration:
             assert "This is a test." in read_result["content"]
 
     @pytest.mark.integration
-    def test_file_write_edit_read_chain(self):
+    def test_file_write_edit_read_chain(self, agent_state):
         """Test writing, editing, and reading a file."""
         with tempfile.TemporaryDirectory() as temp_dir:
             file_path = os.path.join(temp_dir, "test.py")
             initial_content = "def hello():\n    print('Hello')"
 
             # Write initial file
-            write_result_str = file_write_tool(file_path, initial_content)
+            write_result_str = file_write_tool(file_path, initial_content, agent_state=agent_state)
             write_result = json.loads(write_result_str)
             assert write_result["success"]
 
             # Edit file
             old_string = "print('Hello')"
             new_string = "print('Hello, World!')"
-            edit_result_str = file_edit_tool(file_path, old_string, new_string)
+            edit_result_str = file_edit_tool(file_path, old_string, new_string, agent_state=agent_state)
             edit_result = json.loads(edit_result_str)
             assert edit_result["success"]
 
             # Read modified file
-            read_result_str = file_read_tool(file_path)
+            read_result_str = file_read_tool(file_path, agent_state=agent_state)
             read_result = json.loads(read_result_str)
             assert "content" in read_result
             assert "print('Hello, World!')" in read_result["content"]
 
     @pytest.mark.integration
-    def test_bash_and_file_tools_integration(self):
+    def test_bash_and_file_tools_integration(self, agent_state):
         """Test bash tool working with file tools."""
         with tempfile.TemporaryDirectory() as temp_dir:
             file_path = os.path.join(temp_dir, "data.txt")
 
             # Write file (with trailing newline so wc -l counts correctly)
             content = "Line 1\nLine 2\nLine 3\n"
-            write_result_str = file_write_tool(file_path, content)
+            write_result_str = file_write_tool(file_path, content, agent_state=agent_state)
             write_result = json.loads(write_result_str)
             assert write_result["success"]
 
             # Use bash to count lines
-            bash_result = bash_tool(f"wc -l {file_path}")
+            bash_result = bash_tool(f"wc -l {file_path}", agent_state=agent_state)
             assert bash_result["status"] == "success"
             assert "3" in bash_result["stdout"]
 
@@ -100,37 +109,37 @@ class TestToolStateManagement:
     """Integration tests for tools that maintain state."""
 
     @pytest.mark.integration
-    def test_file_state_across_operations(self):
+    def test_file_state_across_operations(self, agent_state):
         """Test file state management across multiple operations."""
         with tempfile.TemporaryDirectory() as temp_dir:
             file_path = os.path.join(temp_dir, "stateful.txt")
 
             # Multiple write operations
-            file_write_tool(file_path, "Version 1")
-            read1_str = file_read_tool(file_path)
+            file_write_tool(file_path, "Version 1", agent_state=agent_state)
+            read1_str = file_read_tool(file_path, agent_state=agent_state)
             read1 = json.loads(read1_str)
             assert "Version 1" in read1["content"]
 
-            file_write_tool(file_path, "Version 2")
-            read2_str = file_read_tool(file_path)
+            file_write_tool(file_path, "Version 2", agent_state=agent_state)
+            read2_str = file_read_tool(file_path, agent_state=agent_state)
             read2 = json.loads(read2_str)
             assert "Version 2" in read2["content"]
             assert "Version 1" not in read2["content"]
 
     @pytest.mark.integration
-    def test_concurrent_tool_execution(self):
+    def test_concurrent_tool_execution(self, agent_state):
         """Test tools executing concurrently without conflicts."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create multiple files
             files = []
             for i in range(5):
                 file_path = os.path.join(temp_dir, f"file_{i}.txt")
-                file_write_tool(file_path, f"Content {i}")
+                file_write_tool(file_path, f"Content {i}", agent_state=agent_state)
                 files.append(file_path)
 
             # Read all files
             for i, file_path in enumerate(files):
-                result_str = file_read_tool(file_path)
+                result_str = file_read_tool(file_path, agent_state=agent_state)
                 result = json.loads(result_str)
                 assert "content" in result
                 assert f"Content {i}" in result["content"]
@@ -140,38 +149,38 @@ class TestToolErrorRecovery:
     """Integration tests for tool error handling and recovery."""
 
     @pytest.mark.integration
-    def test_file_tool_error_recovery(self):
+    def test_file_tool_error_recovery(self, agent_state):
         """Test recovery from file tool errors."""
         with tempfile.TemporaryDirectory() as temp_dir:
             file_path = os.path.join(temp_dir, "test.txt")
 
             # Try to read non-existent file
-            read_result_str = file_read_tool(file_path)
+            read_result_str = file_read_tool(file_path, agent_state=agent_state)
             read_result = json.loads(read_result_str)
             assert "error" in read_result
             assert "not found" in read_result["error"].lower() or "does not exist" in read_result["error"].lower()
 
             # Recover by creating the file
-            write_result_str = file_write_tool(file_path, "Recovery content")
+            write_result_str = file_write_tool(file_path, "Recovery content", agent_state=agent_state)
             write_result = json.loads(write_result_str)
             assert write_result["success"]
 
             # Now read should work
-            read_result_str = file_read_tool(file_path)
+            read_result_str = file_read_tool(file_path, agent_state=agent_state)
             read_result = json.loads(read_result_str)
             assert "content" in read_result
             assert "Recovery content" in read_result["content"]
 
     @pytest.mark.integration
-    def test_bash_tool_error_recovery(self):
+    def test_bash_tool_error_recovery(self, agent_state):
         """Test recovery from bash tool errors."""
         # Execute failing command
-        result = bash_tool("exit 1")
+        result = bash_tool("exit 1", agent_state=agent_state)
         assert result["status"] == "error"
         assert result["exit_code"] == 1
 
         # Execute successful command
-        result = bash_tool("echo 'success'")
+        result = bash_tool("echo 'success'", agent_state=agent_state)
         assert result["status"] == "success"
         assert result["exit_code"] == 0
 

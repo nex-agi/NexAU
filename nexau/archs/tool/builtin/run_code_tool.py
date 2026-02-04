@@ -17,11 +17,11 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from typing import Literal, TypedDict
 
-from nexau.archs.sandbox import BaseSandbox, LocalSandbox, SandboxStatus
+from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.sandbox import BaseSandbox, SandboxStatus
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def run_code_tool(
     code_block: str,
     timeout: int | None = None,
     description: str | None = None,
-    sandbox: BaseSandbox | None = None,
+    agent_state: AgentState | None = None,
 ) -> ExecutionResult:
     """
     Execute Python code using sandbox adaptor.
@@ -70,7 +70,9 @@ def run_code_tool(
     start_time = time.time()
 
     # Get sandbox instance
-    sandbox = sandbox or LocalSandbox(_work_dir=os.getcwd())
+    assert agent_state is not None, "File operation tool invoked, but agent_state is not passed. We need sandbox instance in agent_state."
+    sandbox: BaseSandbox | None = agent_state.get_sandbox()
+    assert sandbox is not None, "File operation tool invoked, but sandbox is not initialized."
 
     # Validate timeout
     if timeout is None:

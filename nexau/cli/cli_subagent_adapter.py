@@ -150,6 +150,7 @@ class CLIEnabledSubAgentManager(SubAgentManager):
             session_manager=self.session_manager,
             user_id=self.user_id,
             session_id=self.session_id,
+            is_root=False,
         )
 
         self.running_sub_agents[sub_agent.agent_id] = sub_agent

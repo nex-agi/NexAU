@@ -62,7 +62,6 @@ from nexau.archs.main_sub.tool_call_modes import (
     normalize_tool_call_mode,
 )
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
-from nexau.archs.sandbox.base_sandbox import BaseSandboxManager
 from nexau.archs.tool.tool import Tool
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, coerce_tool_result_content
@@ -85,7 +84,6 @@ class Executor:
         stop_tools: set[str],
         openai_client: Any,
         llm_config: LLMConfig,
-        sandbox_manager: BaseSandboxManager[Any],
         max_iterations: int = 100,
         max_context_tokens: int = 128000,
         max_running_subagents: int = 5,
@@ -198,9 +196,6 @@ class Executor:
 
         # Message queue for dynamic message enqueueing during execution
         self.queued_messages: list[Message] = []
-
-        # Sandbox manager
-        self.sandbox_manager = sandbox_manager
 
     def enqueue_message(self, message: dict[str, str]) -> None:
         """Enqueue a message to be processed during execution.
@@ -978,7 +973,6 @@ class Executor:
             tool_call_id = tool_call.tool_call_id or f"tool_call_{uuid.uuid4()}"
             result = self.tool_executor.execute_tool(
                 agent_state,
-                self.sandbox_manager.instance,
                 tool_call.tool_name,
                 converted_params,
                 tool_call_id=tool_call_id,

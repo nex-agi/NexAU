@@ -478,7 +478,6 @@ class Agent:
             session_manager=self._session_manager,
             user_id=self._user_id,
             session_id=self._session_id,
-            sandbox_manager=self.sandbox_manager,
         )
 
     def _initialize_sandbox(self) -> None:
@@ -751,6 +750,7 @@ class Agent:
                 global_storage=self.global_storage,
                 parent_agent_state=parent_agent_state,
                 executor=self.executor,
+                sandbox=self.sandbox_manager.instance,
             )
 
             # Execute with or without tracing

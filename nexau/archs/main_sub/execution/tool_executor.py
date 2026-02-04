@@ -67,7 +67,6 @@ class ToolExecutor:
     def execute_tool(
         self,
         agent_state: "AgentState",
-        sandbox: BaseSandbox | None,
         tool_name: str,
         parameters: dict[str, Any],
         tool_call_id: str,
@@ -92,6 +91,8 @@ class ToolExecutor:
                 raise ValueError(error_msg)
             tool = self.tool_registry[tool_name]
             # Fetch tool while holding the lock to avoid TOCTOU races with concurrent registry updates.
+
+        sandbox: BaseSandbox | None = agent_state.get_sandbox()
 
         tool_parameters = parameters.copy()
         if self.middleware_manager:
