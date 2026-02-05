@@ -1,10 +1,12 @@
 from dataclasses import asdict
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from nexau.archs.sandbox.base_sandbox import (
     BaseSandbox,
+    BaseSandboxManager,
     CodeExecutionResult,
     CodeLanguage,
     CommandResult,
@@ -13,7 +15,9 @@ from nexau.archs.sandbox.base_sandbox import (
     SandboxError,
     SandboxFileError,
     SandboxStatus,
+    extract_dataclass_init_kwargs,
 )
+from nexau.archs.session.session_manager import SessionManager
 
 
 class TestSandboxStatus:
@@ -217,8 +221,99 @@ class TestSandboxExceptions:
         assert isinstance(exc_info.value, SandboxError)
 
 
+class TestExtractDataclassInitKwargs:
+    def test_extract_kwargs_ignores_extra(self):
+        from dataclasses import dataclass
+
+        @dataclass
+        class Example:
+            name: str
+            count: int
+
+        result = extract_dataclass_init_kwargs(Example, {"name": "a", "count": 2, "extra": "ignore"})
+        assert result == {"name": "a", "count": 2}
+
+    def test_extract_kwargs_rejects_extra(self):
+        from dataclasses import dataclass
+
+        @dataclass
+        class Example:
+            name: str
+
+        with pytest.raises(TypeError):
+            extract_dataclass_init_kwargs(Example, {"name": "a", "extra": "bad"}, ignore_extra=False)
+
+    def test_extract_kwargs_non_dataclass(self):
+        with pytest.raises(TypeError):
+            extract_dataclass_init_kwargs(dict, {"name": "a"})
+
+
 # Removed TestSandboxType, TestSandboxConfig, and TestGetSandbox classes
 # as these are no longer part of the base_sandbox module
+
+
+class DummySandbox(BaseSandbox):
+    uploaded: list[tuple[str, str]]
+
+    def __init__(self, sandbox_id: str | None = None, _work_dir: str = "/tmp") -> None:
+        super().__init__(sandbox_id=sandbox_id, _work_dir=_work_dir)
+        self.uploaded = []
+
+    def detect_encoding(self, data: bytes) -> str:
+        return self._detect_file_encoding(data)
+
+    def execute_bash(self, command: str, timeout: int | None = None) -> CommandResult:
+        return CommandResult(status=SandboxStatus.SUCCESS)
+
+    def execute_code(self, code: str, language: CodeLanguage | str, timeout: int | None = None) -> CodeExecutionResult:
+        return CodeExecutionResult(status=SandboxStatus.SUCCESS, language=CodeLanguage.PYTHON)
+
+    def read_file(self, file_path: str, encoding: str = "utf-8", binary: bool = False) -> FileOperationResult:
+        return FileOperationResult(status=SandboxStatus.SUCCESS, file_path=file_path, content="")
+
+    def write_file(
+        self,
+        file_path: str,
+        content: str | bytes,
+        encoding: str = "utf-8",
+        binary: bool = False,
+        create_directories: bool = True,
+    ) -> FileOperationResult:
+        return FileOperationResult(status=SandboxStatus.SUCCESS, file_path=file_path)
+
+    def delete_file(self, file_path: str) -> FileOperationResult:
+        return FileOperationResult(status=SandboxStatus.SUCCESS, file_path=file_path)
+
+    def list_files(self, directory_path: str, recursive: bool = False, pattern: str | None = None) -> list[FileInfo]:
+        return []
+
+    def file_exists(self, file_path: str) -> bool:
+        return False
+
+    def get_file_info(self, file_path: str) -> FileInfo:
+        return FileInfo(path=file_path, exists=False)
+
+    def create_directory(self, directory_path: str, parents: bool = True) -> bool:
+        return True
+
+    def edit_file(self, file_path: str, old_string: str, new_string: str) -> FileOperationResult:
+        return FileOperationResult(status=SandboxStatus.SUCCESS, file_path=file_path)
+
+    def glob(self, pattern: str, recursive: bool = True) -> list[str]:
+        return []
+
+    def upload_file(self, local_path: str, sandbox_path: str, create_directories: bool = True) -> FileOperationResult:
+        return FileOperationResult(status=SandboxStatus.SUCCESS, file_path=sandbox_path)
+
+    def download_file(self, sandbox_path: str, local_path: str, create_directories: bool = True) -> FileOperationResult:
+        return FileOperationResult(status=SandboxStatus.SUCCESS, file_path=local_path)
+
+    def upload_directory(self, local_path: str, sandbox_path: str) -> bool:
+        self.uploaded.append((local_path, sandbox_path))
+        return True
+
+    def download_directory(self, sandbox_path: str, local_path: str) -> bool:
+        return True
 
 
 class TestBaseSandboxInterface:
@@ -254,10 +349,196 @@ class TestBaseSandboxInterface:
 
     def test_detect_file_encoding_utf8(self):
         utf8_data = b"Hello World"
-        encoding = BaseSandbox._detect_file_encoding(utf8_data)
+        encoding = DummySandbox().detect_encoding(utf8_data)
         assert encoding in ["utf-8", "ascii"]
 
     def test_detect_file_encoding_fallback(self):
         binary_data = b"\x00\x01\x02\x03"
-        encoding = BaseSandbox._detect_file_encoding(binary_data)
+        encoding = DummySandbox().detect_encoding(binary_data)
         assert encoding == "utf-8"
+
+
+class TestBaseSandboxManager:
+    def test_instance_raises_without_context(self) -> None:
+        class DummyManager(BaseSandboxManager["DummySandbox"]):
+            def start(
+                self,
+                session_manager: object | None,
+                user_id: str,
+                session_id: str,
+                sandbox_config: dict[str, object],
+            ) -> DummySandbox:
+                return DummySandbox()
+
+            def stop(self) -> bool:
+                return True
+
+            def pause(self) -> bool:
+                return True
+
+            def is_running(self) -> bool:
+                return False
+
+        manager = DummyManager()
+        with pytest.raises(SandboxError):
+            _ = manager.instance
+
+    def test_instance_starts_with_context(self) -> None:
+        class DummyManager(BaseSandboxManager["DummySandbox"]):
+            def start(
+                self,
+                session_manager: object | None,
+                user_id: str,
+                session_id: str,
+                sandbox_config: dict[str, object],
+            ) -> DummySandbox:
+                return DummySandbox()
+
+            def stop(self) -> bool:
+                return True
+
+            def pause(self) -> bool:
+                return True
+
+            def is_running(self) -> bool:
+                return False
+
+        manager = DummyManager()
+        manager.prepare_session_context(
+            session_manager=None,
+            user_id="user",
+            session_id="session",
+            sandbox_config={},
+            upload_assets=[("/src", "/dest")],
+        )
+        instance = manager.instance
+        assert instance is not None
+        assert instance.uploaded == [("/src", "/dest")]
+
+    def test_start_sync_without_context_returns_none(self) -> None:
+        class DummyManager(BaseSandboxManager["DummySandbox"]):
+            def start(
+                self,
+                session_manager: object | None,
+                user_id: str,
+                session_id: str,
+                sandbox_config: dict[str, object],
+            ) -> DummySandbox:
+                return DummySandbox()
+
+            def stop(self) -> bool:
+                return True
+
+            def pause(self) -> bool:
+                return True
+
+            def is_running(self) -> bool:
+                return True
+
+        manager = DummyManager()
+        assert manager.start_sync() is None
+
+    def test_start_sync_uploads_assets(self) -> None:
+        class DummyManager(BaseSandboxManager["DummySandbox"]):
+            def start(
+                self,
+                session_manager: object | None,
+                user_id: str,
+                session_id: str,
+                sandbox_config: dict[str, object],
+            ) -> DummySandbox:
+                return DummySandbox()
+
+            def stop(self) -> bool:
+                return True
+
+            def pause(self) -> bool:
+                return True
+
+            def is_running(self) -> bool:
+                return True
+
+        manager = DummyManager()
+        manager.prepare_session_context(
+            session_manager=None,
+            user_id="user",
+            session_id="session",
+            sandbox_config={},
+            upload_assets=[("/src", "/dest"), ("/src2", "/dest2")],
+        )
+        instance = manager.start_sync()
+        assert instance is not None
+        assert instance.uploaded == [("/src", "/dest"), ("/src2", "/dest2")]
+
+    def test_persist_sandbox_state_event_loop_conflict(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class DummySessionManager:
+            async def update_session_sandbox(self, user_id: str, session_id: str, sandbox_state: dict[str, object]) -> None:
+                return None
+
+        class DummyManager(BaseSandboxManager["DummySandbox"]):
+            def start(
+                self,
+                session_manager: object | None,
+                user_id: str,
+                session_id: str,
+                sandbox_config: dict[str, object],
+            ) -> DummySandbox:
+                return DummySandbox()
+
+            def stop(self) -> bool:
+                return True
+
+            def pause(self) -> bool:
+                return True
+
+            def is_running(self) -> bool:
+                return True
+
+        def raise_conflict(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("Event loop is closed")
+
+        manager = DummyManager()
+        monkeypatch.setattr("nexau.archs.sandbox.base_sandbox.run_async_function_sync", raise_conflict)
+        result = manager.persist_sandbox_state(
+            session_manager=cast(SessionManager, DummySessionManager()),
+            user_id="user",
+            session_id="session",
+            sandbox=DummySandbox(),
+        )
+        assert result is None
+
+    def test_load_sandbox_state_event_loop_conflict(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class DummySessionManager:
+            async def get_session(self, user_id: str, session_id: str) -> object | None:
+                return None
+
+        class DummyManager(BaseSandboxManager["DummySandbox"]):
+            def start(
+                self,
+                session_manager: object | None,
+                user_id: str,
+                session_id: str,
+                sandbox_config: dict[str, object],
+            ) -> DummySandbox:
+                return DummySandbox()
+
+            def stop(self) -> bool:
+                return True
+
+            def pause(self) -> bool:
+                return True
+
+            def is_running(self) -> bool:
+                return True
+
+        def raise_conflict(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("bound to a different event loop")
+
+        manager = DummyManager()
+        monkeypatch.setattr("nexau.archs.sandbox.base_sandbox.run_async_function_sync", raise_conflict)
+        result = manager.load_sandbox_state(
+            session_manager=cast(SessionManager, DummySessionManager()),
+            user_id="user",
+            session_id="session",
+        )
+        assert result is None

@@ -59,6 +59,7 @@ from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock
+from nexau.core.utils import run_async_function_sync
 
 # Setup logger for agent execution
 logger = logging.getLogger(__name__)
@@ -274,7 +275,7 @@ class Agent:
 
             return storage, agent_id
 
-        return syncify(_init, raise_sync_error=False)()
+        return run_async_function_sync(_init, raise_sync_error=False)
 
     def _setup_tracer(self) -> None:
         """Set up tracer in global_storage with conflict detection.
@@ -507,7 +508,10 @@ class Agent:
                 self.config.skills[i] = skill
                 upload_assets.append((local_folder, skill.folder))
 
-        self.sandbox_manager.start_no_wait(
+        # 功能说明1：仅保存会话上下文，不启动 sandbox
+        # 功能说明2：sandbox 会在首次调用工具时通过 start_sync() 延迟启动
+        # 功能说明3：确保 sandbox 在正确的事件循环上下文中创建，避免 asyncio 问题
+        self.sandbox_manager.prepare_session_context(
             session_manager=self._session_manager,
             user_id=self._user_id,
             session_id=self._session_id,
@@ -741,6 +745,11 @@ class Agent:
                 self.history.extend(message)
 
             # Create the AgentState instance
+            # 功能说明1：传递 sandbox_manager 给 AgentState，而不是 sandbox 实例
+            # 功能说明2：AgentState.get_sandbox() 会懒加载获取 sandbox 实例
+            # 功能说明3：这避免了在不同事件循环中访问 asyncio 原语的问题
+            # 功能说明4：sandbox 只在工具实际需要时才获取
+            sandbox_mgr = self.sandbox_manager if hasattr(self, "sandbox_manager") else None
             agent_state = AgentState(
                 agent_name=self.agent_name,
                 agent_id=self.agent_id,
@@ -750,7 +759,7 @@ class Agent:
                 global_storage=self.global_storage,
                 parent_agent_state=parent_agent_state,
                 executor=self.executor,
-                sandbox=self.sandbox_manager.instance,
+                sandbox_manager=sandbox_mgr,
             )
 
             # Execute with or without tracing

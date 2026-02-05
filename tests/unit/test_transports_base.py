@@ -23,8 +23,7 @@ import pytest
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent import Agent
 from nexau.archs.main_sub.config import AgentConfig
-from nexau.archs.session import SessionManager
-from nexau.archs.session import InMemoryDatabaseEngine
+from nexau.archs.session import InMemoryDatabaseEngine, SessionManager
 from nexau.archs.transports.base import TransportBase
 
 
@@ -211,17 +210,10 @@ class TestTransportBase:
             mock_agent.run_async.assert_called_once()
 
     def test_async_loop_nesting_problem_direct_agent_in_async(self, engine, agent_config):
-        """Simulate the original problem: creating Agent() directly in async context fails.
-
-        Agent.__init__ uses syncify() to run async session init; when called from
-        an async handler, syncify/anyio detects an already-running event loop and
-        raises RuntimeError (or would deadlock on other implementations). This test
-        expects the call to fail, not succeed.
-        """
+        """Creating Agent() directly in async context succeeds with nest_asyncio."""
         session_manager = SessionManager(engine=engine)
 
         async def create_agent_in_async_context():
-            # Old transport pattern: Agent() directly in async handler -> fails
             return Agent(
                 config=agent_config,
                 session_manager=session_manager,
@@ -229,8 +221,11 @@ class TestTransportBase:
                 session_id="session_1",
             )
 
-        with pytest.raises(RuntimeError, match="Already running asyncio"):
-            asyncio.run(create_agent_in_async_context())
+        agent = asyncio.run(create_agent_in_async_context())
+        assert agent is not None
+        assert agent.agent_id
+        assert agent.global_storage is not None
+        assert agent._session_id == "session_1"
 
     def test_async_loop_nesting_fix_via_to_thread(self, engine, agent_config):
         """Verify the fix: creating Agent via asyncio.to_thread from async context completes.

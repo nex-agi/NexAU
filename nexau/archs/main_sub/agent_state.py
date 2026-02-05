@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from nexau.archs.main_sub.execution.executor import Executor
-    from nexau.archs.sandbox.base_sandbox import BaseSandbox
+    from nexau.archs.sandbox.base_sandbox import BaseSandbox, BaseSandboxManager
     from nexau.archs.tool.tool import Tool
 
 from .agent_context import AgentContext, GlobalStorage
@@ -46,6 +46,7 @@ class AgentState:
         executor: "Executor",
         parent_agent_state: Optional["AgentState"] = None,
         sandbox: Optional["BaseSandbox"] = None,
+        sandbox_manager: Optional["BaseSandboxManager[Any]"] = None,
     ):
         """Initialize agent state.
 
@@ -58,6 +59,8 @@ class AgentState:
             global_storage: The GlobalStorage instance
             parent_agent_state: Optional parent state when this is a sub-agent
             executor: Optional executor reference to allow runtime tool injection
+            sandbox: Optional sandbox instance (deprecated, use sandbox_manager)
+            sandbox_manager: Optional sandbox manager for lazy sandbox access
         """
         self.agent_name = agent_name
         self.agent_id = agent_id
@@ -68,6 +71,7 @@ class AgentState:
         self.parent_agent_state = parent_agent_state
         self._executor = executor
         self._sandbox = sandbox
+        self._sandbox_manager = sandbox_manager
 
     def get_context_value(self, key: str, default: Any = None) -> Any:
         """Get a value from the context.
@@ -112,7 +116,16 @@ class AgentState:
         self.global_storage.set(key, value)
 
     def get_sandbox(self) -> Optional["BaseSandbox"]:
-        """Get the sandbox associated with the agent state."""
+        """Get the sandbox associated with the agent state.
+
+        功能说明1：使用 start_sync() 在当前事件循环中同步启动 sandbox
+        功能说明2：避免在不同事件循环中访问 asyncio 原语导致的问题
+        功能说明3：E2B SDK 的 httpx 客户端会在当前事件循环上下文中创建
+        功能说明4：如果没有 sandbox_manager，则使用直接设置的 sandbox
+        """
+        # 使用 start_sync() 在当前线程/事件循环中启动 sandbox
+        if self._sandbox_manager is not None:
+            return self._sandbox_manager.start_sync()
         return self._sandbox
 
     def set_sandbox(self, sandbox: "BaseSandbox") -> None:

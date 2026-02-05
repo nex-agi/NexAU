@@ -24,6 +24,7 @@ and is suitable for production use.
 # pyright: reportUnknownMemberType=false
 # pyright: reportUnknownVariableType=false
 # pyright: reportUnknownArgumentType=false
+# pyright: reportPrivateUsage=false
 
 from __future__ import annotations
 
@@ -32,8 +33,14 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
+from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, cast
+
+if TYPE_CHECKING:
+    import httpx
+
+from packaging.version import Version
 
 from .base_sandbox import (
     BaseSandbox,
@@ -51,25 +58,111 @@ from .base_sandbox import (
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
-    from e2b import Sandbox as TSandbox  # type: ignore
-else:
-    TSandbox = Any
+
+class _CommandResultProtocol(Protocol):
+    stdout: str | None
+    stderr: str | None
+    exit_code: int
+
+
+class _SandboxCommandsProtocol(Protocol):
+    def run(
+        self,
+        cmd: str,
+        timeout: int | None = None,
+        cwd: str | None = None,
+    ) -> _CommandResultProtocol: ...
+
+
+class _FilesystemEntryProtocol(Protocol):
+    name: str
+    path: str
+    type: object
+    size: int | None
+
+
+class _SandboxFilesystemProtocol(Protocol):
+    def read(self, path: str, format: str = "bytes") -> bytes: ...
+
+    def write(self, path: str, content: bytes | str) -> None: ...
+
+    def remove(self, path: str) -> None: ...
+
+    def list(self, path: str) -> list[_FilesystemEntryProtocol]: ...
+
+    def exists(self, path: str) -> bool: ...
+
+    def get_info(self, path: str) -> _FilesystemEntryProtocol: ...
+
+
+class _SandboxProtocol(Protocol):
+    sandbox_id: str
+    commands: _SandboxCommandsProtocol
+    _filesystem: _SandboxFilesystemProtocol
+    connection_config: _ConnectionConfigProtocol
+    _transport: httpx.BaseTransport | None
+    _envd_api: object
+
+    def kill(self) -> None: ...
+
+    def beta_pause(self) -> None: ...
+
+    def is_running(self) -> bool: ...
+
+
+class _SandboxClassProtocol(Protocol):
+    def __call__(self, **kwargs: object) -> _SandboxProtocol: ...
+
+    def connect(self, sandbox_id: str, **kwargs: object) -> _SandboxProtocol: ...
+
+    def beta_create(self, **kwargs: object) -> _SandboxProtocol: ...
+
+
+class _FileTypeProtocol(Protocol):
+    FILE: object
+    DIR: object
+
+
+class _E2BTimeoutError(Exception):
+    pass
+
+
+class _E2BCommandExitError(Exception):
+    pass
+
+
+Sandbox: _SandboxClassProtocol | None = None
+TimeoutException: type[BaseException] = _E2BTimeoutError
+CommandExitException: type[BaseException] = _E2BCommandExitError
+FileType: _FileTypeProtocol | None = None
 
 try:
-    from e2b import Sandbox  # type: ignore
-    from e2b.exceptions import TimeoutException  # type: ignore
-    from e2b.sandbox.commands.command_handle import CommandExitException  # type: ignore
-    from e2b.sandbox.filesystem.filesystem import FileType  # type: ignore
+    e2b_module = import_module("e2b")
+    e2b_exceptions = import_module("e2b.exceptions")
+    e2b_command_handle = import_module("e2b.sandbox.commands.command_handle")
+    e2b_filesystem = import_module("e2b.sandbox.filesystem.filesystem")
 
-    E2B_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
+    Sandbox = cast(_SandboxClassProtocol, e2b_module.Sandbox)
+    TimeoutException = cast(type[BaseException], e2b_exceptions.TimeoutException)
+    CommandExitException = cast(type[BaseException], e2b_command_handle.CommandExitException)
+    FileType = cast(_FileTypeProtocol, e2b_filesystem.FileType)
+    _e2b_available = True
+except (ImportError, ModuleNotFoundError, AttributeError):
     logger.warning("E2B SDK not installed. Install it with: pip install e2b")
-    Sandbox = None
-    FileType = None
-    TimeoutException = None
-    CommandExitException = None
-    E2B_AVAILABLE = False  # type: ignore
+    _e2b_available = False
+
+E2B_AVAILABLE = _e2b_available
+
+
+class _ConnectionConfigProtocol(Protocol):
+    def __init__(self, sandbox_url: str, extra_sandbox_headers: dict[str, str]) -> None: ...
+
+    sandbox_headers: dict[str, str]
+
+
+def _get_connection_config_class() -> type[_ConnectionConfigProtocol]:
+    connection_config_module = import_module("e2b.connection_config")
+    return cast(type[_ConnectionConfigProtocol], connection_config_module.ConnectionConfig)
 
 
 @dataclass(kw_only=True)
@@ -86,18 +179,25 @@ class E2BSandbox(BaseSandbox):
     """
 
     _work_dir: str = field(default="/home/user")
+    envd_version: str | None = field(default=None)
+    _api_key: str | None = field(default=None, repr=False)
+    _api_url: str | None = field(default=None, repr=False)
 
     # Unserialized fields
-    _sandbox: TSandbox | None = field(default=None, repr=False, init=False)
+    _sandbox: _SandboxProtocol | None = field(default=None, repr=False, init=False)
 
     @property
-    def sandbox(self) -> TSandbox | None:
+    def sandbox(self) -> _SandboxProtocol | None:
         return self._sandbox
 
     @sandbox.setter
-    def sandbox(self, sandbox: TSandbox):
+    def sandbox(self, sandbox: _SandboxProtocol):
         self._sandbox = sandbox
-        self._sandbox_id = sandbox.sandbox_id
+        self.sandbox_id = sandbox.sandbox_id
+
+    def set_api_credentials(self, api_key: str | None, api_url: str | None) -> None:
+        self._api_key = api_key
+        self._api_url = api_url
 
     def execute_bash(
         self,
@@ -115,7 +215,7 @@ class E2BSandbox(BaseSandbox):
             CommandResult containing execution results
         """
         assert E2B_AVAILABLE, "E2B SDK not installed. Install it with: pip install e2b"
-        if not self._sandbox:
+        if self._sandbox is None:
             raise SandboxError("Sandbox not started. Call start() first.")
 
         start_time = time.time()
@@ -129,11 +229,44 @@ class E2BSandbox(BaseSandbox):
         try:
             # Execute command directly (not in background)
             # E2B SDK will raise exception on non-zero exit code
-            result = self._sandbox.commands.run(
-                cmd=command,
-                timeout=int(timeout_seconds),
-                cwd=str(self.work_dir),
-            )
+            # 功能说明1：E2B SDK 可能有事件循环问题，添加重试逻辑
+            # 功能说明2：如果遇到 "Event loop is closed"，重新连接后重试
+            max_retries = 2
+            last_error: RuntimeError | None = None
+            result: _CommandResultProtocol | None = None
+            for retry in range(max_retries + 1):
+                try:
+                    result = self._sandbox.commands.run(
+                        cmd=command,
+                        timeout=int(timeout_seconds),
+                        cwd=str(self.work_dir),
+                    )
+                    break
+                except RuntimeError as e:
+                    last_error = e
+                    if "Event loop is closed" in str(e) and retry < max_retries:
+                        logger.warning(f"Event loop closed error, reconnecting sandbox (retry {retry + 1}/{max_retries})")
+                        # 尝试重新连接
+                        try:
+                            assert Sandbox is not None, "E2B SDK not installed. Install it with: pip install e2b"
+                            connect_opts: dict[str, Any] = {}
+                            if self._api_key:
+                                connect_opts["api_key"] = self._api_key
+                            if self._api_url:
+                                connect_opts["api_url"] = self._api_url
+                            if not self.sandbox_id:
+                                raise SandboxError("Sandbox ID not set; cannot reconnect.")
+                            self._sandbox = Sandbox.connect(sandbox_id=self.sandbox_id, **connect_opts)
+                            continue
+                        except Exception as reconnect_error:
+                            logger.error(f"Failed to reconnect sandbox: {reconnect_error}")
+                    raise
+            else:
+                if last_error:
+                    raise last_error
+
+            if result is None:
+                raise SandboxError("E2B command returned no result after retries.")
 
             duration_ms = int((time.time() - start_time) * 1000)
 
@@ -327,9 +460,12 @@ class E2BSandbox(BaseSandbox):
 
             max_output_size = 30000  # Default: 30000 characters
 
-            content = self._sandbox._filesystem.read(resolved_path, format="bytes")  # type: ignore
-            if not binary:
-                content = content.decode(encoding)
+            raw_content = self._sandbox._filesystem.read(resolved_path, format="bytes")  # type: ignore
+            content: str | bytes
+            if binary:
+                content = raw_content
+            else:
+                content = raw_content.decode(encoding)
 
             # Get file size
             file_info = self.get_file_info(resolved_path)
@@ -403,8 +539,9 @@ class E2BSandbox(BaseSandbox):
             size = 0
             try:
                 result = self._sandbox.commands.run(cmd=f'stat -c "%s" "{resolved_path}"')
-                if result.exit_code == 0:
-                    size = int(result.stdout.strip())
+                stdout_text = result.stdout or ""
+                if result.exit_code == 0 and stdout_text.strip():
+                    size = int(stdout_text.strip())
             except Exception:
                 pass
 
@@ -726,8 +863,18 @@ class E2BSandbox(BaseSandbox):
             if operation != "CREATE":
                 if old_string not in original_content:
                     # Try to normalize common escape sequence issues from LLM
-                    normalized_old_string = old_string.replace("\\\\n", "\\n").replace("\\\\t", "\\t").replace("\\\\r", "\\r")
-                    normalized_new_string = new_string.replace("\\\\n", "\\n").replace("\\\\t", "\\t").replace("\\\\r", "\\r")
+                    def _normalize_escape_sequences(value: str) -> str:
+                        return (
+                            value.replace("\\\\n", "\n")
+                            .replace("\\n", "\n")
+                            .replace("\\\\t", "\t")
+                            .replace("\\t", "\t")
+                            .replace("\\\\r", "\r")
+                            .replace("\\r", "\r")
+                        )
+
+                    normalized_old_string = _normalize_escape_sequences(old_string)
+                    normalized_new_string = _normalize_escape_sequences(new_string)
 
                     if normalized_old_string != old_string and normalized_old_string in original_content:
                         # Use normalized version
@@ -819,7 +966,8 @@ class E2BSandbox(BaseSandbox):
                 raise SandboxFileError(f"Glob command failed: {result.stderr}")
 
             # Parse output
-            matches = [line.strip() for line in result.stdout.split("\n") if line.strip()]
+            stdout_text = result.stdout or ""
+            matches = [line.strip() for line in stdout_text.split("\n") if line.strip()]
 
             return sorted(matches)
 
@@ -1091,13 +1239,76 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
             session_manager: Session manager instance
             user_id: User ID
             session_id: Session ID
+            sandbox_config: Sandbox configuration dict. If contains sandbox_id, domain,
+                and envd_access_token, will connect to existing sandbox instead of creating new.
 
         Returns:
             Configured and started E2BSandbox instance
         """
         assert E2B_AVAILABLE and Sandbox is not None, "E2B SDK not installed. Install it with: pip install e2b"
 
-        # Load existing sandbox state if available
+        # Priority 1: Check if sandbox_config contains an existing sandbox to connect to
+        # This is used by NexAU Cloud Agent Runtime which manages sandbox lifecycle externally
+        config_sandbox_id = sandbox_config.get("sandbox_id")
+        config_domain = sandbox_config.get("sandbox_domain")
+        config_envd_token = sandbox_config.get("envd_access_token")
+
+        if config_sandbox_id and config_domain and config_envd_token:
+            try:
+                logger.info(f"Connecting to existing sandbox from config: {config_sandbox_id[:16]}...")
+
+                # Build sandbox URL (HTTP for internal K8s communication)
+                sandbox_url = f"http://49983-{config_sandbox_id}.{config_domain}"
+
+                # Create sandbox kwargs from config
+                sandbox_kwargs = extract_dataclass_init_kwargs(E2BSandbox, sandbox_config)
+                if "_work_dir" not in sandbox_kwargs:
+                    sandbox_kwargs["_work_dir"] = "/home/user"
+                sandbox = E2BSandbox(**sandbox_kwargs)
+                sandbox.set_api_credentials(self.api_key, self.api_url)
+
+                # Connect using E2B SDK with explicit URL via ConnectionConfig
+                connection_config_cls = _get_connection_config_class()
+
+                envd_version_value = sandbox.envd_version
+                if envd_version_value is None:
+                    envd_version_value = sandbox_config.get("envd_version")
+                parsed_envd_version: Version | None = None
+                if isinstance(envd_version_value, str):
+                    try:
+                        parsed_envd_version = Version(envd_version_value)
+                    except Exception as e:
+                        logger.warning(f"Invalid envd_version '{envd_version_value}': {e}. Skipping version pin.")
+                        parsed_envd_version = None
+                elif isinstance(envd_version_value, Version):
+                    parsed_envd_version = envd_version_value
+                sandbox_init_kwargs: dict[str, Any] = {
+                    "sandbox_id": config_sandbox_id,
+                    "sandbox_domain": config_domain,
+                    "envd_access_token": config_envd_token,
+                    "traffic_access_token": None,
+                    "connection_config": connection_config_cls(
+                        sandbox_url=sandbox_url,
+                        extra_sandbox_headers={"X-Access-Token": config_envd_token},
+                    ),
+                }
+                if parsed_envd_version is not None:
+                    sandbox_init_kwargs["envd_version"] = parsed_envd_version
+
+                e2b_sandbox = Sandbox(**sandbox_init_kwargs)
+
+                sandbox.sandbox = e2b_sandbox
+                sandbox.sandbox_id = config_sandbox_id
+
+                logger.info(f"Connected to existing sandbox: {config_sandbox_id[:16]}... at {sandbox_url}")
+
+                self._instance = sandbox
+                return sandbox
+
+            except Exception as e:
+                logger.warning(f"Failed to connect to sandbox from config: {e}. Will try session state or create new.")
+
+        # Priority 2: Load existing sandbox state from session_manager if available
         sandbox_state = self.load_sandbox_state(session_manager, user_id, session_id)
 
         # Try to restore from saved state
@@ -1108,6 +1319,7 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
                 # Create sandbox instance from saved state
                 sandbox_kwargs = extract_dataclass_init_kwargs(E2BSandbox, sandbox_state)
                 sandbox = E2BSandbox(**sandbox_kwargs)
+                sandbox.set_api_credentials(self.api_key, self.api_url)
 
                 if not sandbox.sandbox_id:
                     raise SandboxError("Sandbox ID not found in state, failed to restore.")
@@ -1117,7 +1329,28 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
                 if self.api_url:
                     connect_opts["api_url"] = self.api_url
 
-                sandbox.sandbox = Sandbox.connect(sandbox_id=sandbox.sandbox_id, **connect_opts)
+                e2b_sandbox = Sandbox.connect(sandbox_id=sandbox.sandbox_id, **connect_opts)
+                sandbox.sandbox = e2b_sandbox
+
+                # 功能说明：reconnect 时也要 patch URL 为 HTTP
+                if self.force_http:
+                    try:
+                        envd_url = getattr(e2b_sandbox, "_SandboxBase__envd_api_url", None)
+                        if envd_url and envd_url.startswith("https://"):
+                            http_url = envd_url.replace("https://", "http://")
+                            e2b_sandbox._SandboxBase__envd_api_url = http_url  # type: ignore[attr-defined]
+                            import httpx
+
+                            connection_config = e2b_sandbox.connection_config
+                            e2b_sandbox._envd_api = httpx.Client(
+                                base_url=http_url,
+                                transport=e2b_sandbox._transport,
+                                headers=connection_config.sandbox_headers,
+                            )
+                            logger.info(f"Patched reconnected sandbox envd URL to HTTP: {http_url}")
+                    except Exception as e:
+                        logger.warning(f"Failed to patch sandbox URL to HTTP on reconnect: {e}")
+
                 logger.info(f"Successfully reconnected to E2B sandbox: {sandbox.sandbox_id}")
 
                 self._instance = sandbox
@@ -1143,9 +1376,10 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
             create_opts["envs"] = self.envs
         if self.api_url:
             create_opts["api_url"] = self.api_url
-        if self.force_http:
-            create_opts["force_http"] = True
-        create_opts["auto_pause"] = True
+        # Note: force_http is NOT passed to SDK - E2B SDK doesn't accept it
+        # HTTP patching is done after sandbox creation (see below)
+        # Disable E2B auto_pause; runtime controls lifecycle explicitly.
+        create_opts["auto_pause"] = False
 
         # Create E2B sandbox via SDK
         e2b_sandbox = Sandbox.beta_create(**create_opts)  # type: ignore
@@ -1156,9 +1390,35 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
 
         # Create our wrapper instance
         sandbox = E2BSandbox(**sandbox_kwargs)
+        sandbox.set_api_credentials(self.api_key, self.api_url)
 
         sandbox.sandbox = e2b_sandbox
         sandbox.sandbox_id = e2b_sandbox.sandbox_id
+
+        # 功能说明1：patch sandbox URL 强制使用 HTTP，避免 SSL 错误
+        # 功能说明2：K8s 内部服务不使用 SSL，需要覆盖 E2B SDK 的默认 HTTPS
+        # 功能说明3：获取 envd API URL 并确保使用 http:// 前缀
+        if self.force_http:
+            try:
+                # 获取 sandbox 内部的 envd API URL
+                envd_url = getattr(e2b_sandbox, "_SandboxBase__envd_api_url", None)
+                if envd_url and envd_url.startswith("https://"):
+                    # 替换为 HTTP
+                    http_url = envd_url.replace("https://", "http://")
+                    e2b_sandbox._SandboxBase__envd_api_url = http_url  # type: ignore[attr-defined]
+
+                    # 重新创建内部的 httpx 客户端
+                    import httpx
+
+                    connection_config = e2b_sandbox.connection_config
+                    e2b_sandbox._envd_api = httpx.Client(
+                        base_url=http_url,
+                        transport=e2b_sandbox._transport,
+                        headers=connection_config.sandbox_headers,
+                    )
+                    logger.info(f"Patched sandbox envd URL to HTTP: {http_url}")
+            except Exception as e:
+                logger.warning(f"Failed to patch sandbox URL to HTTP: {e}")
 
         logger.info(f"E2B sandbox created with ID: {sandbox.sandbox_id}")
 
@@ -1196,9 +1456,12 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
         Pause the E2B sandbox for a session.
         """
         try:
-            if self.instance and self.instance.sandbox:
-                self.instance.sandbox.beta_pause()
-                return True
+            instance = self._instance
+            if not instance or not instance.sandbox:
+                logger.warning("No E2B sandbox instance to pause; skipping pause")
+                return False
+            instance.sandbox.beta_pause()
+            return True
         except Exception as e:
             logger.error(f"Failed to pause E2B sandbox: {e}")
             return False

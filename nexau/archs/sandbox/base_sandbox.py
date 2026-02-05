@@ -31,10 +31,9 @@ from pathlib import Path
 from threading import Thread
 from typing import Any, TypeVar
 
-from asyncer import syncify
-
 from nexau.archs.main_sub.skill import Skill
 from nexau.archs.session.session_manager import SessionManager
+from nexau.core.utils import run_async_function_sync
 
 logger = logging.getLogger(__name__)
 
@@ -627,7 +626,12 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
         session_id: str,
         sandbox: BaseSandbox,
     ):
-        """Persist sandbox state."""
+        """Persist sandbox state.
+
+        功能说明1：将 sandbox 状态保存到 session manager
+        功能说明2：如果发生事件循环冲突，静默失败（非关键操作）
+        功能说明3：这避免了跨事件循环访问 asyncio 原语的问题
+        """
         if session_manager is None:
             return None
 
@@ -640,7 +644,14 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
                 sandbox_state=sandbox_state,
             )
 
-        return syncify(_persist_sandbox_state, raise_sync_error=False)()
+        try:
+            return run_async_function_sync(_persist_sandbox_state, raise_sync_error=False)
+        except RuntimeError as e:
+            # 事件循环冲突，静默失败（保存状态是非关键操作）
+            if "bound to a different event loop" in str(e) or "Event loop is closed" in str(e):
+                logger.warning(f"Event loop conflict persisting sandbox state: {e}. State not saved.")
+                return None
+            raise
 
     def load_sandbox_state(
         self,
@@ -648,7 +659,12 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
         user_id: str,
         session_id: str,
     ) -> dict[str, Any] | None:
-        """Load sandbox state."""
+        """Load sandbox state.
+
+        功能说明1：从 session manager 加载保存的 sandbox 状态
+        功能说明2：如果发生事件循环冲突，返回 None 让调用者创建新 sandbox
+        功能说明3：这避免了跨事件循环访问 asyncio 原语的问题
+        """
         if session_manager is None:
             return None
 
@@ -661,7 +677,36 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
                 return session.sandbox_state
             return None
 
-        return syncify(_load_sandbox_state, raise_sync_error=False)()
+        try:
+            return run_async_function_sync(_load_sandbox_state, raise_sync_error=False)
+        except RuntimeError as e:
+            # 事件循环冲突，返回 None 让调用者创建新 sandbox
+            if "bound to a different event loop" in str(e) or "Event loop is closed" in str(e):
+                logger.warning(f"Event loop conflict loading sandbox state: {e}. Will create new sandbox.")
+                return None
+            raise
+
+    def prepare_session_context(
+        self,
+        session_manager: SessionManager | None,
+        user_id: str,
+        session_id: str,
+        sandbox_config: dict[str, Any],
+        upload_assets: list[tuple[str, str]],
+    ):
+        """Prepare session context for lazy sandbox initialization.
+
+        功能说明1：仅保存会话上下文，不启动 sandbox
+        功能说明2：sandbox 会在首次调用 start_sync() 时延迟启动
+        功能说明3：确保 sandbox 在正确的事件循环上下文中创建
+        """
+        self._session_context = {
+            "session_manager": session_manager,
+            "user_id": user_id,
+            "session_id": session_id,
+            "sandbox_config": sandbox_config,
+            "upload_assets": upload_assets,
+        }
 
     def start_no_wait(
         self,
@@ -692,6 +737,37 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
 
         self.start_future = self._executor.submit(_inner)
         return self.start_future
+
+    def start_sync(self) -> TSandbox | None:
+        """Start sandbox synchronously in the current thread/event loop.
+
+        功能说明1：在当前线程同步启动 sandbox，避免 asyncio 事件循环问题
+        功能说明2：E2B SDK 的 httpx 客户端会在当前事件循环中创建
+        功能说明3：确保 sandbox 和使用它的代码在同一个事件循环上下文中
+        功能说明4：用于解决跨线程/事件循环访问 asyncio 原语的问题
+        """
+        if self._instance is not None:
+            return self._instance
+
+        if not self._session_context:
+            logger.warning("No session context available for sandbox start")
+            return None
+
+        logger.info("Starting sandbox synchronously in current event loop context...")
+        sandbox = self.start(
+            session_manager=self._session_context.get("session_manager"),
+            user_id=self._session_context.get("user_id", ""),
+            session_id=self._session_context.get("session_id", ""),
+            sandbox_config=self._session_context.get("sandbox_config", {}),
+        )
+
+        # Upload assets if any
+        upload_assets = self._session_context.get("upload_assets", [])
+        for src, tgt in upload_assets:
+            sandbox.upload_directory(src, tgt)
+
+        self._instance = sandbox
+        return sandbox
 
     def pause_no_wait(
         self,

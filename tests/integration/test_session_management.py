@@ -146,7 +146,7 @@ class TestMultipleBackends:
                 user_id="test_user",
                 session_id="jsonl_session",
             )
-            agent.run(message="Remember: the secret code is ABC123.")
+            agent.run(message="Remember: my test token is ABC123.")
 
             # Verify directory was created
             assert db_dir.exists()
@@ -161,7 +161,7 @@ class TestMultipleBackends:
                 user_id="test_user",
                 session_id="jsonl_session",
             )
-            response = agent2.run(message="What is the secret code?")
+            response = agent2.run(message="What is my test token?")
 
             # Should remember from persisted JSONL
             assert "ABC123" in response
