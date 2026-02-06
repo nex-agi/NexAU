@@ -147,6 +147,13 @@ class LLMConfig:
         if self.stream:
             params["stream"] = True
 
+        # For Gemini REST API specific parameters
+        if self.api_type == "gemini_rest":
+            if "thinking_budget" in self.extra_params:
+                params["thinking_budget"] = self.extra_params["thinking_budget"]
+            if "include_thoughts" in self.extra_params:
+                params["include_thoughts"] = self.extra_params["include_thoughts"]
+
         # Add extra parameters
         params.update(self.extra_params)
 

@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from typing import Any, Literal, cast
 
 import openai
+import requests
 from anthropic.types import ToolParam
 from openai import Stream
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
@@ -99,7 +100,7 @@ class LLMCaller:
         """
         runtime_client = openai_client if openai_client is not None else self.openai_client
 
-        if not runtime_client and not self.middleware_manager:
+        if not runtime_client and not self.middleware_manager and self.llm_config.api_type != "gemini_rest":
             raise RuntimeError(
                 "OpenAI client is not available. Please check your API configuration.",
             )
@@ -278,6 +279,14 @@ def call_llm_with_different_client(
     elif llm_config.api_type == "openai_chat_completion":
         return call_llm_with_openai_chat_completion(
             client,
+            kwargs,
+            middleware_manager=middleware_manager,
+            model_call_params=model_call_params,
+            llm_config=llm_config,
+            tracer=tracer,
+        )
+    elif llm_config.api_type == "gemini_rest":
+        return call_llm_with_gemini_rest(
             kwargs,
             middleware_manager=middleware_manager,
             model_call_params=model_call_params,
@@ -1541,3 +1550,210 @@ class OpenAIResponsesStreamAggregator:
             delta = str(delta)
         reasoning_builder = self._reasoning_builders.setdefault(item_id, ReasoningSummaryBuilder(item_id))
         reasoning_builder.append_summary_delta(summary_index, delta)
+
+
+def _gemini_sanitize_parameters(params: dict[str, Any]) -> dict[str, Any]:
+    """Keep only type, properties, required for Gemini (strip $schema, additionalProperties, etc.)."""
+    allowed = {"type", "properties", "required"}
+    return {k: v for k, v in params.items() if k in allowed}
+
+
+def convert_tools_to_gemini(tools: list[Any]) -> list[dict[str, Any]]:
+    """Convert OpenAI tool definitions to Gemini function declarations."""
+    gemini_tools: list[dict[str, Any]] = []
+    for tool in tools:
+        tool_dict = cast(dict[str, Any], tool)
+        if tool_dict.get("type") == "function":
+            func = cast(dict[str, Any], tool_dict.get("function", {}))
+            raw_params = func.get("parameters", {"type": "object", "properties": {}})
+            gemini_tools.append(
+                {
+                    "name": func.get("name"),
+                    "description": func.get("description", ""),
+                    "parameters": _gemini_sanitize_parameters(raw_params),
+                }
+            )
+    return gemini_tools
+
+
+def openai_to_gemini_rest_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Convert OpenAI-style messages to Gemini REST API format."""
+    gemini_contents: list[dict[str, Any]] = []
+    system_instruction: dict[str, Any] | None = None
+    # Track function names from last assistant tool_calls for filling functionResponse.name (tool messages have no name)
+    last_model_function_names: list[str] = []
+    tool_result_index = 0
+
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content", "")
+        tool_calls = msg.get("tool_calls")
+
+        if role == "system":
+            system_instruction = {"parts": [{"text": content}]}
+            continue
+
+        parts: list[dict[str, Any]] = []
+        if content:
+            parts.append({"text": content})
+
+        if role == "assistant":
+            if tool_calls:
+                tool_calls_list = cast(list[dict[str, Any]], tool_calls)
+                last_model_function_names = [str(cast(dict[str, Any], tc.get("function", {})).get("name", "")) for tc in tool_calls_list]
+                tool_result_index = 0
+                # Gemini 3 Requirement: The first functionCall in a turn needs the thought_signature
+                # Check for top-level signature or OpenAI-compatible nested signature
+                thought_sig: str | None = cast(str | None, msg.get("thought_signature"))
+                if not thought_sig:
+                    # Fallback: check first tool_call for nested extra_content.google.thought_signature
+                    first_tc: dict[str, Any] = tool_calls_list[0] if tool_calls_list else {}
+                    extra_content = cast(dict[str, Any], first_tc.get("extra_content", {}))
+                    google_content = cast(dict[str, Any], extra_content.get("google", {}))
+                    thought_sig = cast(str | None, google_content.get("thought_signature"))
+
+                for i, tc in enumerate(tool_calls_list):
+                    func = cast(dict[str, Any], tc.get("function", {}))
+                    args: dict[str, Any] | str = func.get("arguments", "{}")
+                    if isinstance(args, str):
+                        try:
+                            args = cast(dict[str, Any], json.loads(args))
+                        except json.JSONDecodeError:
+                            args = {}
+
+                    fc_part: dict[str, Any] = {"functionCall": {"name": func.get("name"), "args": args}}
+                    if i == 0 and thought_sig:
+                        fc_part["thoughtSignature"] = thought_sig
+                    parts.append(fc_part)
+            elif parts and msg.get("thought_signature"):
+                # Handle cases where thought_signature is present but no tool_calls (rare for Gemini function calling flow)
+                parts[-1]["thoughtSignature"] = msg.get("thought_signature")
+
+            gemini_contents.append({"role": "model", "parts": parts})
+
+        elif role == "user":
+            gemini_contents.append({"role": "user", "parts": parts})
+
+        elif role == "tool":
+            # Fill name from last assistant's tool_calls by order (tool messages from legacy have no name)
+            func_name: str | None = None
+            if tool_result_index < len(last_model_function_names):
+                func_name = last_model_function_names[tool_result_index] or None
+            tool_result_index += 1
+            if func_name is None:
+                func_name = msg.get("name")
+                if func_name is None:
+                    raise ValueError("Function name is required for tool result messages")
+            resp_part = {"functionResponse": {"name": func_name, "response": {"result": content}}}
+
+            if gemini_contents and gemini_contents[-1]["role"] == "user":
+                # Check if it's already a tool response block
+                if any("functionResponse" in p for p in gemini_contents[-1]["parts"]):
+                    gemini_contents[-1]["parts"].append(resp_part)
+                else:
+                    gemini_contents.append({"role": "user", "parts": [resp_part]})
+            else:
+                gemini_contents.append({"role": "user", "parts": [resp_part]})
+
+    return gemini_contents, system_instruction
+
+
+def call_llm_with_gemini_rest(
+    kwargs: dict[str, Any],
+    *,
+    middleware_manager: MiddlewareManager | None = None,
+    model_call_params: ModelCallParams | None = None,
+    llm_config: LLMConfig | None = None,
+    tracer: BaseTracer | None = None,
+) -> ModelResponse:
+    """Call Gemini API directly via REST."""
+    from nexau.core.messages import ImageBlock
+
+    # TODO: Support image input for Gemini REST API
+    if model_call_params is not None:
+        for msg in model_call_params.messages:
+            for block in msg.content:
+                if isinstance(block, ImageBlock):
+                    raise ValueError("Image input is not supported for Gemini REST API")
+    # TODO: Support stream for Gemini REST API
+    stream_requested = bool(kwargs.pop("stream", False) or getattr(llm_config, "stream", False))
+    if stream_requested:
+        raise ValueError("Stream is not supported for Gemini REST API")
+    if not llm_config:
+        raise ValueError("llm_config is required for gemini_rest call")
+
+    messages = kwargs.get("messages", [])
+    tools = kwargs.get("tools")
+
+    # Convert messages
+    contents, system_instruction = openai_to_gemini_rest_messages(messages)
+
+    # Base URL handling
+    base_url = llm_config.base_url.rstrip("/") if llm_config.base_url else ""
+    model_name = llm_config.model
+    api_key = llm_config.api_key
+
+    if not base_url or "generativelanguage.googleapis.com" in base_url:
+        if not base_url:
+            base_url = "https://generativelanguage.googleapis.com"
+        url = f"{base_url}/v1beta/models/{model_name}:generateContent?key={api_key}"
+    else:
+        url = f"{base_url}/models/{model_name}:generateContent?key={api_key}"
+
+    # Construct request body - only include non-None values
+    generation_config: dict[str, Any] = {
+        "temperature": llm_config.temperature if llm_config.temperature is not None else 0.7,
+    }
+    if llm_config.max_tokens is not None:
+        generation_config["maxOutputTokens"] = llm_config.max_tokens
+    if llm_config.top_p is not None:
+        generation_config["topP"] = llm_config.top_p
+
+    request_body: dict[str, Any] = {
+        "contents": contents,
+        "generationConfig": generation_config,
+    }
+
+    if system_instruction:
+        request_body["systemInstruction"] = system_instruction
+
+    if tools:
+        gemini_tools = convert_tools_to_gemini(tools)
+        if gemini_tools:
+            request_body["tools"] = [{"functionDeclarations": gemini_tools}]
+
+    # Handle thinking budget
+    thinking_budget = llm_config.extra_params.get("thinking_budget")
+    if thinking_budget:
+        generation_config["thinkingConfig"] = {
+            "includeThoughts": llm_config.extra_params.get("include_thoughts", True),
+            "thoughtBudgetTokens": int(thinking_budget),
+        }
+
+    # Check if tracing is active (there's a current span and we have a tracer)
+    should_trace = tracer is not None and get_current_span() is not None
+
+    def do_request() -> dict[str, Any]:
+        response = requests.post(url, json=request_body, timeout=llm_config.timeout or 60)
+        response.raise_for_status()
+        return response.json()
+
+    # Perform request
+    try:
+        if should_trace and tracer is not None:
+            trace_ctx = TraceContext(tracer, "Gemini REST generateContent", SpanType.LLM, inputs=request_body)
+            with trace_ctx:
+                response_json = do_request()
+                trace_ctx.set_outputs(_to_serializable_dict(response_json))
+        else:
+            response_json = do_request()
+
+        return ModelResponse.from_gemini_rest(response_json)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Gemini REST API call failed: {e}")
+        if e.response is not None:
+            logger.error(f"Response content: {e.response.text}")
+        raise
+    except Exception as e:
+        logger.error(f"Gemini REST API call failed: {e}")
+        raise

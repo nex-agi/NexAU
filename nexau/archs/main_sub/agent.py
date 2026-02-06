@@ -352,6 +352,8 @@ class Agent:
         llm_config = self.config.llm_config or LLMConfig()
 
         try:
+            if llm_config.api_type == "gemini_rest":
+                return None
             if llm_config.api_type == "anthropic_chat_completion":
                 client_kwargs = llm_config.to_client_kwargs()
                 return anthropic.Anthropic(**client_kwargs)

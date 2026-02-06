@@ -294,6 +294,8 @@ class ModelResponse:
     Be sure to include these items in your input to the Responses API for subsequent turns of a
     conversation if you are manually managing context.
     """
+    thought_signature: str | None = None
+    """Gemini-specific thought signature for preserving reasoning context across turns."""
     usage: JsonDict | None = None
     """Token usage information from the model response (normalized format).
 
@@ -704,6 +706,72 @@ class ModelResponse:
             )
         return "\n".join(parts).strip()
 
+    @classmethod
+    def from_gemini_rest(cls, response_json: dict[str, Any]) -> ModelResponse:
+        """Create a ModelResponse from a Gemini REST API response.
+
+        Args:
+            response_json: The JSON response from Gemini generateContent API
+        """
+        if not response_json or "candidates" not in response_json:
+            raise ValueError(f"Invalid Gemini response: {response_json}")
+
+        candidate = response_json["candidates"][0]
+        content_obj = candidate.get("content", {})
+        parts = content_obj.get("parts", [])
+
+        content_text = ""
+        reasoning_content = ""
+        thought_signature = None
+        tool_calls: list[ModelToolCall] = []
+
+        for part in parts:
+            # Handle thought process
+            if part.get("thought"):
+                reasoning_content += part.get("text", "")
+
+            # Handle thought signature (often attached to a part)
+            if "thoughtSignature" in part:
+                thought_signature = part["thoughtSignature"]
+
+            # Handle text content
+            if "text" in part and not part.get("thought"):
+                content_text += part["text"]
+
+            # Handle function calls
+            if "functionCall" in part:
+                fc = part["functionCall"]
+                # Convert to ModelToolCall format
+                tool_calls.append(
+                    ModelToolCall(
+                        call_id=None,  # Gemini doesn't always provide a call ID in the same way
+                        name=fc["name"],
+                        arguments=fc.get("args", {}),
+                        raw_arguments=json.dumps(fc.get("args", {}), ensure_ascii=False),
+                        call_type="function",
+                        raw_call=part,
+                    )
+                )
+
+        # Extract usage metadata
+        usage_meta = response_json.get("usageMetadata", {})
+        normalized_usage = {
+            "input_tokens": usage_meta.get("promptTokenCount", 0),
+            "completion_tokens": usage_meta.get("candidatesTokenCount", 0),
+            "reasoning_tokens": usage_meta.get("thoughtsTokenCount", 0),
+            "total_tokens": usage_meta.get("totalTokenCount", 0),
+        }
+
+        return cls(
+            content=content_text if content_text else None,
+            tool_calls=tool_calls,
+            role="assistant",
+            raw_message=response_json,
+            reasoning_content=reasoning_content if reasoning_content else None,
+            thought_signature=thought_signature,
+            usage=normalized_usage,
+        )
+
     def to_message_dict(self) -> dict[str, Any]:
         """Convert response into chat completion message dict."""
         message: dict[str, Any] = {"role": self.role, "content": self.content or ""}
@@ -713,6 +781,9 @@ class ModelResponse:
             message["response_items"] = self.response_items
         if self.reasoning_content:
             message["reasoning_content"] = self.reasoning_content
+        if self.thought_signature:
+            # For Gemini thought signature passthrough
+            message["thought_signature"] = self.thought_signature
         return message
 
     def to_ump_message(self) -> Message:
@@ -745,6 +816,8 @@ class ModelResponse:
         msg = Message(role=role, content=blocks)
         if self.response_items:
             msg.metadata["response_items"] = self.response_items
+        if self.thought_signature:
+            msg.metadata["thought_signature"] = self.thought_signature
         return msg
 
     def __str__(self) -> str:  # pragma: no cover - convenience

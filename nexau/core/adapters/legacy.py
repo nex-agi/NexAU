@@ -349,6 +349,8 @@ def messages_to_legacy_openai_chat(
             entry["response_items"] = msg.metadata["response_items"]
         if "reasoning" in msg.metadata:
             entry["reasoning"] = msg.metadata["reasoning"]
+        if "thought_signature" in msg.metadata:
+            entry["thought_signature"] = msg.metadata["thought_signature"]
 
         has_images = any(isinstance(b, ImageBlock) for b in msg.content)
         text_parts: list[str] = []
