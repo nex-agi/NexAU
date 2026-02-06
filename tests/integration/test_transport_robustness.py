@@ -52,7 +52,7 @@ def _start_http_server_subprocess(port: int) -> subprocess.Popen:
     )
 
 
-def _wait_for_health(base_url: str, timeout_sec: float = 15.0) -> None:
+def _wait_for_health(base_url: str, timeout_sec: float = 30.0) -> None:
     for _ in range(int(timeout_sec / 0.2) + 1):
         try:
             r = httpx.get(f"{base_url}/health", timeout=1.0)

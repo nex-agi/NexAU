@@ -545,7 +545,7 @@ def test_manager_start_creates_sandbox_and_patches_envd_url(monkeypatch: pytest.
 
     assert factory.beta_create_called
     assert factory.created_kwargs is not None
-    assert factory.created_kwargs["auto_pause"] is False
+    assert factory.created_kwargs["auto_pause"] is True
     assert sandbox.sandbox_id == "sbx-new"
     assert backend.envd_api_url == "http://envd-service"
     assert isinstance(backend.envd_api, _FakeHttpxClient)

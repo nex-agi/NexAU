@@ -787,10 +787,21 @@ class Agent:
                 # Persist context and storage to session
                 await self._persist_session_state(ctx.context)
 
-                # Pause sandbox after agent execution if persistence is enabled
-                if self.config.sandbox_config and self.config.sandbox_config.get("persist_sandbox", True):
-                    self.sandbox_manager.pause_no_wait()
+                # Handle sandbox lifecycle after agent execution
+                # Options:
+                #   - status_after_run=pause (default): Pause sandbox for later resume
+                #   - status_after_run=stop: Stop/kill sandbox
+                #   - status_after_run=none/something else: Let caller manage sandbox (for RL training scenarios)
+                if self.config.sandbox_config:
+                    if self.config.sandbox_config.get("status_after_run", "pause") == "pause":
+                        self.sandbox_manager.pause_no_wait()
+                    elif self.config.sandbox_config.get("status_after_run", "pause") == "stop":
+                        self.sandbox_manager.stop()
+                    else:
+                        # Let the caller manage sandbox lifecycle (useful for RL training)
+                        logger.info("Sandbox lifecycle managed by caller (persist_after_run=True)")
                 else:
+                    # No sandbox_config means local sandbox, call stop for consistency
                     self.sandbox_manager.stop()
 
                 logger.info(f"✅ Agent '{self.config.name}' completed execution")

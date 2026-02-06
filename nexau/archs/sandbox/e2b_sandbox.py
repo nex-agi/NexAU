@@ -199,11 +199,7 @@ class E2BSandbox(BaseSandbox):
         self._api_key = api_key
         self._api_url = api_url
 
-    def execute_bash(
-        self,
-        command: str,
-        timeout: int | None = None,
-    ) -> CommandResult:
+    def execute_bash(self, command: str, timeout: int | None = None, cwd: str | None = None) -> CommandResult:
         """
         Execute a bash command in the E2B sandbox.
 
@@ -239,7 +235,7 @@ class E2BSandbox(BaseSandbox):
                     result = self._sandbox.commands.run(
                         cmd=command,
                         timeout=int(timeout_seconds),
-                        cwd=str(self.work_dir),
+                        cwd=cwd or str(self.work_dir),
                     )
                     break
                 except RuntimeError as e:
@@ -384,16 +380,15 @@ class E2BSandbox(BaseSandbox):
 
         temp_file_path = None
         try:
-            # Create temporary Python file in work_dir
-            work_dir = str(self.work_dir) if self.work_dir else "/tmp"
+            # Create temporary Python file in /tmp (always exists)
             temp_filename = f"tmp_{uuid.uuid4().hex[:8]}.py"
-            temp_file_path = f"{work_dir}/{temp_filename}"
+            temp_file_path = f"/tmp/{temp_filename}"
 
             # Write code to temp file
             self.write_file(temp_file_path, code)
 
             # Execute the temp file
-            result = self.execute_bash(f"python3 {temp_filename}", timeout)
+            result = self.execute_bash(f"python3 {temp_filename}", timeout, cwd="/tmp/")
 
             outputs: list[dict[str, Any]] = []
             if result.stdout:
@@ -784,8 +779,9 @@ class E2BSandbox(BaseSandbox):
 
         try:
             # Use mkdir command
+            # Note: Use /home/user as cwd since the target directory may not exist yet
             cmd = f"mkdir -p {directory_path}" if parents else f"mkdir {directory_path}"
-            result = self._sandbox.commands.run(cmd=cmd, cwd=str(self.work_dir))
+            result = self._sandbox.commands.run(cmd=cmd, cwd="/home/user")
 
             if result.exit_code != 0:
                 raise SandboxFileError(f"Failed to create directory: {result.stderr}")
@@ -1379,7 +1375,10 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
         # Note: force_http is NOT passed to SDK - E2B SDK doesn't accept it
         # HTTP patching is done after sandbox creation (see below)
         # Disable E2B auto_pause; runtime controls lifecycle explicitly.
-        create_opts["auto_pause"] = False
+
+        # Disable auto_pause if pstatus_after_run is set as none (for RL training scenarios)
+        # This prevents E2B from automatically pausing the sandbox during long operations
+        create_opts["auto_pause"] = sandbox_config.get("status_after_run", "pause") == "pause"
 
         # Create E2B sandbox via SDK
         e2b_sandbox = Sandbox.beta_create(**create_opts)  # type: ignore
@@ -1421,6 +1420,13 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
                 logger.warning(f"Failed to patch sandbox URL to HTTP: {e}")
 
         logger.info(f"E2B sandbox created with ID: {sandbox.sandbox_id}")
+
+        # Ensure work_dir exists (it may not exist if user configured a custom path)
+        try:
+            sandbox.create_directory(str(sandbox.work_dir))
+            logger.debug(f"Work directory ensured: {sandbox.work_dir}")
+        except Exception as e:
+            logger.warning(f"Failed to create work directory {sandbox.work_dir}: {e}")
 
         # Persist sandbox state
         self.persist_sandbox_state(session_manager, user_id, session_id, sandbox)
