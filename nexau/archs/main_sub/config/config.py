@@ -29,7 +29,7 @@ from pydantic import ConfigDict, Field, PrivateAttr, field_validator, model_vali
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.prompt_builder import PromptBuilder
-from nexau.archs.main_sub.skill import Skill
+from nexau.archs.main_sub.skill import Skill, build_load_skill_tool
 from nexau.archs.main_sub.tool_call_modes import normalize_tool_call_mode
 from nexau.archs.main_sub.utils import import_from_string
 from nexau.archs.tool import Tool
@@ -237,6 +237,11 @@ class AgentConfig(
         # Ensure name is set
         if not self.name:
             self.name = f"agent_{id(self)}"
+
+        # Ensure load_skill tool is ingested into tools
+        load_skill_tool = build_load_skill_tool(self.tools, self.skills)
+        if load_skill_tool:
+            self.tools.append(load_skill_tool)
 
         # Resolve tracer composition
         if len(self.tracers) == 1:

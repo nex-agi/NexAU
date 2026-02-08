@@ -300,8 +300,9 @@ class TestAgentConfigIntegration:
         # Verify skills are registered
         assert len(config.skills) == 2
 
-        # Verify tools include skill_tool, tool_skill, and regular_tool
-        assert len(config.tools) == 2
+        # Verify tools include LoadSkill, tool_skill, and regular_tool
+        assert len(config.tools) == 3
         tool_names = [t.name for t in config.tools]
+        assert "LoadSkill" in tool_names
         assert "code_skill" in tool_names
         assert "calculator" in tool_names

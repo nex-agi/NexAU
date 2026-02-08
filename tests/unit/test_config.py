@@ -599,3 +599,35 @@ class TestExecutionConfig:
         assert exec_cfg.max_running_subagents == 1
         assert exec_cfg.retry_attempts == 2
         assert exec_cfg.timeout == 3
+
+
+class TestSkillToolIngestion:
+    """Tests for auto-ingestion of the LoadSkill tool."""
+
+    def test_load_skill_tool_ingested_when_agent_config_contains_skills(self, temp_dir: str) -> None:
+        skill_folder = Path(temp_dir) / "skills" / "my_skill"
+        skill_folder.mkdir(parents=True)
+        skill_folder.joinpath("SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: My test skill\n---\n\nDetails.\n",
+        )
+
+        config_path = Path(temp_dir) / "agent.yaml"
+        config_path.write_text(
+            textwrap.dedent(
+                """
+                type: agent
+                name: skill_agent
+                llm_config:
+                  model: gpt-4o-mini
+                tools: []
+                skills:
+                  - ./skills/my_skill
+                """,
+            ).lstrip(),
+        )
+
+        with patch("nexau.archs.main_sub.config.config.PromptBuilder", return_value=StubPromptBuilder()):
+            cfg = AgentConfig.from_yaml(config_path)
+
+        assert [s.name for s in cfg.skills] == ["my-skill"]
+        assert any(t.name == "LoadSkill" for t in cfg.tools)
