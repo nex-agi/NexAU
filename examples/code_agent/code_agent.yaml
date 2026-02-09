@@ -14,6 +14,9 @@ llm_config: # Support environment variable replacement in YAML config
   stream: false
   max_tokens: ${variables.max_tokens}
   api_type: openai_chat_completion # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
+sandbox_config:
+  type: e2b
+  status_after_run: none
 tools: # Tool definition and implementation (binding) are decoupled
   - name: web_search
     yaml_path: ./tools/WebSearch.tool.yaml
@@ -51,6 +54,9 @@ tools: # Tool definition and implementation (binding) are decoupled
   - name: run_code
     yaml_path: ./tools/RunCode.tool.yaml
     binding: nexau.archs.tool.builtin.run_code_tool:run_code_tool
+  - name: background_task
+    yaml_path: ./tools/BackgroundTask.tool.yaml
+    binding: nexau.archs.tool.builtin.background_task_tool:background_task_tool
 skills: # Skills are used to hint the agent to solve specific tasks
   - ./skills/template-skill
   - ./skills/theme-factory

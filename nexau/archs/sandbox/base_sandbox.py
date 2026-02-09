@@ -80,6 +80,7 @@ class CommandResult:
     truncated: bool = False
     original_stdout_length: int | None = None
     original_stderr_length: int | None = None
+    background_pid: int | None = None
 
 
 @dataclass
@@ -178,6 +179,11 @@ class BaseSandbox(ABC):
 
     sandbox_id: str | None = field(default=None)
     _work_dir: str = field(default_factory=os.getcwd)
+    _background_tasks: dict[int, Any] = field(
+        default_factory=lambda: {},  # noqa: C408
+        repr=False,
+        init=False,
+    )
 
     @property
     def work_dir(self):
@@ -193,6 +199,7 @@ class BaseSandbox(ABC):
         cwd: str | None = None,
         user: str | None = None,
         envs: dict[str, str] | None = None,
+        background: bool = False,
     ) -> CommandResult:
         """
         Execute a bash command in the sandbox.
@@ -203,6 +210,7 @@ class BaseSandbox(ABC):
             cwd: Optional working directory
             user: Optional user to run the command as (not available in LocalSandbox)
             envs: Optional environment variables
+            background: Optional flag to run the command in the background
 
         Returns:
             CommandResult containing execution results
@@ -211,6 +219,43 @@ class BaseSandbox(ABC):
             SandboxError: If command execution fails
         """
         pass
+
+    # Background task management methods
+
+    @abstractmethod
+    def get_background_task_status(self, pid: int) -> CommandResult:
+        """
+        Get the status and output of a background task.
+
+        Args:
+            pid: The process ID of the background task
+
+        Returns:
+            CommandResult with current status and accumulated output
+        """
+        pass
+
+    @abstractmethod
+    def kill_background_task(self, pid: int) -> CommandResult:
+        """
+        Kill a background task.
+
+        Args:
+            pid: The process ID of the background task
+
+        Returns:
+            CommandResult with the kill operation result
+        """
+        pass
+
+    def list_background_tasks(self) -> dict[int, Any]:
+        """
+        Return the dict of all tracked background tasks.
+
+        Returns:
+            dict mapping pid -> task info
+        """
+        return self._background_tasks
 
     # Code execution methods
 
@@ -680,7 +725,7 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
         if session_manager is None:
             return None
 
-        async def _load_sandbox_state():
+        async def _load_sandbox_state() -> dict[str, Any] | None:
             session = await session_manager.get_session(
                 user_id=user_id,
                 session_id=session_id,

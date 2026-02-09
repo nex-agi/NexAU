@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .background_task_tool import background_task_tool
 from .bash_tool import bash_tool
 from .file_tools.file_edit_tool import file_edit_tool
 from .file_tools.file_read_tool import file_read_tool
@@ -33,6 +34,7 @@ from .todo_write import todo_write
 from .web_tool import web_read, web_search
 
 __all__ = [
+    "background_task_tool",
     "bash_tool",
     "file_edit_tool",
     "file_read_tool",

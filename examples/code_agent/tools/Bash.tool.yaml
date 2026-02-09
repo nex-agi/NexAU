@@ -184,6 +184,14 @@ input_schema:
     timeout:
       type: number
       description: Optional timeout in milliseconds (max 6000000)
+    background:
+      type: boolean
+      description: >-
+        If true, run the command in the background and return immediately with a
+        pid. Use the BackgroundTask tool to check status, get output, or kill
+        background tasks. Useful for long-running commands like servers, builds,
+        or watch processes.
+      default: false
     description:
       type: string
       description: |2-

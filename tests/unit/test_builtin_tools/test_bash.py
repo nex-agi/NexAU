@@ -28,8 +28,9 @@ from nexau.archs.tool.builtin.bash_tool import bash_tool
 
 @pytest.fixture
 def agent_state():
+    sandbox = LocalSandbox()
     agent_state = Mock()
-    agent_state.get_sandbox = lambda: LocalSandbox()
+    agent_state.get_sandbox = lambda: sandbox
     return agent_state
 
 
@@ -138,6 +139,51 @@ class TestBashTool:
         assert result["status"] == "error"
         assert result["stderr"]
         assert "No such file or directory" in result["stderr"]
+
+
+class TestBashToolBackground:
+    """Test cases for bash tool background execution."""
+
+    def test_bash_tool_background_returns_pid(self, agent_state):
+        """Test background execution returns a pid."""
+        result = bash_tool("sleep 10", background=True, agent_state=agent_state)
+
+        assert result["status"] == "success"
+        assert "background_pid" in result
+        assert result["background_pid"] is not None
+        assert result["background_pid"] > 0
+
+        # Cleanup
+        sandbox = agent_state.get_sandbox()
+        sandbox.kill_background_task(result["background_pid"])
+
+    def test_bash_tool_background_task_tracked_in_sandbox(self, agent_state):
+        """Test background task is tracked in sandbox._background_tasks."""
+        result = bash_tool("sleep 10", background=True, agent_state=agent_state)
+
+        assert result["status"] == "success"
+        pid = result["background_pid"]
+
+        # Verify task is tracked in sandbox
+        sandbox = agent_state.get_sandbox()
+        bg_tasks = sandbox.list_background_tasks()
+        assert pid in bg_tasks
+        assert bg_tasks[pid]["command"] == "sleep 10"
+
+        # Cleanup
+        sandbox.kill_background_task(pid)
+
+    def test_bash_tool_background_empty_command(self, agent_state):
+        """Test background with empty command still fails."""
+        result = bash_tool("", background=True, agent_state=agent_state)
+        assert result["status"] == "error"
+        assert "Command cannot be empty" in result["error"]
+
+    def test_bash_tool_background_dangerous_command(self, agent_state):
+        """Test background with dangerous command still blocked."""
+        result = bash_tool("rm -rf /", background=True, agent_state=agent_state)
+        assert result["status"] == "error"
+        assert "dangerous" in result["error"].lower()
 
 
 class TestBashToolIntegration:

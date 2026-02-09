@@ -384,6 +384,92 @@ class TestE2BFileTransfer:
         assert (dest_dir / "subdir" / "file3.txt").exists()
 
 
+class TestE2BBackgroundExecution:
+    def test_execute_bash_background(self, e2b_sandbox):
+        """Test starting a background task returns immediately with a pid."""
+        result = e2b_sandbox.execute_bash("sleep 10", background=True)
+        assert result.status == SandboxStatus.SUCCESS
+        assert result.background_pid is not None
+        assert result.background_pid > 0
+        assert "pid" in result.stdout.lower()
+        # Cleanup
+        e2b_sandbox.kill_background_task(result.background_pid)
+
+    def test_background_task_status_running(self, e2b_sandbox):
+        """Test checking status of a still-running background task."""
+        result = e2b_sandbox.execute_bash("sleep 10", background=True)
+        pid = result.background_pid
+        assert pid is not None
+
+        status = e2b_sandbox.get_background_task_status(pid)
+        assert status.status == SandboxStatus.RUNNING
+        assert status.background_pid == pid
+        assert status.exit_code == -1
+        # Cleanup
+        e2b_sandbox.kill_background_task(pid)
+
+    def test_background_task_status_finished(self, e2b_sandbox):
+        """Test checking status of a finished background task."""
+        result = e2b_sandbox.execute_bash("echo done", background=True)
+        pid = result.background_pid
+        assert pid is not None
+
+        import time
+
+        time.sleep(2)  # Wait for the short command to finish
+
+        status = e2b_sandbox.get_background_task_status(pid)
+        assert status.status == SandboxStatus.SUCCESS
+        assert status.exit_code == 0
+        assert "done" in status.stdout
+        assert status.background_pid == pid
+
+    def test_background_task_status_not_found(self, e2b_sandbox):
+        """Test checking status of a non-existent background task."""
+        status = e2b_sandbox.get_background_task_status(99999)
+        assert status.status == SandboxStatus.ERROR
+        assert "not found" in status.error.lower()
+
+    def test_kill_background_task(self, e2b_sandbox):
+        """Test killing a running background task."""
+        result = e2b_sandbox.execute_bash("sleep 60", background=True)
+        pid = result.background_pid
+        assert pid is not None
+
+        kill_result = e2b_sandbox.kill_background_task(pid)
+        assert kill_result.status == SandboxStatus.SUCCESS
+        assert kill_result.background_pid == pid
+
+        # Task should no longer be found
+        status = e2b_sandbox.get_background_task_status(pid)
+        assert status.status == SandboxStatus.ERROR
+
+    def test_kill_background_task_not_found(self, e2b_sandbox):
+        """Test killing a non-existent background task."""
+        result = e2b_sandbox.kill_background_task(99999)
+        assert result.status == SandboxStatus.ERROR
+        assert "not found" in result.error.lower()
+
+    def test_multiple_background_tasks(self, e2b_sandbox):
+        """Test running multiple background tasks simultaneously."""
+        result1 = e2b_sandbox.execute_bash("sleep 10", background=True)
+        result2 = e2b_sandbox.execute_bash("sleep 10", background=True)
+        pid1 = result1.background_pid
+        pid2 = result2.background_pid
+        assert pid1 is not None
+        assert pid2 is not None
+        assert pid1 != pid2
+
+        status1 = e2b_sandbox.get_background_task_status(pid1)
+        status2 = e2b_sandbox.get_background_task_status(pid2)
+        assert status1.status == SandboxStatus.RUNNING
+        assert status2.status == SandboxStatus.RUNNING
+
+        # Cleanup
+        e2b_sandbox.kill_background_task(pid1)
+        e2b_sandbox.kill_background_task(pid2)
+
+
 class TestE2BEdgeCases:
     def test_empty_file_operations(self, e2b_sandbox):
         """Test operations with empty files."""

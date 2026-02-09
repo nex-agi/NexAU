@@ -89,6 +89,20 @@ class TestCommandResult:
         assert result.original_stdout_length == 50000
         assert result.original_stderr_length == 40000
 
+    def test_command_result_background_pid_default(self):
+        result = CommandResult(status=SandboxStatus.SUCCESS)
+        assert result.background_pid is None
+
+    def test_command_result_background_pid(self):
+        result = CommandResult(
+            status=SandboxStatus.SUCCESS,
+            stdout="Background task started (pid: 12345)",
+            exit_code=0,
+            duration_ms=10,
+            background_pid=12345,
+        )
+        assert result.background_pid == 12345
+
 
 class TestCodeExecutionResult:
     def test_code_execution_result_success(self):
@@ -269,8 +283,15 @@ class DummySandbox(BaseSandbox):
         cwd: str | None = None,
         user: str | None = None,
         envs: dict[str, str] | None = None,
+        background: bool = False,
     ) -> CommandResult:
         return CommandResult(status=SandboxStatus.SUCCESS)
+
+    def get_background_task_status(self, pid: int) -> CommandResult:
+        return CommandResult(status=SandboxStatus.ERROR, error=f"Not found: pid={pid}")
+
+    def kill_background_task(self, pid: int) -> CommandResult:
+        return CommandResult(status=SandboxStatus.ERROR, error=f"Not found: pid={pid}")
 
     def execute_code(
         self,

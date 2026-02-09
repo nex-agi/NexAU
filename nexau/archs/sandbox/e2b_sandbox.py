@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -65,6 +66,13 @@ class _CommandResultProtocol(Protocol):
     exit_code: int
 
 
+class _CommandHandleProtocol(Protocol):
+    @property
+    def pid(self) -> int: ...
+    def wait(self) -> _CommandResultProtocol: ...
+    def kill(self) -> bool: ...
+
+
 class _SandboxCommandsProtocol(Protocol):
     def run(
         self,
@@ -73,6 +81,7 @@ class _SandboxCommandsProtocol(Protocol):
         cwd: str | None = None,
         user: str | None = None,
         envs: dict[str, str] | None = None,
+        background: bool | None = None,
     ) -> _CommandResultProtocol: ...
 
 
@@ -209,6 +218,7 @@ class E2BSandbox(BaseSandbox):
         cwd: str | None = None,
         user: str | None = None,
         envs: dict[str, str] | None = None,
+        background: bool = False,
     ) -> CommandResult:
         """
         Execute a bash command in the E2B sandbox.
@@ -219,6 +229,7 @@ class E2BSandbox(BaseSandbox):
             cwd: Optional working directory
             user: Optional user to run the command as
             envs: Optional environment variables
+            background: Optional flag to run the command in the background
 
         Returns:
             CommandResult containing execution results
@@ -241,7 +252,73 @@ class E2BSandbox(BaseSandbox):
         max_output_size = 30000  # Default: 30000 characters
 
         try:
-            # Execute command directly (not in background)
+            if background:
+                # Background mode: use E2B SDK's background=True to get a CommandHandle
+                handle = self._sandbox.commands.run(
+                    cmd=command,
+                    background=True,
+                    timeout=int(timeout_seconds),
+                    cwd=cwd or str(self.work_dir),
+                    user=user,
+                    envs=envs,
+                )
+                cmd_handle = cast("_CommandHandleProtocol", handle)
+                bg_pid: int = cmd_handle.pid
+
+                # E2B CommandHandle requires iterating events to populate _result.
+                # Start a daemon thread to consume events in the background.
+                task_info: dict[str, Any] = {
+                    "handle": handle,
+                    "command": command,
+                    "start_time": start_time,
+                    "finished": False,
+                    "exit_code": -1,
+                    "stdout": "",
+                    "stderr": "",
+                    "error": None,
+                }
+
+                def _consume_events(h: Any, info: dict[str, Any]) -> None:
+                    try:
+                        for stdout_chunk, stderr_chunk, _pty in h:
+                            if stdout_chunk is not None:
+                                info["stdout"] += stdout_chunk
+                            if stderr_chunk is not None:
+                                info["stderr"] += stderr_chunk
+                    except StopIteration:
+                        pass
+                    except Exception as exc:
+                        info["error"] = str(exc)
+                    finally:
+                        # After iteration ends, _result should be populated
+                        if h._result is not None:
+                            info["exit_code"] = h._result.exit_code
+                            info["stdout"] = h._result.stdout or info["stdout"]
+                            info["stderr"] = h._result.stderr or info["stderr"]
+                            if h._result.exit_code != 0:
+                                info["error"] = info.get("error") or f"Command failed with exit code {h._result.exit_code}"
+                        info["finished"] = True
+
+                consumer_thread = threading.Thread(
+                    target=_consume_events,
+                    args=(handle, task_info),
+                    daemon=True,
+                )
+                consumer_thread.start()
+                task_info["thread"] = consumer_thread
+
+                self._background_tasks[bg_pid] = task_info
+                duration_ms = int((time.time() - start_time) * 1000)
+                return CommandResult(
+                    status=SandboxStatus.SUCCESS,
+                    stdout=f"Background task started (pid: {bg_pid})",
+                    stderr="",
+                    exit_code=0,
+                    duration_ms=duration_ms,
+                    background_pid=bg_pid,
+                )
+
+            # Foreground mode: execute command directly
             # E2B SDK will raise exception on non-zero exit code
             # 功能说明1：E2B SDK 可能有事件循环问题，添加重试逻辑
             # 功能说明2：如果遇到 "Event loop is closed"，重新连接后重试
@@ -352,6 +429,100 @@ class E2BSandbox(BaseSandbox):
                 duration_ms=duration_ms,
                 error=f"Command execution error: {str(e)[:200]}",
                 truncated=False,
+            )
+
+    def get_background_task_status(self, pid: int) -> CommandResult:
+        """
+        Get the status and output of a background task.
+
+        The consumer thread (started in execute_bash) continuously reads events
+        from the E2B CommandHandle and populates task_info["stdout"], ["stderr"],
+        ["finished"], ["exit_code"], and ["error"].
+
+        Args:
+            pid: The process ID of the background task
+
+        Returns:
+            CommandResult with current status and accumulated output
+        """
+        if pid not in self._background_tasks:
+            return CommandResult(
+                status=SandboxStatus.ERROR,
+                stderr=f"Background task not found: pid={pid}",
+                exit_code=-1,
+                error=f"Background task not found: pid={pid}",
+            )
+
+        task_info = self._background_tasks[pid]
+        max_output_size = 30000
+        duration_ms = int((time.time() - task_info["start_time"]) * 1000)
+
+        stdout = task_info.get("stdout", "") or ""
+        stderr = task_info.get("stderr", "") or ""
+
+        if task_info["finished"]:
+            exit_code = task_info["exit_code"]
+            return CommandResult(
+                status=SandboxStatus.SUCCESS if exit_code == 0 else SandboxStatus.ERROR,
+                stdout=stdout[:max_output_size],
+                stderr=stderr[:max_output_size],
+                exit_code=exit_code,
+                duration_ms=duration_ms,
+                error=task_info.get("error"),
+                truncated=len(stdout) > max_output_size or len(stderr) > max_output_size,
+                background_pid=pid,
+            )
+
+        # Task is still running, return accumulated output so far
+        return CommandResult(
+            status=SandboxStatus.RUNNING,
+            stdout=stdout[:max_output_size],
+            stderr=stderr[:max_output_size],
+            exit_code=-1,
+            duration_ms=duration_ms,
+            truncated=len(stdout) > max_output_size or len(stderr) > max_output_size,
+            background_pid=pid,
+        )
+
+    def kill_background_task(self, pid: int) -> CommandResult:
+        """
+        Kill a background task.
+
+        Args:
+            pid: The process ID of the background task
+
+        Returns:
+            CommandResult with the kill operation result
+        """
+        if pid not in self._background_tasks:
+            return CommandResult(
+                status=SandboxStatus.ERROR,
+                stderr=f"Background task not found: pid={pid}",
+                exit_code=-1,
+                error=f"Background task not found: pid={pid}",
+            )
+
+        task_info = self._background_tasks[pid]
+        handle = task_info["handle"]
+
+        try:
+            killed = handle.kill()  # type: ignore[union-attr]
+            duration_ms = int((time.time() - task_info["start_time"]) * 1000)
+            del self._background_tasks[pid]
+            return CommandResult(
+                status=SandboxStatus.SUCCESS if killed else SandboxStatus.ERROR,
+                stdout=f"Background task (pid={pid}) killed successfully" if killed else f"Failed to kill task (pid={pid})",
+                exit_code=0 if killed else -1,
+                duration_ms=duration_ms,
+                background_pid=pid,
+            )
+        except Exception as e:
+            return CommandResult(
+                status=SandboxStatus.ERROR,
+                stderr=str(e),
+                exit_code=-1,
+                error=f"Failed to kill background task: {str(e)[:200]}",
+                background_pid=pid,
             )
 
     def execute_code(

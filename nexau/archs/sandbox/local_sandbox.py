@@ -95,6 +95,7 @@ class LocalSandbox(BaseSandbox):
         cwd: str | None = None,
         user: str | None = None,
         envs: dict[str, str] | None = None,
+        background: bool = False,
     ) -> CommandResult:
         """
         Execute a bash command in the sandbox.
@@ -105,6 +106,7 @@ class LocalSandbox(BaseSandbox):
             cwd: Optional working directory
             user: Optional user to run the command as (not available in LocalSandbox)
             envs: Optional environment variables
+            background: Optional flag to run the command in the background
 
         Returns:
             CommandResult containing execution results
@@ -122,6 +124,34 @@ class LocalSandbox(BaseSandbox):
         max_output_size = 30000  # Default: 30000 characters
 
         try:
+            if background:
+                # Background mode: start process without waiting
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    cwd=cwd or str(work_dir),
+                    env=envs,
+                )
+                bg_pid = process.pid
+                self._background_tasks[bg_pid] = {
+                    "process": process,
+                    "command": command,
+                    "start_time": start_time,
+                }
+                duration_ms = int((time.time() - start_time) * 1000)
+                return CommandResult(
+                    status=SandboxStatus.SUCCESS,
+                    stdout=f"Background task started (pid: {bg_pid})",
+                    stderr="",
+                    exit_code=0,
+                    duration_ms=duration_ms,
+                    background_pid=bg_pid,
+                )
+
+            # Foreground mode
             process = subprocess.Popen(
                 command,
                 shell=True,
@@ -180,6 +210,99 @@ class LocalSandbox(BaseSandbox):
                 duration_ms=duration_ms,
                 error=f"Execution failed: {str(e)}",
                 truncated=False,
+            )
+
+    def get_background_task_status(self, pid: int) -> CommandResult:
+        """
+        Get the status and output of a background task.
+
+        Args:
+            pid: The process ID of the background task
+
+        Returns:
+            CommandResult with current status and accumulated output
+        """
+        if pid not in self._background_tasks:
+            return CommandResult(
+                status=SandboxStatus.ERROR,
+                stderr=f"Background task not found: pid={pid}",
+                exit_code=-1,
+                error=f"Background task not found: pid={pid}",
+            )
+
+        task_info = self._background_tasks[pid]
+        process: subprocess.Popen[str] = task_info["process"]
+        max_output_size = 30000
+
+        poll_result = process.poll()
+        duration_ms = int((time.time() - task_info["start_time"]) * 1000)
+
+        if poll_result is not None:
+            # Process has finished, read remaining output
+            stdout, stderr = process.communicate()
+            stdout = stdout or ""
+            stderr = stderr or ""
+            return CommandResult(
+                status=SandboxStatus.SUCCESS if poll_result == 0 else SandboxStatus.ERROR,
+                stdout=stdout[:max_output_size],
+                stderr=stderr[:max_output_size],
+                exit_code=poll_result,
+                duration_ms=duration_ms,
+                error=None if poll_result == 0 else f"Command failed with exit code {poll_result}",
+                truncated=len(stdout) > max_output_size or len(stderr) > max_output_size,
+                background_pid=pid,
+            )
+
+        # Process is still running
+        return CommandResult(
+            status=SandboxStatus.RUNNING,
+            stdout="",
+            stderr="",
+            exit_code=-1,
+            duration_ms=duration_ms,
+            background_pid=pid,
+        )
+
+    def kill_background_task(self, pid: int) -> CommandResult:
+        """
+        Kill a background task.
+
+        Args:
+            pid: The process ID of the background task
+
+        Returns:
+            CommandResult with the kill operation result
+        """
+        if pid not in self._background_tasks:
+            return CommandResult(
+                status=SandboxStatus.ERROR,
+                stderr=f"Background task not found: pid={pid}",
+                exit_code=-1,
+                error=f"Background task not found: pid={pid}",
+            )
+
+        task_info = self._background_tasks[pid]
+        process: subprocess.Popen[str] = task_info["process"]
+
+        try:
+            process.kill()
+            process.wait(timeout=5)
+            duration_ms = int((time.time() - task_info["start_time"]) * 1000)
+            del self._background_tasks[pid]
+            return CommandResult(
+                status=SandboxStatus.SUCCESS,
+                stdout=f"Background task (pid={pid}) killed successfully",
+                exit_code=0,
+                duration_ms=duration_ms,
+                background_pid=pid,
+            )
+        except Exception as e:
+            return CommandResult(
+                status=SandboxStatus.ERROR,
+                stderr=str(e),
+                exit_code=-1,
+                error=f"Failed to kill background task: {str(e)[:200]}",
+                background_pid=pid,
             )
 
     def execute_code(

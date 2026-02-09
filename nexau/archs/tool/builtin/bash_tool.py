@@ -48,12 +48,14 @@ class BashResult(TypedDict):
     stderr_original_length: NotRequired[int]
     error: NotRequired[str]
     error_type: NotRequired[str]
+    background_pid: NotRequired[int | None]
 
 
 def bash_tool(
     command: str,
     timeout: int | None = None,
     description: str | None = None,
+    background: bool = False,
     agent_state: AgentState | None = None,
 ) -> BashResult:
     """
@@ -63,6 +65,8 @@ def bash_tool(
         command: The bash command to execute (required)
         timeout: Optional timeout in milliseconds (max 6000000ms / 100 minutes)
         description: Clear, concise description of what this command does in 5-10 words
+        background: If True, run the command in the background and return immediately with a pid.
+            Use the background_task_tool to check status and get output of background tasks.
         agent_state: AgentState containing agent context and global storage
 
     Returns:
@@ -125,9 +129,27 @@ def bash_tool(
 
     try:
         # Execute command through sandbox
-        cmd_result = sandbox.execute_bash(command, timeout)
+        cmd_result = sandbox.execute_bash(command, timeout, background=background)
 
         duration_ms = cmd_result.duration_ms
+
+        # If background mode, return immediately with pid
+        if background and cmd_result.background_pid is not None:
+            bg_pid = cmd_result.background_pid
+            logger.info(
+                f"Background task started: '{command}' (pid={bg_pid}), "
+                f"sandbox={id(sandbox)}, tasks={list(sandbox.list_background_tasks().keys())}"
+            )
+            return {
+                "status": "success",
+                "command": command,
+                "exit_code": 0,
+                "duration_ms": duration_ms,
+                "working_directory": str(sandbox.work_dir),
+                "description": description or "",
+                "stdout": cmd_result.stdout,
+                "background_pid": bg_pid,
+            }
 
         # Determine status
         status: Literal["success", "error", "timeout"]
