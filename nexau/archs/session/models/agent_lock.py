@@ -28,6 +28,11 @@ class AgentLockModel(SQLModel, table=True):
     - Same agent_id: serialized execution
     - Different agent_id: concurrent execution (supports sub-agents)
 
+    Expiration-based locking:
+    - Lock is valid while expires_at_ns > current time
+    - Heartbeat renews lock by extending expires_at_ns
+    - No background cleanup needed - expired locks are ignored on query
+
     Attributes:
         session_id: Session identifier (primary key)
         agent_id: Agent identifier (primary key)
@@ -35,7 +40,7 @@ class AgentLockModel(SQLModel, table=True):
         run_id: Run identifier (metadata, optional)
         holder_id: Unique identifier for this lock acquisition (e.g., "12345:a1b2c3d4")
         acquired_at_ns: Nanosecond timestamp when lock was acquired
-        last_heartbeat_ns: Nanosecond timestamp of last heartbeat update
+        expires_at_ns: Nanosecond timestamp when lock expires (renewed by heartbeat)
     """
 
     __tablename__ = "agent_locks"  # type: ignore[assignment]
@@ -46,4 +51,4 @@ class AgentLockModel(SQLModel, table=True):
     run_id: str | None = Field(default=None)
     holder_id: str
     acquired_at_ns: int = Field(default_factory=time.time_ns)
-    last_heartbeat_ns: int = Field(default_factory=time.time_ns)
+    expires_at_ns: int = Field(default_factory=time.time_ns)  # Replaces last_heartbeat_ns

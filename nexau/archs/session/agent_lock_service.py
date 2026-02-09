@@ -15,7 +15,13 @@
 """Agent lock service with automatic heartbeat renewal.
 
 This module provides AgentLockService which uses DatabaseEngine to store locks.
-It supports automatic heartbeat renewal and short TTL for fast recovery.
+It supports automatic heartbeat renewal using expiration-based locking.
+
+Design principles:
+- Expiration-based: Lock has expires_at_ns, valid while expires_at_ns > now
+- Run-level heartbeat: Heartbeat task runs only during lock acquisition
+- No global cleanup: Expired locks are filtered out on query, not deleted periodically
+- Fast release: Lock is deleted when run completes
 """
 
 from __future__ import annotations
@@ -43,9 +49,9 @@ class AgentLockService:
 
     Features:
     - Uses DatabaseEngine for storage (works with any engine)
-    - Automatic heartbeat every heartbeat_interval seconds
-    - Lock expires after lock_ttl seconds without heartbeat
-    - Background cleanup task removes expired locks
+    - Expiration-based locking: lock valid while expires_at_ns > now
+    - Automatic heartbeat extends expiration during run
+    - No background cleanup task - expired locks ignored on query
     - No waiting: fails immediately if agent is busy
 
     Example:
@@ -54,7 +60,7 @@ class AgentLockService:
         >>> lock_service = AgentLockService(engine=engine)
         >>> async with lock_service.acquire("session1", "agent1"):
         ...     # Only one execution per (session_id, agent_id) at a time
-        ...     # Lock is automatically renewed every 10s
+        ...     # Lock expiration is automatically extended every heartbeat_interval
         ...     await long_running_task()
     """
 
@@ -82,8 +88,6 @@ class AgentLockService:
         self._engine = engine
         self._lock_ttl = lock_ttl
         self._heartbeat_interval = heartbeat_interval
-        self._cleanup_task: asyncio.Task[None] | None = None
-        self._cleanup_lock = asyncio.Lock()
         self._initialized = False
 
     async def _ensure_initialized(self):
@@ -102,42 +106,9 @@ class AgentLockService:
         """
         return f"{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
-    async def _start_cleanup_task(self):
-        """Start background cleanup task if not running."""
-        async with self._cleanup_lock:
-            if self._cleanup_task is None or self._cleanup_task.done():
-                logger.debug("Starting background cleanup task")
-                self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-
-    async def _cleanup_loop(self):
-        """Background task to clean up expired locks."""
-        try:
-            while True:
-                await asyncio.sleep(self._heartbeat_interval)
-                await self.cleanup_expired()
-        except asyncio.CancelledError:
-            pass
-
-    async def cleanup_expired(self) -> int:
-        """Clean up expired locks.
-
-        Returns:
-            Number of locks cleaned up
-        """
-        await self._ensure_initialized()
-
-        now = time.time_ns()
-        stale_threshold = now - int(self._lock_ttl * 1_000_000_000)
-
-        count = await self._engine.delete(
-            AgentLockModel,
-            filters=ComparisonFilter.lt("last_heartbeat_ns", stale_threshold),
-        )
-
-        if count > 0:
-            logger.warning(f"Cleaned up {count} expired lock(s)")
-
-        return count
+    def _calculate_expires_at_ns(self) -> int:
+        """Calculate expiration timestamp (now + TTL)."""
+        return time.time_ns() + int(self._lock_ttl * 1_000_000_000)
 
     async def _heartbeat_loop(
         self,
@@ -145,13 +116,18 @@ class AgentLockService:
         agent_id: str,
         holder_id: str,
     ):
-        """Send periodic heartbeats to keep lock alive."""
+        """Send periodic heartbeats to extend lock expiration.
+
+        This runs only during the lock acquisition context, not as a global task.
+        Each heartbeat extends expires_at_ns by lock_ttl.
+        """
         logger.debug(f"Starting heartbeat loop for session={session_id}, agent={agent_id}, holder={holder_id}")
         try:
             while True:
                 await asyncio.sleep(self._heartbeat_interval)
 
-                # Find lock
+                # Find and update lock in one operation
+                # We need to verify we still hold the lock before extending
                 lock = await self._engine.find_first(
                     AgentLockModel,
                     filters=AndFilter(
@@ -168,14 +144,44 @@ class AgentLockService:
                     logger.warning(f"Heartbeat stopped: lock not found for session={session_id}, agent={agent_id}, holder={holder_id}")
                     break
 
-                # Update heartbeat
-                lock.last_heartbeat_ns = time.time_ns()
+                # Extend expiration
+                lock.expires_at_ns = self._calculate_expires_at_ns()
                 await self._engine.update(lock)
-                logger.debug(f"Heartbeat sent for session={session_id}, agent={agent_id}, holder={holder_id}")
+                logger.debug(f"Heartbeat: extended lock expiration for session={session_id}, agent={agent_id}, holder={holder_id}")
 
         except asyncio.CancelledError:
             logger.debug(f"Heartbeat loop cancelled for session={session_id}, agent={agent_id}, holder={holder_id}")
-            pass
+
+    async def _find_valid_lock(
+        self,
+        session_id: str,
+        agent_id: str,
+    ) -> AgentLockModel | None:
+        """Find a valid (non-expired) lock for the given session and agent.
+
+        Returns:
+            Lock if exists and not expired, None otherwise
+        """
+        lock = await self._engine.find_first(
+            AgentLockModel,
+            filters=AndFilter(
+                filters=[
+                    ComparisonFilter.eq("session_id", session_id),
+                    ComparisonFilter.eq("agent_id", agent_id),
+                ]
+            ),
+        )
+
+        if not lock:
+            return None
+
+        # Check if expired
+        now = time.time_ns()
+        if lock.expires_at_ns <= now:
+            logger.debug(f"Found expired lock for session={session_id}, agent={agent_id}, holder={lock.holder_id}")
+            return None
+
+        return lock
 
     @asynccontextmanager
     async def acquire(
@@ -201,14 +207,23 @@ class AgentLockService:
             TimeoutError: If agent is already locked (immediate failure)
         """
         await self._ensure_initialized()
-        await self._start_cleanup_task()
 
         holder_id = self._generate_holder_id()
         now = time.time_ns()
+        expires_at_ns = self._calculate_expires_at_ns()
 
         logger.info(f"Attempting to acquire lock for session={session_id}, agent={agent_id}, holder={holder_id}, run_id={run_id}")
 
-        # Try to create lock first (optimistic approach)
+        # Check for existing valid lock first
+        existing = await self._find_valid_lock(session_id, agent_id)
+        if existing:
+            logger.warning(
+                f"Lock acquisition failed: agent {agent_id} in session {session_id} is already locked by holder={existing.holder_id}"
+            )
+            raise TimeoutError(f"Agent {agent_id} in session {session_id} is already locked (holder: {existing.holder_id})")
+
+        # Try to create or replace lock
+        # If there's an expired lock, we can overwrite it
         lock = AgentLockModel(
             session_id=session_id,
             agent_id=agent_id,
@@ -216,37 +231,43 @@ class AgentLockService:
             run_id=run_id,
             holder_id=holder_id,
             acquired_at_ns=now,
-            last_heartbeat_ns=now,
+            expires_at_ns=expires_at_ns,
         )
 
         # Try to create lock, handle race condition
         lock_acquired = False
         try:
+            # First try to delete any expired lock (atomic cleanup)
+            await self._engine.delete(
+                AgentLockModel,
+                filters=AndFilter(
+                    filters=[
+                        ComparisonFilter.eq("session_id", session_id),
+                        ComparisonFilter.eq("agent_id", agent_id),
+                        ComparisonFilter.lt("expires_at_ns", now),  # Only delete if expired
+                    ]
+                ),
+            )
+
+            # Now try to create
             await self._engine.create(lock)
             lock_acquired = True
             logger.info(f"Lock acquired successfully for session={session_id}, agent={agent_id}, holder={holder_id}")
         except Exception as e:
             # Check if it's a unique constraint violation (race condition)
-            # Different databases have different exception types
             error_msg = str(e).lower()
             if any(keyword in error_msg for keyword in ["unique", "duplicate", "constraint", "integrity"]):
-                logger.debug(f"Lock conflict detected for session={session_id}, agent={agent_id}, checking if expired")
-                # Lock already exists, check if it's expired
-                existing = await self._engine.find_first(
-                    AgentLockModel,
-                    filters=AndFilter(
-                        filters=[
-                            ComparisonFilter.eq("session_id", session_id),
-                            ComparisonFilter.eq("agent_id", agent_id),
-                        ]
-                    ),
-                )
-
-                if existing and now - existing.last_heartbeat_ns > int(self._lock_ttl * 1_000_000_000):
-                    # Lock expired, delete it and retry
-                    logger.info(
-                        f"Found expired lock for session={session_id}, agent={agent_id}, holder={existing.holder_id}, deleting and retrying"
+                # Another process got the lock first, check if it's still valid
+                existing = await self._find_valid_lock(session_id, agent_id)
+                if existing:
+                    logger.warning(
+                        f"Lock acquisition failed (race condition): agent {agent_id} in session {session_id} "
+                        f"is already locked by holder={existing.holder_id}"
                     )
+                    raise TimeoutError(f"Agent {agent_id} in session {session_id} is already locked (holder: {existing.holder_id})") from e
+                else:
+                    # The conflicting lock expired, try again
+                    logger.debug(f"Retrying lock acquisition after expired lock cleanup for session={session_id}, agent={agent_id}")
                     await self._engine.delete(
                         AgentLockModel,
                         filters=AndFilter(
@@ -256,16 +277,6 @@ class AgentLockService:
                             ]
                         ),
                     )
-                    # Retry creating the lock with a new instance
-                    lock = AgentLockModel(
-                        session_id=session_id,
-                        agent_id=agent_id,
-                        user_id=user_id,
-                        run_id=run_id,
-                        holder_id=holder_id,
-                        acquired_at_ns=now,
-                        last_heartbeat_ns=now,
-                    )
                     try:
                         await self._engine.create(lock)
                         lock_acquired = True
@@ -273,19 +284,8 @@ class AgentLockService:
                             f"Lock acquired after removing expired lock for session={session_id}, agent={agent_id}, holder={holder_id}"
                         )
                     except Exception:
-                        # If still fails, another task got it first
-                        logger.warning(
-                            f"Failed to acquire lock after removing expired lock (race condition) "
-                            f"for session={session_id}, agent={agent_id}"
-                        )
-                        raise TimeoutError(f"Agent {agent_id} in session {session_id} is already locked (race condition detected)") from e
-                else:
-                    # Lock is still valid or was just acquired by another task
-                    holder = existing.holder_id if existing else "unknown"
-                    logger.warning(
-                        f"Lock acquisition failed: agent {agent_id} in session {session_id} is already locked by holder={holder}"
-                    )
-                    raise TimeoutError(f"Agent {agent_id} in session {session_id} is already locked (holder: {holder})") from e
+                        logger.warning(f"Failed to acquire lock after retry for session={session_id}, agent={agent_id}")
+                        raise TimeoutError(f"Agent {agent_id} in session {session_id} could not acquire lock (race condition)") from e
             else:
                 # Re-raise other exceptions
                 logger.error(f"Unexpected error acquiring lock for session={session_id}, agent={agent_id}: {e}")
@@ -294,7 +294,7 @@ class AgentLockService:
         if not lock_acquired:
             raise TimeoutError(f"Agent {agent_id} in session {session_id} could not acquire lock")
 
-        # Start heartbeat task
+        # Start heartbeat task (run-level, not global)
         heartbeat_task = asyncio.create_task(self._heartbeat_loop(session_id, agent_id, holder_id))
 
         try:
@@ -342,36 +342,19 @@ class AgentLockService:
         """
         await self._ensure_initialized()
 
-        lock = await self._engine.find_first(
-            AgentLockModel,
-            filters=AndFilter(
-                filters=[
-                    ComparisonFilter.eq("session_id", session_id),
-                    ComparisonFilter.eq("agent_id", agent_id),
-                ]
-            ),
-        )
+        lock = await self._find_valid_lock(session_id, agent_id)
 
-        if not lock:
-            logger.debug(f"is_locked check: no lock found for session={session_id}, agent={agent_id}")
+        if lock:
+            logger.debug(f"is_locked check: lock is active for session={session_id}, agent={agent_id}, holder={lock.holder_id}")
+            return True
+        else:
+            logger.debug(f"is_locked check: no valid lock for session={session_id}, agent={agent_id}")
             return False
-
-        # Check if expired
-        now = time.time_ns()
-        if now - lock.last_heartbeat_ns > int(self._lock_ttl * 1_000_000_000):
-            logger.debug(f"is_locked check: lock expired for session={session_id}, agent={agent_id}, holder={lock.holder_id}")
-            return False
-
-        logger.debug(f"is_locked check: lock is active for session={session_id}, agent={agent_id}, holder={lock.holder_id}")
-        return True
 
     async def stop(self):
-        """Stop the cleanup task."""
-        if self._cleanup_task and not self._cleanup_task.done():
-            logger.info("Stopping AgentLockService cleanup task")
-            self._cleanup_task.cancel()
-            try:
-                await self._cleanup_task
-            except asyncio.CancelledError:
-                pass
-            logger.info("AgentLockService cleanup task stopped")
+        """Stop the lock service.
+
+        Note: This is a no-op now since we no longer have a global cleanup task.
+        Kept for API compatibility.
+        """
+        logger.debug("AgentLockService stop called (no-op, no global cleanup task)")

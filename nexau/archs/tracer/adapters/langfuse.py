@@ -164,6 +164,17 @@ class LangfuseTracer(BaseTracer):
         if host:
             client_kwargs["host"] = host
 
+        # IMPORTANT: Use an isolated TracerProvider to prevent Langfuse SDK from
+        # overwriting the global TracerProvider. Without this, Langfuse v3+ (which
+        # is built on OpenTelemetry) would register its span processor on the global
+        # provider, causing ALL spans (including Jaeger-only spans like sandbox
+        # operations) to be sent to Langfuse.
+        # See: https://langfuse.com/faq/all/existing-otel-setup
+        from opentelemetry.sdk.trace import TracerProvider as SdkTracerProvider
+
+        isolated_provider = SdkTracerProvider()
+        client_kwargs["tracer_provider"] = isolated_provider
+
         try:
             self.client = Langfuse(**client_kwargs)
             self._client_identity = identity
@@ -359,6 +370,19 @@ class LangfuseTracer(BaseTracer):
             # Trace-level fields are optional depending on the Langfuse SDK object type.
             # Keep this best-effort so missing methods (e.g., in tests/mocks) don't prevent `.end()`/flush.
             if hasattr(langfuse_span, "update_trace"):
+                # For root spans (no parent), update trace name, input, and output.
+                # This is defensive programming: when using trace_context.trace_id,
+                # Langfuse SDK creates a trace with empty name. We must explicitly
+                # call update_trace to ensure the trace has meaningful data.
+                # Without this, users who enable auto-instrumentation (FastAPI, httpx)
+                # may see unnamed traces in Langfuse UI.
+                if span.parent_id is None:
+                    trace_update: dict[str, Any] = {"name": span.name}
+                    if span.inputs:
+                        trace_update["input"] = self._serialize_for_langfuse(span.inputs)
+                    if outputs is not None:
+                        trace_update["output"] = self._serialize_for_langfuse(outputs)
+                    langfuse_span.update_trace(**trace_update)
                 if self.metadata:
                     langfuse_span.update_trace(metadata=self.metadata)
                 if self.user_id:

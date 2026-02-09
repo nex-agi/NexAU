@@ -239,7 +239,7 @@ class TestAgentLockServiceHeartbeat:
                     run_id=None,
                     holder_id="old_holder",
                     acquired_at_ns=time.time_ns() - 10_000_000_000,  # 10 seconds ago
-                    last_heartbeat_ns=time.time_ns() - 10_000_000_000,  # 10 seconds ago
+                    expires_at_ns=time.time_ns() - 1_000_000_000,  # expired 1 second ago
                 )
                 await service._engine.create(old_lock)
 
@@ -253,7 +253,12 @@ class TestAgentLockServiceHeartbeat:
         asyncio.run(run())
 
     def test_cleanup_expired_locks(self):
-        """Test manual cleanup of expired locks."""
+        """Test that expired locks are ignored and can be replaced.
+
+        In the expiration-based design, there is no explicit cleanup_expired().
+        Expired locks are filtered out on query (_find_valid_lock) and
+        replaced atomically during acquire().
+        """
 
         async def run():
             engine = InMemoryDatabaseEngine()
@@ -274,13 +279,19 @@ class TestAgentLockServiceHeartbeat:
                         run_id=None,
                         holder_id=f"holder{i}",
                         acquired_at_ns=time.time_ns() - 10_000_000_000,  # 10 seconds ago
-                        last_heartbeat_ns=time.time_ns() - 10_000_000_000,  # 10 seconds ago
+                        expires_at_ns=time.time_ns() - 1_000_000_000,  # expired 1 second ago
                     )
                     await service._engine.create(old_lock)
 
-                # Cleanup expired locks
-                count = await service.cleanup_expired()
-                assert count == 3
+                # All expired locks should be reported as not locked
+                for i in range(3):
+                    is_locked = await service.is_locked(f"session{i}", "agent1")
+                    assert not is_locked, f"Expired lock for session{i} should not be reported as locked"
+
+                # Should be able to acquire a new lock on a session with expired lock
+                async with service.acquire("session0", "agent1"):
+                    is_locked = await service.is_locked("session0", "agent1")
+                    assert is_locked
             finally:
                 await service.stop()
 
@@ -379,5 +390,192 @@ class TestAgentLockServiceSQLBackend:
             finally:
                 await service.stop()
                 await sql_engine.dispose()
+
+        asyncio.run(run())
+
+
+class TestAgentLockServiceEdgeCases:
+    """Tests for edge cases and new code paths in expiration-based locking."""
+
+    def test_heartbeat_stops_when_lock_deleted_externally(self):
+        """Test that heartbeat loop stops when lock is deleted by another process.
+
+        Covers the _heartbeat_loop break path when lock is not found.
+        """
+
+        async def run():
+            engine = InMemoryDatabaseEngine()
+            service = AgentLockService(
+                engine=engine,
+                lock_ttl=5.0,
+                heartbeat_interval=0.2,  # Fast heartbeat for test speed
+            )
+
+            try:
+                lock_acquired = asyncio.Event()
+
+                async def hold_lock():
+                    async with service.acquire("session1", "agent1"):
+                        lock_acquired.set()
+                        # Hold lock long enough for heartbeat to fire
+                        await asyncio.sleep(2.0)
+
+                task = asyncio.create_task(hold_lock())
+
+                # Wait for lock to be acquired
+                await asyncio.wait_for(lock_acquired.wait(), timeout=2.0)
+
+                # Externally delete the lock (simulating another process)
+                from nexau.archs.session.orm import AndFilter, ComparisonFilter
+
+                await engine.delete(
+                    AgentLockModel,
+                    filters=AndFilter(
+                        filters=[
+                            ComparisonFilter.eq("session_id", "session1"),
+                            ComparisonFilter.eq("agent_id", "agent1"),
+                        ]
+                    ),
+                )
+
+                # Wait for heartbeat to detect the missing lock and stop
+                await asyncio.sleep(0.5)
+
+                # Lock should no longer be reported as locked
+                is_locked = await service.is_locked("session1", "agent1")
+                assert not is_locked, "Lock should not be reported as locked after external deletion"
+
+                # Let the task finish
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            finally:
+                await service.stop()
+
+        asyncio.run(run())
+
+    def test_is_locked_returns_false_for_nonexistent_lock(self):
+        """Test is_locked returns False when no lock exists at all."""
+
+        async def run():
+            engine = InMemoryDatabaseEngine()
+            service = AgentLockService(
+                engine=engine,
+                lock_ttl=30.0,
+                heartbeat_interval=10.0,
+            )
+
+            try:
+                is_locked = await service.is_locked("nonexistent_session", "nonexistent_agent")
+                assert not is_locked, "is_locked should return False for nonexistent lock"
+            finally:
+                await service.stop()
+
+        asyncio.run(run())
+
+    def test_acquire_rejects_when_valid_lock_exists(self):
+        """Test that acquire raises TimeoutError immediately when a valid lock exists.
+
+        Covers the early rejection path in acquire() before attempting create.
+        """
+
+        async def run():
+            engine = InMemoryDatabaseEngine()
+            service = AgentLockService(
+                engine=engine,
+                lock_ttl=30.0,
+                heartbeat_interval=10.0,
+            )
+
+            try:
+                # Manually create a valid (non-expired) lock
+                await service._ensure_initialized()
+                valid_lock = AgentLockModel(
+                    session_id="session1",
+                    agent_id="agent1",
+                    user_id="user1",
+                    run_id=None,
+                    holder_id="existing_holder",
+                    acquired_at_ns=time.time_ns(),
+                    expires_at_ns=time.time_ns() + 30_000_000_000,  # expires in 30s
+                )
+                await service._engine.create(valid_lock)
+
+                # Try to acquire — should fail immediately with TimeoutError
+                import pytest
+
+                with pytest.raises(TimeoutError, match="already locked"):
+                    async with service.acquire("session1", "agent1"):
+                        pass  # Should never reach here
+            finally:
+                await service.stop()
+
+        asyncio.run(run())
+
+    def test_invalid_heartbeat_interval_raises_value_error(self):
+        """Test that heartbeat_interval >= lock_ttl/2 raises ValueError."""
+        import pytest
+
+        engine = InMemoryDatabaseEngine()
+
+        with pytest.raises(ValueError, match="heartbeat_interval"):
+            AgentLockService(
+                engine=engine,
+                lock_ttl=10.0,
+                heartbeat_interval=5.0,  # == lock_ttl/2, should fail
+            )
+
+        with pytest.raises(ValueError, match="heartbeat_interval"):
+            AgentLockService(
+                engine=engine,
+                lock_ttl=10.0,
+                heartbeat_interval=6.0,  # > lock_ttl/2, should fail
+            )
+
+    def test_lock_release_only_deletes_own_holder(self):
+        """Test that releasing a lock only deletes the lock with matching holder_id.
+
+        Ensures the finally block in acquire() doesn't accidentally delete
+        another holder's lock.
+        """
+
+        async def run():
+            engine = InMemoryDatabaseEngine()
+            service = AgentLockService(
+                engine=engine,
+                lock_ttl=30.0,
+                heartbeat_interval=10.0,
+            )
+
+            try:
+                # Acquire and release a lock
+                async with service.acquire("session1", "agent1"):
+                    is_locked = await service.is_locked("session1", "agent1")
+                    assert is_locked
+
+                # After release, lock should be gone
+                is_locked = await service.is_locked("session1", "agent1")
+                assert not is_locked, "Lock should be released after context exit"
+
+                # Now manually insert a lock with a different holder
+                await service._ensure_initialized()
+                other_lock = AgentLockModel(
+                    session_id="session1",
+                    agent_id="agent1",
+                    user_id="user1",
+                    run_id=None,
+                    holder_id="other_holder_xyz",
+                    acquired_at_ns=time.time_ns(),
+                    expires_at_ns=time.time_ns() + 30_000_000_000,
+                )
+                await service._engine.create(other_lock)
+
+                # Verify the other holder's lock is still there
+                is_locked = await service.is_locked("session1", "agent1")
+                assert is_locked, "Other holder's lock should still exist"
+            finally:
+                await service.stop()
 
         asyncio.run(run())

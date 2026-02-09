@@ -379,7 +379,10 @@ def test_langfuse_tracer_end_span_updates_trace_fields_when_supported() -> None:
 
     tracer.end_span(span, outputs={"result": "ok"})
 
+    # Root span (parent_id is None) updates trace name and output first,
+    # then metadata, user_id, session_id, and tags.
     assert trace_vendor.update_trace_calls == [
+        {"name": "tool", "output": {"result": "ok"}},  # Root span sets trace name/output
         {"metadata": {"meta": "value"}},
         {"user_id": "user-456"},
         {"session_id": "sess-123"},
@@ -621,3 +624,163 @@ def test_langfuse_tracer_id(caplog: pytest.LogCaptureFixture) -> None:
     assert tracer.client is not None
     span_vendor_obj = cast(DummyLangfuseObject, span.vendor_obj)
     assert span_vendor_obj.trace_id == trace_id
+
+
+def test_langfuse_tracer_end_span_updates_trace_name_for_root_span() -> None:
+    """Verify that ending a root span calls update_trace(name=...) to set trace name.
+
+    This is critical defensive programming: when using trace_context.trace_id,
+    Langfuse SDK creates a trace with empty name. LangfuseTracer must explicitly
+    call update_trace(name=span.name) to ensure the trace has a meaningful name.
+
+    Without this fix, users who enable auto-instrumentation may see unnamed traces
+    in Langfuse UI because the SDK creates trace records without inheriting span names.
+    """
+    tracer = LangfuseTracer(
+        debug=True,
+        session_id="sess-123",
+        user_id="user-456",
+    )
+    root_span = tracer.start_span(
+        "Agent: test-agent",
+        SpanType.AGENT,
+        inputs={"message": "hello"},
+    )
+    assert root_span.vendor_obj is not None
+    assert root_span.parent_id is None  # Confirm this is a root span
+
+    # Swap vendor object for one that supports trace-level updates
+    trace_vendor = DummyLangfuseObjectWithTrace()
+    root_span.vendor_obj = trace_vendor
+
+    # End the root span with outputs
+    tracer.end_span(root_span, outputs={"response": "world"})
+
+    # CRITICAL: Verify update_trace was called with name for root span
+    # This ensures trace name is set even when Langfuse SDK creates empty trace
+    name_update_calls = [c for c in trace_vendor.update_trace_calls if "name" in c]
+    assert len(name_update_calls) >= 1, (
+        "update_trace(name=...) was not called for root span! "
+        "This will cause unnamed traces when using trace_context.trace_id. "
+        "Fix: Add update_trace(name=span.name) in end_span() for root spans."
+    )
+    assert name_update_calls[0]["name"] == "Agent: test-agent"
+
+    # Also verify input/output are set on trace for root spans
+    input_update_calls = [c for c in trace_vendor.update_trace_calls if "input" in c]
+    output_update_calls = [c for c in trace_vendor.update_trace_calls if "output" in c]
+    assert len(input_update_calls) >= 1, "update_trace(input=...) was not called for root span"
+    assert len(output_update_calls) >= 1, "update_trace(output=...) was not called for root span"
+
+
+def test_langfuse_tracer_end_span_does_not_update_trace_name_for_child_span() -> None:
+    """Verify that ending a child span does NOT call update_trace(name=...).
+
+    Only root spans should update trace-level fields. Child spans should not
+    overwrite the trace name set by the root span.
+    """
+    tracer = LangfuseTracer(debug=True)
+    root_span = tracer.start_span("Agent: parent", SpanType.AGENT)
+    child_span = tracer.start_span("Tool: child", SpanType.TOOL, parent_span=root_span)
+    assert child_span.parent_id == root_span.id  # Confirm this is a child span
+
+    # Swap vendor object for one that supports trace-level updates
+    trace_vendor = DummyLangfuseObjectWithTrace()
+    child_span.vendor_obj = trace_vendor
+
+    tracer.end_span(child_span, outputs={"result": "done"})
+
+    # Child span should NOT update trace name
+    name_update_calls = [c for c in trace_vendor.update_trace_calls if "name" in c]
+    assert len(name_update_calls) == 0, "update_trace(name=...) was called for child span! Only root spans should update trace-level name."
+
+
+def test_langfuse_tracer_root_span_without_inputs_skips_input_update() -> None:
+    """Verify that root span without inputs does not call update_trace(input=...).
+
+    Covers the `if span.inputs:` guard in end_span().
+    """
+    tracer = LangfuseTracer(debug=True)
+    # Start root span WITHOUT inputs
+    root_span = tracer.start_span("Agent: no-input", SpanType.AGENT)
+    assert root_span.parent_id is None
+
+    trace_vendor = DummyLangfuseObjectWithTrace()
+    root_span.vendor_obj = trace_vendor
+
+    # End without outputs either
+    tracer.end_span(root_span)
+
+    # Should have update_trace(name=...) but NOT input or output
+    name_calls = [c for c in trace_vendor.update_trace_calls if "name" in c]
+    input_calls = [c for c in trace_vendor.update_trace_calls if "input" in c]
+    output_calls = [c for c in trace_vendor.update_trace_calls if "output" in c]
+
+    assert len(name_calls) == 1, "Root span should always set trace name"
+    assert name_calls[0]["name"] == "Agent: no-input"
+    assert len(input_calls) == 0, "Root span without inputs should not call update_trace(input=...)"
+    assert len(output_calls) == 0, "Root span without outputs should not call update_trace(output=...)"
+
+
+def test_langfuse_tracer_root_span_with_inputs_but_no_outputs() -> None:
+    """Verify root span with inputs but no outputs sets input but not output on trace."""
+    tracer = LangfuseTracer(debug=True)
+    root_span = tracer.start_span(
+        "Agent: input-only",
+        SpanType.AGENT,
+        inputs={"query": "hello"},
+    )
+    assert root_span.parent_id is None
+
+    trace_vendor = DummyLangfuseObjectWithTrace()
+    root_span.vendor_obj = trace_vendor
+
+    tracer.end_span(root_span)  # No outputs
+
+    name_calls = [c for c in trace_vendor.update_trace_calls if "name" in c]
+    assert len(name_calls) == 1
+    # The first call should have name and input but NOT output
+    first_call = name_calls[0]
+    assert first_call["name"] == "Agent: input-only"
+    assert "input" in first_call, "Root span with inputs should include input in trace update"
+    assert first_call["input"] == {"query": "hello"}
+    assert "output" not in first_call, "Root span without outputs should not include output"
+
+
+def test_langfuse_ensure_client_passes_tracer_provider() -> None:
+    """Verify that _ensure_client passes tracer_provider to Langfuse constructor.
+
+    This is critical: without isolated TracerProvider, Langfuse v3+ would
+    overwrite the global TracerProvider, causing all spans to be sent to Langfuse.
+    """
+    captured_kwargs: list[dict[str, Any]] = []
+
+    class CapturingLangfuse:
+        def __init__(self, **kwargs: Any) -> None:
+            captured_kwargs.append(kwargs)
+
+    import nexau.archs.tracer.adapters.langfuse as langfuse_mod
+
+    original = langfuse_mod.Langfuse
+    langfuse_mod.Langfuse = CapturingLangfuse  # type: ignore[assignment,misc]
+    try:
+        tracer = LangfuseTracer(
+            public_key="pk-test",
+            secret_key="sk-test",
+            host="http://test.local",
+        )
+        tracer._ensure_client()
+
+        assert len(captured_kwargs) == 1, "Langfuse should be instantiated once"
+        kwargs = captured_kwargs[0]
+        assert "tracer_provider" in kwargs, (
+            "tracer_provider must be passed to Langfuse() to prevent global TracerProvider pollution. "
+            "See: https://langfuse.com/faq/all/existing-otel-setup"
+        )
+        from opentelemetry.sdk.trace import TracerProvider as SdkTracerProvider
+
+        assert isinstance(kwargs["tracer_provider"], SdkTracerProvider), (
+            f"tracer_provider should be an isolated SdkTracerProvider, got {type(kwargs['tracer_provider'])}"
+        )
+    finally:
+        langfuse_mod.Langfuse = original  # type: ignore[assignment,misc]
