@@ -27,7 +27,7 @@ from nexau.archs.sandbox import BaseSandbox, SandboxStatus
 logger = logging.getLogger(__name__)
 
 
-class BackgroundTaskResult(TypedDict):
+class BackgroundTaskManageResult(TypedDict):
     status: Literal["running", "success", "error", "not_found"]
     pid: NotRequired[int | None]
     action: str
@@ -42,11 +42,11 @@ class BackgroundTaskResult(TypedDict):
     tasks: NotRequired[list[dict[str, object]]]
 
 
-def background_task_tool(
+def background_task_manage_tool(
     action: Literal["status", "kill", "list"],
     pid: int | None = None,
     agent_state: AgentState | None = None,
-) -> BackgroundTaskResult:
+) -> BackgroundTaskManageResult:
     """
     Manage background tasks started by bash_tool with background=True.
 
@@ -120,7 +120,7 @@ def background_task_tool(
             result_status = "error"
 
         task_info = bg_tasks.get(pid, {})
-        result: BackgroundTaskResult = {
+        result: BackgroundTaskManageResult = {
             "status": result_status,
             "pid": pid,
             "action": "status",

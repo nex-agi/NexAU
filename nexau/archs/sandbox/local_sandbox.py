@@ -26,6 +26,7 @@ import os
 import shutil
 import stat as stat_module
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -136,11 +137,56 @@ class LocalSandbox(BaseSandbox):
                     env=envs,
                 )
                 bg_pid = process.pid
-                self._background_tasks[bg_pid] = {
+
+                task_info: dict[str, Any] = {
                     "process": process,
                     "command": command,
                     "start_time": start_time,
+                    "finished": False,
+                    "exit_code": -1,
+                    "stdout": "",
+                    "stderr": "",
+                    "error": None,
                 }
+
+                def _consume_output(proc: subprocess.Popen[str], info: dict[str, Any]) -> None:
+                    try:
+                        if proc.stdout:
+                            for line in proc.stdout:
+                                info["stdout"] += line
+                    except (ValueError, OSError):
+                        pass
+
+                def _consume_stderr(proc: subprocess.Popen[str], info: dict[str, Any]) -> None:
+                    try:
+                        if proc.stderr:
+                            for line in proc.stderr:
+                                info["stderr"] += line
+                    except (ValueError, OSError):
+                        pass
+
+                def _wait_process(proc: subprocess.Popen[str], info: dict[str, Any]) -> None:
+                    try:
+                        exit_code = proc.wait()
+                        info["exit_code"] = exit_code
+                        if exit_code != 0:
+                            info["error"] = f"Command failed with exit code {exit_code}"
+                    except Exception as exc:
+                        info["error"] = str(exc)
+                    finally:
+                        info["finished"] = True
+
+                stdout_thread = threading.Thread(target=_consume_output, args=(process, task_info), daemon=True)
+                stderr_thread = threading.Thread(target=_consume_stderr, args=(process, task_info), daemon=True)
+                wait_thread = threading.Thread(target=_wait_process, args=(process, task_info), daemon=True)
+                stdout_thread.start()
+                stderr_thread.start()
+                wait_thread.start()
+                task_info["stdout_thread"] = stdout_thread
+                task_info["stderr_thread"] = stderr_thread
+                task_info["wait_thread"] = wait_thread
+
+                self._background_tasks[bg_pid] = task_info
                 duration_ms = int((time.time() - start_time) * 1000)
                 return CommandResult(
                     status=SandboxStatus.SUCCESS,
@@ -231,35 +277,33 @@ class LocalSandbox(BaseSandbox):
             )
 
         task_info = self._background_tasks[pid]
-        process: subprocess.Popen[str] = task_info["process"]
         max_output_size = 30000
-
-        poll_result = process.poll()
         duration_ms = int((time.time() - task_info["start_time"]) * 1000)
 
-        if poll_result is not None:
-            # Process has finished, read remaining output
-            stdout, stderr = process.communicate()
-            stdout = stdout or ""
-            stderr = stderr or ""
+        stdout = task_info.get("stdout", "") or ""
+        stderr = task_info.get("stderr", "") or ""
+
+        if task_info["finished"]:
+            exit_code = task_info["exit_code"]
             return CommandResult(
-                status=SandboxStatus.SUCCESS if poll_result == 0 else SandboxStatus.ERROR,
+                status=SandboxStatus.SUCCESS if exit_code == 0 else SandboxStatus.ERROR,
                 stdout=stdout[:max_output_size],
                 stderr=stderr[:max_output_size],
-                exit_code=poll_result,
+                exit_code=exit_code,
                 duration_ms=duration_ms,
-                error=None if poll_result == 0 else f"Command failed with exit code {poll_result}",
+                error=task_info.get("error"),
                 truncated=len(stdout) > max_output_size or len(stderr) > max_output_size,
                 background_pid=pid,
             )
 
-        # Process is still running
+        # Task is still running, return accumulated output so far
         return CommandResult(
             status=SandboxStatus.RUNNING,
-            stdout="",
-            stderr="",
+            stdout=stdout[:max_output_size],
+            stderr=stderr[:max_output_size],
             exit_code=-1,
             duration_ms=duration_ms,
+            truncated=len(stdout) > max_output_size or len(stderr) > max_output_size,
             background_pid=pid,
         )
 
@@ -287,6 +331,11 @@ class LocalSandbox(BaseSandbox):
         try:
             process.kill()
             process.wait(timeout=5)
+            # Wait for consumer threads to finish flushing output
+            for thread_key in ("stdout_thread", "stderr_thread", "wait_thread"):
+                t = task_info.get(thread_key)
+                if t is not None:
+                    t.join(timeout=2)
             duration_ms = int((time.time() - task_info["start_time"]) * 1000)
             del self._background_tasks[pid]
             return CommandResult(
