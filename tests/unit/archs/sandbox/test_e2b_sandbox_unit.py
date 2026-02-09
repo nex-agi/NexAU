@@ -32,7 +32,9 @@ class _FakeCommands:
         self.behavior: list[Exception | _FakeCommandResult] = list(behavior or [])
         self.calls: list[tuple[str, int | None, str | None]] = []
 
-    def run(self, cmd: str, timeout: int | None = None, cwd: str | None = None) -> _FakeCommandResult:
+    def run(
+        self, cmd: str, timeout: int | None = None, cwd: str | None = None, user: str | None = None, envs: dict[str, str] | None = None
+    ) -> _FakeCommandResult:
         self.calls.append((cmd, timeout, cwd))
         if self.behavior:
             action = self.behavior.pop(0)

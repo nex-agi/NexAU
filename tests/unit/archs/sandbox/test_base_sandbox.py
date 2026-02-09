@@ -262,10 +262,24 @@ class DummySandbox(BaseSandbox):
     def detect_encoding(self, data: bytes) -> str:
         return self._detect_file_encoding(data)
 
-    def execute_bash(self, command: str, timeout: int | None = None) -> CommandResult:
+    def execute_bash(
+        self,
+        command: str,
+        timeout: int | None = None,
+        cwd: str | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
+    ) -> CommandResult:
         return CommandResult(status=SandboxStatus.SUCCESS)
 
-    def execute_code(self, code: str, language: CodeLanguage | str, timeout: int | None = None) -> CodeExecutionResult:
+    def execute_code(
+        self,
+        code: str,
+        language: CodeLanguage | str,
+        timeout: int | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
+    ) -> CodeExecutionResult:
         return CodeExecutionResult(status=SandboxStatus.SUCCESS, language=CodeLanguage.PYTHON)
 
     def read_file(self, file_path: str, encoding: str = "utf-8", binary: bool = False) -> FileOperationResult:
@@ -278,6 +292,7 @@ class DummySandbox(BaseSandbox):
         encoding: str = "utf-8",
         binary: bool = False,
         create_directories: bool = True,
+        user: str | None = None,
     ) -> FileOperationResult:
         return FileOperationResult(status=SandboxStatus.SUCCESS, file_path=file_path)
 

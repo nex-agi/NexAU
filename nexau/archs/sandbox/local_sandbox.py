@@ -92,6 +92,9 @@ class LocalSandbox(BaseSandbox):
         self,
         command: str,
         timeout: int | None = None,
+        cwd: str | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
     ) -> CommandResult:
         """
         Execute a bash command in the sandbox.
@@ -99,10 +102,16 @@ class LocalSandbox(BaseSandbox):
         Args:
             command: The bash command to execute
             timeout: Optional timeout in milliseconds (overrides default)
+            cwd: Optional working directory
+            user: Optional user to run the command as (not available in LocalSandbox)
+            envs: Optional environment variables
 
         Returns:
             CommandResult containing execution results
         """
+        if user is not None:
+            logger.warning(f"User {user} is not used in local sandbox.")
+
         start_time = time.time()
         work_dir = self._ensure_working_directory()
 
@@ -119,7 +128,8 @@ class LocalSandbox(BaseSandbox):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                cwd=str(work_dir),
+                cwd=cwd or str(work_dir),
+                env=envs,
             )
 
             try:
@@ -177,6 +187,8 @@ class LocalSandbox(BaseSandbox):
         code: str,
         language: CodeLanguage | str,
         timeout: int | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
     ) -> CodeExecutionResult:
         """
         Execute Python code in the sandbox.
@@ -185,10 +197,15 @@ class LocalSandbox(BaseSandbox):
             code: The Python code to execute
             language: Programming language (must be "python" or CodeLanguage.PYTHON)
             timeout: Optional timeout in milliseconds (overrides default)
+            user: Optional user to run the command as (not available in LocalSandbox)
+            envs: Optional environment variables to set
 
         Returns:
             CodeExecutionResult containing execution results and outputs
         """
+        if user is not None:
+            logger.warning(f"User {user} is not used in local sandbox.")
+
         start_time = time.time()
 
         if isinstance(language, str):
@@ -228,7 +245,7 @@ class LocalSandbox(BaseSandbox):
                 os.close(fd)
 
             # Execute the temp file
-            result = self.execute_bash(f"python3 {Path(temp_file).name}", timeout)
+            result = self.execute_bash(f"python3 {Path(temp_file).name}", timeout, envs=envs)
 
             outputs: list[dict[str, Any]] = []
             if result.stdout:
@@ -331,6 +348,7 @@ class LocalSandbox(BaseSandbox):
         encoding: str = "utf-8",
         binary: bool = False,
         create_directories: bool = True,
+        user: str | None = None,
     ) -> FileOperationResult:
         """
         Write content to a file in the sandbox.
@@ -341,10 +359,14 @@ class LocalSandbox(BaseSandbox):
             encoding: File encoding (default: utf-8)
             binary: Whether to write file in binary mode
             create_directories: Whether to create parent directories if they don't exist
+            user: Optional user to run the create_directories command as (not available in LocalSandbox)
 
         Returns:
             FileOperationResult containing operation status
         """
+        if user is not None:
+            logger.warning(f"User {user} is not used in local sandbox.")
+
         try:
             full_path = self._resolve_path(file_path)
 

@@ -71,6 +71,8 @@ class _SandboxCommandsProtocol(Protocol):
         cmd: str,
         timeout: int | None = None,
         cwd: str | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
     ) -> _CommandResultProtocol: ...
 
 
@@ -178,6 +180,7 @@ class E2BSandbox(BaseSandbox):
     This class only contains runtime state.
     """
 
+    default_user: str = field(default="user")
     _work_dir: str = field(default="/home/user")
     envd_version: str | None = field(default=None)
     _api_key: str | None = field(default=None, repr=False)
@@ -199,13 +202,23 @@ class E2BSandbox(BaseSandbox):
         self._api_key = api_key
         self._api_url = api_url
 
-    def execute_bash(self, command: str, timeout: int | None = None, cwd: str | None = None) -> CommandResult:
+    def execute_bash(
+        self,
+        command: str,
+        timeout: int | None = None,
+        cwd: str | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
+    ) -> CommandResult:
         """
         Execute a bash command in the E2B sandbox.
 
         Args:
             command: The bash command to execute
             timeout: Optional timeout in milliseconds (overrides default)
+            cwd: Optional working directory
+            user: Optional user to run the command as
+            envs: Optional environment variables
 
         Returns:
             CommandResult containing execution results
@@ -213,6 +226,11 @@ class E2BSandbox(BaseSandbox):
         assert E2B_AVAILABLE, "E2B SDK not installed. Install it with: pip install e2b"
         if self._sandbox is None:
             raise SandboxError("Sandbox not started. Call start() first.")
+
+        user = user or self.default_user or "user"
+
+        if user not in ("root", "user"):
+            raise ValueError(f"User must be 'root' or 'user' for E2B sandbox. But got {user}")
 
         start_time = time.time()
 
@@ -236,6 +254,8 @@ class E2BSandbox(BaseSandbox):
                         cmd=command,
                         timeout=int(timeout_seconds),
                         cwd=cwd or str(self.work_dir),
+                        user=user,
+                        envs=envs,
                     )
                     break
                 except RuntimeError as e:
@@ -339,6 +359,8 @@ class E2BSandbox(BaseSandbox):
         code: str,
         language: CodeLanguage | str,
         timeout: int | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
     ) -> CodeExecutionResult:
         """
         Execute Python code in the E2B sandbox.
@@ -347,6 +369,8 @@ class E2BSandbox(BaseSandbox):
             code: The Python code to execute
             language: Programming language (must be "python" or CodeLanguage.PYTHON)
             timeout: Optional timeout in milliseconds (overrides default)
+            user: Optional user to run the code as (default: root)
+            envs: Optional environment variables to set
 
         Returns:
             CodeExecutionResult containing execution results and outputs
@@ -356,6 +380,11 @@ class E2BSandbox(BaseSandbox):
             raise SandboxError("Sandbox not started. Call start() first.")
 
         start_time = time.time()
+
+        user = user or self.default_user or "user"
+
+        if user not in ("root", "user"):
+            raise ValueError(f"User must be 'root' or 'user' for E2B sandbox. But got {user}")
 
         if isinstance(language, str):
             try:
@@ -388,7 +417,7 @@ class E2BSandbox(BaseSandbox):
             self.write_file(temp_file_path, code)
 
             # Execute the temp file
-            result = self.execute_bash(f"python3 {temp_filename}", timeout, cwd="/tmp/")
+            result = self.execute_bash(f"python3 {temp_filename}", timeout, cwd="/tmp/", user=user, envs=envs)
 
             outputs: list[dict[str, Any]] = []
             if result.stdout:
@@ -492,6 +521,7 @@ class E2BSandbox(BaseSandbox):
         encoding: str = "utf-8",
         binary: bool = False,
         create_directories: bool = True,
+        user: str | None = None,
     ) -> FileOperationResult:
         """
         Write content to a file in the E2B sandbox.
@@ -502,6 +532,7 @@ class E2BSandbox(BaseSandbox):
             encoding: File encoding (default: utf-8)
             binary: Whether to write file in binary mode
             create_directories: Whether to create parent directories if they don't exist
+            user: Optional user to run the create_directories command as
 
         Returns:
             FileOperationResult containing operation status
@@ -509,6 +540,11 @@ class E2BSandbox(BaseSandbox):
         assert E2B_AVAILABLE, "E2B SDK not installed. Install it with: pip install e2b"
         if not self._sandbox:
             raise SandboxError("Sandbox not started. Call start() first.")
+
+        user = user or self.default_user or "user"
+
+        if user not in ("root", "user"):
+            raise ValueError(f"User must be 'root' or 'user' for E2B sandbox. But got {user}")
 
         try:
             # Resolve to absolute path if relative
@@ -521,7 +557,10 @@ class E2BSandbox(BaseSandbox):
             if create_directories:
                 parent_dir = str(Path(resolved_path).parent)
                 if parent_dir and parent_dir != ".":
-                    self._sandbox.commands.run(cmd=f"mkdir -p {parent_dir}")
+                    self._sandbox.commands.run(
+                        cmd=f"mkdir -p {parent_dir}",
+                        user=user,
+                    )
 
             # Write file using E2B filesystem API
             if isinstance(content, bytes):
@@ -533,7 +572,10 @@ class E2BSandbox(BaseSandbox):
             # Get file size - use stat command directly to avoid recursion issues
             size = 0
             try:
-                result = self._sandbox.commands.run(cmd=f'stat -c "%s" "{resolved_path}"')
+                result = self._sandbox.commands.run(
+                    cmd=f'stat -c "%s" "{resolved_path}"',
+                    user=user,
+                )
                 stdout_text = result.stdout or ""
                 if result.exit_code == 0 and stdout_text.strip():
                     size = int(stdout_text.strip())
@@ -762,7 +804,7 @@ class E2BSandbox(BaseSandbox):
             logger.error(f"Failed to get file info for {file_path}: {e}")
             raise SandboxFileError(f"Failed to get file info: {str(e)}")
 
-    def create_directory(self, directory_path: str, parents: bool = True) -> bool:
+    def create_directory(self, directory_path: str, parents: bool = True, user: str | None = None) -> bool:
         """
         Create a directory in the E2B sandbox.
 
@@ -777,11 +819,20 @@ class E2BSandbox(BaseSandbox):
         if not self._sandbox:
             raise SandboxError("Sandbox not started. Call start() first.")
 
+        user = user or self.default_user or "user"
+
+        if user not in ("root", "user"):
+            raise ValueError(f"User must be 'root' or 'user' for E2B sandbox. But got {user}")
+
         try:
             # Use mkdir command
             # Note: Use /home/user as cwd since the target directory may not exist yet
             cmd = f"mkdir -p {directory_path}" if parents else f"mkdir {directory_path}"
-            result = self._sandbox.commands.run(cmd=cmd, cwd="/home/user")
+            result = self._sandbox.commands.run(
+                cmd=cmd,
+                cwd="/home/user",
+                user=user,
+            )
 
             if result.exit_code != 0:
                 raise SandboxFileError(f"Failed to create directory: {result.stderr}")
@@ -916,11 +967,7 @@ class E2BSandbox(BaseSandbox):
                 error=f"Failed to edit file: {str(e)}",
             )
 
-    def glob(
-        self,
-        pattern: str,
-        recursive: bool = True,
-    ) -> list[str]:
+    def glob(self, pattern: str, recursive: bool = True, user: str | None = None) -> list[str]:
         """
         Find files matching a glob pattern.
 
@@ -934,6 +981,11 @@ class E2BSandbox(BaseSandbox):
         assert E2B_AVAILABLE, "E2B SDK not installed. Install it with: pip install e2b"
         if not self._sandbox:
             raise SandboxError("Sandbox not started. Call start() first.")
+
+        user = user or self.default_user or "user"
+
+        if user not in ("root", "user"):
+            raise ValueError(f"User must be 'root' or 'user' for E2B sandbox. But got {user}")
 
         try:
             # Use find command with pattern matching
@@ -956,7 +1008,11 @@ class E2BSandbox(BaseSandbox):
                     cmd = f'find "{search_dir}" -name "{file_pattern}"'
             else:
                 cmd = f'ls -1 "{pattern}" 2>/dev/null || true'
-            result = self._sandbox.commands.run(cmd=cmd, cwd=str(self.work_dir))
+            result = self._sandbox.commands.run(
+                cmd=cmd,
+                cwd=str(self.work_dir),
+                user=user,
+            )
 
             if result.exit_code != 0 and result.exit_code != 1:
                 raise SandboxFileError(f"Glob command failed: {result.stderr}")

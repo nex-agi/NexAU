@@ -83,6 +83,24 @@ class TestE2BBashExecution:
         with pytest.raises((SandboxError, AttributeError)):
             sandbox.execute_bash("echo test")
 
+    def test_execute_command_with_user_parameter(self, e2b_sandbox):
+        """Test executing a command with specific user parameter."""
+        result = e2b_sandbox.execute_bash("whoami", user="root")
+        assert result.status == SandboxStatus.SUCCESS
+        assert "root" in result.stdout.strip()
+
+        result_user = e2b_sandbox.execute_bash("whoami", user="user")
+        assert result_user.status == SandboxStatus.SUCCESS
+        assert "user" in result_user.stdout.strip()
+
+    def test_execute_command_with_envs_parameter(self, e2b_sandbox):
+        """Test executing a command with environment variables."""
+        envs = {"TEST_VAR": "test_value", "ANOTHER_VAR": "another_value"}
+        result = e2b_sandbox.execute_bash("echo $TEST_VAR $ANOTHER_VAR", envs=envs)
+        assert result.status == SandboxStatus.SUCCESS
+        assert "test_value" in result.stdout
+        assert "another_value" in result.stdout
+
 
 class TestE2BCodeExecution:
     def test_execute_simple_python_code(self, e2b_sandbox):

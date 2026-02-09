@@ -52,7 +52,7 @@ def glob_tool(
     assert sandbox is not None, "File operation tool invoked, but sandbox is not initialized."
 
     # Determine the search directory
-    search_dir = path if path else str(Path.cwd())
+    search_dir = path if path else str(sandbox.work_dir)
 
     # Validate that the directory exists
     try:

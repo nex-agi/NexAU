@@ -190,6 +190,9 @@ class BaseSandbox(ABC):
         self,
         command: str,
         timeout: int | None = None,
+        cwd: str | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
     ) -> CommandResult:
         """
         Execute a bash command in the sandbox.
@@ -197,6 +200,9 @@ class BaseSandbox(ABC):
         Args:
             command: The bash command to execute
             timeout: Optional timeout in milliseconds (overrides default)
+            cwd: Optional working directory
+            user: Optional user to run the command as (not available in LocalSandbox)
+            envs: Optional environment variables
 
         Returns:
             CommandResult containing execution results
@@ -214,6 +220,8 @@ class BaseSandbox(ABC):
         code: str,
         language: CodeLanguage | str,
         timeout: int | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
     ) -> CodeExecutionResult:
         """
         Execute code in the specified programming language.
@@ -222,6 +230,8 @@ class BaseSandbox(ABC):
             code: The code to execute
             language: Programming language (CodeLanguage enum or string)
             timeout: Optional timeout in milliseconds (overrides default)
+            user: Optional user to run the code as
+            envs: Optional environment variables
 
         Returns:
             CodeExecutionResult containing execution results and outputs
@@ -265,6 +275,7 @@ class BaseSandbox(ABC):
         encoding: str = "utf-8",
         binary: bool = False,
         create_directories: bool = True,
+        user: str | None = None,
     ) -> FileOperationResult:
         """
         Write content to a file in the sandbox.
@@ -275,6 +286,7 @@ class BaseSandbox(ABC):
             encoding: File encoding (default: utf-8)
             binary: Whether to write file in binary mode
             create_directories: Whether to create parent directories if they don't exist
+            user: Optional user to run the create_directories command as
 
         Returns:
             FileOperationResult containing operation status
