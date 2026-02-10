@@ -761,10 +761,13 @@ class Executor:
         serial_tool_names = set(self.serial_tool_name)
 
         try:
-            # Submit tool execution tasks
+            # Batch all context snapshots before any task submission to prevent
+            # OTel context pollution between parallel tool threads (fix-span-overlap)
+            tool_snapshots = [(copy_context(), tool_call) for tool_call in parsed_response.tool_calls]
+
+            # Submit tool execution tasks using pre-created context snapshots
             tool_futures: dict[Future[tuple[str, Any, bool]], tuple[str, ToolCall]] = {}
-            for tool_call in parsed_response.tool_calls:
-                task_ctx = copy_context()
+            for task_ctx, tool_call in tool_snapshots:
                 future = tool_executor.submit(
                     task_ctx.run,
                     self._execute_tool_call_safe,
@@ -776,10 +779,13 @@ class Executor:
                 if tool_call.tool_name in serial_tool_names:
                     future.result()
 
-            # Submit sub-agent execution tasks
+            # Batch all context snapshots before any sub-agent task submission to prevent
+            # OTel context pollution between parallel sub-agent threads (fix-span-overlap)
+            sub_agent_snapshots = [(copy_context(), sub_agent_call) for sub_agent_call in parsed_response.sub_agent_calls]
+
+            # Submit sub-agent execution tasks using pre-created context snapshots
             sub_agent_futures: dict[Future[tuple[str, str, bool]], tuple[str, SubAgentCall]] = {}
-            for sub_agent_call in parsed_response.sub_agent_calls:
-                task_ctx = copy_context()
+            for task_ctx, sub_agent_call in sub_agent_snapshots:
                 future = subagent_executor.submit(
                     task_ctx.run,
                     self._execute_sub_agent_call_safe,

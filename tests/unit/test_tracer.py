@@ -8,6 +8,8 @@ from collections.abc import Iterator
 from typing import Any, cast
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from nexau.archs.tracer.adapters import InMemoryTracer, LangfuseTracer
 from nexau.archs.tracer.composite import CompositeTracer
@@ -784,3 +786,455 @@ def test_langfuse_ensure_client_passes_tracer_provider() -> None:
         )
     finally:
         langfuse_mod.Langfuse = original  # type: ignore[assignment,misc]
+
+
+def test_parallel_tool_spans_have_correct_parent_with_batched_snapshots():
+    """Verify that parallel tool spans all have the Agent span as parent when using
+    the 'snapshot-before-activate' pattern (batch copy_context() before submission).
+
+    This is the core regression test for the fix-span-overlap bug: when multiple
+    tool calls are submitted to ThreadPoolExecutor, each thread's TraceContext
+    should create a Tool span whose parent_id is the Agent span, not another
+    tool's span or a polluted intermediate state.
+
+    Validates: Requirements 3.1, 3.2
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from contextvars import copy_context
+
+    tracer = RecordingTracer()
+    num_tools = 5
+    tool_spans_from_threads: list[Span] = []
+    errors: list[Exception] = []
+
+    with TraceContext(tracer, "Agent: test-agent", SpanType.AGENT) as agent_span:
+        # Step 1: Batch all context snapshots BEFORE any task submission
+        # This is the fixed pattern from executor.py
+        tool_snapshots = [(copy_context(), f"Tool: tool_{i}") for i in range(num_tools)]
+
+        # Step 2: Submit all tasks using pre-created snapshots
+        with ThreadPoolExecutor(max_workers=num_tools) as executor:
+
+            def run_tool_in_thread(tool_name: str) -> Span:
+                """Simulate a tool execution inside a TraceContext."""
+                with TraceContext(tracer, tool_name, SpanType.TOOL) as tool_span:
+                    # The tool span should see the Agent span as its parent
+                    # because copy_context() was called while Agent span was current
+                    return tool_span
+
+            futures = {}
+            for task_ctx, tool_name in tool_snapshots:
+                future = executor.submit(task_ctx.run, run_tool_in_thread, tool_name)
+                futures[future] = tool_name
+
+            for future in as_completed(futures):
+                try:
+                    tool_span = future.result()
+                    tool_spans_from_threads.append(tool_span)
+                except Exception as e:
+                    errors.append(e)
+
+    # No errors should have occurred
+    assert not errors, f"Errors during parallel execution: {errors}"
+
+    # All tool spans should have been created
+    assert len(tool_spans_from_threads) == num_tools
+
+    # CRITICAL: Every tool span's parent_id must be the Agent span's id
+    for tool_span in tool_spans_from_threads:
+        assert tool_span.parent_id == agent_span.id, (
+            f"Tool span '{tool_span.name}' has parent_id={tool_span.parent_id}, "
+            f"expected Agent span id={agent_span.id}. "
+            "This indicates OTel context pollution between parallel tool threads."
+        )
+
+    # Verify all tool spans are distinct (no duplicates)
+    tool_span_ids = [s.id for s in tool_spans_from_threads]
+    assert len(set(tool_span_ids)) == num_tools, "Tool span IDs should all be unique"
+
+    # Verify the RecordingTracer captured the correct number of start/end calls
+    # 1 Agent span + N Tool spans = N+1 total
+    assert len(tracer.start_calls) == num_tools + 1
+    assert len(tracer.end_calls) == num_tools + 1
+
+    # Verify all tool start_calls have the correct parent_id
+    tool_start_calls = [c for c in tracer.start_calls if c["span_type"] == SpanType.TOOL]
+    assert len(tool_start_calls) == num_tools
+    for call in tool_start_calls:
+        assert call["parent_id"] == agent_span.id, (
+            f"RecordingTracer captured tool start_call with parent_id={call['parent_id']}, expected {agent_span.id}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Property-Based Tests (hypothesis)
+# ---------------------------------------------------------------------------
+
+
+@given(num_tool_calls=st.integers(min_value=1, max_value=20))
+@settings(max_examples=100)
+def test_property_context_snapshot_consistency(num_tool_calls: int) -> None:
+    """Property 1: Context snapshot consistency.
+
+    For any set of N tool calls (N >= 1) being submitted to ThreadPoolExecutor,
+    all N context snapshots created by copy_context() should contain the same
+    OTel current span (the parent/Agent span), regardless of the number of tools
+    or their execution order.
+
+    This validates the "snapshot-before-activate" pattern: when copy_context()
+    calls are batched before any task submission, every snapshot captures the
+    same, unpolluted OTel context state.
+
+    **Validates: Requirements 1.1, 1.2, 1.3, 2.1, 2.2**
+    """
+    from contextvars import copy_context
+
+    from opentelemetry import context as otel_context
+    from opentelemetry import trace as otel_trace_api
+    from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
+
+    # Create a known parent span with a deterministic trace/span ID
+    parent_span_context = SpanContext(
+        trace_id=0x1234567890ABCDEF1234567890ABCDEF,
+        span_id=0xFEDCBA0987654321,
+        is_remote=False,
+        trace_flags=TraceFlags(TraceFlags.SAMPLED),
+    )
+    parent_span = NonRecordingSpan(context=parent_span_context)
+
+    # Attach the parent span to the current OTel context
+    new_ctx = otel_trace_api.set_span_in_context(parent_span)
+    token = otel_context.attach(new_ctx)
+
+    try:
+        # Batch N copy_context() calls — the "snapshot-before-activate" pattern
+        snapshots = [copy_context() for _ in range(num_tool_calls)]
+
+        # Verify every snapshot contains the same OTel current span
+        for i, snapshot in enumerate(snapshots):
+            captured_span = snapshot.run(otel_trace_api.get_current_span)
+            assert captured_span is parent_span, (
+                f"Snapshot {i} captured span {captured_span!r} instead of the "
+                f"expected parent span {parent_span!r}. "
+                f"This indicates context pollution between copy_context() calls."
+            )
+
+            # Also verify the span context attributes match
+            captured_ctx = captured_span.get_span_context()
+            assert captured_ctx.trace_id == parent_span_context.trace_id, (
+                f"Snapshot {i} trace_id mismatch: {captured_ctx.trace_id:#x} != {parent_span_context.trace_id:#x}"
+            )
+            assert captured_ctx.span_id == parent_span_context.span_id, (
+                f"Snapshot {i} span_id mismatch: {captured_ctx.span_id:#x} != {parent_span_context.span_id:#x}"
+            )
+    finally:
+        # Always detach to restore the OTel context
+        otel_context.detach(token)
+
+
+@given(num_parallel_tools=st.integers(min_value=2, max_value=10))
+@settings(max_examples=100)
+def test_property_parallel_tool_span_parenting(num_parallel_tools: int) -> None:
+    """Property 3: Parallel tool span parenting.
+
+    For any set of N parallel tool executions (N >= 2), each tool's active span
+    inside its TraceContext should be that tool's own span, not another tool's
+    span or the server span. Specifically, for each tool thread,
+    get_current_span() should return the span created by that tool's
+    TraceContext.__enter__, and each Tool span's parent_id should be the Agent
+    span's id.
+
+    This validates the "snapshot-before-activate" pattern: when copy_context()
+    calls are batched before any task submission, each thread's TraceContext
+    creates a Tool span whose parent is the Agent span, and the active span
+    inside each thread is that thread's own Tool span.
+
+    **Validates: Requirements 3.1, 3.2, 4.1**
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from contextvars import copy_context
+
+    tracer = RecordingTracer()
+    results: list[dict[str, Any]] = []
+    errors: list[Exception] = []
+
+    with TraceContext(tracer, "Agent: property-test", SpanType.AGENT) as agent_span:
+        # Step 1: Batch all context snapshots BEFORE any task submission
+        tool_snapshots = [(copy_context(), f"Tool: prop_tool_{i}") for i in range(num_parallel_tools)]
+
+        # Step 2: Submit all tasks using pre-created snapshots
+        with ThreadPoolExecutor(max_workers=num_parallel_tools) as executor:
+
+            def run_tool_in_thread(tool_name: str) -> dict[str, Any]:
+                """Execute a tool inside TraceContext and capture active span info."""
+                with TraceContext(tracer, tool_name, SpanType.TOOL) as tool_span:
+                    # Capture the active span inside this thread's TraceContext
+                    active_span = get_current_span()
+                    return {
+                        "tool_name": tool_name,
+                        "tool_span_id": tool_span.id,
+                        "tool_span_name": tool_span.name,
+                        "tool_span_parent_id": tool_span.parent_id,
+                        "active_span_id": active_span.id if active_span else None,
+                        "active_span_name": active_span.name if active_span else None,
+                    }
+
+            futures = {}
+            for task_ctx, tool_name in tool_snapshots:
+                future = executor.submit(task_ctx.run, run_tool_in_thread, tool_name)
+                futures[future] = tool_name
+
+            for future in as_completed(futures):
+                try:
+                    results.append(future.result())
+                except Exception as e:
+                    errors.append(e)
+
+    # No errors should have occurred during parallel execution
+    assert not errors, f"Errors during parallel execution: {errors}"
+
+    # All tools should have produced results
+    assert len(results) == num_parallel_tools
+
+    for result in results:
+        tool_name = result["tool_name"]
+
+        # CRITICAL Property 3a: Each tool span's parent_id must be the Agent span's id
+        assert result["tool_span_parent_id"] == agent_span.id, (
+            f"Tool '{tool_name}' has parent_id={result['tool_span_parent_id']}, "
+            f"expected Agent span id={agent_span.id}. "
+            "This indicates OTel context pollution — the tool's parent is wrong."
+        )
+
+        # CRITICAL Property 3b: The active span inside each thread's TraceContext
+        # must be that thread's own Tool span, not another tool's span
+        assert result["active_span_id"] == result["tool_span_id"], (
+            f"Tool '{tool_name}' active span id={result['active_span_id']} "
+            f"does not match its own tool span id={result['tool_span_id']}. "
+            "This indicates context cross-contamination between parallel threads."
+        )
+        assert result["active_span_name"] == tool_name, (
+            f"Tool '{tool_name}' active span name='{result['active_span_name']}' "
+            f"does not match expected name='{tool_name}'. "
+            "Another tool's span is active in this thread's context."
+        )
+
+    # All tool span IDs should be unique (no duplicates)
+    tool_span_ids = [r["tool_span_id"] for r in results]
+    assert len(set(tool_span_ids)) == num_parallel_tools, (
+        f"Expected {num_parallel_tools} unique tool span IDs, got {len(set(tool_span_ids))}. Duplicate spans detected."
+    )
+
+
+@given(nesting_depth=st.integers(min_value=1, max_value=5))
+@settings(max_examples=100)
+def test_property_context_restoration_after_exit(nesting_depth: int) -> None:
+    """Property 4: Context restoration after TraceContext exit.
+
+    For any TraceContext usage, after __exit__ completes, the OTel current span
+    should be restored to the span that was active before __enter__ was called.
+
+    This test creates nested TraceContext instances to a random depth (1-5) and
+    verifies that after each __exit__, the current span is correctly restored to
+    the span that was active before the corresponding __enter__.
+
+    **Validates: Requirements 3.3**
+    """
+    tracer = RecordingTracer()
+
+    # Define span types to cycle through for nested contexts
+    span_types = [SpanType.AGENT, SpanType.TOOL, SpanType.LLM, SpanType.SUB_AGENT, SpanType.TOOL]
+
+    # Before any context is entered, current span should be None
+    assert get_current_span() is None
+
+    # Build nested contexts: enter them one by one, tracking each span
+    contexts: list[TraceContext] = []
+    spans: list[Span] = []
+
+    for depth in range(nesting_depth):
+        span_type = span_types[depth % len(span_types)]
+        name = f"span_depth_{depth}"
+        ctx = TraceContext(tracer, name, span_type)
+        span = ctx.__enter__()
+        contexts.append(ctx)
+        spans.append(span)
+
+        # After entering, the current span should be the one we just created
+        assert get_current_span() is span, (
+            f"After entering depth {depth}, current span should be '{name}' (id={span.id}), but got {get_current_span()!r}"
+        )
+
+        # Verify parent relationship: each span's parent should be the previous span
+        if depth > 0:
+            assert span.parent_id == spans[depth - 1].id, (
+                f"Span at depth {depth} should have parent_id={spans[depth - 1].id}, but got parent_id={span.parent_id}"
+            )
+        else:
+            # The first span should have no parent (None was current before entering)
+            assert span.parent_id is None, f"Root span at depth 0 should have parent_id=None, but got parent_id={span.parent_id}"
+
+    # Now exit contexts in reverse order (LIFO) and verify restoration
+    for depth in range(nesting_depth - 1, -1, -1):
+        ctx = contexts[depth]
+        ctx.__exit__(None, None, None)
+
+        if depth > 0:
+            # After exiting this context, the current span should be the parent span
+            expected_span = spans[depth - 1]
+            actual_span = get_current_span()
+            assert actual_span is expected_span, (
+                f"After exiting depth {depth}, current span should be restored to "
+                f"'{expected_span.name}' (id={expected_span.id}), "
+                f"but got {actual_span!r}"
+            )
+        else:
+            # After exiting the outermost context, current span should be None
+            assert get_current_span() is None, (
+                f"After exiting the outermost context (depth 0), current span should be None, but got {get_current_span()!r}"
+            )
+
+    # Final verification: no span should be active
+    assert get_current_span() is None, "After all contexts have exited, no span should be active"
+
+
+@given(num_tracers=st.integers(min_value=1, max_value=5))
+@settings(max_examples=100)
+def test_property_lifo_deactivation_order(num_tracers: int) -> None:
+    """Property 2: LIFO deactivation order.
+
+    For any sequence of activate_span calls across K tracers in a CompositeTracer,
+    calling deactivate_span should restore the OTel context to the state before
+    the corresponding activate_span, following LIFO (last-in-first-out) order.
+
+    This test creates K OTel-context-aware tracers in a CompositeTracer, activates
+    a span, then deactivates it, and verifies the OTel current span is restored
+    to the pre-activation state.
+
+    **Validates: Requirements 2.3**
+    """
+    from opentelemetry import context as otel_context
+    from opentelemetry import trace as otel_trace_api
+    from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
+
+    class OTelContextTracer(BaseTracer):
+        """Tracer that modifies OTel context on activate/deactivate, similar to JaegerTracer.
+
+        Each instance creates its own OTel span and attaches it to the global
+        OTel context on activate_span, then detaches on deactivate_span.
+        """
+
+        def __init__(self, tracer_id: int) -> None:
+            self.tracer_id = tracer_id
+
+        def start_span(
+            self,
+            name: str,
+            span_type: SpanType,
+            inputs: dict[str, Any] | None = None,
+            parent_span: Span | None = None,
+            attributes: dict[str, Any] | None = None,
+        ) -> Span:
+            # Create a unique OTel span for this tracer
+            otel_span = NonRecordingSpan(
+                context=SpanContext(
+                    trace_id=0xAAAABBBBCCCCDDDD0000000000000000 + self.tracer_id,
+                    span_id=0x1111222233330000 + self.tracer_id,
+                    is_remote=False,
+                    trace_flags=TraceFlags(TraceFlags.SAMPLED),
+                )
+            )
+            return Span(
+                id=str(uuid.uuid4()),
+                name=name,
+                type=span_type,
+                vendor_obj=otel_span,
+            )
+
+        def end_span(
+            self,
+            span: Span,
+            outputs: Any = None,
+            error: Exception | None = None,
+            attributes: dict[str, Any] | None = None,
+        ) -> None:
+            pass
+
+        def activate_span(self, span: Span) -> Any | None:  # noqa: ANN401
+            """Attach the OTel span to the global context, like JaegerTracer does."""
+            otel_span = span.vendor_obj
+            if otel_span is None:
+                return None
+            new_ctx = otel_trace_api.set_span_in_context(cast(otel_trace_api.Span, otel_span))
+            token = otel_context.attach(new_ctx)
+            return token
+
+        def deactivate_span(self, token: Any | None) -> None:  # noqa: ANN401
+            """Detach the OTel context, restoring the previous state."""
+            if token is None:
+                return
+            otel_context.detach(token)
+
+    # Set up a known "pre-activation" OTel context with a parent span
+    parent_span_context = SpanContext(
+        trace_id=0xDEADBEEFDEADBEEF0000000000000000,
+        span_id=0xCAFEBABECAFE0000,
+        is_remote=False,
+        trace_flags=TraceFlags(TraceFlags.SAMPLED),
+    )
+    parent_otel_span = NonRecordingSpan(context=parent_span_context)
+
+    # Attach the parent span to establish the pre-activation state
+    pre_ctx = otel_trace_api.set_span_in_context(parent_otel_span)
+    pre_token = otel_context.attach(pre_ctx)
+
+    try:
+        # Capture the pre-activation OTel current span
+        pre_activation_span = otel_trace_api.get_current_span()
+        assert pre_activation_span is parent_otel_span, "Pre-activation span should be the parent span we just attached"
+
+        # Create K OTel-context-aware tracers and compose them
+        tracers: list[BaseTracer] = [OTelContextTracer(i) for i in range(num_tracers)]
+        composite = CompositeTracer(tracers)
+
+        # Create a span via the CompositeTracer
+        span = composite.start_span("test-span", SpanType.TOOL)
+
+        # Activate the span — this will call activate_span on each tracer,
+        # each of which attaches its own OTel span to the context
+        activate_token = composite.activate_span(span)
+
+        # After activation, the OTel current span should NOT be the parent span
+        # (it should be the last tracer's span, since each tracer overwrites)
+        post_activation_span = otel_trace_api.get_current_span()
+        if num_tracers > 0:
+            assert post_activation_span is not parent_otel_span, (
+                "After activation, the OTel current span should have been changed by the tracers' activate_span calls"
+            )
+
+        # Deactivate the span — this should restore the OTel context
+        # to the pre-activation state (LIFO unwinding)
+        composite.deactivate_span(activate_token)
+
+        # CRITICAL PROPERTY: After deactivation, the OTel current span
+        # should be exactly the same as before activation
+        post_deactivation_span = otel_trace_api.get_current_span()
+        assert post_deactivation_span is parent_otel_span, (
+            f"After deactivate_span, the OTel current span should be restored "
+            f"to the pre-activation parent span. "
+            f"Expected: {parent_otel_span!r} (trace_id={parent_span_context.trace_id:#x}), "
+            f"Got: {post_deactivation_span!r}. "
+            f"This indicates LIFO deactivation order is broken with {num_tracers} tracers."
+        )
+
+        # Also verify the span context attributes match exactly
+        restored_ctx = post_deactivation_span.get_span_context()
+        assert restored_ctx.trace_id == parent_span_context.trace_id, (
+            f"Restored trace_id {restored_ctx.trace_id:#x} != expected {parent_span_context.trace_id:#x}"
+        )
+        assert restored_ctx.span_id == parent_span_context.span_id, (
+            f"Restored span_id {restored_ctx.span_id:#x} != expected {parent_span_context.span_id:#x}"
+        )
+    finally:
+        # Always restore the OTel context to clean state
+        otel_context.detach(pre_token)

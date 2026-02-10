@@ -208,7 +208,11 @@ class CompositeTracer(BaseTracer):
             return
 
         tokens = token
-        for idx, tracer in enumerate(self.tracers):
+        # Deactivate in reverse (LIFO) order to correctly unwind the OTel context stack.
+        # activate_span attaches contexts in forward order (0, 1, ..., K-1), so
+        # deactivation must detach in reverse order (K-1, ..., 1, 0) to restore
+        # the pre-activation state.
+        for idx, tracer in reversed(list(enumerate(self.tracers))):
             t = tokens.get(idx)
             if t is None:
                 continue
