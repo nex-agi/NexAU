@@ -73,6 +73,7 @@ class SubAgentManager:
         context: dict[str, Any] | None = None,
         parent_agent_state: AgentState | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
+        parallel_execution_id: str | None = None,
     ) -> str:
         """Call a sub-agent like a tool call.
 
@@ -148,6 +149,10 @@ class SubAgentManager:
                 if current_context:
                     # Use context from current agent context if not explicitly provided
                     effective_context = current_context.context.copy()
+
+            # Store parallel_execution_id in agent_state if provided
+            if parallel_execution_id and parent_agent_state:
+                parent_agent_state.set_global_value("parallel_execution_id", parallel_execution_id)
 
             result = sub_agent.run(
                 message=message,

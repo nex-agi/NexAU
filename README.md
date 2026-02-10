@@ -209,3 +209,4 @@ Artifacts to inspect locally (and that CI uploads to Codecov):
 
 - `mypy_reports/type_cobertura/cobertura.xml` plus `mypy_reports/type_html/index.html` for type coverage.
 - `coverage.xml` plus `htmlcov/index.html` for runtime test coverage.
+# Trigger CI with updated tests

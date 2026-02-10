@@ -182,13 +182,14 @@ class BeforeToolHookInput:
     tool_name: str
     tool_call_id: str
     tool_input: dict[str, Any]
+    parallel_execution_id: str | None = None
 
 
 @dataclass
 class AfterToolHookInput(BeforeToolHookInput):
     """Input data passed to after_tool_hooks."""
 
-    tool_output: Any
+    tool_output: Any = None
 
 
 @dataclass

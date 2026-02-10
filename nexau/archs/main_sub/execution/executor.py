@@ -720,6 +720,8 @@ class Executor:
         context_dict = current_context.context.copy() if current_context else None
 
         executor_id = str(uuid.uuid4())
+        parallel_execution_id = str(uuid.uuid4())
+
         tool_executor = ThreadPoolExecutor()
         subagent_executor = ThreadPoolExecutor(
             max_workers=self.max_running_subagents,
@@ -740,6 +742,8 @@ class Executor:
             else:
                 tool_call.tool_call_id = base_id
             seen_tool_call_ids[base_id] += 1
+            # Set parallel execution ID for grouping
+            tool_call.parallel_execution_id = parallel_execution_id
 
         # Handle duplicate sub_agent_call_ids by adding suffixes
         seen_sub_agent_call_ids: defaultdict[str, int] = defaultdict(int)
@@ -751,6 +755,8 @@ class Executor:
             else:
                 sub_agent_call.sub_agent_call_id = base_id
             seen_sub_agent_call_ids[base_id] += 1
+            # Set parallel execution ID for grouping
+            sub_agent_call.parallel_execution_id = parallel_execution_id
 
         serial_tool_names = set(self.serial_tool_name)
 
@@ -976,6 +982,7 @@ class Executor:
                 tool_call.tool_name,
                 converted_params,
                 tool_call_id=tool_call_id,
+                parallel_execution_id=tool_call.parallel_execution_id,
             )
 
             return (tool_call.tool_name, result, False)
@@ -999,6 +1006,7 @@ class Executor:
                 context=context,
                 parent_agent_state=parent_agent_state,
                 custom_llm_client_provider=custom_llm_client_provider,
+                parallel_execution_id=sub_agent_call.parallel_execution_id,
             )
 
             return sub_agent_call.agent_name, result, False

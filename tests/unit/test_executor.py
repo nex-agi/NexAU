@@ -1394,3 +1394,258 @@ class TestExecutorEdgeCases:
 
             assert result == "Batch result"
             mock_batch.assert_called_once_with("sub_agent", test_file, "json", "Process {id}")
+
+
+class TestExecutorParallelExecutionId:
+    """Test parallel_execution_id generation and propagation in Executor."""
+
+    def test_executor_assigns_same_parallel_execution_id_to_all_tool_calls(self, mock_llm_config, agent_state):
+        """Test that all tool calls in the same batch get the same parallel_execution_id."""
+        from nexau.archs.main_sub.execution.hooks import FunctionMiddleware
+
+        captured_parallel_execution_ids = []
+
+        def mock_tool1() -> str:
+            return "result1"
+
+        def mock_tool2() -> str:
+            return "result2"
+
+        def before_tool_hook(hook_input):
+            captured_parallel_execution_ids.append(hook_input.parallel_execution_id)
+            return HookResult()
+
+        middleware = FunctionMiddleware(before_tool_hook=before_tool_hook)
+
+        tool1 = Tool(
+            name="tool1",
+            description="Test tool 1",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            implementation=mock_tool1,
+        )
+
+        tool2 = Tool(
+            name="tool2",
+            description="Test tool 2",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            implementation=mock_tool2,
+        )
+
+        executor = Executor(
+            agent_name="test_agent",
+            agent_id="test_id",
+            tool_registry={"tool1": tool1, "tool2": tool2},
+            sub_agents={},
+            stop_tools=set(),
+            openai_client=Mock(),
+            llm_config=mock_llm_config,
+            middlewares=[middleware],
+        )
+
+        # Create parsed response with multiple tool calls
+        parsed_response = ParsedResponse(
+            original_response="Test",
+            tool_calls=[
+                ToolCall(tool_name="tool1", parameters={}),
+                ToolCall(tool_name="tool2", parameters={}),
+            ],
+            sub_agent_calls=[],
+            batch_agent_calls=[],
+        )
+
+        # Execute the parsed response
+        executor._execute_parsed_calls(parsed_response, agent_state)
+
+        # Verify all tool calls received the same parallel_execution_id
+        assert len(captured_parallel_execution_ids) == 2
+        assert captured_parallel_execution_ids[0] == captured_parallel_execution_ids[1]
+        assert captured_parallel_execution_ids[0] is not None
+
+    def test_executor_assigns_same_parallel_execution_id_to_all_subagent_calls(self, mock_llm_config, agent_state):
+        """Test that all sub-agent calls in the same batch get the same parallel_execution_id."""
+        from nexau.archs.main_sub.config.config import AgentConfig
+
+        # Create sub-agent configs
+        sub_agent_config = AgentConfig(
+            name="test_sub_agent",
+            system_prompt="You are a test sub-agent",
+            llm_config=mock_llm_config,
+        )
+
+        captured_parallel_execution_ids = []
+
+        # Mock the sub-agent manager to capture parallel_execution_id
+        with patch("nexau.archs.main_sub.execution.executor.SubAgentManager") as mock_subagent_manager_cls:
+            mock_manager = Mock()
+
+            def mock_call_sub_agent(*args, **kwargs):
+                captured_parallel_execution_ids.append(kwargs.get("parallel_execution_id"))
+                return "sub agent result"
+
+            mock_manager.call_sub_agent = mock_call_sub_agent
+            mock_subagent_manager_cls.return_value = mock_manager
+
+            executor = Executor(
+                agent_name="test_agent",
+                agent_id="test_id",
+                tool_registry={},
+                sub_agents={"test_sub_agent": sub_agent_config},
+                stop_tools=set(),
+                openai_client=Mock(),
+                llm_config=mock_llm_config,
+            )
+
+            # Create parsed response with multiple sub-agent calls
+            parsed_response = ParsedResponse(
+                original_response="Test",
+                tool_calls=[],
+                sub_agent_calls=[
+                    SubAgentCall(agent_name="test_sub_agent", message="task1"),
+                    SubAgentCall(agent_name="test_sub_agent", message="task2"),
+                ],
+                batch_agent_calls=[],
+            )
+
+            # Execute the parsed response
+            executor._execute_parsed_calls(parsed_response, agent_state)
+
+            # Verify all sub-agent calls received the same parallel_execution_id
+            assert len(captured_parallel_execution_ids) == 2
+            assert captured_parallel_execution_ids[0] == captured_parallel_execution_ids[1]
+            assert captured_parallel_execution_ids[0] is not None
+
+    def test_executor_assigns_different_parallel_execution_ids_to_different_batches(self, mock_llm_config, agent_state):
+        """Test that different execution batches get different parallel_execution_ids."""
+        from nexau.archs.main_sub.execution.hooks import FunctionMiddleware
+
+        captured_parallel_execution_ids = []
+
+        def mock_tool() -> str:
+            return "result"
+
+        def before_tool_hook(hook_input):
+            captured_parallel_execution_ids.append(hook_input.parallel_execution_id)
+            return HookResult()
+
+        middleware = FunctionMiddleware(before_tool_hook=before_tool_hook)
+
+        tool = Tool(
+            name="test_tool",
+            description="Test tool",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            implementation=mock_tool,
+        )
+
+        executor = Executor(
+            agent_name="test_agent",
+            agent_id="test_id",
+            tool_registry={"test_tool": tool},
+            sub_agents={},
+            stop_tools=set(),
+            openai_client=Mock(),
+            llm_config=mock_llm_config,
+            middlewares=[middleware],
+        )
+
+        # Execute first batch
+        parsed_response1 = ParsedResponse(
+            original_response="Test 1",
+            tool_calls=[
+                ToolCall(tool_name="test_tool", parameters={}),
+                ToolCall(tool_name="test_tool", parameters={}),
+            ],
+            sub_agent_calls=[],
+            batch_agent_calls=[],
+        )
+        executor._execute_parsed_calls(parsed_response1, agent_state)
+
+        # Execute second batch
+        parsed_response2 = ParsedResponse(
+            original_response="Test 2",
+            tool_calls=[
+                ToolCall(tool_name="test_tool", parameters={}),
+            ],
+            sub_agent_calls=[],
+            batch_agent_calls=[],
+        )
+        executor._execute_parsed_calls(parsed_response2, agent_state)
+
+        # Verify: first 2 calls have same ID, third call has different ID
+        assert len(captured_parallel_execution_ids) == 3
+        assert captured_parallel_execution_ids[0] == captured_parallel_execution_ids[1]
+        assert captured_parallel_execution_ids[0] != captured_parallel_execution_ids[2]
+
+    def test_executor_assigns_parallel_execution_id_to_mixed_calls(self, mock_llm_config, agent_state):
+        """Test that both tool calls and sub-agent calls in the same batch get the same parallel_execution_id."""
+        from nexau.archs.main_sub.config.config import AgentConfig
+        from nexau.archs.main_sub.execution.hooks import FunctionMiddleware
+
+        captured_tool_parallel_id = None
+        captured_subagent_parallel_id = None
+
+        def mock_tool() -> str:
+            return "tool result"
+
+        def before_tool_hook(hook_input):
+            nonlocal captured_tool_parallel_id
+            captured_tool_parallel_id = hook_input.parallel_execution_id
+            return HookResult()
+
+        middleware = FunctionMiddleware(before_tool_hook=before_tool_hook)
+
+        tool = Tool(
+            name="test_tool",
+            description="Test tool",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            implementation=mock_tool,
+        )
+
+        # Create sub-agent config
+        sub_agent_config = AgentConfig(
+            name="test_sub_agent",
+            system_prompt="You are a test sub-agent",
+            llm_config=mock_llm_config,
+        )
+
+        # Mock the sub-agent manager to capture parallel_execution_id
+        with patch("nexau.archs.main_sub.execution.executor.SubAgentManager") as mock_subagent_manager_cls:
+            mock_manager = Mock()
+
+            def mock_call_sub_agent(*args, **kwargs):
+                nonlocal captured_subagent_parallel_id
+                captured_subagent_parallel_id = kwargs.get("parallel_execution_id")
+                return "sub agent result"
+
+            mock_manager.call_sub_agent = mock_call_sub_agent
+            mock_subagent_manager_cls.return_value = mock_manager
+
+            executor = Executor(
+                agent_name="test_agent",
+                agent_id="test_id",
+                tool_registry={"test_tool": tool},
+                sub_agents={"test_sub_agent": sub_agent_config},
+                stop_tools=set(),
+                openai_client=Mock(),
+                llm_config=mock_llm_config,
+                middlewares=[middleware],
+            )
+
+            # Create parsed response with both tool calls and sub-agent calls
+            parsed_response = ParsedResponse(
+                original_response="Test",
+                tool_calls=[
+                    ToolCall(tool_name="test_tool", parameters={}),
+                ],
+                sub_agent_calls=[
+                    SubAgentCall(agent_name="test_sub_agent", message="task"),
+                ],
+                batch_agent_calls=[],
+            )
+
+            # Execute the parsed response
+            executor._execute_parsed_calls(parsed_response, agent_state)
+
+            # Verify both tool call and sub-agent call received the same parallel_execution_id
+            assert captured_tool_parallel_id is not None
+            assert captured_subagent_parallel_id is not None
+            assert captured_tool_parallel_id == captured_subagent_parallel_id

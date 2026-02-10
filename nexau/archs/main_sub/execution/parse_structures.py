@@ -39,6 +39,7 @@ class ToolCall:
     raw_content: str | None = None  # Original representation for error reporting/debugging
     tool_call_id: str | None = None
     source: str = "xml"
+    parallel_execution_id: str | None = None  # ID for grouping parallel executions
 
     def __post_init__(self):
         if self.tool_call_id is None:
@@ -58,6 +59,7 @@ class SubAgentCall:
     raw_content: str | None = None  # Original representation for error reporting/debugging
     tool_call_id: str | None = None
     sub_agent_call_id: str | None = None
+    parallel_execution_id: str | None = None  # ID for grouping parallel executions
 
     def __post_init__(self):
         if self.sub_agent_call_id is None:

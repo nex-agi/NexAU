@@ -1037,3 +1037,84 @@ class TestToolExecutorIntegration:
         assert result["_is_stop_tool"] is True
         assert result["hooked"] is True
         hook.assert_called_once()
+
+
+class TestToolExecutorParallelExecutionId:
+    """Test parallel_execution_id propagation in ToolExecutor."""
+
+    def test_execute_tool_passes_parallel_execution_id_to_before_hook(self, agent_state):
+        """Test that parallel_execution_id is passed to before_tool hook."""
+        captured_parallel_execution_id = None
+
+        def mock_tool(x: int) -> dict:
+            return {"result": x * 2}
+
+        def before_hook(hook_input):
+            nonlocal captured_parallel_execution_id
+            captured_parallel_execution_id = hook_input.parallel_execution_id
+            return HookResult()
+
+        tool = Tool(
+            name="test_tool",
+            description="Test tool",
+            input_schema={"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]},
+            implementation=mock_tool,
+        )
+
+        middleware_manager = MiddlewareManager([FunctionMiddleware(before_tool_hook=before_hook)])
+
+        executor = ToolExecutor(
+            tool_registry={"test_tool": tool},
+            stop_tools=set(),
+            middleware_manager=middleware_manager,
+        )
+
+        # Execute tool with parallel_execution_id
+        executor.execute_tool(
+            agent_state=agent_state,
+            tool_name="test_tool",
+            parameters={"x": 5},
+            tool_call_id="call_123",
+            parallel_execution_id="test-exec-id-999",
+        )
+
+        # Verify hook received parallel_execution_id
+        assert captured_parallel_execution_id == "test-exec-id-999"
+
+    def test_execute_tool_without_parallel_execution_id(self, agent_state):
+        """Test that tool execution works without parallel_execution_id (backward compatibility)."""
+        captured_parallel_execution_id = "not_set"
+
+        def mock_tool(x: int) -> dict:
+            return {"result": x * 2}
+
+        def before_hook(hook_input):
+            nonlocal captured_parallel_execution_id
+            captured_parallel_execution_id = hook_input.parallel_execution_id
+            return HookResult()
+
+        tool = Tool(
+            name="test_tool",
+            description="Test tool",
+            input_schema={"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]},
+            implementation=mock_tool,
+        )
+
+        middleware_manager = MiddlewareManager([FunctionMiddleware(before_tool_hook=before_hook)])
+
+        executor = ToolExecutor(
+            tool_registry={"test_tool": tool},
+            stop_tools=set(),
+            middleware_manager=middleware_manager,
+        )
+
+        # Execute tool without parallel_execution_id
+        executor.execute_tool(
+            agent_state=agent_state,
+            tool_name="test_tool",
+            parameters={"x": 5},
+            tool_call_id="call_123",
+        )
+
+        # Verify hook received None for parallel_execution_id
+        assert captured_parallel_execution_id is None

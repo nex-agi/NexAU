@@ -357,6 +357,62 @@ class TestAfterToolHookInput:
         assert hook_input.tool_input == {"param": "value"}
         assert hook_input.tool_output == "result"
 
+    def test_initialization_with_parallel_execution_id(self, agent_state):
+        """Test initialization of AfterToolHookInput with parallel_execution_id."""
+        hook_input = AfterToolHookInput(
+            agent_state=agent_state,
+            tool_name="test_tool",
+            tool_call_id="call_123",
+            tool_input={"param": "value"},
+            tool_output="result",
+            sandbox=LocalSandbox(),
+            parallel_execution_id="uuid-xxx-123",
+        )
+
+        assert hook_input.parallel_execution_id == "uuid-xxx-123"
+
+    def test_parallel_execution_id_optional(self, agent_state):
+        """Test parallel_execution_id is optional and defaults to None."""
+        hook_input = AfterToolHookInput(
+            agent_state=agent_state,
+            tool_name="test_tool",
+            tool_call_id="call_123",
+            tool_input={"param": "value"},
+            tool_output="result",
+            sandbox=LocalSandbox(),
+        )
+
+        assert hook_input.parallel_execution_id is None
+
+
+class TestBeforeToolHookInput:
+    """Tests for BeforeToolHookInput dataclass with parallel_execution_id."""
+
+    def test_initialization_with_parallel_execution_id(self, agent_state):
+        """Test initialization of BeforeToolHookInput with parallel_execution_id."""
+        hook_input = BeforeToolHookInput(
+            agent_state=agent_state,
+            tool_name="test_tool",
+            tool_call_id="call_123",
+            tool_input={"param": "value"},
+            sandbox=LocalSandbox(),
+            parallel_execution_id="uuid-xxx-456",
+        )
+
+        assert hook_input.parallel_execution_id == "uuid-xxx-456"
+
+    def test_parallel_execution_id_defaults_to_none(self, agent_state):
+        """Test parallel_execution_id defaults to None when not provided."""
+        hook_input = BeforeToolHookInput(
+            agent_state=agent_state,
+            tool_name="test_tool",
+            tool_call_id="call_123",
+            tool_input={"param": "value"},
+            sandbox=LocalSandbox(),
+        )
+
+        assert hook_input.parallel_execution_id is None
+
 
 class TestAfterToolHookResult:
     """Tests for AfterToolHookResult dataclass."""
@@ -775,3 +831,53 @@ class TestHookProtocols:
         )
         result = my_hook(hook_input)
         assert isinstance(result, AfterToolHookResult)
+
+
+class TestToolCallParallelExecutionId:
+    """Tests for ToolCall parallel_execution_id field."""
+
+    def test_tool_call_with_parallel_execution_id(self):
+        """Test ToolCall initialization with parallel_execution_id."""
+        tool_call = ToolCall(
+            tool_name="search",
+            parameters={"query": "test"},
+            raw_content="<tool>search</tool>",
+            parallel_execution_id="uuid-parallel-123",
+        )
+
+        assert tool_call.parallel_execution_id == "uuid-parallel-123"
+
+    def test_tool_call_parallel_execution_id_optional(self):
+        """Test ToolCall parallel_execution_id is optional."""
+        tool_call = ToolCall(
+            tool_name="search",
+            parameters={"query": "test"},
+            raw_content="<tool>search</tool>",
+        )
+
+        assert tool_call.parallel_execution_id is None
+
+
+class TestSubAgentCallParallelExecutionId:
+    """Tests for SubAgentCall parallel_execution_id field."""
+
+    def test_sub_agent_call_with_parallel_execution_id(self):
+        """Test SubAgentCall initialization with parallel_execution_id."""
+        sub_agent_call = SubAgentCall(
+            agent_name="research_agent",
+            message="Find information",
+            raw_content="<sub_agent>research</sub_agent>",
+            parallel_execution_id="uuid-parallel-456",
+        )
+
+        assert sub_agent_call.parallel_execution_id == "uuid-parallel-456"
+
+    def test_sub_agent_call_parallel_execution_id_optional(self):
+        """Test SubAgentCall parallel_execution_id is optional."""
+        sub_agent_call = SubAgentCall(
+            agent_name="research_agent",
+            message="Find information",
+            raw_content="<sub_agent>research</sub_agent>",
+        )
+
+        assert sub_agent_call.parallel_execution_id is None

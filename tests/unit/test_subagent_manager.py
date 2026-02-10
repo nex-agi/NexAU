@@ -376,3 +376,145 @@ class TestSubAgentManager:
         assert "Sub-agent finished" in result
         call_args = mock_sub_agent.run.call_args
         assert call_args[1]["custom_llm_client_provider"] is custom_provider
+
+
+class TestSubAgentManagerParallelExecutionId:
+    """Test parallel_execution_id storage and handling in SubAgentManager."""
+
+    @pytest.fixture
+    def mock_sub_agent(self):
+        """Create a mock sub-agent."""
+        sub_agent = Mock()
+        sub_agent.config = Mock()
+        sub_agent.run = Mock(return_value="sub agent result")
+        sub_agent.stop = Mock()
+        sub_agent.agent_id = "mock_sub_agent_id"
+        return sub_agent
+
+    @pytest.fixture
+    def sub_agent_config(self, agent_config):
+        """AgentConfig for a sub-agent."""
+        return agent_config.model_copy(update={"name": "test_sub_agent"})
+
+    @pytest.fixture
+    def sub_agents(self, sub_agent_config):
+        """Create a dictionary of sub-agent configs."""
+        return {"test_sub_agent": sub_agent_config}
+
+    @pytest.fixture
+    def subagent_manager(self, sub_agents):
+        """Create a SubAgentManager instance."""
+        return SubAgentManager(agent_name="parent_agent", sub_agents=sub_agents)
+
+    @patch("nexau.archs.main_sub.agent.Agent")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
+    def test_call_sub_agent_stores_parallel_execution_id_in_parent_state(
+        self,
+        mock_get_context,
+        mock_agent_cls,
+        subagent_manager,
+        mock_sub_agent,
+        agent_state,
+    ):
+        """Test that parallel_execution_id is stored in parent_agent_state.global_storage."""
+        mock_get_context.return_value = None
+        mock_agent_cls.return_value = mock_sub_agent
+
+        test_exec_id = "test-parallel-exec-id-555"
+
+        # Call sub_agent with parallel_execution_id
+        subagent_manager.call_sub_agent(
+            sub_agent_name="test_sub_agent",
+            message="test message",
+            parent_agent_state=agent_state,
+            parallel_execution_id=test_exec_id,
+        )
+
+        # Verify parallel_execution_id was stored in global_storage
+        stored_id = agent_state.global_storage.get("parallel_execution_id")
+        assert stored_id == test_exec_id
+
+    @patch("nexau.archs.main_sub.agent.Agent")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
+    def test_call_sub_agent_without_parallel_execution_id_no_storage(
+        self,
+        mock_get_context,
+        mock_agent_cls,
+        subagent_manager,
+        mock_sub_agent,
+        agent_state,
+    ):
+        """Test that calling without parallel_execution_id doesn't store it in global_storage."""
+        mock_get_context.return_value = None
+        mock_agent_cls.return_value = mock_sub_agent
+
+        # Call sub_agent without parallel_execution_id
+        subagent_manager.call_sub_agent(
+            sub_agent_name="test_sub_agent",
+            message="test message",
+            parent_agent_state=agent_state,
+        )
+
+        # Verify parallel_execution_id was not stored
+        stored_id = agent_state.global_storage.get("parallel_execution_id")
+        assert stored_id is None
+
+    @patch("nexau.archs.main_sub.agent.Agent")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
+    def test_call_sub_agent_without_parent_state_no_error(
+        self,
+        mock_get_context,
+        mock_agent_cls,
+        subagent_manager,
+        mock_sub_agent,
+    ):
+        """Test that parallel_execution_id parameter works without parent_agent_state."""
+        mock_get_context.return_value = None
+        mock_agent_cls.return_value = mock_sub_agent
+
+        # Call sub_agent with parallel_execution_id but without parent_agent_state
+        # Should not raise error
+        result = subagent_manager.call_sub_agent(
+            sub_agent_name="test_sub_agent",
+            message="test message",
+            parallel_execution_id="test-exec-id-666",
+        )
+
+        # Should complete successfully
+        assert "sub agent result" in result
+
+    @patch("nexau.archs.main_sub.agent.Agent")
+    @patch("nexau.archs.main_sub.agent_context.get_context")
+    def test_call_sub_agent_parallel_execution_id_overwrites_previous(
+        self,
+        mock_get_context,
+        mock_agent_cls,
+        subagent_manager,
+        mock_sub_agent,
+        agent_state,
+    ):
+        """Test that parallel_execution_id can be overwritten with new value."""
+        mock_get_context.return_value = None
+        mock_agent_cls.return_value = mock_sub_agent
+
+        # First call with exec_id_1
+        subagent_manager.call_sub_agent(
+            sub_agent_name="test_sub_agent",
+            message="message 1",
+            parent_agent_state=agent_state,
+            parallel_execution_id="exec-id-1",
+        )
+
+        stored_id = agent_state.global_storage.get("parallel_execution_id")
+        assert stored_id == "exec-id-1"
+
+        # Second call with exec_id_2 should overwrite
+        subagent_manager.call_sub_agent(
+            sub_agent_name="test_sub_agent",
+            message="message 2",
+            parent_agent_state=agent_state,
+            parallel_execution_id="exec-id-2",
+        )
+
+        stored_id = agent_state.global_storage.get("parallel_execution_id")
+        assert stored_id == "exec-id-2"

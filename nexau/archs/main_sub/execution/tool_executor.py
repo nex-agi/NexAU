@@ -70,6 +70,7 @@ class ToolExecutor:
         tool_name: str,
         parameters: dict[str, Any],
         tool_call_id: str,
+        parallel_execution_id: str | None = None,
     ) -> JsonDict:
         """Execute a tool with given parameters.
 
@@ -102,6 +103,7 @@ class ToolExecutor:
                 tool_name=tool_name,
                 tool_call_id=tool_call_id,
                 tool_input=tool_parameters,
+                parallel_execution_id=parallel_execution_id,
             )
             tool_parameters = self.middleware_manager.run_before_tool(before_input)
 
