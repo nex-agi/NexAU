@@ -1645,7 +1645,6 @@ def openai_to_gemini_rest_messages(messages: list[dict[str, Any]]) -> tuple[list
                 if func_name is None:
                     raise ValueError("Function name is required for tool result messages")
             resp_part = {"functionResponse": {"name": func_name, "response": {"result": content}}}
-
             if gemini_contents and gemini_contents[-1]["role"] == "user":
                 # Check if it's already a tool response block
                 if any("functionResponse" in p for p in gemini_contents[-1]["parts"]):
@@ -1709,6 +1708,14 @@ def call_llm_with_gemini_rest(
     if llm_config.top_p is not None:
         generation_config["topP"] = llm_config.top_p
 
+    # Optional: Gemini's topK sampling parameter, taken from extra_params["top_k"]
+    top_k = llm_config.extra_params.get("top_k")
+    if top_k is not None:
+        try:
+            generation_config["topK"] = int(top_k)
+        except (TypeError, ValueError):
+            pass
+
     request_body: dict[str, Any] = {
         "contents": contents,
         "generationConfig": generation_config,
@@ -1722,19 +1729,15 @@ def call_llm_with_gemini_rest(
         if gemini_tools:
             request_body["tools"] = [{"functionDeclarations": gemini_tools}]
 
-    # Handle thinking budget
-    thinking_budget = llm_config.extra_params.get("thinking_budget")
-    if thinking_budget:
-        generation_config["thinkingConfig"] = {
-            "includeThoughts": llm_config.extra_params.get("include_thoughts", True),
-            "thoughtBudgetTokens": int(thinking_budget),
-        }
+    thinking_config = llm_config.extra_params.get("thinkingConfig")
+    if thinking_config:
+        generation_config["thinkingConfig"] = thinking_config
 
     # Check if tracing is active (there's a current span and we have a tracer)
     should_trace = tracer is not None and get_current_span() is not None
 
     def do_request() -> dict[str, Any]:
-        response = requests.post(url, json=request_body, timeout=llm_config.timeout or 60)
+        response = requests.post(url, json=request_body, timeout=llm_config.timeout or 120)
         response.raise_for_status()
         return response.json()
 

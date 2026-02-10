@@ -542,7 +542,7 @@ class TestCallLLMWithGeminiRest:
 
     @patch("nexau.archs.main_sub.execution.llm_caller.requests.post")
     def test_call_with_thinking_budget(self, mock_post):
-        """Test Gemini REST API call with thinking budget."""
+        """Test Gemini REST API call with thinking config via extra_params."""
         mock_response = Mock()
         mock_response.json.return_value = {
             "candidates": [
@@ -556,19 +556,20 @@ class TestCallLLMWithGeminiRest:
         mock_response.raise_for_status = Mock()
         mock_post.return_value = mock_response
 
+        # thinkingConfig is passed via extra_params (LLMConfig **kwargs)
         llm_config = LLMConfig(
             model="gemini-2.5-flash-thinking",
             base_url="https://generativelanguage.googleapis.com",
             api_key="test-key",
             api_type="gemini_rest",
-            thinking_budget=1024,
+            thinkingConfig={"thoughtBudgetTokens": 1024},
         )
 
         kwargs = {"messages": [{"role": "user", "content": "Think about this"}]}
 
         call_llm_with_gemini_rest(kwargs, llm_config=llm_config)
 
-        # Verify thinking config was included
+        # Verify thinking config from extra_params was included in request
         call_args = mock_post.call_args
         request_body = call_args.kwargs["json"]
         assert "thinkingConfig" in request_body["generationConfig"]
