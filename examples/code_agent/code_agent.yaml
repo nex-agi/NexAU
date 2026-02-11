@@ -1,82 +1,65 @@
-variables:
-  max_tokens: 64000
-
 type: agent
 name: nexau_code_agent
-max_context_tokens: ${variables.max_tokens}
-system_prompt: ./system-workflow.md
+max_context_tokens: 200000
+system_prompt: ./systemprompt.md
 system_prompt_type: jinja
-tool_call_mode: openai # xml, openai or anthropic
+tool_call_mode: openai # xml, openai or anthorpic
+max_iterations: 300
 llm_config: # Support environment variable replacement in YAML config
   model: ${env.LLM_MODEL}
   base_url: ${env.LLM_BASE_URL}
   api_key: ${env.LLM_API_KEY}
-  stream: false
-  max_tokens: ${variables.max_tokens}
+  max_tokens: 64000
+  temperature: 0.7
+  stream: False
   api_type: openai_chat_completion # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
-sandbox_config:
-  type: local
-  status_after_run: none
-tools: # Tool definition and implementation (binding) are decoupled
+tools: # Tool implementations based on gemini-cli (local Python implementations)
+  # File operations - read_file, write_file, replace
+  - name: read_file
+    yaml_path: ./tools/read_file.tool.yaml
+    binding: tool_impl.read_file:read_file
+  - name: read_many_files
+    yaml_path: ./tools/read_many_files.tool.yaml
+    binding: tool_impl.read_many_files:read_many_files
+  - name: write_file
+    yaml_path: ./tools/write_file.tool.yaml
+    binding: tool_impl.write_file:write_file
+  - name: replace
+    yaml_path: ./tools/replace.tool.yaml
+    binding: tool_impl.replace:replace
+  # Search and navigation - search_file_content, glob, list_directory
+  - name: search_file_content
+    yaml_path: ./tools/search_file_content.tool.yaml
+    binding: tool_impl.search_file_content:search_file_content
+  - name: glob
+    yaml_path: ./tools/Glob.tool.yaml
+    binding: tool_impl.glob_tool:glob
+  - name: list_directory
+    yaml_path: ./tools/list_directory.tool.yaml
+    binding: tool_impl.list_directory:list_directory
+  # Shell command
+  - name: run_shell_command
+    yaml_path: ./tools/run_shell_command.tool.yaml
+    binding: tool_impl.run_shell_command:run_shell_command
+  # Web tools - web_fetch, web_read
   - name: web_search
     yaml_path: ./tools/WebSearch.tool.yaml
     binding: nexau.archs.tool.builtin.web_tool:web_search
   - name: web_read
     yaml_path: ./tools/WebFetch.tool.yaml
     binding: nexau.archs.tool.builtin.web_tool:web_read
-  - name: todo_write
-    yaml_path: ./tools/TodoWrite.tool.yaml
-    binding: nexau.archs.tool.builtin.todo_write:todo_write
-  - name: grep
-    yaml_path: ./tools/Grep.tool.yaml
-    binding: nexau.archs.tool.builtin.file_tools.grep_tool:grep_tool
-  - name: glob
-    yaml_path: ./tools/Glob.tool.yaml
-    binding: nexau.archs.tool.builtin.file_tools.glob_tool:glob_tool
-  - name: file_read
-    yaml_path: ./tools/Read.tool.yaml
-    binding: nexau.archs.tool.builtin.file_tools.file_read_tool:file_read_tool
-  - name: file_write
-    yaml_path: ./tools/Write.tool.yaml
-    binding: nexau.archs.tool.builtin.file_tools.file_write_tool:file_write_tool
-  - name: file_edit
-    yaml_path: ./tools/Edit.tool.yaml
-    binding: nexau.archs.tool.builtin.file_tools.file_edit_tool:file_edit_tool
-  - name: bash
-    yaml_path: ./tools/Bash.tool.yaml
-    binding: nexau.archs.tool.builtin.bash_tool:bash_tool
-  - name: ls
-    yaml_path: ./tools/Ls.tool.yaml
-    binding: nexau.archs.tool.builtin.ls_tool:ls_tool
-  - name: multiedit
-    yaml_path: ./tools/MultiEdit.tool.yaml
-    binding: nexau.archs.tool.builtin.multiedit_tool:multiedit_tool
-  - name: run_code
-    yaml_path: ./tools/RunCode.tool.yaml
-    binding: nexau.archs.tool.builtin.run_code_tool:run_code_tool
-  - name: background_task_manage
-    yaml_path: ./tools/BackgroundTaskManage.tool.yaml
-    binding: nexau.archs.tool.builtin.background_task_manage_tool:background_task_manage_tool
+  # Memory management
+  - name: save_memory
+    yaml_path: ./tools/save_memory.tool.yaml
+    binding: tool_impl.save_memory:save_memory
+  # Task management
+  - name: write_todos
+    yaml_path: ./tools/write_todos.tool.yaml
+    binding: tool_impl.write_todos:write_todos
+  - name: complete_task
+    yaml_path: ./tools/complete_task.tool.yaml
+    binding: tool_impl.complete_task:complete_task
 skills: # Skills are used to hint the agent to solve specific tasks
+  - ./skills/skill-creator
   - ./skills/template-skill
-  - ./skills/theme-factory
-middlewares: # Middlewares are used to modify the behavior of the agent.
-  - import: nexau.archs.main_sub.execution.middleware.context_compaction:ContextCompactionMiddleware
-    params:
-      max_context_tokens: ${variables.max_tokens}
-      auto_compact: true
-      threshold: 0.75  # Trigger compaction when token usage reaches 75%
-      compaction_strategy: "tool_result_compaction"  # "sliding_window" or "tool_result_compaction"
-      keep_user_rounds: 2
-
-  - import: nexau.archs.main_sub.execution.hooks:LoggingMiddleware
-    params:
-      model_logger: "nexau_code_agent"
-      tool_logger: "nexau_code_agent"
-      log_model_calls: true
-tracers:
-  - import: nexau.archs.tracer.adapters.langfuse:LangfuseTracer
-    params:
-      public_key: ${env.LANGFUSE_PUBLIC_KEY}
-      secret_key: ${env.LANGFUSE_SECRET_KEY}
-      host: ${env.LANGFUSE_HOST}
+stop_tools: [complete_task]

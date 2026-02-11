@@ -56,6 +56,13 @@ if _project_root and _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 
+def _ensure_config_dir_on_sys_path(config_path: Path) -> None:
+    """Ensure local config modules (e.g. `tool_impl.*`) are importable."""
+    config_dir = str(config_path.resolve().parent)
+    if config_dir not in sys.path:
+        sys.path.insert(0, config_dir)
+
+
 def get_date():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -266,6 +273,7 @@ def main():
             send_message(message_type, content, metadata=payload)
 
         config_path = Path(yaml_path)
+        _ensure_config_dir_on_sys_path(config_path)
 
         def build_agent_from_config() -> Agent:
             raw_config = load_yaml_with_vars(str(config_path))

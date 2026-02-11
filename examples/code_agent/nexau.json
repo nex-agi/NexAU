@@ -1,0 +1,5 @@
+{
+  "agents": {
+    "code_agent": "code_agent.yaml"
+  }
+}

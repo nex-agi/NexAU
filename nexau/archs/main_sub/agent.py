@@ -47,7 +47,6 @@ from nexau.archs.main_sub.utils.cleanup_manager import cleanup_manager
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
 from nexau.archs.sandbox import (
     BaseSandboxManager,
-    E2BSandboxManager,
     LocalSandboxManager,
     extract_dataclass_init_kwargs,
 )
@@ -495,6 +494,8 @@ class Agent:
         if sandbox_type == "local":
             sandbox_manager_cls = LocalSandboxManager
         elif sandbox_type == "e2b":
+            from nexau.archs.sandbox.e2b_sandbox import E2BSandboxManager
+
             sandbox_manager_cls = E2BSandboxManager
         else:
             raise ValueError(f"Unsupported sandbox type: {sandbox_type}")
