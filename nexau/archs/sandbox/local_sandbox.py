@@ -1186,4 +1186,4 @@ class LocalSandboxManager(BaseSandboxManager[LocalSandbox]):
         return True
 
     def is_running(self) -> bool:
-        return True
+        return self._instance is not None
