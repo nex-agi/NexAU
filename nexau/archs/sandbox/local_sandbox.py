@@ -89,6 +89,24 @@ class LocalSandbox(BaseSandbox):
         else:
             return self.work_dir / p
 
+    def _build_local_envs(self, per_call_envs: dict[str, str] | None = None) -> dict[str, str] | None:
+        """Build environment variables for local subprocess execution.
+
+        Merges os.environ + self.envs + per_call_envs.
+        Returns None if no custom envs are set (subprocess inherits parent env).
+
+        Args:
+            per_call_envs: Optional per-call environment variables
+
+        Returns:
+            Merged envs dict including os.environ, or None to inherit parent env
+        """
+        merged = self._merge_envs(per_call_envs)
+        if merged is None:
+            return None
+        # For local subprocess, we must include os.environ as base
+        return {**os.environ, **merged}
+
     def execute_bash(
         self,
         command: str,
@@ -134,7 +152,7 @@ class LocalSandbox(BaseSandbox):
                     stderr=subprocess.PIPE,
                     text=True,
                     cwd=cwd or str(work_dir),
-                    env=envs,
+                    env=self._build_local_envs(envs),
                 )
                 bg_pid = process.pid
 
@@ -205,7 +223,7 @@ class LocalSandbox(BaseSandbox):
                 stderr=subprocess.PIPE,
                 text=True,
                 cwd=cwd or str(work_dir),
-                env=envs,
+                env=self._build_local_envs(envs),
             )
 
             try:

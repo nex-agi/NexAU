@@ -699,3 +699,58 @@ class TestAgentInitSessionState:
 
         # Non-root agent should have different agent_id
         assert sub_agent.agent_id != root_agent.agent_id
+
+
+class TestAgentContextFromSources:
+    def test_empty_sources(self):
+        ctx = AgentContext.from_sources()
+        assert ctx.context == {}
+
+    def test_initial_context_only(self):
+        ctx = AgentContext.from_sources(initial_context={"a": "1"})
+        assert ctx.context == {"a": "1"}
+
+    def test_template_overrides_initial(self):
+        ctx = AgentContext.from_sources(
+            initial_context={"k": "old"},
+            template={"k": "new"},
+        )
+        assert ctx.context["k"] == "new"
+
+    def test_legacy_context_triggers_deprecation_warning(self):
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ctx = AgentContext.from_sources(legacy_context={"x": "1"})
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert ctx.context == {"x": "1"}
+
+    def test_no_warning_without_legacy_context(self):
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            AgentContext.from_sources(
+                initial_context={"a": "1"},
+                template={"b": "2"},
+            )
+            assert len(w) == 0
+
+    def test_priority_order(self):
+        import warnings
+
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            ctx = AgentContext.from_sources(
+                initial_context={"a": "init", "b": "init"},
+                legacy_context={"b": "legacy", "c": "legacy"},
+                template={"c": "template", "d": "template"},
+            )
+        assert ctx.context == {
+            "a": "init",
+            "b": "legacy",
+            "c": "template",
+            "d": "template",
+        }

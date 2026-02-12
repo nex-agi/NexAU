@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 
 from nexau import AgentConfig
 from nexau.archs.llm.llm_aggregators.events import TransportErrorEvent
+from nexau.archs.main_sub.context_value import ContextValue
 from nexau.archs.session.orm import DatabaseEngine
 from nexau.archs.transports.base import TransportBase
 from nexau.archs.transports.http.config import HTTPConfig
@@ -158,6 +159,7 @@ class SSETransportServer(TransportBase[HTTPConfig]):
                     agent_config=self._default_agent_config,
                     session_id=request.session_id,
                     context=request.context,
+                    variables=request.variables,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -177,6 +179,7 @@ class SSETransportServer(TransportBase[HTTPConfig]):
                     agent_config=self._default_agent_config,
                     session_id=request.session_id,
                     context=request.context,
+                    variables=request.variables,
                 )
                 return AgentResponse(status="success", response=response)
             except Exception as e:
@@ -191,6 +194,7 @@ class SSETransportServer(TransportBase[HTTPConfig]):
         agent_config: AgentConfig,
         session_id: str | None = None,
         context: dict[str, Any] | None = None,
+        variables: ContextValue | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream agent response as SSE events."""
         try:
@@ -200,6 +204,7 @@ class SSETransportServer(TransportBase[HTTPConfig]):
                 agent_config=agent_config,
                 session_id=session_id,
                 context=context,
+                variables=variables,
             ):
                 yield f"data: {event.model_dump_json()}\n\n"
         except Exception as e:

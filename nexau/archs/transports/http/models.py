@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from nexau.archs.main_sub.context_value import ContextValue
 from nexau.core.messages import Message
 
 
@@ -32,6 +33,7 @@ class AgentRequest(BaseModel):
     user_id: str = "default-user"
     session_id: str | None = None
     context: dict[str, Any] | None = None
+    variables: ContextValue | None = None
 
 
 class AgentResponse(BaseModel):

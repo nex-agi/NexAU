@@ -178,6 +178,7 @@ class BaseSandbox(ABC):
     """
 
     sandbox_id: str | None = field(default=None)
+    envs: dict[str, str] = field(default_factory=lambda: {})
     _work_dir: str = field(default_factory=os.getcwd)
     _background_tasks: dict[int, Any] = field(
         default_factory=lambda: {},  # noqa: C408
@@ -188,6 +189,24 @@ class BaseSandbox(ABC):
     @property
     def work_dir(self):
         return Path(self._work_dir)
+
+    def _merge_envs(self, per_call_envs: dict[str, str] | None = None) -> dict[str, str] | None:
+        """Merge instance-level envs with per-call envs.
+
+        Priority: per_call_envs > self.envs (per-call overrides instance-level).
+
+        Args:
+            per_call_envs: Optional per-call environment variables
+
+        Returns:
+            Merged envs dict, or None if both are empty
+        """
+        if not self.envs and not per_call_envs:
+            return None
+        merged = dict(self.envs)
+        if per_call_envs:
+            merged.update(per_call_envs)
+        return merged or None
 
     # Bash command execution methods
 

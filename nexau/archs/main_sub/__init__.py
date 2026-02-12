@@ -13,5 +13,6 @@
 # limitations under the License.
 
 from .agent import Agent
+from .context_value import ContextValue
 
-__all__ = ["Agent"]
+__all__ = ["Agent", "ContextValue"]

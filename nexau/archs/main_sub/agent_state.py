@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from nexau.archs.tool.tool import Tool
 
 from .agent_context import AgentContext, GlobalStorage
+from .context_value import ContextValue
 
 
 class AgentState:
@@ -47,6 +48,7 @@ class AgentState:
         parent_agent_state: Optional["AgentState"] = None,
         sandbox: Optional["BaseSandbox"] = None,
         sandbox_manager: Optional["BaseSandboxManager[Any]"] = None,
+        variables: ContextValue | None = None,
     ):
         """Initialize agent state.
 
@@ -61,6 +63,7 @@ class AgentState:
             executor: Optional executor reference to allow runtime tool injection
             sandbox: Optional sandbox instance (deprecated, use sandbox_manager)
             sandbox_manager: Optional sandbox manager for lazy sandbox access
+            variables: Optional ContextValue with runtime variables
         """
         self.agent_name = agent_name
         self.agent_id = agent_id
@@ -72,6 +75,7 @@ class AgentState:
         self._executor = executor
         self._sandbox = sandbox
         self._sandbox_manager = sandbox_manager
+        self._variables = variables or ContextValue()
 
     def get_context_value(self, key: str, default: Any = None) -> Any:
         """Get a value from the context.
@@ -114,6 +118,40 @@ class AgentState:
             value: The value to set
         """
         self.global_storage.set(key, value)
+
+    def get_variable(self, key: str, default: str | None = None) -> str | None:
+        """Get a runtime variable (not in prompt, not exposed to LLM).
+
+        Args:
+            key: The variable key to retrieve
+            default: Default value if key not found
+
+        Returns:
+            The variable value or default
+        """
+        return self._variables.runtime_vars.get(key, default)
+
+    def get_sandbox_env(self, key: str, default: str | None = None) -> str | None:
+        """Get a sandbox environment variable value.
+
+        Args:
+            key: The sandbox env key to retrieve
+            default: Default value if key not found
+
+        Returns:
+            The sandbox env value or default
+        """
+        return self._variables.sandbox_env.get(key, default)
+
+    @property
+    def all_variables(self) -> dict[str, str]:
+        """All runtime variables."""
+        return dict(self._variables.runtime_vars)
+
+    @property
+    def all_sandbox_env(self) -> dict[str, str]:
+        """All sandbox environment variables."""
+        return dict(self._variables.sandbox_env)
 
     def get_sandbox(self) -> Optional["BaseSandbox"]:
         """Get the sandbox associated with the agent state.

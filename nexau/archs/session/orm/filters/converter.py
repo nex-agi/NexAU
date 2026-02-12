@@ -1018,7 +1018,8 @@ def from_query_string(query: str) -> Filter:
             parts = _split_by_comma_at_depth_zero(inner)
             filters = [_parse_nested_filter(p) for p in parts]
             return AndFilter(filters=filters)
-        if not any(right.startswith(f"{op}.") for op in _VALID_OPERATORS):
+        # 如果 right 不以有效操作符或 "not." 开头，则不是合法的 field=op.value 格式
+        if not right.startswith("not.") and not any(right.startswith(f"{op}.") for op in _VALID_OPERATORS):
             raise ValueError(f"Invalid query string format: {query}")
 
     # 处理 or=(...) 格式
@@ -1032,7 +1033,8 @@ def from_query_string(query: str) -> Filter:
             parts = _split_by_comma_at_depth_zero(inner)
             filters = [_parse_nested_filter(p) for p in parts]
             return OrFilter(filters=filters)
-        if not any(right.startswith(f"{op}.") for op in _VALID_OPERATORS):
+        # 如果 right 不以有效操作符或 "not." 开头，则不是合法的 field=op.value 格式
+        if not right.startswith("not.") and not any(right.startswith(f"{op}.") for op in _VALID_OPERATORS):
             raise ValueError(f"Invalid query string format: {query}")
 
     # 处理 not=filter 格式（逻辑过滤器的 NOT）

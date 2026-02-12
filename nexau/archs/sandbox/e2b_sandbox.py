@@ -260,7 +260,7 @@ class E2BSandbox(BaseSandbox):
                     timeout=int(timeout_seconds),
                     cwd=cwd or str(self.work_dir),
                     user=user,
-                    envs=envs,
+                    envs=self._merge_envs(envs),
                 )
                 cmd_handle = cast("_CommandHandleProtocol", handle)
                 bg_pid: int = cmd_handle.pid
@@ -332,7 +332,7 @@ class E2BSandbox(BaseSandbox):
                         timeout=int(timeout_seconds),
                         cwd=cwd or str(self.work_dir),
                         user=user,
-                        envs=envs,
+                        envs=self._merge_envs(envs),
                     )
                     break
                 except RuntimeError as e:

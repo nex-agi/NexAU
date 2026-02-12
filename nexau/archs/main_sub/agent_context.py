@@ -117,6 +117,40 @@ class AgentContext:
         merged.update(self.get_context_variables())
         return merged
 
+    @classmethod
+    def from_sources(
+        cls,
+        initial_context: dict[str, Any] | None = None,
+        legacy_context: dict[str, Any] | None = None,
+        template: dict[str, str] | None = None,
+    ) -> "AgentContext":
+        """Merge multiple context sources into a single AgentContext.
+
+        Priority (highest last): initial_context < legacy_context < template.
+
+        Args:
+            initial_context: Base context from agent config.
+            legacy_context: Deprecated run()/run_async() context dict.
+                If provided, a DeprecationWarning is emitted.
+            template: ContextValue.template variables (highest priority).
+
+        Returns:
+            A new AgentContext with all sources merged.
+        """
+        import warnings
+
+        merged: dict[str, Any] = dict(initial_context or {})
+        if legacy_context:
+            warnings.warn(
+                "Passing 'context' dict to run()/run_async() is deprecated. Use 'variables=ContextValue(template={...})' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            merged.update(legacy_context)
+        if template:
+            merged.update(template)
+        return cls(merged)
+
 
 # Thread-local storage for the current context
 _current_context: AgentContext | None = None

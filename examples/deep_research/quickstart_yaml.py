@@ -59,13 +59,13 @@ def main():
         # web_message = '做一个孙悟空介绍的的html网页'
         # web_message = "List all commits in https://github.com/nex-agi/bp-sandbox"
         # web_message = "Show me details of the skill `algorithmic-art`"
-        web_message = "请使用sub_agent 查一下今天的天气"
+        web_message = "请使用sub_agent 查一下今天上海的天气"
         print(f"\nUser: {web_message}")
         print("\nAgent Response:")
         print("-" * 30)
 
         response = deep_research_agent.run(
-            web_message,
+            message=web_message,
             context={
                 "date": get_date(),
             },

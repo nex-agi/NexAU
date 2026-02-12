@@ -196,6 +196,7 @@ class StdioTransport(TransportBase[StdioConfig]):
                 agent_config=None,  # Use default
                 session_id=request.session_id,
                 context=request.context,
+                variables=request.variables,
             ):
                 self._write_line(JsonRpcEventFrame(id=rpc_id, event=event.model_dump()).model_dump_json())
 
@@ -231,6 +232,7 @@ class StdioTransport(TransportBase[StdioConfig]):
                 agent_config=None,  # Use default
                 session_id=request.session_id,
                 context=request.context,
+                variables=request.variables,
             )
 
             self._write_line(JsonRpcSuccessResponse(id=rpc_id, result=result).model_dump_json())

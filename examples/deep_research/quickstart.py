@@ -92,7 +92,7 @@ When completing a task, you need to update the todo list. Todo list: {{current_t
         print("-" * 30)
 
         response = deep_research_agent.run(
-            web_message,
+            message=web_message,
             context={
                 "date": get_date(),
             },

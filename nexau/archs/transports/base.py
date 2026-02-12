@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from nexau.archs.llm.llm_aggregators.events import Event
 from nexau.archs.main_sub.agent import Agent
+from nexau.archs.main_sub.context_value import ContextValue
 from nexau.archs.main_sub.execution.hooks import Middleware
 from nexau.archs.main_sub.execution.middleware.agent_events_middleware import AgentEventsMiddleware
 from nexau.archs.session import SessionManager
@@ -152,6 +153,7 @@ class TransportBase[TTransportConfig](ABC):
         agent_config: AgentConfig | None = None,
         session_id: str | None = None,
         context: dict[str, Any] | None = None,
+        variables: ContextValue | None = None,
     ) -> str:
         """Handle a single request.
 
@@ -194,12 +196,13 @@ class TransportBase[TTransportConfig](ABC):
                 session_manager=self._session_manager,
                 user_id=user_id,
                 session_id=session_id,
+                variables=variables,
             )
 
         agent: Agent = await asyncio.to_thread(create_agent)
 
         # Run agent (agent handles locking and persistence internally)
-        response = cast(str, await agent.run_async(message=message, context=context))
+        response = cast(str, await agent.run_async(message=message, context=context, variables=variables))
 
         duration = (datetime.now() - start_time).total_seconds()
         logger.info("handle_request completed in %.2fs (session_id: %s)", duration, session_id)
@@ -214,6 +217,7 @@ class TransportBase[TTransportConfig](ABC):
         agent_config: AgentConfig | None = None,
         session_id: str | None = None,
         context: dict[str, Any] | None = None,
+        variables: ContextValue | None = None,
     ) -> AsyncGenerator[Event]:
         """Handle a streaming request.
 
@@ -258,12 +262,13 @@ class TransportBase[TTransportConfig](ABC):
                 session_manager=self._session_manager,
                 user_id=user_id,
                 session_id=session_id,
+                variables=variables,
             )
 
         agent: Agent = await asyncio.to_thread(create_agent)
 
         async def run_agent() -> str:
-            return cast(str, await agent.run_async(message=message, context=context))
+            return cast(str, await agent.run_async(message=message, context=context, variables=variables))
 
         agent_task = asyncio.create_task(run_agent())
 

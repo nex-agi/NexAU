@@ -35,6 +35,7 @@ from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import AgentConfig, ConfigError, ExecutionConfig
+from nexau.archs.main_sub.context_value import ContextValue
 from nexau.archs.main_sub.execution.executor import Executor
 from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.prompt_builder import PromptBuilder
@@ -77,6 +78,7 @@ class Agent:
         user_id: str | None = None,
         session_id: str | None = None,
         is_root: bool = True,
+        variables: ContextValue | None = None,
     ):
         """Initialize agent with configuration.
 
@@ -89,12 +91,14 @@ class Agent:
             user_id: Optional user ID for persistence
             session_id: Optional session ID for persistence
             is_root: Whether this is the root agent (default True). Set to False for sub-agents.
+            variables: Optional ContextValue with structured runtime parameters
         """
         logger.info("Initializing Agent (%s)", config.name)
 
         # Store basic config
         self._is_root = is_root
         self.config: AgentConfig = config
+        self._variables = variables
         self._user_id = user_id or f"local_user_{uuid.uuid4().hex[:8]}"
         self._session_id = session_id or f"local_{uuid.uuid4().hex[:8]}"
 
@@ -484,9 +488,14 @@ class Agent:
 
     def _initialize_sandbox(self) -> None:
         """Initialize sandbox."""
-        sandbox_config = self.config.sandbox_config
-        if sandbox_config is None:
-            sandbox_config = {}
+        # Shallow copy to avoid mutating the shared config reference
+        sandbox_config = dict(self.config.sandbox_config) if self.config.sandbox_config else {}
+
+        # Merge sandbox_env from variables into sandbox_config["envs"]
+        if self._variables and self._variables.sandbox_env:
+            existing_envs: dict[str, str] = sandbox_config.get("envs", {})
+            sandbox_config["envs"] = {**existing_envs, **self._variables.sandbox_env}
+
         sandbox_type = sandbox_config.get("type", "local")
 
         sandbox_manager_cls: type[BaseSandboxManager[Any]]
@@ -547,6 +556,7 @@ class Agent:
         config: dict[str, Any] | None = None,
         parent_agent_state: AgentState | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
+        variables: ContextValue | None = None,
     ) -> str | tuple[str, dict[str, Any]]:
         """Run agent asynchronously with a message and return response.
 
@@ -568,6 +578,7 @@ class Agent:
             config: Optional config dict
             parent_agent_state: Optional parent agent state (for sub-agents)
             custom_llm_client_provider: Optional custom LLM client provider
+            variables: Optional ContextValue with structured runtime parameters
 
         Returns:
             Agent response string or tuple of (response, state)
@@ -595,6 +606,7 @@ class Agent:
                 parent_agent_state=parent_agent_state,
                 custom_llm_client_provider=custom_llm_client_provider,
                 run_id=run_id,
+                variables=variables,
             )
 
     async def _run_async_inner(
@@ -608,6 +620,7 @@ class Agent:
         parent_agent_state: AgentState | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         run_id: str,
+        variables: ContextValue | None = None,
     ) -> str | tuple[str, dict[str, Any]]:
         """Inner implementation of run_async without lock handling.
 
@@ -636,9 +649,29 @@ class Agent:
         if config:
             merged_config.update(config)
 
-        merged_context = {**(self.config.initial_context or {})}
-        if context:
-            merged_context.update(context)
+        effective_variables = variables or self._variables
+        merged_context = AgentContext.from_sources(
+            initial_context=self.config.initial_context,
+            legacy_context=context,
+            template=effective_variables.template if effective_variables else None,
+        ).context
+
+        # Inject sandbox_env into sandbox at run time
+        if effective_variables and effective_variables.sandbox_env:
+            sandbox_instance = self.sandbox_manager.instance
+            if sandbox_instance is not None:
+                # Sandbox already created — update its envs directly
+                sandbox_instance.envs = {**sandbox_instance.envs, **effective_variables.sandbox_env}
+            else:
+                # Sandbox not yet created — update the stored session context
+                # so envs are included when the sandbox is lazily initialized
+                ctx_data = getattr(self.sandbox_manager, "_session_context", None)
+                if ctx_data is not None:
+                    cfg = ctx_data.get("sandbox_config")
+                    if isinstance(cfg, dict):
+                        sandbox_cfg = cast(dict[str, dict[str, str]], cfg)
+                        prev_envs = sandbox_cfg.get("envs", {})
+                        sandbox_cfg["envs"] = {**prev_envs, **effective_variables.sandbox_env}
 
         # Get tracer from global storage
         tracer: BaseTracer | None = self.global_storage.get("tracer")
@@ -763,6 +796,7 @@ class Agent:
                 parent_agent_state=parent_agent_state,
                 executor=self.executor,
                 sandbox_manager=sandbox_mgr,
+                variables=effective_variables,
             )
 
             # Execute with or without tracing
@@ -822,6 +856,7 @@ class Agent:
         config: dict[str, Any] | None = None,
         parent_agent_state: AgentState | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
+        variables: ContextValue | None = None,
     ) -> str | tuple[str, dict[str, Any]]:
         """Run agent with a message and return response.
 
@@ -835,6 +870,7 @@ class Agent:
             config: Optional config dict
             parent_agent_state: Optional parent agent state (for sub-agents)
             custom_llm_client_provider: Optional custom LLM client provider
+            variables: Optional ContextValue with structured runtime parameters
 
         Returns:
             Agent response string or tuple of (response, state)
@@ -852,6 +888,7 @@ class Agent:
                 config=config,
                 parent_agent_state=parent_agent_state,
                 custom_llm_client_provider=custom_llm_client_provider,
+                variables=variables,
             )
 
         return syncify(_run, raise_sync_error=False)()
