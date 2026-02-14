@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from nexau.core.adapters.base import LLMAdapter
-from nexau.core.messages import ImageBlock, Message, Role, TextBlock, ToolResultBlock, ToolUseBlock
+from nexau.core.messages import ImageBlock, Message, ReasoningBlock, Role, TextBlock, ToolResultBlock, ToolUseBlock
 
 
 class AnthropicMessagesAdapter(LLMAdapter):
@@ -34,6 +34,13 @@ class AnthropicMessagesAdapter(LLMAdapter):
                 return None
             return None
 
+        pending_tool_results: list[dict[str, Any]] = []
+
+        def _flush_tool_results() -> None:
+            if pending_tool_results:
+                convo.append({"role": Role.USER.value, "content": pending_tool_results.copy()})
+                pending_tool_results.clear()
+
         for msg in messages:
             if msg.role == Role.SYSTEM:
                 # Anthropic expects "system" as a separate top-level parameter, not message role.
@@ -47,6 +54,14 @@ class AnthropicMessagesAdapter(LLMAdapter):
                 if isinstance(block, TextBlock):
                     if block.text:
                         content_blocks.append({"type": "text", "text": block.text})
+                elif isinstance(block, ReasoningBlock):
+                    if block.redacted_data:
+                        content_blocks.append({"type": "redacted_thinking", "data": block.redacted_data})
+                    else:
+                        reasoning_block: dict[str, Any] = {"type": "thinking", "thinking": block.text}
+                        if block.signature:
+                            reasoning_block["signature"] = block.signature
+                        content_blocks.append(reasoning_block)
                 elif isinstance(block, ToolUseBlock):
                     content_blocks.append(
                         {
@@ -60,7 +75,7 @@ class AnthropicMessagesAdapter(LLMAdapter):
                     img_block = _image_block_to_anthropic(block)
                     if img_block is not None:
                         content_blocks.append(img_block)
-                elif isinstance(block, ToolResultBlock):
+                elif isinstance(block, ToolResultBlock):  # pyright: ignore[reportUnnecessaryIsInstance]
                     if isinstance(block.content, list):
                         # Compatibility note:
                         # Some Anthropic-compatible gateways accept tool_result blocks with only text
@@ -106,7 +121,15 @@ class AnthropicMessagesAdapter(LLMAdapter):
             if msg.role in (Role.TOOL, Role.FRAMEWORK):
                 role = Role.USER.value
 
+            if msg.role == Role.TOOL:
+                # Some gateways reject multiple tool_result messages; merge them into one user message.
+                pending_tool_results.extend(content_blocks)
+                continue
+
+            _flush_tool_results()
             convo.append({"role": role, "content": content_blocks})
+
+        _flush_tool_results()
 
         return system_blocks, convo
 

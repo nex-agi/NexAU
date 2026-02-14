@@ -158,8 +158,16 @@ def messages_from_legacy_openai_chat(messages: list[dict[str, Any]]) -> list[Mes
                     )
                 elif part_type == "reasoning":
                     text = _coerce_str(part_dict.get("text") or part_dict.get("content"))
-                    if text:
-                        content_blocks.append(ReasoningBlock(text=text))
+                    sig = part_dict.get("signature")
+                    rd = part_dict.get("redacted_data")
+                    if text or rd:
+                        content_blocks.append(
+                            ReasoningBlock(
+                                text=text or "",
+                                signature=sig if isinstance(sig, str) else None,
+                                redacted_data=rd if isinstance(rd, str) else None,
+                            )
+                        )
                 else:
                     # Unknown structured part; store as text so we don't drop user-visible info
                     text = _coerce_str(part_dict.get("text") or part_dict.get("content"))
@@ -219,8 +227,18 @@ def messages_from_legacy_openai_chat(messages: list[dict[str, Any]]) -> list[Mes
 
         # Prefer explicit reasoning_content into a dedicated block (store-only)
         reasoning_content = raw.get("reasoning_content")
-        if isinstance(reasoning_content, str) and reasoning_content:
-            content_blocks.append(ReasoningBlock(text=reasoning_content))
+        reasoning_signature = raw.get("reasoning_signature")
+        reasoning_redacted_data = raw.get("reasoning_redacted_data")
+        if (isinstance(reasoning_content, str) and reasoning_content) or reasoning_redacted_data:
+            # Thinking blocks MUST come before text/tool blocks for Anthropic compliance.
+            content_blocks.insert(
+                0,
+                ReasoningBlock(
+                    text=reasoning_content or "",
+                    signature=reasoning_signature,
+                    redacted_data=reasoning_redacted_data,
+                ),
+            )
 
         # Assistant tool calls (OpenAI Chat Completions style)
         tool_calls_raw = raw.get("tool_calls")
@@ -357,6 +375,8 @@ def messages_to_legacy_openai_chat(
         content_parts: list[dict[str, Any]] = []
         tool_calls: list[dict[str, Any]] = []
         reasoning_parts: list[str] = []
+        reasoning_signatures: list[str] = []
+        reasoning_redacted_data_parts: list[str] = []
 
         for block in msg.content:
             if isinstance(block, TextBlock):
@@ -366,6 +386,10 @@ def messages_to_legacy_openai_chat(
                     text_parts.append(block.text)
             elif isinstance(block, ReasoningBlock):
                 reasoning_parts.append(block.text)
+                if block.signature:
+                    reasoning_signatures.append(block.signature)
+                if block.redacted_data:
+                    reasoning_redacted_data_parts.append(block.redacted_data)
             elif isinstance(block, ToolUseBlock):
                 tool_calls.append(
                     {
@@ -398,6 +422,11 @@ def messages_to_legacy_openai_chat(
         entry["content"] = content_parts if has_images else "".join(text_parts)
         if reasoning_parts:
             entry["reasoning_content"] = "".join(reasoning_parts)
+        if reasoning_signatures:
+            # We take the last signature if multiple thinking blocks exist (rare).
+            entry["reasoning_signature"] = reasoning_signatures[-1]
+        if reasoning_redacted_data_parts:
+            entry["reasoning_redacted_data"] = reasoning_redacted_data_parts[-1]
         if tool_calls:
             entry["tool_calls"] = tool_calls
         output.append(entry)

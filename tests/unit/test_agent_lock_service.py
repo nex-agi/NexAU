@@ -20,6 +20,8 @@ Tests the new AgentLockService with heartbeat renewal mechanism.
 import asyncio
 import time
 
+import pytest
+
 from nexau.archs.session import AgentLockService
 from nexau.archs.session.models.agent_lock import AgentLockModel
 from nexau.archs.session.orm import InMemoryDatabaseEngine, SQLDatabaseEngine
@@ -301,34 +303,34 @@ class TestAgentLockServiceHeartbeat:
 class TestAgentLockServiceSQLBackend:
     """Tests for AgentLockService with SQL backend."""
 
-    def test_sql_backend_basic(self):
+    @pytest.mark.anyio
+    async def test_sql_backend_basic(self):
         """Test basic lock operations with SQL backend."""
+        from sqlalchemy.ext.asyncio import create_async_engine
 
-        async def run():
-            from sqlalchemy.ext.asyncio import create_async_engine
+        sql_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        engine = SQLDatabaseEngine(sql_engine)
+        service = AgentLockService(
+            engine=engine,
+            lock_ttl=30.0,
+            heartbeat_interval=10.0,
+        )
 
-            sql_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-            engine = SQLDatabaseEngine(sql_engine)
-            service = AgentLockService(
-                engine=engine,
-                lock_ttl=30.0,
-                heartbeat_interval=10.0,
-            )
-
-            try:
-                async with service.acquire("session1", "agent1"):
-                    is_locked = await service.is_locked("session1", "agent1")
-                    assert is_locked
-
+        try:
+            async with service.acquire("session1", "agent1"):
                 is_locked = await service.is_locked("session1", "agent1")
-                assert not is_locked
-            finally:
-                await service.stop()
-                await sql_engine.dispose()
+                assert is_locked
 
-        asyncio.run(run())
+            is_locked = await service.is_locked("session1", "agent1")
+            assert not is_locked
+        finally:
+            await service.stop()
+            await sql_engine.dispose()
+            # Give aiosqlite background threads time to finish cleanup
+            await asyncio.sleep(0.5)
 
-    def test_sql_backend_concurrent(self):
+    @pytest.mark.anyio
+    async def test_sql_backend_concurrent(self):
         """Test concurrent operations with SQL backend.
 
         Note: Due to SQLite's limited concurrency support in memory mode,
@@ -336,62 +338,60 @@ class TestAgentLockServiceSQLBackend:
         task attempts to acquire the lock. In rare cases, both tasks may
         succeed due to SQLite's write serialization behavior.
         """
+        from sqlalchemy.ext.asyncio import create_async_engine
 
-        async def run():
-            from sqlalchemy.ext.asyncio import create_async_engine
+        sql_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        engine = SQLDatabaseEngine(sql_engine)
+        service = AgentLockService(
+            engine=engine,
+            lock_ttl=30.0,
+            heartbeat_interval=10.0,
+        )
 
-            sql_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-            engine = SQLDatabaseEngine(sql_engine)
-            service = AgentLockService(
-                engine=engine,
-                lock_ttl=30.0,
-                heartbeat_interval=10.0,
+        try:
+            results = []
+
+            async def task(task_id: int):
+                try:
+                    async with service.acquire("session1", "agent1"):
+                        results.append(f"task{task_id}_success")
+                        await asyncio.sleep(0.2)  # Hold lock longer to ensure conflict
+                except TimeoutError:
+                    results.append(f"task{task_id}_failed")
+
+            await asyncio.gather(
+                task(1),
+                task(2),
+                return_exceptions=True,
             )
 
-            try:
-                results = []
+            # At least one should succeed
+            success_count = len([r for r in results if "success" in r])
+            failed_count = len([r for r in results if "failed" in r])
 
-                async def task(task_id: int):
-                    try:
-                        async with service.acquire("session1", "agent1"):
-                            results.append(f"task{task_id}_success")
-                            await asyncio.sleep(0.2)  # Hold lock longer to ensure conflict
-                    except TimeoutError:
-                        results.append(f"task{task_id}_failed")
+            # Verify we got results from both tasks
+            assert len(results) == 2, f"Expected 2 results, got {len(results)}: {results}"
 
-                await asyncio.gather(
-                    task(1),
-                    task(2),
-                    return_exceptions=True,
-                )
+            # At least one should succeed (the lock was acquired)
+            assert success_count >= 1, f"Expected at least 1 success, got {success_count}: {results}"
 
-                # At least one should succeed
-                success_count = len([r for r in results if "success" in r])
-                failed_count = len([r for r in results if "failed" in r])
+            # Ideally one should succeed and one should fail, but due to SQLite's
+            # concurrency limitations, both might succeed in rare cases
+            if success_count == 2:
+                # Both succeeded - this can happen with SQLite in-memory
+                # Log a warning but don't fail the test
+                import warnings
 
-                # Verify we got results from both tasks
-                assert len(results) == 2, f"Expected 2 results, got {len(results)}: {results}"
-
-                # At least one should succeed (the lock was acquired)
-                assert success_count >= 1, f"Expected at least 1 success, got {success_count}: {results}"
-
-                # Ideally one should succeed and one should fail, but due to SQLite's
-                # concurrency limitations, both might succeed in rare cases
-                if success_count == 2:
-                    # Both succeeded - this can happen with SQLite in-memory
-                    # Log a warning but don't fail the test
-                    import warnings
-
-                    warnings.warn("Both tasks succeeded in acquiring the lock. This is a known limitation of SQLite's concurrency model.")
-                else:
-                    # Normal case: one succeeds, one fails
-                    assert success_count == 1, f"Expected 1 success, got {success_count}: {results}"
-                    assert failed_count == 1, f"Expected 1 failure, got {failed_count}: {results}"
-            finally:
-                await service.stop()
-                await sql_engine.dispose()
-
-        asyncio.run(run())
+                warnings.warn("Both tasks succeeded in acquiring the lock. This is a known limitation of SQLite's concurrency model.")
+            else:
+                # Normal case: one succeeds, one fails
+                assert success_count == 1, f"Expected 1 success, got {success_count}: {results}"
+                assert failed_count == 1, f"Expected 1 failure, got {failed_count}: {results}"
+        finally:
+            await service.stop()
+            await sql_engine.dispose()
+            # Give aiosqlite background threads time to finish cleanup
+            await asyncio.sleep(0.5)
 
 
 class TestAgentLockServiceEdgeCases:

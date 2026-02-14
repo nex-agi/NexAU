@@ -216,211 +216,189 @@ class TestSSEClient:
 class TestSSEClientQuery:
     """Test cases for SSEClient.query() method."""
 
-    def test_query_success(self):
+    @pytest.mark.anyio
+    async def test_query_success(self):
         """Test successful query."""
-        import asyncio
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        async def run_test():
-            # Mock the response
-            mock_response = MagicMock()
-            mock_response.json.return_value = {"status": "success", "response": "Hello, world!"}
-            mock_response.raise_for_status = MagicMock()
+        # Mock the response
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"status": "success", "response": "Hello, world!"}
+        mock_response.raise_for_status = MagicMock()
 
-            # Mock the client
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client.aclose = AsyncMock()
+        # Mock the client
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.aclose = AsyncMock()
 
-            with patch("httpx.AsyncClient", return_value=mock_client):
-                client = SSEClient()
-                result = await client.query(messages="Hello", user_id="test_user")
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            client = SSEClient()
+            result = await client.query(messages="Hello", user_id="test_user")
 
-            assert result == "Hello, world!"
-            mock_client.aclose.assert_called_once()
+        assert result == "Hello, world!"
+        mock_client.aclose.assert_called_once()
 
-        asyncio.run(run_test())
-
-    def test_query_with_custom_client(self):
+    @pytest.mark.anyio
+    async def test_query_with_custom_client(self):
         """Test query with custom HTTP client (not closed)."""
-        import asyncio
         from unittest.mock import AsyncMock, MagicMock
 
-        async def run_test():
-            # Mock the response
-            mock_response = MagicMock()
-            mock_response.json.return_value = {"status": "success", "response": "Response"}
-            mock_response.raise_for_status = MagicMock()
+        # Mock the response
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"status": "success", "response": "Response"}
+        mock_response.raise_for_status = MagicMock()
 
-            # Create custom mock client
-            custom_client = AsyncMock()
-            custom_client.post = AsyncMock(return_value=mock_response)
-            custom_client.aclose = AsyncMock()
+        # Create custom mock client
+        custom_client = AsyncMock()
+        custom_client.post = AsyncMock(return_value=mock_response)
+        custom_client.aclose = AsyncMock()
 
-            client = SSEClient(http_client=custom_client)
+        client = SSEClient(http_client=custom_client)
+        result = await client.query(messages="Hello")
+
+        assert result == "Response"
+        # Custom client should NOT be closed
+        custom_client.aclose.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_query_error_response(self):
+        """Test query with error response."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        # Mock error response
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"status": "error", "error": "Something went wrong"}
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.aclose = AsyncMock()
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            client = SSEClient()
+            with pytest.raises(ValueError, match="Server returned error"):
+                await client.query(messages="Hello")
+
+    @pytest.mark.anyio
+    async def test_query_empty_response(self):
+        """Test query with None response."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"status": "success", "response": None}
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.aclose = AsyncMock()
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            client = SSEClient()
             result = await client.query(messages="Hello")
 
-            assert result == "Response"
-            # Custom client should NOT be closed
-            custom_client.aclose.assert_not_called()
-
-        asyncio.run(run_test())
-
-    def test_query_error_response(self):
-        """Test query with error response."""
-        import asyncio
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        async def run_test():
-            # Mock error response
-            mock_response = MagicMock()
-            mock_response.json.return_value = {"status": "error", "error": "Something went wrong"}
-            mock_response.raise_for_status = MagicMock()
-
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client.aclose = AsyncMock()
-
-            with patch("httpx.AsyncClient", return_value=mock_client):
-                client = SSEClient()
-                with pytest.raises(ValueError, match="Server returned error"):
-                    await client.query(messages="Hello")
-
-        asyncio.run(run_test())
-
-    def test_query_empty_response(self):
-        """Test query with None response."""
-        import asyncio
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        async def run_test():
-            mock_response = MagicMock()
-            mock_response.json.return_value = {"status": "success", "response": None}
-            mock_response.raise_for_status = MagicMock()
-
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client.aclose = AsyncMock()
-
-            with patch("httpx.AsyncClient", return_value=mock_client):
-                client = SSEClient()
-                result = await client.query(messages="Hello")
-
-            assert result == ""
-
-        asyncio.run(run_test())
+        assert result == ""
 
 
 class TestSSEClientStreamEvents:
     """Test cases for SSEClient.stream_events() method."""
 
-    def test_stream_events(self):
+    @pytest.mark.anyio
+    async def test_stream_events(self):
         """Test streaming events."""
-        import asyncio
+        from contextlib import asynccontextmanager
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        async def run_test():
-            # Create async iterator for lines
-            async def mock_aiter_lines():
-                yield 'data: {"type": "TEXT_MESSAGE_START", "message_id": "msg_1", "run_id": "run_1"}'
-                yield 'data: {"type": "TEXT_MESSAGE_CONTENT", "message_id": "msg_1", "delta": "Hello"}'
-                yield 'data: {"type": "TEXT_MESSAGE_END", "message_id": "msg_1"}'
+        # Create async iterator for lines
+        async def mock_aiter_lines():
+            yield 'data: {"type": "TEXT_MESSAGE_START", "message_id": "msg_1", "run_id": "run_1"}'
+            yield 'data: {"type": "TEXT_MESSAGE_CONTENT", "message_id": "msg_1", "delta": "Hello"}'
+            yield 'data: {"type": "TEXT_MESSAGE_END", "message_id": "msg_1"}'
 
-            # Mock the response context manager
-            mock_response = MagicMock()
-            mock_response.raise_for_status = MagicMock()
-            mock_response.aiter_lines = mock_aiter_lines
+        # Mock the response context manager
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.aiter_lines = mock_aiter_lines
 
-            @asynccontextmanager
-            async def mock_stream(*args, **kwargs):
-                yield mock_response
+        @asynccontextmanager
+        async def mock_stream(*args, **kwargs):
+            yield mock_response
 
-            mock_client = AsyncMock()
-            mock_client.stream = mock_stream
-            mock_client.aclose = AsyncMock()
+        mock_client = AsyncMock()
+        mock_client.stream = mock_stream
+        mock_client.aclose = AsyncMock()
 
-            with patch("httpx.AsyncClient", return_value=mock_client):
-                client = SSEClient()
-                events = []
-                async for event in client.stream_events(messages="Hello"):
-                    events.append(event)
-
-            assert len(events) == 3
-            assert isinstance(events[0], TextMessageStartEvent)
-            assert isinstance(events[1], TextMessageContentEvent)
-            assert events[1].delta == "Hello"
-            assert isinstance(events[2], TextMessageEndEvent)
-            mock_client.aclose.assert_called_once()
-
-        from contextlib import asynccontextmanager
-
-        asyncio.run(run_test())
-
-    def test_stream_events_with_custom_client(self):
-        """Test streaming events with custom HTTP client."""
-        import asyncio
-        from contextlib import asynccontextmanager
-        from unittest.mock import AsyncMock, MagicMock
-
-        async def run_test():
-            async def mock_aiter_lines():
-                yield 'data: {"type": "RUN_FINISHED", "thread_id": "t1", "run_id": "r1"}'
-
-            mock_response = MagicMock()
-            mock_response.raise_for_status = MagicMock()
-            mock_response.aiter_lines = mock_aiter_lines
-
-            @asynccontextmanager
-            async def mock_stream(*args, **kwargs):
-                yield mock_response
-
-            custom_client = AsyncMock()
-            custom_client.stream = mock_stream
-            custom_client.aclose = AsyncMock()
-
-            client = SSEClient(http_client=custom_client)
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            client = SSEClient()
             events = []
             async for event in client.stream_events(messages="Hello"):
                 events.append(event)
 
-            assert len(events) == 1
-            # Custom client should NOT be closed
-            custom_client.aclose.assert_not_called()
+        assert len(events) == 3
+        assert isinstance(events[0], TextMessageStartEvent)
+        assert isinstance(events[1], TextMessageContentEvent)
+        assert events[1].delta == "Hello"
+        assert isinstance(events[2], TextMessageEndEvent)
+        mock_client.aclose.assert_called_once()
 
-        asyncio.run(run_test())
+    @pytest.mark.anyio
+    async def test_stream_events_with_custom_client(self):
+        """Test streaming events with custom HTTP client."""
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, MagicMock
 
-    def test_stream_events_skips_non_data_lines(self):
+        async def mock_aiter_lines():
+            yield 'data: {"type": "RUN_FINISHED", "thread_id": "t1", "run_id": "r1"}'
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.aiter_lines = mock_aiter_lines
+
+        @asynccontextmanager
+        async def mock_stream(*args, **kwargs):
+            yield mock_response
+
+        custom_client = AsyncMock()
+        custom_client.stream = mock_stream
+        custom_client.aclose = AsyncMock()
+
+        client = SSEClient(http_client=custom_client)
+        events = []
+        async for event in client.stream_events(messages="Hello"):
+            events.append(event)
+
+        assert len(events) == 1
+        # Custom client should NOT be closed
+        custom_client.aclose.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_stream_events_skips_non_data_lines(self):
         """Test that non-data lines are skipped."""
-        import asyncio
         from contextlib import asynccontextmanager
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        async def run_test():
-            async def mock_aiter_lines():
-                yield ": comment line"
-                yield "event: ping"
-                yield 'data: {"type": "TEXT_MESSAGE_START", "message_id": "msg_1", "run_id": "run_1"}'
-                yield ""
+        async def mock_aiter_lines():
+            yield ": comment line"
+            yield "event: ping"
+            yield 'data: {"type": "TEXT_MESSAGE_START", "message_id": "msg_1", "run_id": "run_1"}'
+            yield ""
 
-            mock_response = MagicMock()
-            mock_response.raise_for_status = MagicMock()
-            mock_response.aiter_lines = mock_aiter_lines
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.aiter_lines = mock_aiter_lines
 
-            @asynccontextmanager
-            async def mock_stream(*args, **kwargs):
-                yield mock_response
+        @asynccontextmanager
+        async def mock_stream(*args, **kwargs):
+            yield mock_response
 
-            mock_client = AsyncMock()
-            mock_client.stream = mock_stream
-            mock_client.aclose = AsyncMock()
+        mock_client = AsyncMock()
+        mock_client.stream = mock_stream
+        mock_client.aclose = AsyncMock()
 
-            with patch("httpx.AsyncClient", return_value=mock_client):
-                client = SSEClient()
-                events = []
-                async for event in client.stream_events(messages="Hello"):
-                    events.append(event)
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            client = SSEClient()
+            events = []
+            async for event in client.stream_events(messages="Hello"):
+                events.append(event)
 
-            # Only the data line should produce an event
-            assert len(events) == 1
-
-        asyncio.run(run_test())
+        # Only the data line should produce an event
+        assert len(events) == 1

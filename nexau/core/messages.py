@@ -249,6 +249,7 @@ class ReasoningBlock(ContentBlock):
     type: Literal["reasoning"] = "reasoning"
     text: str
     signature: str | None = None
+    redacted_data: str | None = None
 
 
 class ToolUseBlock(ContentBlock):

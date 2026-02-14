@@ -24,6 +24,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Maximum content length for web tools to prevent overwhelming responses
+MAX_WEB_CONTENT_LENGTH = 64 * 1024  # 64KB
+
 
 class SerperSearch:
     """Serper API search implementation."""
@@ -248,10 +251,17 @@ def web_read(
             if all([_html_parser.base_url, _html_parser.api_key, _html_parser.secret]):
                 success, content = _html_parser.parse(url)
                 if success:
+                    # Truncate content if too long (based on byte size)
+                    truncated = False
+                    content_bytes = content.encode("utf-8")
+                    if len(content_bytes) > MAX_WEB_CONTENT_LENGTH:
+                        content = content_bytes[:MAX_WEB_CONTENT_LENGTH].decode("utf-8", errors="ignore") + "..."
+                        truncated = True
                     return {
                         "status": "success",
                         "url": url,
                         "content": content,
+                        "content_truncated": truncated,
                         "method": "html_parser",
                     }
         except Exception as e:
@@ -298,6 +308,12 @@ def web_read(
                 lines = (line.strip() for line in text.splitlines())
                 chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
                 text = " ".join(chunk for chunk in chunks if chunk)
+
+                # Truncate extracted text if too long (based on byte size)
+                text_bytes = text.encode("utf-8")
+                if len(text_bytes) > MAX_WEB_CONTENT_LENGTH:
+                    text = text_bytes[:MAX_WEB_CONTENT_LENGTH].decode("utf-8", errors="ignore") + "..."
+                    result["text_truncated"] = True
 
                 result["extracted_text"] = text
                 result["title"] = soup.title.string if soup.title else ""

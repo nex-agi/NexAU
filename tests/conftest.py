@@ -295,6 +295,7 @@ def mock_openai_client():
     mock_response = Mock()
     mock_response.choices = [Mock()]
     mock_response.choices[0].message.content = "Mocked LLM response"
+    mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
     mock_client.chat.completions.create.return_value = mock_response
 
     # Mock Responses API
@@ -308,6 +309,7 @@ def mock_openai_client():
     responses_payload = types.SimpleNamespace(
         output=[message_item],
         output_text="Mocked LLM response",
+        usage=types.SimpleNamespace(input_tokens=10, output_tokens=20),
     )
     mock_client.responses.create.return_value = responses_payload
 

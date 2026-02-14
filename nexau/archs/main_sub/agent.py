@@ -185,12 +185,20 @@ class Agent:
             agent_name=self.agent_name,
         )
 
+        # Full, uncompacted trace (for debugging/training only; not used for execution).
+        self._full_trace: list[Message] = []
+
         # Queue for messages to be processed in the next execution cycle
         self.queued_messages: list[Message] = []
 
         # Register for cleanup
         cleanup_manager.register_agent(self)
         logger.info("Agent '%s' initialized (agent_id=%s, session_id=%s)", self.agent_name, self.agent_id, self._session_id)
+
+    @property
+    def full_trace(self) -> list[Message]:
+        """Get the full, uncompacted conversation trace (for debugging/training)."""
+        return self._full_trace
 
     @property
     def history(self) -> HistoryList:
@@ -950,6 +958,16 @@ class Agent:
             # HistoryList will automatically persist any changes made by executor
             self.history = updated_messages
 
+            # Expose full trace captured by ContextCompactionMiddleware (best-effort).
+            try:
+                ft = agent_state.get_context_value("__nexau_full_trace_messages__", None)
+                if isinstance(ft, list) and ft:
+                    self._full_trace = ft
+                else:
+                    self._full_trace = list(self.history)
+            except Exception:
+                self._full_trace = list(self.history)
+
             # Flush pending messages to persistence
             self.history.flush()
 
@@ -1022,17 +1040,24 @@ class Agent:
         """Enqueue a message to be added to the history."""
         self.executor.enqueue_message(message)
 
-    def stop(self) -> None:
-        """Clean up this agent and all its running sub-agents."""
-        logger.info(
-            f"🧹 Cleaning up agent '{self.config.name}' and its sub-agents...",
-        )
+    def stop(self, *, _from_del: bool = False) -> None:
+        """Clean up this agent and all its running sub-agents.
+
+        Args:
+            _from_del: Internal flag. True when called from __del__ to skip
+                logging (logging may fail during interpreter shutdown).
+        """
+        if not _from_del:
+            logger.info(
+                f"🧹 Cleaning up agent '{self.config.name}' and its sub-agents...",
+            )
         self.executor.cleanup()
-        logger.info(f"✅ Agent '{self.config.name}' cleanup completed")
+        if not _from_del:
+            logger.info(f"✅ Agent '{self.config.name}' cleanup completed")
 
     def __del__(self):
         """Destructor to ensure cleanup when agent is garbage collected."""
         try:
-            self.stop()
+            self.stop(_from_del=True)
         except Exception:
             pass  # Avoid exceptions during garbage collection

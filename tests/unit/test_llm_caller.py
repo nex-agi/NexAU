@@ -97,6 +97,8 @@ class TestLLMCallerBasicCalls:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Hello! How can I help you?"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -496,6 +498,7 @@ class TestLLMCallerBasicCalls:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -520,6 +523,7 @@ class TestLLMCallerBasicCalls:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         # Setup llm_config with existing stop sequences
@@ -549,6 +553,7 @@ class TestLLMCallerBasicCalls:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         mock_llm_config.to_openai_params = Mock(
@@ -606,6 +611,7 @@ class TestLLMCallerBasicCalls:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         # anthropic mode sets tools and tool_choice but may not be fully supported
@@ -628,6 +634,7 @@ class TestLLMCallerBasicCalls:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         mock_llm_config.additional_drop_params = ("stop", "temperature")
@@ -650,6 +657,7 @@ class TestLLMCallerBasicCalls:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         # Setup llm_config with string stop sequence
@@ -680,6 +688,7 @@ class TestLLMCallerXMLRestoration:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "<tool_use><tool_name>test"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -701,6 +710,7 @@ class TestLLMCallerXMLRestoration:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = full_response
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -726,6 +736,7 @@ class TestLLMCallerDebugLogging:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Debug response"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         # Enable debug mode
@@ -756,6 +767,7 @@ class TestLLMCallerDebugLogging:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         # Disable debug mode
@@ -782,10 +794,12 @@ class TestLLMCallerRetryLogic:
     def test_call_llm_retry_on_failure(self, mock_openai_client, mock_llm_config, agent_state):
         """Test that LLM calls retry on failure."""
         # First two calls fail, third succeeds
+        success_response = Mock(choices=[Mock(message=Mock(content="Success after retry", tool_calls=[]))])
+        success_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.side_effect = [
             Exception("API Error 1"),
             Exception("API Error 2"),
-            Mock(choices=[Mock(message=Mock(content="Success after retry", tool_calls=[]))]),
+            success_response,
         ]
 
         caller = LLMCaller(
@@ -825,10 +839,12 @@ class TestLLMCallerRetryLogic:
     def test_call_llm_exponential_backoff(self, mock_openai_client, mock_llm_config, agent_state):
         """Test that retry uses exponential backoff."""
         # Fail a few times to trigger backoff
+        success_response = Mock(choices=[Mock(message=Mock(content="Success", tool_calls=[]))])
+        success_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.side_effect = [
             Exception("Error 1"),
             Exception("Error 2"),
-            Mock(choices=[Mock(message=Mock(content="Success", tool_calls=[]))]),
+            success_response,
         ]
 
         caller = LLMCaller(
@@ -851,9 +867,13 @@ class TestLLMCallerRetryLogic:
     def test_call_llm_empty_response_triggers_retry(self, mock_openai_client, mock_llm_config, agent_state):
         """Test that empty response content triggers retry."""
         # First call returns empty content, second succeeds
+        empty_response = Mock(choices=[Mock(message=Mock(content="", tool_calls=[]))])
+        empty_response.usage = {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10}
+        valid_response = Mock(choices=[Mock(message=Mock(content="Valid response", tool_calls=[]))])
+        valid_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.side_effect = [
-            Mock(choices=[Mock(message=Mock(content="", tool_calls=[]))]),
-            Mock(choices=[Mock(message=Mock(content="Valid response", tool_calls=[]))]),
+            empty_response,
+            valid_response,
         ]
 
         caller = LLMCaller(
@@ -881,6 +901,7 @@ class TestLLMCallerForceStopReason:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Normal response"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -947,6 +968,7 @@ class TestLLMCallerEdgeCases:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -968,6 +990,7 @@ class TestLLMCallerEdgeCases:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -989,6 +1012,7 @@ class TestLLMCallerEdgeCases:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         # Setup llm_config with None stop sequences
@@ -1023,6 +1047,7 @@ class TestLLMCallerEdgeCases:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = complex_response
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -1043,6 +1068,7 @@ class TestLLMCallerEdgeCases:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "Response"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         caller = LLMCaller(
@@ -1061,9 +1087,13 @@ class TestLLMCallerEdgeCases:
     def test_call_llm_response_content_none_triggers_exception(self, mock_openai_client, mock_llm_config, agent_state):
         """Test that None response content triggers retry."""
         # First call returns None, second succeeds
+        none_response = Mock(choices=[Mock(message=Mock(content=None, tool_calls=[]))])
+        none_response.usage = {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10}
+        valid_response = Mock(choices=[Mock(message=Mock(content="Valid response", tool_calls=[]))])
+        valid_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.side_effect = [
-            Mock(choices=[Mock(message=Mock(content=None, tool_calls=[]))]),
-            Mock(choices=[Mock(message=Mock(content="Valid response", tool_calls=[]))]),
+            none_response,
+            valid_response,
         ]
 
         caller = LLMCaller(
@@ -1092,6 +1122,7 @@ class TestLLMCallerIntegration:
         mock_response.choices = [Mock()]
         mock_response.choices[0].message.content = "<tool_use><tool_name>test</tool_name>"
         mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.return_value = mock_response
 
         # Enable debug mode

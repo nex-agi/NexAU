@@ -883,7 +883,10 @@ def _sanitize_response_items_for_input(items: list[Any], *, drop_ephemeral_ids: 
                     item_copy["output"] = _coerce_tool_output_text(output_value)
             elif item_type == "reasoning":
                 item_copy.pop("id", None)
-                item_copy["summary"] = _ensure_reasoning_summary(item_copy)
+                # When encrypted_content is present the reasoning payload is opaque;
+                # preserve the original summary as-is (API expects [] for encrypted items).
+                if not item_copy.get("encrypted_content"):
+                    item_copy["summary"] = _ensure_reasoning_summary(item_copy)
         else:
             sanitized.append(item)
             continue

@@ -135,53 +135,42 @@ def _normalize_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
     if usage is None:
         return None
 
-    normalized: dict[str, Any] = {}
+    # Preserve all provider-specific fields (e.g., Anthropic cache tokens) while
+    # also ensuring the standard keys exist.
+    normalized: dict[str, Any] = dict(usage)
 
-    # Handle input tokens
-    try:
-        if "input_tokens" in usage:
-            normalized["input_tokens"] = usage["input_tokens"]
-        elif "prompt_tokens" in usage:
-            normalized["input_tokens"] = usage["prompt_tokens"]
-        else:
-            normalized["input_tokens"] = 0
-    except Exception:
-        normalized["input_tokens"] = 0
+    def _as_int(val: Any) -> int:
+        try:
+            return int(val)
+        except Exception:
+            return 0
 
-    # Handle reasoning tokens (for models that support it)
-    try:
-        if "reasoning_tokens" in usage and usage["reasoning_tokens"] is not None:
-            normalized["reasoning_tokens"] = usage["reasoning_tokens"]
-        else:
-            normalized["reasoning_tokens"] = 0
-    except Exception:
-        normalized["reasoning_tokens"] = 0
+    # Base input tokens (provider-reported, typically excluding cache extras).
+    direct_input = _as_int(usage.get("input_tokens", usage.get("prompt_tokens", 0)))
 
-    # Handle completion/output tokens
-    try:
-        if "completion_tokens" in usage:
-            normalized["completion_tokens"] = usage["completion_tokens"]
-        elif "output_tokens" in usage:
-            normalized["completion_tokens"] = usage["output_tokens"]
-        else:
-            normalized["completion_tokens"] = 0
-    except Exception:
-        normalized["completion_tokens"] = 0
+    # Anthropic cache accounting (if present).
+    cache_creation = _as_int(usage.get("cache_creation_input_tokens", 0))
+    cache_read = _as_int(usage.get("cache_read_input_tokens", 0))
 
-    # Handle total tokens
-    try:
-        if "total_tokens" in usage:
-            normalized["total_tokens"] = usage["total_tokens"]
-        else:
-            input_t = normalized["input_tokens"] or 0
-            reasoning_t = normalized["reasoning_tokens"] or 0
-            completion_t = normalized["completion_tokens"] or 0
-            normalized["total_tokens"] = input_t + reasoning_t + completion_t
-    except Exception:
-        input_t = normalized.get("input_tokens") or 0
-        reasoning_t = normalized.get("reasoning_tokens") or 0
-        completion_t = normalized.get("completion_tokens") or 0
-        normalized["total_tokens"] = input_t + reasoning_t + completion_t
+    # If cache fields exist, treat total input as: cache_creation + cache_read + input_tokens.
+    if ("cache_creation_input_tokens" in usage) or ("cache_read_input_tokens" in usage):
+        normalized.setdefault("input_tokens_uncached", direct_input)
+        direct_input = cache_creation + cache_read + direct_input
+
+    # Standard keys
+    normalized["input_tokens"] = direct_input
+    reasoning_tokens: Any = usage.get("reasoning_tokens", None)
+    if reasoning_tokens is None:
+        # OpenAI ChatCompletions may report reasoning under completion_tokens_details.reasoning_tokens.
+        details: dict[str, Any] = usage.get("completion_tokens_details") or usage.get("output_tokens_details") or {}
+        reasoning_tokens = details.get("reasoning_tokens", None)
+    normalized["reasoning_tokens"] = _as_int(reasoning_tokens)
+    normalized["completion_tokens"] = _as_int(usage.get("completion_tokens", usage.get("output_tokens", 0)))
+
+    if "total_tokens" in usage:
+        normalized["total_tokens"] = _as_int(usage.get("total_tokens"))
+    else:
+        normalized["total_tokens"] = normalized["input_tokens"] + normalized["reasoning_tokens"] + normalized["completion_tokens"]
 
     return normalized
 
@@ -294,6 +283,10 @@ class ModelResponse:
     Be sure to include these items in your input to the Responses API for subsequent turns of a
     conversation if you are manually managing context.
     """
+    reasoning_signature: str | None = None
+    """Optional signature for the reasoning content (used by Anthropic)."""
+    reasoning_redacted_data: str | None = None
+    """Optional encrypted data for redacted reasoning (used by Anthropic)."""
     thought_signature: str | None = None
     """Gemini-specific thought signature for preserving reasoning context across turns."""
     usage: JsonDict | None = None
@@ -424,23 +417,42 @@ class ModelResponse:
         # Extract text content from content blocks
         text_parts: list[str] = []
         raw_tool_calls: list[Any] = []
+        reasoning_parts: list[str] = []
+        thinking_signature: str | None = None
+        redacted_thinking_data: str | None = None
 
         for block in content_blocks:
             if isinstance(block, dict):
                 block_dict = cast(JsonDict, block)
                 block_type_val: str | None = cast(str | None, block_dict.get("type"))
                 text_val: Any = block_dict.get("text")
+                thinking_val: Any = block_dict.get("thinking")
+                redacted_thinking_val: Any = block_dict.get("data") if block_type_val == "redacted_thinking" else None
+                signature_val: Any = block_dict.get("signature")
             else:
                 block_type_val = cast(str | None, getattr(block, "type", None))
                 text_val = getattr(block, "text", None)
+                thinking_val = getattr(block, "thinking", None)
+                redacted_thinking_val = getattr(block, "data", None) if block_type_val == "redacted_thinking" else None
+                signature_val = getattr(block, "signature", None)
+
             block_type = str(block_type_val) if block_type_val is not None else None
             if block_type == "text":
                 if isinstance(text_val, str):
                     text_parts.append(text_val)
+            elif block_type == "thinking":
+                if isinstance(thinking_val, str):
+                    reasoning_parts.append(thinking_val)
+                if isinstance(signature_val, str):
+                    thinking_signature = signature_val
+            elif block_type == "redacted_thinking":
+                if isinstance(redacted_thinking_val, str):
+                    redacted_thinking_data = redacted_thinking_val
             elif block_type == "tool_use":
                 raw_tool_calls.append(block)
 
         content = "\n".join(text_parts) if text_parts else ""
+        reasoning_content = "\n".join(reasoning_parts) if reasoning_parts else None
 
         tool_calls: list[ModelToolCall] = []
         if raw_tool_calls:
@@ -491,6 +503,9 @@ class ModelResponse:
             tool_calls=tool_calls,
             role=role,
             raw_message=message,
+            reasoning_content=reasoning_content,
+            reasoning_signature=thinking_signature,
+            reasoning_redacted_data=redacted_thinking_data,
             usage=_normalize_usage(final_usage),
         )
 
@@ -781,6 +796,10 @@ class ModelResponse:
             message["response_items"] = self.response_items
         if self.reasoning_content:
             message["reasoning_content"] = self.reasoning_content
+        if self.reasoning_signature:
+            message["reasoning_signature"] = self.reasoning_signature
+        if self.reasoning_redacted_data:
+            message["reasoning_redacted_data"] = self.reasoning_redacted_data
         if self.thought_signature:
             # For Gemini thought signature passthrough
             message["thought_signature"] = self.thought_signature
@@ -797,11 +816,19 @@ class ModelResponse:
             role = Role.ASSISTANT
 
         blocks: list[Any] = []
+
+        # Insert reasoning block BEFORE text content (Anthropic requires thinking first)
+        if self.reasoning_content:
+            blocks.append(
+                ReasoningBlock(
+                    text=self.reasoning_content,
+                    signature=self.reasoning_signature,
+                    redacted_data=self.reasoning_redacted_data,
+                )
+            )
+
         if self.content:
             blocks.append(TextBlock(text=self.content))
-
-        if self.reasoning_content:
-            blocks.append(ReasoningBlock(text=self.reasoning_content))
 
         for call in self.tool_calls:
             blocks.append(
