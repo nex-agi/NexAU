@@ -78,7 +78,11 @@ class TestConfigIntegration:
                 "name": "agent_with_tools",
                 "llm_config": {"model": "gpt-4o-mini"},
                 "tools": [
-                    {"name": "test_tool", "yaml_path": "tools/test_tool.yaml", "binding": "nexau.archs.tool.builtin.bash_tool:bash_tool"}
+                    {
+                        "name": "test_tool",
+                        "yaml_path": "tools/test_tool.yaml",
+                        "binding": ("nexau.archs.tool.builtin.shell_tools:run_shell_command"),
+                    }
                 ],
             }
             with open(config_path, "w") as f:

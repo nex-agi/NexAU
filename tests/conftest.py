@@ -236,14 +236,9 @@ def mock_tools(sample_tool):
 @pytest.fixture
 def temp_file():
     """Create a temporary file for testing."""
-    from nexau.archs.tool.builtin.file_tools.file_edit_tool import mark_file_as_read
-
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
         f.write("test content")
         temp_path = f.name
-
-    # Mark the file as read so it can be edited/written by tests
-    mark_file_as_read(temp_path)
 
     yield temp_path
 

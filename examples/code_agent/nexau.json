@@ -1,5 +1,1 @@
-{
-  "agents": {
-    "code_agent": "code_agent.yaml"
-  }
-}
+{"agents":{"code_agent":"code_agent.yaml","code_agent_sync":"code_agent_sync.yaml"}}

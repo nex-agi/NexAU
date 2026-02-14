@@ -80,17 +80,17 @@ uv sync
     from nexau.archs.main_sub.execution.hooks import LoggingMiddleware
 
     from nexau.archs.tool.builtin import (
-        bash_tool,
-        file_edit_tool,
-        file_read_tool,
-        file_write_tool,
-        glob_tool,
-        grep_tool,
-        ls_tool,
-        multiedit_tool,
-        todo_write,
-        web_read,
-        web_search,
+        glob,
+        google_web_search,
+        list_directory,
+        read_file,
+        read_many_files,
+        replace,
+        run_shell_command,
+        search_file_content,
+        web_fetch,
+        write_file,
+        write_todos,
     )
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
@@ -99,17 +99,17 @@ uv sync
 
     # NexAU decouples the definition and implementation (binding) of tools
     tools = [
-        Tool.from_yaml(base_dir / "tools/WebSearch.tool.yaml", binding=web_search),
-        Tool.from_yaml(base_dir / "tools/WebFetch.tool.yaml", binding=web_read),
-        Tool.from_yaml(base_dir / "tools/TodoWrite.tool.yaml", binding=todo_write),
-        Tool.from_yaml(base_dir / "tools/Grep.tool.yaml", binding=grep_tool),
-        Tool.from_yaml(base_dir / "tools/Glob.tool.yaml", binding=glob_tool),
-        Tool.from_yaml(base_dir / "tools/Read.tool.yaml", binding=file_read_tool),
-        Tool.from_yaml(base_dir / "tools/Write.tool.yaml", binding=file_write_tool),
-        Tool.from_yaml(base_dir / "tools/Edit.tool.yaml", binding=file_edit_tool),
-        Tool.from_yaml(base_dir / "tools/Bash.tool.yaml", binding=bash_tool),
-        Tool.from_yaml(base_dir / "tools/Ls.tool.yaml", binding=ls_tool),
-        Tool.from_yaml(base_dir / "tools/MultiEdit.tool.yaml", binding=multiedit_tool),
+        Tool.from_yaml(base_dir / "tools/WebSearch.tool.yaml", binding=google_web_search),
+        Tool.from_yaml(base_dir / "tools/WebFetch.tool.yaml", binding=web_fetch),
+        Tool.from_yaml(base_dir / "tools/write_todos.tool.yaml", binding=write_todos),
+        Tool.from_yaml(base_dir / "tools/search_file_content.tool.yaml", binding=search_file_content),
+        Tool.from_yaml(base_dir / "tools/Glob.tool.yaml", binding=glob),
+        Tool.from_yaml(base_dir / "tools/read_file.tool.yaml", binding=read_file),
+        Tool.from_yaml(base_dir / "tools/write_file.tool.yaml", binding=write_file),
+        Tool.from_yaml(base_dir / "tools/replace.tool.yaml", binding=replace),
+        Tool.from_yaml(base_dir / "tools/run_shell_command.tool.yaml", binding=run_shell_command),
+        Tool.from_yaml(base_dir / "tools/list_directory.tool.yaml", binding=list_directory),
+        Tool.from_yaml(base_dir / "tools/read_many_files.tool.yaml", binding=read_many_files),
     ]
 
     # NexAU supports Skills (compatible with Claude Skills)

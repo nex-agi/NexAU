@@ -13,53 +13,70 @@ llm_config: # Support environment variable replacement in YAML config
   temperature: 0.7
   stream: False
   api_type: openai_chat_completion # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
-tools: # Tool implementations based on gemini-cli (local Python implementations)
-  # File operations - read_file, write_file, replace
+# Sandbox for file/shell tools.
+# Set SANDBOX_WORK_DIR env before running, e.g. export SANDBOX_WORK_DIR=/tmp/code_agent_work
+sandbox_config:
+  type: local
+  _work_dir: ${env.SANDBOX_WORK_DIR}
+tools: # Builtin tools (nexau.archs.tool.builtin)
+  # File operations
   - name: read_file
     yaml_path: ./tools/read_file.tool.yaml
-    binding: tool_impl.read_file:read_file
+    binding: nexau.archs.tool.builtin.file_tools:read_file
   - name: read_many_files
     yaml_path: ./tools/read_many_files.tool.yaml
-    binding: tool_impl.read_many_files:read_many_files
+    binding: nexau.archs.tool.builtin.file_tools:read_many_files
   - name: write_file
     yaml_path: ./tools/write_file.tool.yaml
-    binding: tool_impl.write_file:write_file
+    binding: nexau.archs.tool.builtin.file_tools:write_file
   - name: replace
     yaml_path: ./tools/replace.tool.yaml
-    binding: tool_impl.replace:replace
-  # Search and navigation - search_file_content, glob, list_directory
+    binding: nexau.archs.tool.builtin.file_tools:replace
+  # Search and navigation
   - name: search_file_content
     yaml_path: ./tools/search_file_content.tool.yaml
-    binding: tool_impl.search_file_content:search_file_content
+    binding: nexau.archs.tool.builtin.file_tools:search_file_content
   - name: glob
     yaml_path: ./tools/Glob.tool.yaml
-    binding: tool_impl.glob_tool:glob
+    binding: nexau.archs.tool.builtin.file_tools:glob
   - name: list_directory
     yaml_path: ./tools/list_directory.tool.yaml
-    binding: tool_impl.list_directory:list_directory
-  # Shell command
+    binding: nexau.archs.tool.builtin.file_tools:list_directory
+  # Shell
   - name: run_shell_command
     yaml_path: ./tools/run_shell_command.tool.yaml
-    binding: tool_impl.run_shell_command:run_shell_command
-  # Web tools - web_fetch, web_read
+    binding: nexau.archs.tool.builtin.shell_tools:run_shell_command
+  - name: BackgroundTaskManage
+    yaml_path: ./tools/BackgroundTaskManage.tool.yaml
+    binding: nexau.archs.tool.builtin:background_task_manage_tool
+  # Web
   - name: web_search
     yaml_path: ./tools/WebSearch.tool.yaml
-    binding: nexau.archs.tool.builtin.web_tool:web_search
+    binding: nexau.archs.tool.builtin.web_tools:google_web_search
   - name: web_read
     yaml_path: ./tools/WebFetch.tool.yaml
-    binding: nexau.archs.tool.builtin.web_tool:web_read
-  # Memory management
+    binding: nexau.archs.tool.builtin.web_tools:web_fetch
+  # Memory and task
   - name: save_memory
     yaml_path: ./tools/save_memory.tool.yaml
-    binding: tool_impl.save_memory:save_memory
-  # Task management
+    binding: nexau.archs.tool.builtin.session_tools:save_memory
   - name: write_todos
     yaml_path: ./tools/write_todos.tool.yaml
-    binding: tool_impl.write_todos:write_todos
+    binding: nexau.archs.tool.builtin.session_tools:write_todos
   - name: complete_task
     yaml_path: ./tools/complete_task.tool.yaml
-    binding: tool_impl.complete_task:complete_task
+    binding: nexau.archs.tool.builtin.session_tools:complete_task
+  - name: ask_user
+    yaml_path: ./tools/ask_user.tool.yaml
+    binding: nexau.archs.tool.builtin.session_tools:ask_user
 skills: # Skills are used to hint the agent to solve specific tasks
   - ./skills/skill-creator
   - ./skills/template-skill
 stop_tools: [complete_task]
+middlewares:
+  - import: nexau.archs.tool.builtin.session_tools.ask_user_hook:AskUserMiddleware
+tracers:
+  - import: nexau.archs.tracer.adapters.in_memory:InMemoryTracer
+
+
+

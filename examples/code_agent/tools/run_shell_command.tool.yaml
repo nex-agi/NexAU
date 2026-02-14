@@ -33,19 +33,19 @@ input_schema:
         Brief description of the command for the user. Be specific and concise.
         Ideally a single sentence. Can be up to 3 sentences for clarity. No line
         breaks.
+    is_background:
+      type: boolean
+      description: >-
+        (OPTIONAL) Set to true if this command should be run in the background
+        (e.g. for long-running servers or watchers). The command will be started,
+        allowed to run for a brief moment to check for immediate errors, and then
+        moved to the background. If not provided, defaults to false.
     dir_path:
       type: string
       description: >-
         (OPTIONAL) The path of the directory to run the command in. If not
         provided, the project root directory is used. Must be a directory within
         the workspace and must already exist.
-    is_background:
-      type: boolean
-      description: >-
-        Set to true if this command should be run in the background (e.g. for
-        long-running servers or watchers). The command will be started, allowed
-        to run for a brief moment to check for immediate errors, and then moved
-        to the background.
   required:
     - command
   additionalProperties: false

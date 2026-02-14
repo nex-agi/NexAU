@@ -26,11 +26,11 @@ llm_config:
 tools:
   - name: web_search
     yaml_path: ./tools/WebSearch.yaml
-    binding: nexau.archs.tool.builtin.web_tool:web_search
+    binding: nexau.archs.tool.builtin.web_tools:google_web_search
     as_skill: true
   - name: web_read
     yaml_path: ./tools/WebRead.yaml
-    binding: nexau.archs.tool.builtin.web_tool:web_read
+    binding: nexau.archs.tool.builtin.web_tools:web_fetch
     as_skill: true
 
 middlewares:

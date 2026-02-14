@@ -21,13 +21,13 @@ from nexau import Agent, AgentConfig
 from nexau.archs.llm import LLMConfig
 from nexau.archs.main_sub.execution.hooks import create_tool_after_approve_hook
 from nexau.archs.tool import Tool
-from nexau.archs.tool.builtin.bash_tool import bash_tool
+from nexau.archs.tool.builtin.shell_tools import run_shell_command
 from nexau.archs.tool.builtin.feishu import (
     get_feishu_chat_list,
     send_feishu_message,
     upload_feishu_file,
 )
-from nexau.archs.tool.builtin.web_tool import web_read, web_search
+from nexau.archs.tool.builtin.web_tools import google_web_search, web_fetch
 
 # Configure logging for hooks to ensure they appear
 logging.basicConfig(
@@ -90,21 +90,21 @@ def main():
             src_dir,
             "tools/Bash.tool.yaml",
         ),
-        binding=bash_tool,
+        binding=run_shell_command,
     )
     web_search_tool = Tool.from_yaml(
         os.path.join(
             src_dir,
             "tools/WebSearch.yaml",
         ),
-        binding=web_search,
+        binding=google_web_search,
     )
     web_read_tool = Tool.from_yaml(
         os.path.join(
             src_dir,
             "tools/WebRead.yaml",
         ),
-        binding=web_read,
+        binding=web_fetch,
     )
     tools = [
         feishu_upload_file_tool,

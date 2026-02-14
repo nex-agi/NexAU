@@ -21,8 +21,8 @@ from pathlib import Path
 from nexau import Agent, AgentConfig
 from nexau.archs.llm import LLMConfig
 from nexau.archs.tool import Tool
-from nexau.archs.tool.builtin.todo_write import todo_write
-from nexau.archs.tool.builtin.web_tool import web_read, web_search
+from nexau.archs.tool.builtin.session_tools import write_todos
+from nexau.archs.tool.builtin.web_tools import google_web_search, web_fetch
 
 
 def get_date():
@@ -40,15 +40,15 @@ def main():
         print("Creating tools...")
         web_search_tool = Tool.from_yaml(
             str(script_dir / "tools/WebSearch.yaml"),
-            binding=web_search,
+            binding=google_web_search,
         )
         web_read_tool = Tool.from_yaml(
             str(script_dir / "tools/WebRead.yaml"),
-            binding=web_read,
+            binding=web_fetch,
         )
         todo_write_tool = Tool.from_yaml(
             str(script_dir / "tools/TodoWrite.tool.yaml"),
-            binding=todo_write,
+            binding=write_todos,
         )
         print("✓ Tools created successfully")
 

@@ -27,16 +27,16 @@ mcp_servers:
 tools:
   - name: web_search
     yaml_path: ./tools/WebSearch.yaml
-    binding: nexau.archs.tool.builtin.web_tool:web_search
+    binding: nexau.archs.tool.builtin.web_tools:google_web_search
   - name: web_read
     yaml_path: ./tools/WebRead.yaml
-    binding: nexau.archs.tool.builtin.web_tool:web_read
+    binding: nexau.archs.tool.builtin.web_tools:web_fetch
   - name: todo_write
     yaml_path: ./tools/TodoWrite.tool.yaml
-    binding: nexau.archs.tool.builtin.todo_write:todo_write
+    binding: nexau.archs.tool.builtin.session_tools:write_todos
   - name: file_write
     yaml_path: ./tools/Write.tool.yaml
-    binding: nexau.archs.tool.builtin.file_tools.file_write_tool:file_write_tool
+    binding: nexau.archs.tool.builtin.file_tools:write_file
 
 sub_agents:
   - name: sub_deep_research_agent

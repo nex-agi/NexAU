@@ -694,17 +694,17 @@ class TestWebReadTruncation:
     """Tests for web_read 64KB content truncation."""
 
     def test_max_web_content_length_constant(self):
-        from nexau.archs.tool.builtin.web_tool import MAX_WEB_CONTENT_LENGTH
+        from nexau.archs.tool.builtin.web_tools.web_tool import MAX_WEB_CONTENT_LENGTH
 
         assert MAX_WEB_CONTENT_LENGTH == 64 * 1024
 
     def test_html_parser_truncation(self):
         """Test that HTML parser results are truncated at 64KB."""
-        from nexau.archs.tool.builtin.web_tool import MAX_WEB_CONTENT_LENGTH, web_read
+        from nexau.archs.tool.builtin.web_tools.web_tool import MAX_WEB_CONTENT_LENGTH, web_read
 
         large_content = "A" * (MAX_WEB_CONTENT_LENGTH + 1000)
 
-        with patch("nexau.archs.tool.builtin.web_tool._html_parser") as mock_parser:
+        with patch("nexau.archs.tool.builtin.web_tools.web_tool._html_parser") as mock_parser:
             mock_parser.base_url = "http://test"
             mock_parser.api_key = "key"
             mock_parser.secret = "secret"
@@ -717,11 +717,11 @@ class TestWebReadTruncation:
         assert len(result["content"].encode("utf-8")) <= MAX_WEB_CONTENT_LENGTH + 10  # +... suffix
 
     def test_html_parser_no_truncation_for_small_content(self):
-        from nexau.archs.tool.builtin.web_tool import web_read
+        from nexau.archs.tool.builtin.web_tools.web_tool import web_read
 
         small_content = "Hello World"
 
-        with patch("nexau.archs.tool.builtin.web_tool._html_parser") as mock_parser:
+        with patch("nexau.archs.tool.builtin.web_tools.web_tool._html_parser") as mock_parser:
             mock_parser.base_url = "http://test"
             mock_parser.api_key = "key"
             mock_parser.secret = "secret"

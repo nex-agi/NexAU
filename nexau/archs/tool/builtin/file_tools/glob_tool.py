@@ -1,214 +1,208 @@
-# Copyright (c) Nex-AGI. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright 2025 Google LLC
+# SPDX-License-Identifier: Apache-2.0
+"""
+glob tool - Finds files matching glob patterns.
 
-import json
-import logging
-import time
+Based on gemini-cli's glob.ts implementation.
+Returns absolute paths sorted by modification time (newest first).
+"""
+
+import fnmatch
 from pathlib import Path
 from typing import Any
 
 from nexau.archs.main_sub.agent_state import AgentState
-from nexau.archs.sandbox import BaseSandbox
+from nexau.archs.sandbox import BaseSandbox, SandboxStatus
+from nexau.archs.tool.builtin._sandbox_utils import get_sandbox, resolve_path
 
-logger = logging.getLogger(__name__)
+# Default exclusions matching gemini-cli
+DEFAULT_EXCLUDES = [
+    "node_modules",
+    ".git",
+    "__pycache__",
+    "venv",
+    ".venv",
+    "dist",
+    "build",
+    ".tox",
+    ".eggs",
+    "*.egg-info",
+]
 
 
-def glob_tool(
+def _should_exclude(path: str, excludes: list[str]) -> bool:
+    """Check if path should be excluded."""
+    parts = Path(path).parts
+    for part in parts:
+        for pattern in excludes:
+            if fnmatch.fnmatch(part, pattern):
+                return True
+    return False
+
+
+def _sort_paths_by_mtime_desc(paths_with_mtime: list[tuple[str, str | None]]) -> list[str]:
+    """Sort by modification time descending (string mtime), then path."""
+    # LocalSandbox uses "%Y-%m-%d %H:%M:%S", which sorts lexicographically.
+    paths_with_mtime.sort(key=lambda t: (t[1] or "", t[0]))
+    # reverse for newest first
+    return [p for p, _ in reversed(paths_with_mtime)]
+
+
+def glob(
     pattern: str,
-    path: str | None = None,
-    limit: int = 100,
+    dir_path: str | None = None,
+    case_sensitive: bool = False,
+    respect_git_ignore: bool = True,
+    respect_gemini_ignore: bool = True,
     agent_state: AgentState | None = None,
-) -> str:
+) -> dict[str, Any]:
     """
-    Search for files using glob patterns. This tool allows you to find files that match
-    specific patterns in the filesystem. Supports standard glob syntax including:
-    - * matches any sequence of characters (except path separators)
-    - ? matches any single character
-    - [seq] matches any character in seq
-    - ** matches directories recursively
+    Finds files matching a glob pattern.
 
-    Examples:
-    - '*.py' - all Python files in the current directory
-    - '**/*.tsx' - all TypeScript React files recursively
-    - 'src/**/*.js' - all JavaScript files in src directory recursively
-    - 'test_*.py' - all test files starting with 'test_'
+    Returns absolute paths sorted by modification time (newest first).
+    Ideal for quickly locating files based on their name or path structure.
+
+    Args:
+        pattern: Glob pattern (e.g., "**/*.py", "docs/*.md")
+        dir_path: Directory to search in (optional, defaults to cwd)
+        case_sensitive: Whether matching should be case-sensitive
+        respect_git_ignore: Whether to respect .gitignore patterns
+        respect_gemini_ignore: Whether to respect .geminiignore patterns
+
+    Returns:
+        Dict with content and returnDisplay matching gemini-cli format
     """
-    start_time = time.time()
-
-    # Get sandbox instance
-    assert agent_state is not None, "File operation tool invoked, but agent_state is not passed. We need sandbox instance in agent_state."
-    sandbox: BaseSandbox | None = agent_state.get_sandbox()
-    assert sandbox is not None, "File operation tool invoked, but sandbox is not initialized."
-
-    # Determine the search directory
-    search_dir = path if path else str(sandbox.work_dir)
-
-    # Validate that the directory exists
     try:
+        sandbox: BaseSandbox = get_sandbox(agent_state)
+
+        # Validate pattern
+        if not pattern or not pattern.strip():
+            return {
+                "content": "The 'pattern' parameter cannot be empty.",
+                "returnDisplay": "Error: Empty pattern",
+                "error": {
+                    "message": "The 'pattern' parameter cannot be empty.",
+                    "type": "INVALID_PATTERN",
+                },
+            }
+
+        # Determine search directory
+        search_dir = resolve_path(dir_path, sandbox) if dir_path else str(sandbox.work_dir)
+
         if not sandbox.file_exists(search_dir):
-            return json.dumps(
-                {
-                    "error": f"Directory does not exist: {search_dir}",
-                    "num_files": 0,
-                    "filenames": [],
-                    "duration_ms": int((time.time() - start_time) * 1000),
-                    "truncated": False,
+            error_msg = f"Search path does not exist {search_dir}"
+            return {
+                "content": error_msg,
+                "returnDisplay": "Error: Path not found",
+                "error": {
+                    "message": error_msg,
+                    "type": "DIRECTORY_NOT_FOUND",
                 },
-                indent=2,
-            )
+            }
 
-        # Get file info to check if it's a directory
-        file_info = sandbox.get_file_info(search_dir)
-        if not file_info.is_directory:
-            return json.dumps(
-                {
-                    "error": f"Path is not a directory: {search_dir}",
-                    "num_files": 0,
-                    "filenames": [],
-                    "duration_ms": int((time.time() - start_time) * 1000),
-                    "truncated": False,
+        if not sandbox.get_file_info(search_dir).is_directory:
+            error_msg = f"Search path is not a directory: {search_dir}"
+            return {
+                "content": error_msg,
+                "returnDisplay": "Error: Not a directory",
+                "error": {
+                    "message": error_msg,
+                    "type": "NOT_A_DIRECTORY",
                 },
-                indent=2,
-            )
+            }
 
-        if not file_info.readable:
-            return json.dumps(
-                {
-                    "error": f"No read permission for directory: {search_dir}",
-                    "num_files": 0,
-                    "filenames": [],
-                    "duration_ms": int((time.time() - start_time) * 1000),
-                    "truncated": False,
-                },
-                indent=2,
-            )
-    except Exception as e:
-        logger.error(f"Error checking directory permissions: {e}")
-        return json.dumps(
-            {
-                "error": f"Error accessing directory: {str(e)}",
-                "num_files": 0,
-                "filenames": [],
-                "duration_ms": int((time.time() - start_time) * 1000),
-                "truncated": False,
-            },
-            indent=2,
-        )
+        # Build exclusion list
+        excludes = list(DEFAULT_EXCLUDES)
 
-    try:
-        # Construct full pattern path
+        # Try to read .gitignore if requested
+        if respect_git_ignore:
+            gitignore_path = str(Path(search_dir) / ".gitignore")
+            if sandbox.file_exists(gitignore_path):
+                res = sandbox.read_file(gitignore_path, encoding="utf-8", binary=False)
+                if res.status == SandboxStatus.SUCCESS and isinstance(res.content, str):
+                    for line in res.content.splitlines():
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            excludes.append(line.rstrip("/"))
+
+        # Try to read .geminiignore if requested
+        if respect_gemini_ignore:
+            geminiignore_path = str(Path(search_dir) / ".geminiignore")
+            if sandbox.file_exists(geminiignore_path):
+                res = sandbox.read_file(geminiignore_path, encoding="utf-8", binary=False)
+                if res.status == SandboxStatus.SUCCESS and isinstance(res.content, str):
+                    for line in res.content.splitlines():
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            excludes.append(line.rstrip("/"))
+
+        # Construct full pattern path (match gemini-cli behavior)
         if Path(pattern).is_absolute():
             full_pattern = pattern
-        else:
+        elif pattern.startswith("**/"):
             full_pattern = f"{search_dir}/{pattern}"
+        else:
+            full_pattern = f"{search_dir}/**/{pattern}"
 
-        # Perform glob search through sandbox
+        # Find matching paths through sandbox
         matches = sandbox.glob(full_pattern, recursive=True)
 
-        # Filter to only include files (not directories)
-        files: list[str] = []
-        for match in matches:
+        # Filter to files + excludes and collect modification times
+        files_with_mtime: list[tuple[str, str | None]] = []
+        for m in matches:
             try:
-                info = sandbox.get_file_info(match)
-                if info.is_file:
-                    files.append(match)
+                info = sandbox.get_file_info(m)
+                if not info.is_file:
+                    continue
+
+                try:
+                    rel = str(Path(m).relative_to(search_dir))
+                except Exception:
+                    rel = m
+
+                if _should_exclude(rel, excludes):
+                    continue
+
+                files_with_mtime.append((m, info.modified_time))
             except Exception:
-                # Skip files we can't access
                 continue
 
-        # Sort files for consistent output
-        files.sort()
+        # Sort by modification time (newest first)
+        sorted_paths = _sort_paths_by_mtime_desc(files_with_mtime)
 
-        # Apply limit and check if truncated
-        truncated = len(files) > limit
-        if truncated:
-            files = files[:limit]
+        # Count ignored files
+        ignored_count = len(matches) - len(files_with_mtime)
 
-        # Calculate duration
-        duration_ms = int((time.time() - start_time) * 1000)
+        # Build result matching gemini-cli format
+        if not sorted_paths:
+            message = f'No files found matching pattern "{pattern}" within {search_dir}'
+            if ignored_count > 0:
+                message += f" ({ignored_count} files were ignored)"
+            return {
+                "content": message,
+                "returnDisplay": "No files found",
+            }
 
-        # Prepare result
-        result: dict[str, Any] = {
-            "num_files": len(files),
-            "filenames": files,
-            "duration_ms": duration_ms,
-            "truncated": truncated,
-            "search_directory": search_dir,
-            "pattern": pattern,
+        file_count = len(sorted_paths)
+        file_list = "\n".join(sorted_paths)
+
+        result_message = f'Found {file_count} file(s) matching "{pattern}" within {search_dir}'
+        if ignored_count > 0:
+            result_message += f" ({ignored_count} additional files were ignored)"
+        result_message += f", sorted by modification time (newest first):\n{file_list}"
+
+        return {
+            "content": result_message,
+            "returnDisplay": f"Found {file_count} matching file(s)",
         }
 
-        # Add truncation message if needed
-        if truncated:
-            result["message"] = f"Results are truncated to {limit} files. Consider using a more specific pattern."
-        elif len(files) == 0:
-            result["message"] = "No files found matching the pattern."
-        else:
-            result["message"] = f"Found {len(files)} file{'s' if len(files) != 1 else ''} matching the pattern."
-
-        logger.info(
-            f"Glob search completed: found {len(files)} files in {duration_ms}ms",
-        )
-
-        # Apply length limit to JSON output
-        result_json = json.dumps(result, indent=2, ensure_ascii=False)
-        if len(result_json) > 10000:
-            # Calculate how many files to keep to stay under limit
-            files_to_keep = len(files)
-            while files_to_keep > 0:
-                truncated_result: dict[str, Any] = result.copy()
-                truncated_result["filenames"] = files[:files_to_keep]
-                truncated_result["num_files"] = files_to_keep
-                truncated_result["truncated_output"] = True
-                truncated_result["remaining_files"] = (
-                    len(
-                        files,
-                    )
-                    - files_to_keep
-                )
-                truncated_result["message"] = f"Found {files_to_keep} files (truncated: {len(files) - files_to_keep} more files not shown)"
-
-                test_json = json.dumps(
-                    truncated_result,
-                    indent=2,
-                    ensure_ascii=False,
-                )
-                if len(test_json) <= 10000:
-                    return test_json
-                files_to_keep -= 1
-
-            # If even 0 files is too long, return minimal result
-            minimal_result: dict[str, Any] = {
-                "truncated_output": True,
-                "total_files": len(files),
-                "message": f"Output too long: found {len(files)} files (details truncated)",
-                "search_directory": search_dir,
-                "pattern": pattern,
-                "duration_ms": duration_ms,
-            }
-            return json.dumps(minimal_result, indent=2, ensure_ascii=False)
-
-        return result_json
-
     except Exception as e:
-        logger.error(f"Error during glob search: {e}")
-        return json.dumps(
-            {
-                "error": f"Error during file search: {str(e)}",
-                "num_files": 0,
-                "filenames": [],
-                "duration_ms": int((time.time() - start_time) * 1000),
-                "truncated": False,
+        error_msg = f"Error during glob search operation: {str(e)}"
+        return {
+            "content": error_msg,
+            "returnDisplay": "Error: An unexpected error occurred.",
+            "error": {
+                "message": error_msg,
+                "type": "GLOB_EXECUTION_ERROR",
             },
-            indent=2,
-        )
+        }

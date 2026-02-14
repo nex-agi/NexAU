@@ -48,7 +48,7 @@ def background_task_manage_tool(
     agent_state: AgentState | None = None,
 ) -> BackgroundTaskManageResult:
     """
-    Manage background tasks started by bash_tool with background=True.
+    Manage background tasks started by run_shell_command with background=True.
 
     Args:
         action: The action to perform:
@@ -98,6 +98,16 @@ def background_task_manage_tool(
             "status": "error",
             "action": action,
             "error": f"pid is required for action '{action}'",
+        }
+
+    # Normalize pid to int (LLM may send float e.g. 12345.0)
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return {
+            "status": "error",
+            "action": action,
+            "error": f"pid must be an integer, got {type(pid).__name__}",
         }
 
     if action == "status":

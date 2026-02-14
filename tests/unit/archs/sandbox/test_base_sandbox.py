@@ -389,8 +389,42 @@ class TestBaseSandboxInterface:
         assert encoding in ["utf-8", "ascii"]
 
     def test_detect_file_encoding_fallback(self):
+        """Binary data should fall back to utf-8 or ascii (chardet may vary)."""
         binary_data = b"\x00\x01\x02\x03"
         encoding = DummySandbox().detect_encoding(binary_data)
+        assert encoding in ["utf-8", "ascii"]
+
+    def test_upload_skill_calls_create_directory_and_upload(self) -> None:
+        """upload_skill should create .skills subdir and upload skill folder."""
+        sandbox = DummySandbox(_work_dir="/tmp/sandbox")
+        skill = type("Skill", (), {"folder": "/local/skill_name"})()
+        result = sandbox.upload_skill(skill)
+        assert result == "/tmp/sandbox/.skills/skill_name"
+        assert sandbox.uploaded == [("/local/skill_name", "/tmp/sandbox/.skills/skill_name")]
+
+    def test_dict_returns_init_fields_only(self) -> None:
+        """dict() should return only dataclass init fields."""
+        sandbox = DummySandbox(sandbox_id="sid", _work_dir="/tmp")
+        d = sandbox.dict()
+        assert "sandbox_id" in d
+        assert "_work_dir" in d
+        assert d["sandbox_id"] == "sid"
+        assert d["_work_dir"] == "/tmp"
+
+    def test_detect_file_encoding_chardet_high_confidence(self) -> None:
+        """When chardet returns high confidence, use detected encoding."""
+        data = "你好世界".encode()
+        encoding = DummySandbox().detect_encoding(data)
+        assert encoding in ["utf-8", "ascii", "UTF-8"]
+
+    def test_detect_file_encoding_exception_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When chardet raises, fall back to utf-8."""
+
+        def raise_err(_: bytes) -> dict:
+            raise ValueError("detect failed")
+
+        monkeypatch.setattr("chardet.detect", raise_err)
+        encoding = DummySandbox().detect_encoding(b"hello")
         assert encoding == "utf-8"
 
 
@@ -578,3 +612,105 @@ class TestBaseSandboxManager:
             session_id="session",
         )
         assert result is None
+
+    def test_persist_sandbox_state_success(self) -> None:
+        """persist_sandbox_state should call update_session_sandbox on success."""
+        updated = []
+
+        class SessionManagerWithUpdate:
+            async def update_session_sandbox(self, user_id: str, session_id: str, sandbox_state: dict) -> None:
+                updated.append((user_id, session_id, sandbox_state))
+
+        class DummyManager(BaseSandboxManager["DummySandbox"]):
+            def start(self, *args: object, **kwargs: object) -> DummySandbox:
+                return DummySandbox()
+
+            def stop(self) -> bool:
+                return True
+
+            def pause(self) -> bool:
+                return True
+
+            def is_running(self) -> bool:
+                return True
+
+        sm = cast(SessionManager, SessionManagerWithUpdate())
+        manager = DummyManager()
+        manager._instance = DummySandbox(sandbox_id="x", _work_dir="/tmp")
+        manager.persist_sandbox_state(sm, "u", "s", manager._instance)
+        assert len(updated) == 1
+        assert updated[0][0] == "u"
+        assert updated[0][1] == "s"
+        assert updated[0][2]["sandbox_id"] == "x"
+        assert updated[0][2]["sandbox_type"] == "DummySandbox"
+
+    def test_load_sandbox_state_success(self) -> None:
+        """load_sandbox_state should return sandbox_state when session has it."""
+        state = {"sandbox_id": "loaded", "sandbox_type": "LocalSandbox"}
+
+        class SessionManagerWithGet:
+            async def get_session(self, user_id: str, session_id: str) -> object:
+                return type("Session", (), {"sandbox_state": state})()
+
+        class DummyManager(BaseSandboxManager["DummySandbox"]):
+            def start(self, *args: object, **kwargs: object) -> DummySandbox:
+                return DummySandbox()
+
+            def stop(self) -> bool:
+                return True
+
+            def pause(self) -> bool:
+                return True
+
+            def is_running(self) -> bool:
+                return True
+
+        sm = cast(SessionManager, SessionManagerWithGet())
+        manager = DummyManager()
+        result = manager.load_sandbox_state(sm, "u", "s")
+        assert result == state
+
+    def test_start_sync_returns_cached_instance(self) -> None:
+        """start_sync should return _instance when already set."""
+
+        class DummyManager(BaseSandboxManager["DummySandbox"]):
+            def start(self, *args: object, **kwargs: object) -> DummySandbox:
+                return DummySandbox(sandbox_id="started")
+
+            def stop(self) -> bool:
+                return True
+
+            def pause(self) -> bool:
+                return True
+
+            def is_running(self) -> bool:
+                return True
+
+        manager = DummyManager()
+        existing = DummySandbox(sandbox_id="cached")
+        manager._instance = existing
+        result = manager.start_sync()
+        assert result is existing
+        assert result.sandbox_id == "cached"
+
+    def test_pause_no_wait_starts_thread(self) -> None:
+        """pause_no_wait should start a thread and return it."""
+
+        class DummyManager(BaseSandboxManager["DummySandbox"]):
+            def start(self, *args: object, **kwargs: object) -> DummySandbox:
+                return DummySandbox()
+
+            def stop(self) -> bool:
+                return True
+
+            def pause(self) -> bool:
+                return True
+
+            def is_running(self) -> bool:
+                return True
+
+        manager = DummyManager()
+        thread = manager.pause_no_wait()
+        assert thread is not None
+        assert hasattr(thread, "start")
+        thread.join(timeout=2)

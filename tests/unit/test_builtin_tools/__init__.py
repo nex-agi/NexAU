@@ -19,18 +19,8 @@ This module contains unit tests for each builtin tool in the nexau framework.
 Each test should focus on a single tool's functionality in isolation.
 """
 
-# Import existing test modules
-# Note: Some modules are placeholders and will be implemented later
-try:
-    from .test_bash import *
-except ImportError:
-    pass
-
-try:
-    from .test_file_tools import *
-except ImportError:
-    pass
-
+# Legacy builtin tool tests (file_tools, bash) were removed when legacy impls were deleted.
+# Integration tests for builtin tools are in tests/integration/test_tool_integration.py
 # Future imports (to be implemented)
 # from .test_web_tools import *
 # from .test_mcp import *

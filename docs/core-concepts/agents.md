@@ -13,12 +13,12 @@ Creating an agent in Python gives you maximum flexibility. This is ideal for dyn
 import os
 from datetime import datetime
 from nexau import Agent, AgentConfig, Tool, LLMConfig
-from nexau.archs.tool.builtin.web_tool import web_search, web_read
+from nexau.archs.tool.builtin.web_tools import google_web_search, web_fetch
 
 def main():
     # Create tools from YAML configurations
-    web_search_tool = Tool.from_yaml("tools/WebSearch.yaml", binding=web_search)
-    web_read_tool = Tool.from_yaml("tools/WebRead.yaml", binding=web_read)
+    web_search_tool = Tool.from_yaml("tools/WebSearch.yaml", binding=google_web_search)
+    web_read_tool = Tool.from_yaml("tools/WebRead.yaml", binding=web_fetch)
 
     # Configure the LLM
     llm_config = LLMConfig(
@@ -67,10 +67,10 @@ For a more declarative approach, you can define an agent's entire configuration 
     tools:
       - name: web_search
           yaml_path: ./tools/WebSearch.yaml
-        binding: nexau.archs.tool.builtin.web_tool:web_search
+        binding: nexau.archs.tool.builtin.web_tools:google_web_search
       - name: web_read
           yaml_path: ./tools/WebRead.yaml
-        binding: nexau.archs.tool.builtin.web_tool:web_read
+        binding: nexau.archs.tool.builtin.web_tools:web_fetch
     sub_agents: []
     ```
 

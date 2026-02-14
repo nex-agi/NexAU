@@ -6,46 +6,42 @@ Tools are the functions that an agent can execute to interact with the outside w
 
 NexAU comes with a variety of pre-built tools for common tasks.
 
-#### File Tools
-- **file_read_tool**: Read file contents.
-- **file_write_tool**: Write or create files.
-- **file_edit_tool**: Edit existing files.
-- **grep_tool**: Search for patterns within files.
-- **glob_tool**: Find files using patterns.
-- **ls_tool**: List directory contents.
-- **multiedit_tool**: Apply multiple edits to a single file.
+#### File Tools (`nexau.archs.tool.builtin.file_tools`)
+- **read_file**, **write_file**, **replace**: Read, write, edit files.
+- **glob**, **list_directory**, **read_many_files**, **search_file_content**: Find and search files.
 
-#### Web Tools
-- **web_search**: Search the web for information (uses Serper).
-- **web_read**: Read and parse content from a URL.
+#### Web Tools (`nexau.archs.tool.builtin.web_tools`)
+- **google_web_search**: Search the web.
+- **web_fetch**: Fetch and parse content from a URL.
 
-#### System Tools
-- **bash_tool**: Execute bash commands.
-- **todo_write**: Manage a simple todo list.
+#### Shell Tools (`nexau.archs.tool.builtin.shell_tools`)
+- **run_shell_command**: Execute shell commands.
+
+#### Session Tools (`nexau.archs.tool.builtin.session_tools`)
+- **write_todos**, **complete_task**, **save_memory**, **ask_user**: Task management, persistence, user interaction.
 
 ### How to use Use these built-in tools
 If you use python to create Agent:
 
 ```python
 from nexau import Agent, AgentConfig, Tool
-from nexau.archs.tool.builtin.todo_write import todo_write
-from nexau.archs.tool.builtin.web_tool import web_read
-from nexau.archs.tool.builtin.web_tool import web_search
+from nexau.archs.tool.builtin.session_tools import write_todos
+from nexau.archs.tool.builtin.web_tools import google_web_search, web_fetch
 
 # Create the tool instance
 # Note: you need to create the yaml files for tool config, you may refer to examples/deep_research/tools for examples
 
 web_search_tool = Tool.from_yaml(
     str(script_dir / 'tools/WebSearch.yaml'),
-    binding=web_search,
+    binding=google_web_search,
 )
 web_read_tool = Tool.from_yaml(
     str(script_dir / 'tools/WebRead.yaml'),
-    binding=web_read,
+    binding=web_fetch,
 )
 todo_write_tool = Tool.from_yaml(
     str(script_dir / 'tools/TodoWrite.tool.yaml'),
-    binding=todo_write,
+    binding=write_todos,
 )
 
 # Add it to your agent's tool list
@@ -63,13 +59,13 @@ If you use agent yaml config, you can add these lines to the config file:
 tools:
   - name: web_search
     yaml_path: ./tools/WebSearch.yaml
-    binding: nexau.archs.tool.builtin.web_tool:web_search
+    binding: nexau.archs.tool.builtin.web_tools:google_web_search
   - name: web_read
     yaml_path: ./tools/WebRead.yaml
-    binding: nexau.archs.tool.builtin.web_tool:web_read
+    binding: nexau.archs.tool.builtin.web_tools:web_fetch
   - name: todo_write
     yaml_path: ./tools/TodoWrite.tool.yaml
-    binding: nexau.archs.tool.builtin.todo_write:todo_write
+    binding: nexau.archs.tool.builtin.session_tools:write_todos
 ```
 
 ## Creating Custom Tools

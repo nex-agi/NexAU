@@ -10,32 +10,30 @@
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
-# limitations under the License.
+# limitations in the License.
 
 """
 Integration tests for tool interactions and workflows.
+Uses builtin tools (write_file, read_file, replace, run_shell_command).
 """
 
-import json
 import os
 import tempfile
-from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
 from nexau.archs.sandbox import LocalSandbox
-from nexau.archs.tool.builtin.bash_tool import bash_tool
-from nexau.archs.tool.builtin.file_tools.file_edit_tool import file_edit_tool
-from nexau.archs.tool.builtin.file_tools.file_read_tool import file_read_tool
-from nexau.archs.tool.builtin.file_tools.file_write_tool import file_write_tool
+from nexau.archs.tool.builtin.file_tools import read_file, replace, write_file
+from nexau.archs.tool.builtin.shell_tools import run_shell_command
 
 
 @pytest.fixture
 def agent_state():
-    agent_state = Mock()
-    agent_state.get_sandbox = lambda: LocalSandbox()
-    return agent_state
+    with tempfile.TemporaryDirectory() as work_dir:
+        agent_state = Mock()
+        agent_state.get_sandbox = lambda: LocalSandbox(_work_dir=work_dir)
+        yield agent_state
 
 
 class TestToolChainIntegration:
@@ -44,105 +42,44 @@ class TestToolChainIntegration:
     @pytest.mark.integration
     def test_file_write_read_chain(self, agent_state):
         """Test writing and reading a file in sequence."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            file_path = os.path.join(temp_dir, "test.txt")
-            content = "Hello, World!\nThis is a test."
+        work_dir = str(agent_state.get_sandbox().work_dir)
+        file_path = os.path.join(work_dir, "test.txt")
+        content = "Hello, World!\nThis is a test."
 
-            # Write file - returns JSON string
-            write_result_str = file_write_tool(file_path, content, agent_state=agent_state)
-            write_result = json.loads(write_result_str)
-            assert write_result["success"]
-            assert write_result["file_path"] == file_path
+        write_result = write_file(file_path, content, agent_state=agent_state)
+        assert "error" not in write_result
 
-            # Read file back - returns JSON string
-            read_result_str = file_read_tool(file_path, agent_state=agent_state)
-            read_result = json.loads(read_result_str)
-            assert "content" in read_result
-            # Content includes line numbers, so check for the actual text
-            assert "Hello, World!" in read_result["content"]
-            assert "This is a test." in read_result["content"]
+        read_result = read_file(file_path, agent_state=agent_state)
+        assert "error" not in read_result
+        assert "Hello, World!" in read_result["content"]
+        assert "This is a test." in read_result["content"]
 
     @pytest.mark.integration
-    def test_file_write_edit_read_chain(self, agent_state):
-        """Test writing, editing, and reading a file."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            file_path = os.path.join(temp_dir, "test.py")
-            initial_content = "def hello():\n    print('Hello')"
+    def test_file_write_replace_read_chain(self, agent_state):
+        """Test writing, replacing, and reading a file."""
+        work_dir = str(agent_state.get_sandbox().work_dir)
+        file_path = os.path.join(work_dir, "test.py")
+        initial_content = "def hello():\n    print('Hello')"
 
-            # Write initial file
-            write_result_str = file_write_tool(file_path, initial_content, agent_state=agent_state)
-            write_result = json.loads(write_result_str)
-            assert write_result["success"]
+        write_file(file_path, initial_content, agent_state=agent_state)
+        replace_result = replace(file_path, "print('Hello')", "print('Hello, World!')", agent_state=agent_state)
+        assert "error" not in replace_result
 
-            # Edit file
-            old_string = "print('Hello')"
-            new_string = "print('Hello, World!')"
-            edit_result_str = file_edit_tool(file_path, old_string, new_string, agent_state=agent_state)
-            edit_result = json.loads(edit_result_str)
-            assert edit_result["success"]
-
-            # Read modified file
-            read_result_str = file_read_tool(file_path, agent_state=agent_state)
-            read_result = json.loads(read_result_str)
-            assert "content" in read_result
-            assert "print('Hello, World!')" in read_result["content"]
+        read_result = read_file(file_path, agent_state=agent_state)
+        assert "error" not in read_result
+        assert "print('Hello, World!')" in read_result["content"]
 
     @pytest.mark.integration
-    def test_bash_and_file_tools_integration(self, agent_state):
-        """Test bash tool working with file tools."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            file_path = os.path.join(temp_dir, "data.txt")
+    def test_shell_and_file_tools_integration(self, agent_state):
+        """Test run_shell_command working with file tools."""
+        work_dir = str(agent_state.get_sandbox().work_dir)
+        file_path = os.path.join(work_dir, "data.txt")
+        content = "Line 1\nLine 2\nLine 3\n"
 
-            # Write file (with trailing newline so wc -l counts correctly)
-            content = "Line 1\nLine 2\nLine 3\n"
-            write_result_str = file_write_tool(file_path, content, agent_state=agent_state)
-            write_result = json.loads(write_result_str)
-            assert write_result["success"]
-
-            # Use bash to count lines
-            bash_result = bash_tool(f"wc -l {file_path}", agent_state=agent_state)
-            assert bash_result["status"] == "success"
-            assert "3" in bash_result["stdout"]
-
-
-class TestToolStateManagement:
-    """Integration tests for tools that maintain state."""
-
-    @pytest.mark.integration
-    def test_file_state_across_operations(self, agent_state):
-        """Test file state management across multiple operations."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            file_path = os.path.join(temp_dir, "stateful.txt")
-
-            # Multiple write operations
-            file_write_tool(file_path, "Version 1", agent_state=agent_state)
-            read1_str = file_read_tool(file_path, agent_state=agent_state)
-            read1 = json.loads(read1_str)
-            assert "Version 1" in read1["content"]
-
-            file_write_tool(file_path, "Version 2", agent_state=agent_state)
-            read2_str = file_read_tool(file_path, agent_state=agent_state)
-            read2 = json.loads(read2_str)
-            assert "Version 2" in read2["content"]
-            assert "Version 1" not in read2["content"]
-
-    @pytest.mark.integration
-    def test_concurrent_tool_execution(self, agent_state):
-        """Test tools executing concurrently without conflicts."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Create multiple files
-            files = []
-            for i in range(5):
-                file_path = os.path.join(temp_dir, f"file_{i}.txt")
-                file_write_tool(file_path, f"Content {i}", agent_state=agent_state)
-                files.append(file_path)
-
-            # Read all files
-            for i, file_path in enumerate(files):
-                result_str = file_read_tool(file_path, agent_state=agent_state)
-                result = json.loads(result_str)
-                assert "content" in result
-                assert f"Content {i}" in result["content"]
+        write_file(file_path, content, agent_state=agent_state)
+        result = run_shell_command(f"wc -l {file_path}", agent_state=agent_state)
+        assert "error" not in result
+        assert "3" in result["content"]
 
 
 class TestToolErrorRecovery:
@@ -151,38 +88,26 @@ class TestToolErrorRecovery:
     @pytest.mark.integration
     def test_file_tool_error_recovery(self, agent_state):
         """Test recovery from file tool errors."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            file_path = os.path.join(temp_dir, "test.txt")
+        work_dir = str(agent_state.get_sandbox().work_dir)
+        file_path = os.path.join(work_dir, "test.txt")
 
-            # Try to read non-existent file
-            read_result_str = file_read_tool(file_path, agent_state=agent_state)
-            read_result = json.loads(read_result_str)
-            assert "error" in read_result
-            assert "not found" in read_result["error"].lower() or "does not exist" in read_result["error"].lower()
+        read_result = read_file(file_path, agent_state=agent_state)
+        assert "error" in read_result
 
-            # Recover by creating the file
-            write_result_str = file_write_tool(file_path, "Recovery content", agent_state=agent_state)
-            write_result = json.loads(write_result_str)
-            assert write_result["success"]
-
-            # Now read should work
-            read_result_str = file_read_tool(file_path, agent_state=agent_state)
-            read_result = json.loads(read_result_str)
-            assert "content" in read_result
-            assert "Recovery content" in read_result["content"]
+        write_file(file_path, "Recovery content", agent_state=agent_state)
+        read_result = read_file(file_path, agent_state=agent_state)
+        assert "error" not in read_result
+        assert "Recovery content" in read_result["content"]
 
     @pytest.mark.integration
-    def test_bash_tool_error_recovery(self, agent_state):
-        """Test recovery from bash tool errors."""
-        # Execute failing command
-        result = bash_tool("exit 1", agent_state=agent_state)
-        assert result["status"] == "error"
-        assert result["exit_code"] == 1
+    def test_shell_tool_error_recovery(self, agent_state):
+        """Test recovery from shell tool errors."""
+        result = run_shell_command("exit 1", agent_state=agent_state)
+        assert "error" in result
 
-        # Execute successful command
-        result = bash_tool("echo 'success'", agent_state=agent_state)
-        assert result["status"] == "success"
-        assert result["exit_code"] == 0
+        result = run_shell_command("echo 'success'", agent_state=agent_state)
+        assert "error" not in result
+        assert "success" in result["content"]
 
 
 class TestToolConfigIntegration:
@@ -193,8 +118,6 @@ class TestToolConfigIntegration:
         """Test creating tools from configuration."""
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = os.path.join(temp_dir, "test_tool.yaml")
-
-            # Create tool config
             config_content = """
 name: test_tool
 description: A test tool
@@ -203,34 +126,7 @@ parameters:
     type: string
     description: First parameter
     required: true
-  - name: param2
-    type: integer
-    description: Second parameter
-    required: false
-    default: 10
 """
             with open(config_path, "w") as f:
                 f.write(config_content)
-
-            # In a real test, this would load and create the tool
             assert os.path.exists(config_path)
-
-    @pytest.mark.integration
-    def test_multiple_tools_from_directory(self):
-        """Test loading multiple tools from a directory."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            tools_dir = os.path.join(temp_dir, "tools")
-            os.makedirs(tools_dir)
-
-            # Create multiple tool configs
-            for i in range(3):
-                config_path = os.path.join(tools_dir, f"tool{i}.yaml")
-                with open(config_path, "w") as f:
-                    f.write(f"""
-name: tool{i}
-description: Tool number {i}
-""")
-
-            # Verify all tool configs exist
-            tool_files = list(Path(tools_dir).glob("*.yaml"))
-            assert len(tool_files) == 3

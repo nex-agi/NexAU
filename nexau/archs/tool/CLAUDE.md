@@ -163,23 +163,25 @@ Located in `nexau/archs/tool/builtin/`:
 
 #### File Tools (`file_tools/`)
 
-- `file_read_tool`: Read file contents
-- `file_write_tool`: Write or create files
-- `file_edit_tool`: Edit existing files
-- `grep_tool`: Search for patterns within files
-- `glob_tool`: Find files using patterns
-- `ls_tool`: List directory contents
+- `read_file`, `write_file`, `replace`: Read, write, edit files
+- `glob`, `list_directory`, `read_many_files`, `search_file_content`: Find and search files
+
+#### Web Tools (`web_tools/`)
+
+- `google_web_search`: Search web
+- `web_fetch`: Fetch and parse content from a URL
+
+#### Shell Tools (`shell_tools/`)
+
+- `run_shell_command`: Execute shell commands
+
+#### Session Tools (`session_tools/`)
+
+- `write_todos`, `complete_task`, `save_memory`, `ask_user`: Task management, persistence, user interaction
+
+#### Other Tools
+
 - `multiedit_tool`: Apply multiple edits to a single file
-
-#### Web Tools (`web_tool.py`)
-
-- `web_search`: Search web for information (uses Serper API)
-- `web_read`: Read and parse content from a URL
-
-#### System Tools
-
-- `bash_tool`: Execute bash commands
-- `todo_write`: Manage a simple todo list
 - `run_code_tool`: Execute code in notebook environment
 
 #### MCP Integration (`mcp_client.py`)

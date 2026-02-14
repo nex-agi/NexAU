@@ -680,7 +680,11 @@ class E2BSandbox(BaseSandbox):
             )
 
         except Exception as e:
-            logger.error(f"Failed to read file {file_path}: {e}")
+            # Use debug for UnicodeDecodeError - expected when reading binary as text, avoid log spam
+            if isinstance(e, UnicodeDecodeError):
+                logger.debug("Skipped binary file (cannot decode as text): %s", file_path)
+            else:
+                logger.error(f"Failed to read file {file_path}: {e}")
             return FileOperationResult(
                 status=SandboxStatus.ERROR, file_path=file_path, error=f"Failed to read file: {str(e)}", content=None
             )
