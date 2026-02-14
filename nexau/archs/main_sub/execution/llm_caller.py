@@ -584,6 +584,13 @@ def call_llm_with_openai_responses(
 
     request_payload.pop("store", None)
 
+    # Always request encrypted reasoning content so that reasoning items can be
+    # passed back in subsequent conversation turns (required for stateless / ZDR mode).
+    request_payload.setdefault("include", [])
+    include_list: list[str] = request_payload["include"]
+    if "reasoning.encrypted_content" not in include_list:
+        include_list.append("reasoning.encrypted_content")
+
     # Check if tracing is active (there's a current span and we have a tracer)
     should_trace = tracer is not None and get_current_span() is not None
 

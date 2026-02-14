@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import logging
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -551,6 +552,85 @@ class TestContextCompactionFullTrace:
 # ===========================================================================
 # 6. LLM caller encrypted_content summary fix
 # ===========================================================================
+
+
+class TestResponsesApiIncludeEncryptedContent:
+    """Tests for include=reasoning.encrypted_content in Responses API requests."""
+
+    @staticmethod
+    def _make_mock_response() -> dict[str, Any]:
+        """Create a mock Responses API response as a plain dict (avoids Mock serialization issues)."""
+        return {
+            "id": "resp_1",
+            "model": "o4-mini",
+            "status": "completed",
+            "output": [],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "output_tokens_details": {"reasoning_tokens": 0},
+            },
+        }
+
+    def test_include_added_to_empty_payload(self):
+        """Should auto-add include with reasoning.encrypted_content."""
+        from nexau.archs.main_sub.execution.llm_caller import (
+            call_llm_with_openai_responses,
+        )
+
+        captured: dict[str, Any] = {}
+
+        mock_client = Mock()
+
+        def capture_create(**kw: Any) -> dict[str, Any]:
+            captured.update(kw)
+            return self._make_mock_response()
+
+        mock_client.responses.create = capture_create
+
+        mock_config = Mock()
+        mock_config.stream = False
+
+        call_llm_with_openai_responses(
+            mock_client,
+            {"model": "o4-mini", "input": "hello"},
+            llm_config=mock_config,
+        )
+
+        assert "include" in captured
+        assert "reasoning.encrypted_content" in captured["include"]
+
+    def test_include_preserves_existing_entries(self):
+        """Should not duplicate if already present."""
+        from nexau.archs.main_sub.execution.llm_caller import (
+            call_llm_with_openai_responses,
+        )
+
+        captured: dict[str, Any] = {}
+
+        mock_client = Mock()
+
+        def capture_create(**kw: Any) -> dict[str, Any]:
+            captured.update(kw)
+            return self._make_mock_response()
+
+        mock_client.responses.create = capture_create
+
+        mock_config = Mock()
+        mock_config.stream = False
+
+        call_llm_with_openai_responses(
+            mock_client,
+            {
+                "model": "o4-mini",
+                "input": "hello",
+                "include": ["reasoning.encrypted_content"],
+            },
+            llm_config=mock_config,
+        )
+
+        assert captured["include"].count("reasoning.encrypted_content") == 1
 
 
 class TestSanitizeResponseItemsEncryptedContent:
