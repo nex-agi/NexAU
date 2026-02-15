@@ -20,6 +20,7 @@ uv run nexau serve http --config agent.yaml --port 8000
 The server provides:
 - `/query` - Synchronous queries
 - `/stream` - Streaming queries with SSE
+- `/stop` - Stop a running agent and persist state
 - `/health` - Health check endpoint
 
 ### CLI Chat
@@ -114,6 +115,43 @@ data: {"type": "event", "event": {"type": "TEXT_MESSAGE_CONTENT", "delta": "Hell
 data: {"type": "event", "event": {"type": "TEXT_MESSAGE_CONTENT", "delta": " there"}}
 data: {"type": "complete", "response": "Hello there", "session_id": "sess456"}
 ```
+
+#### Stop a Running Agent
+
+Stop a running agent, persist its current state, and return a summary. This allows the user to stop a long-running task and continue the conversation later with full context preserved.
+
+```bash
+curl -X POST http://localhost:8000/stop \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user123",
+    "session_id": "sess456",
+    "force": false,
+    "timeout": 30.0
+  }'
+```
+
+**Request fields**:
+- `user_id` (string, default `"default-user"`) - User identifier
+- `session_id` (string, required) - Session to stop
+- `agent_id` (string, optional) - Specific agent to stop (if multiple agents share a session)
+- `force` (bool, default `false`) - `true` for immediate stop, `false` for graceful stop (waits for current operation to finish)
+- `timeout` (float, default `30.0`) - Max seconds to wait for the agent to finish its current operation (only applies when `force=false`)
+
+**Response**:
+```json
+{
+  "status": "success",
+  "stop_reason": "USER_INTERRUPTED",
+  "message_count": 12,
+  "error": null
+}
+```
+
+- `status` - `"success"` or `"error"`
+- `stop_reason` - The reason the agent stopped (e.g. `"USER_INTERRUPTED"`)
+- `message_count` - Number of messages persisted in the session history
+- `error` - Error message if `status` is `"error"` (e.g. no running agent found)
 
 ### Python Client
 
@@ -254,6 +292,24 @@ The server reads JSON-RPC 2.0 requests from stdin and writes responses to stdout
 {"jsonrpc": "2.0", "result": {"type": "complete", "response": "Hello there", "session_id": "sess_456"}, "id": 1}
 ```
 
+**Stop** (`agent.stop`):
+
+```json
+{"jsonrpc": "2.0", "method": "agent.stop", "params": {"session_id": "sess_456", "user_id": "user_123", "force": false, "timeout": 30.0}, "id": 2}
+```
+
+**Stop Response**:
+```json
+{"jsonrpc": "2.0", "result": {"status": "success", "stop_reason": "USER_INTERRUPTED", "message_count": 12}, "id": 2}
+```
+
+Parameters:
+- `session_id` (string, required) - Session to stop
+- `user_id` (string, default `"default-user"`) - User identifier
+- `agent_id` (string, optional) - Specific agent to stop
+- `force` (bool, default `false`) - `true` for immediate stop, `false` for graceful
+- `timeout` (float, default `30.0`) - Max seconds to wait
+
 ### Python Integration
 
 ```python
@@ -298,6 +354,7 @@ All transports automatically handle session management:
 - **Session Creation**: If `session_id` is not provided, a new session is created
 - **History Loading**: Previous conversation history is automatically loaded
 - **History Persistence**: Messages are saved after each run
+- **Interrupt & Resume**: Interrupting a running agent persists all messages accumulated so far; the next request on the same session resumes with full context
 - **Multi-User Support**: Each `user_id` has isolated sessions
 
 See [Session Management](./session-management.md) for storage backends, concurrency control, and more.

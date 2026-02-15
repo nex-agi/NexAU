@@ -100,7 +100,7 @@ class CleanupManager:
 
         for agent in agents_to_cleanup:
             try:
-                agent.stop()
+                agent.sync_cleanup()
             except Exception as e:
                 try:
                     logger.error(

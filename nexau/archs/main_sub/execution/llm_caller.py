@@ -16,6 +16,7 @@
 
 import json
 import logging
+import threading
 import time
 from collections.abc import Mapping
 from typing import Any, Literal, cast
@@ -83,6 +84,7 @@ class LLMCaller:
         tool_call_mode: str = "xml",
         tools: list[ChatCompletionToolParam] | list[ToolParam] | None = None,
         openai_client: Any | None = None,
+        shutdown_event: threading.Event | None = None,
     ) -> ModelResponse | None:
         """Call LLM with the given messages and return normalized response.
 
@@ -165,6 +167,7 @@ class LLMCaller:
             openai_client=runtime_client,
             llm_config=self.llm_config,
             retry_attempts=self.retry_attempts,
+            shutdown_event=shutdown_event,
         )
 
         def base_call(params: ModelCallParams) -> ModelResponse | None:
@@ -239,6 +242,11 @@ class LLMCaller:
                     raise Exception("No response content or tool calls")
 
             except Exception as e:
+                # RFC-0001: shutdown_event 已设置时不重试，直接返回 None
+                # 让 execute() 在下一次迭代边界检测 stop_signal
+                if params.shutdown_event and params.shutdown_event.is_set():
+                    logger.info("🛑 LLM call interrupted by shutdown_event, skipping retry")
+                    return None
                 logger.error(
                     f"❌ LLM call failed (attempt {i + 1}/{self.retry_attempts}): {e}",
                 )
@@ -403,8 +411,13 @@ def call_llm_with_anthropic_chat_completion(
             with trace_ctx:
                 start_time = time.time()
                 first_token_time = None
+                # RFC-0001: shutdown_event 检测
+                _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
                 with client.messages.stream(**api_kwargs) as stream:
                     for event in stream:
+                        if _shutdown_ev is not None and _shutdown_ev.is_set():
+                            logger.info("🛑 Shutdown event detected during Anthropic streaming, finalizing partial response")
+                            break
                         if first_token_time is None:
                             first_token_time = time.time()
                         processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
@@ -421,8 +434,13 @@ def call_llm_with_anthropic_chat_completion(
                     )
                 return message_payload, aggregator.model_name
         else:
+            # RFC-0001: shutdown_event 检测
+            _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
             with client.messages.stream(**api_kwargs) as stream:
                 for event in stream:
+                    if _shutdown_ev is not None and _shutdown_ev.is_set():
+                        logger.info("🛑 Shutdown event detected during Anthropic streaming, finalizing partial response")
+                        break
                     processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
                     if processed_event is None:
                         continue
@@ -472,8 +490,13 @@ def call_llm_with_openai_chat_completion(
                         stream=True,
                         **payload,
                     )
+                    # RFC-0001: shutdown_event 检测，流式中断时提前终止
+                    _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
                     with stream_ctx:
                         for chunk in stream_ctx:
+                            if _shutdown_ev is not None and _shutdown_ev.is_set():
+                                logger.info("🛑 Shutdown event detected during OpenAI streaming, finalizing partial response")
+                                break
                             if first_token_time is None:
                                 first_token_time = time.time()
                             last_chunk = chunk
@@ -495,8 +518,13 @@ def call_llm_with_openai_chat_completion(
                     stream=True,
                     **payload,
                 )
+                # RFC-0001: shutdown_event 检测
+                _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
                 with stream_ctx:
                     for chunk in stream_ctx:
+                        if _shutdown_ev is not None and _shutdown_ev.is_set():
+                            logger.info("🛑 Shutdown event detected during OpenAI streaming, finalizing partial response")
+                            break
                         last_chunk = chunk
                         processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
                         if processed_chunk is None:
@@ -610,6 +638,8 @@ def call_llm_with_openai_responses(
 
     def call_llm_stream(payload: dict[str, Any]) -> dict[str, Any]:
         aggregator = OpenAIResponsesStreamAggregator()
+        # RFC-0001: shutdown_event 检测
+        _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
 
         if should_trace and tracer is not None:
             trace_ctx = TraceContext(tracer, "OpenAI responses.stream", SpanType.LLM, inputs=payload)
@@ -618,6 +648,9 @@ def call_llm_with_openai_responses(
             with trace_ctx:
                 with client.responses.stream(**payload) as stream:
                     for event in stream:
+                        if _shutdown_ev is not None and _shutdown_ev.is_set():
+                            logger.info("🛑 Shutdown event detected during OpenAI Responses streaming, finalizing partial response")
+                            break
                         if first_token_time is None:
                             first_token_time = time.time()
                         processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
@@ -636,6 +669,9 @@ def call_llm_with_openai_responses(
         else:
             with client.responses.stream(**payload) as stream:
                 for event in stream:
+                    if _shutdown_ev is not None and _shutdown_ev.is_set():
+                        logger.info("🛑 Shutdown event detected during OpenAI Responses streaming, finalizing partial response")
+                        break
                     processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
                     if processed_event is None:
                         continue

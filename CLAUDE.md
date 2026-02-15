@@ -210,3 +210,166 @@ logging.basicConfig(level=logging.INFO)
 - **Sub-agent not found**: Verify agent name matches config key
 - **Session storage issues**: Check database permissions and path
 - **Transport connection errors**: Verify port availability and network configuration
+
+## RFC convention for NexAU
+### 1. 模块级文档 (module docstring)
+
+用于文件顶部，描述整个模块的功能：
+
+```python
+# Artifact management routes.
+#
+#  RFC-0011: Artifact Management APIs
+#
+#  Provides endpoints for:
+#  - Upload artifact (proxy upload through Backend)
+#  - Download artifact (proxy download through Backend)
+#
+#  # Upload Modes
+#
+#  ## Mode 1: Proxy Upload (Default)
+#  1. Client sends `PUT /api/versions/{id}/artifact` with artifact data
+#  2. Backend reads data, uploads to S3
+```
+
+### 2. 函数/类文档 (docstring)
+
+第一行英文简述，第二行 RFC 引用（中文），后续详细说明：
+
+```python
+async def upload_artifact(version_id: str, body: bytes) -> UploadResult:
+    """Upload artifact via proxy.
+
+    RFC-0011: 代理上传制品 API
+
+    将上传数据读入内存后上传到 S3。
+    同时从 tar 包中提取 nexau.json 作为版本的 config。
+
+    Request::
+
+        PUT /api/versions/{version_id}/artifact
+        Content-Type: application/x-tar
+
+    Response (200 OK)::
+
+        { "version_id": "uuid", "uploaded": true }
+    """
+```
+
+### 3. 函数内部步骤注释 (`#`)
+
+使用编号步骤，中文说明每个逻辑块：
+
+```python
+async def upload_artifact(version_id: str, body: bytes) -> UploadResult:
+    # 1. 验证版本存在且 artifact 未上传
+    version = await get_version(db, version_id)
+
+    # 2. 获取内容大小
+    content_length = len(body)
+
+    # 3. 检查文件大小限制 (500MB)
+    MAX_ARTIFACT_SIZE = 500 * 1024 * 1024
+
+    # 4. 从 tar 包中提取 nexau.json 配置
+    config = extract_config_from_tar(body)
+
+    # 5. 上传到 S3
+    artifact_url = await storage.upload(key, body)
+```
+
+### 4. 路由注释
+
+在路由定义处标注 RFC 和中文说明：
+
+```python
+router = APIRouter()
+
+# RFC-0011: 代理上传制品
+@router.put("/{version_id}/artifact")
+async def upload_artifact(...): ...
+
+# RFC-0011: 获取制品元数据
+@router.get("/{version_id}/artifact")
+async def get_artifact_metadata(...): ...
+```
+
+### 5. 字段文档
+
+数据类/Pydantic model 字段使用注释或 `Field` 说明：
+
+```python
+@dataclass
+class GetUploadUrlRequest:
+    """Request for getting a pre-signed upload URL."""
+
+    content_type: str = "application/x-tar"
+    """Expected content type (default: application/x-tar)"""
+
+    content_length: int | None = None
+    """Expected content length in bytes (optional, for validation)"""
+```
+
+## RFC 生成规范
+
+当进行功能规划（Plan Mode）时，必须为重要变更生成 RFC 文档：
+
+### 何时需要生成 RFC
+
+- 新增 API 端点或修改现有 API
+- 架构变更或新增服务
+- 数据模型变更
+- 安全相关变更
+- 跨服务的功能实现
+
+### RFC 生成流程
+
+1. **参考模板**: 使用 `docs/rfcs/0000-template.md` 作为模板
+2. **编号规则**: 查看 `docs/rfcs/` 目录下现有 RFC，使用下一个可用编号（如 `0023`）
+3. **文件命名**: `docs/rfcs/XXXX-feature-name.md`（使用短横线分隔的小写英文）
+4. **必填字段**:
+   - 状态: `draft`（初始状态）
+   - 优先级: P0-P3
+   - 影响服务: 列出所有受影响的服务
+   - 创建日期: 当天日期
+
+### RFC 模板结构
+
+```markdown
+# RFC-XXXX: 标题
+
+- **状态**: draft
+- **优先级**: P0 | P1 | P2 | P3
+- **标签**: `security`, `architecture`, `performance`, `dx` 等
+- **影响服务**: 列出受影响的服务
+- **创建日期**: YYYY-MM-DD
+- **更新日期**: YYYY-MM-DD
+
+## 摘要
+一段话描述这个 RFC 要解决什么问题。
+
+## 动机
+为什么需要这个变更？当前存在什么问题？
+
+## 设计
+### 概述
+### 详细设计
+### 示例
+
+## 权衡取舍
+### 考虑过的替代方案
+### 缺点
+
+## 实现计划
+### 阶段划分
+### 相关文件
+
+## 未解决的问题
+
+## 参考资料
+```
+
+### 注意事项
+
+- RFC 应在实现前完成并获得确认
+- 实现完成后将状态更新为 `implemented`

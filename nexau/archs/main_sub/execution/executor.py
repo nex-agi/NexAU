@@ -194,8 +194,40 @@ class Executor:
         self._shutdown_event = threading.Event()
         self.stop_signal = False
 
+        # RFC-0001: 追踪 execute() 主循环是否正在运行
+        # _execution_done: set 表示 execute() 未运行或已结束，clear 表示正在运行
+        self._execution_done = threading.Event()
+        self._execution_done.set()  # 初始状态：未运行
+
         # Message queue for dynamic message enqueueing during execution
         self.queued_messages: list[Message] = []
+
+    @property
+    def shutdown_event(self) -> threading.Event:
+        """Public accessor for the shutdown event."""
+        return self._shutdown_event
+
+    @property
+    def has_running_executors(self) -> bool:
+        """Check if there are any running thread pool executors."""
+        return bool(self._running_executors)
+
+    @property
+    def is_executing(self) -> bool:
+        """Check if execute() main loop is currently running.
+
+        RFC-0001: 用于 interrupt() 等待主循环退出。
+        """
+        return not self._execution_done.is_set()
+
+    @property
+    def execution_done_event(self) -> threading.Event:
+        """Public accessor for the _execution_done event.
+
+        RFC-0001: interrupt() 通过 wait() 等待 execute() 退出。
+        Event is set when execute() is NOT running, cleared when running.
+        """
+        return self._execution_done
 
     def enqueue_message(self, message: dict[str, str]) -> None:
         """Enqueue a message to be processed during execution.
@@ -231,6 +263,9 @@ class Executor:
         # Reset the stop signal
         self.stop_signal = False
         self._shutdown_event.clear()
+
+        # RFC-0001: 标记 execute() 正在运行
+        self._execution_done.clear()
 
         messages: list[Message] = []
 
@@ -280,7 +315,7 @@ class Executor:
                         agent_state=agent_state,
                         messages=messages,
                         final_response=stop_response,
-                        stop_reason=None,
+                        stop_reason=AgentStopReason.USER_INTERRUPTED,
                     )
                     return stop_response, messages
 
@@ -371,6 +406,7 @@ class Executor:
                     agent_state=agent_state,
                     tool_call_mode=self.tool_call_mode,
                     tools=tools_payload,
+                    shutdown_event=self._shutdown_event,
                 )
                 if model_response is None:
                     break
@@ -529,6 +565,10 @@ class Executor:
             )
             # Re-raise with more context
             raise RuntimeError(f"Error in agent execution: {e}") from e
+
+        finally:
+            # RFC-0001: 标记 execute() 已结束，唤醒 interrupt() 的等待
+            self._execution_done.set()
 
     def _apply_after_agent_hooks(
         self,
@@ -768,6 +808,11 @@ class Executor:
             # Submit tool execution tasks using pre-created context snapshots
             tool_futures: dict[Future[tuple[str, Any, bool]], tuple[str, ToolCall]] = {}
             for task_ctx, tool_call in tool_snapshots:
+                # RFC-0001: 每次提交前检查 shutdown_event，避免中断后继续执行
+                if self._shutdown_event.is_set():
+                    logger.info("🛑 Shutdown event detected, skipping remaining tool calls")
+                    break
+
                 future = tool_executor.submit(
                     task_ctx.run,
                     self._execute_tool_call_safe,

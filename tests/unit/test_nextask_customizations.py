@@ -739,11 +739,11 @@ class TestWebReadTruncation:
 # ===========================================================================
 
 
-class TestAgentStopFromDel:
-    """Tests for agent.stop(_from_del=True) skipping logging."""
+class TestAgentSyncCleanupFromDel:
+    """Tests for agent.sync_cleanup(_from_del=True) skipping logging."""
 
     def test_stop_from_del_does_not_log(self, caplog):
-        """When _from_del=True, stop() should not produce log messages."""
+        """When _from_del=True, sync_cleanup() should not produce log messages."""
         mock_agent = Mock()
         mock_agent.config = Mock()
         mock_agent.config.name = "test"
@@ -760,7 +760,7 @@ class TestAgentStopFromDel:
             agent.executor = mock_agent.executor
 
             with caplog.at_level(logging.INFO):
-                agent.stop(_from_del=True)
+                agent.sync_cleanup(_from_del=True)
 
             # Should not have any cleanup log messages
             cleanup_logs = [r for r in caplog.records if "Cleaning up" in r.message]
@@ -768,7 +768,7 @@ class TestAgentStopFromDel:
             mock_agent.executor.cleanup.assert_called_once()
 
     def test_stop_normal_does_log(self, caplog):
-        """When _from_del=False (default), stop() should produce log messages."""
+        """When _from_del=False (default), sync_cleanup() should produce log messages."""
         from nexau.archs.main_sub.agent import Agent
 
         with patch.object(Agent, "__init__", lambda self, **kwargs: None):
@@ -779,7 +779,7 @@ class TestAgentStopFromDel:
             agent.executor.cleanup = Mock()
 
             with caplog.at_level(logging.INFO):
-                agent.stop()
+                agent.sync_cleanup()
 
             cleanup_logs = [r for r in caplog.records if "Cleaning up" in r.message]
             assert len(cleanup_logs) == 1

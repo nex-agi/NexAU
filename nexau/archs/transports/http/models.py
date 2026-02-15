@@ -45,3 +45,28 @@ class AgentResponse(BaseModel):
     status: str  # "success" or "error"
     response: str | None = None
     error: str | None = None
+
+
+class StopRequest(BaseModel):
+    """Request model for /stop endpoint.
+
+    RFC-0001 Phase 4: Transport 层 stop 端点
+    """
+
+    user_id: str = "default-user"
+    session_id: str
+    agent_id: str | None = None
+    force: bool = False
+    timeout: float = 30.0
+
+
+class StopResponse(BaseModel):
+    """Response model for /stop endpoint.
+
+    RFC-0001 Phase 4: Transport 层 stop 端点
+    """
+
+    status: str  # "success" or "error"
+    stop_reason: str | None = None
+    message_count: int = 0
+    error: str | None = None

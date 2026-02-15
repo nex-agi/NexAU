@@ -24,3 +24,4 @@ class AgentStopReason(Enum):
     CONTEXT_TOKEN_LIMIT = auto()
     SUCCESS = auto()
     NO_MORE_TOOL_CALLS = auto()
+    USER_INTERRUPTED = auto()

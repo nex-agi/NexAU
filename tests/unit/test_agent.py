@@ -324,7 +324,7 @@ class TestAgent:
             agent = Agent(config=agent_config, global_storage=global_storage)
 
             with patch.object(agent.executor, "cleanup") as mock_cleanup:
-                agent.stop()
+                agent.sync_cleanup()
 
                 mock_cleanup.assert_called_once()
 

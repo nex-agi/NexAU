@@ -86,6 +86,11 @@ class HistoryList(list[Message]):
         self._pending_messages: list[Message] = []
         self._baseline_fingerprints: list[str] = self._compute_fingerprints([m for m in self if m.role != Role.SYSTEM])
 
+    @property
+    def has_pending_messages(self) -> bool:
+        """Check if there are unflushed pending messages."""
+        return bool(self._pending_messages)
+
     def append(self, item: Message) -> None:
         """Append a message (will be persisted on flush)."""
         super().append(item)

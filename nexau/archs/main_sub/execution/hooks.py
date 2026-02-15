@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
@@ -231,6 +232,7 @@ class ModelCallParams:
     openai_client: Any | None = None
     llm_config: Any | None = None
     retry_attempts: int = 5
+    shutdown_event: threading.Event | None = None
 
 
 @dataclass

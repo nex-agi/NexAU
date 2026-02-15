@@ -183,7 +183,7 @@ class SubAgentManager:
         self._shutdown_event.set()
         for sub_agent_id, sub_agent in self.running_sub_agents.items():
             try:
-                sub_agent.stop()
+                sub_agent.sync_cleanup()
             except Exception as e:
                 logger.error(
                     f"❌ Error shutting down sub-agent {sub_agent_id}: {e}",

@@ -176,6 +176,11 @@ class StdioTransport(TransportBase[StdioConfig]):
             await self._handle_sync_request_model(agent_request, rpc_request.id)
             return
 
+        # RFC-0001 Phase 4: agent.stop 方法
+        if rpc_request.method == "agent.stop":
+            await self._handle_stop_request_model(params, rpc_request.id)
+            return
+
         self._write_line(
             JsonRpcErrorResponse(
                 id=rpc_request.id,
@@ -239,6 +244,66 @@ class StdioTransport(TransportBase[StdioConfig]):
 
         except Exception as e:
             logger.error(f"Request error: {e}")
+            self._write_line(
+                JsonRpcErrorResponse(
+                    id=rpc_id,
+                    error=JsonRpcError(code=-32000, message=str(e)),
+                ).model_dump_json()
+            )
+
+    async def _handle_stop_request_model(self, params: dict[str, Any], rpc_id: str) -> None:
+        """Handle stop request.
+
+        RFC-0001 Phase 4: Stdio transport stop 支持
+
+        Args:
+            params: Request parameters (user_id, session_id, agent_id, force, timeout)
+            rpc_id: JSON-RPC request ID
+        """
+        try:
+            user_id = params.get("user_id", "default-user")
+            session_id = params.get("session_id")
+            agent_id = params.get("agent_id")
+            force = bool(params.get("force", False))
+            timeout = float(params.get("timeout", 30.0))
+
+            if not session_id:
+                self._write_line(
+                    JsonRpcErrorResponse(
+                        id=rpc_id,
+                        error=JsonRpcError(code=-32602, message="session_id is required for stop"),
+                    ).model_dump_json()
+                )
+                return
+
+            result = await self.handle_stop_request(
+                user_id=user_id,
+                session_id=session_id,
+                agent_id=agent_id,
+                force=force,
+                timeout=timeout,
+            )
+
+            self._write_line(
+                JsonRpcSuccessResponse(
+                    id=rpc_id,
+                    result={
+                        "status": "success",
+                        "stop_reason": result.stop_reason.name,
+                        "message_count": len(result.messages),
+                    },
+                ).model_dump_json()
+            )
+
+        except ValueError as e:
+            self._write_line(
+                JsonRpcErrorResponse(
+                    id=rpc_id,
+                    error=JsonRpcError(code=-32000, message=str(e)),
+                ).model_dump_json()
+            )
+        except Exception as e:
+            logger.error(f"Stop error: {e}")
             self._write_line(
                 JsonRpcErrorResponse(
                     id=rpc_id,

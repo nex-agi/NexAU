@@ -23,7 +23,7 @@ from nexau.archs.main_sub.context_value import ContextValue
 from nexau.archs.session.orm import DatabaseEngine
 from nexau.archs.transports.base import TransportBase
 from nexau.archs.transports.http.config import HTTPConfig
-from nexau.archs.transports.http.models import AgentRequest, AgentResponse
+from nexau.archs.transports.http.models import AgentRequest, AgentResponse, StopRequest, StopResponse
 from nexau.core.messages import Message
 
 logger = logging.getLogger(__name__)
@@ -139,6 +139,7 @@ class SSETransportServer(TransportBase[HTTPConfig]):
                     "info": self.info_url,
                     "stream": "/stream",
                     "query": "/query",
+                    "stop": "/stop",
                 },
             }
 
@@ -184,6 +185,32 @@ class SSETransportServer(TransportBase[HTTPConfig]):
                 return AgentResponse(status="success", response=response)
             except Exception as e:
                 logger.error("POST /query failed (session_id: %s): %s", request.session_id, e)
+                raise HTTPException(status_code=500, detail=str(e))
+
+        # RFC-0001 Phase 4: stop 端点
+        @app.post("/stop")
+        async def stop_agent(request: StopRequest):  # pyright: ignore[reportUnusedFunction]
+            """Stop a running agent and persist its state."""
+            try:
+                result = await self.handle_stop_request(
+                    user_id=request.user_id,
+                    session_id=request.session_id,
+                    agent_id=request.agent_id,
+                    force=request.force,
+                    timeout=request.timeout,
+                )
+                return StopResponse(
+                    status="success",
+                    stop_reason=result.stop_reason.name,
+                    message_count=len(result.messages),
+                )
+            except ValueError as e:
+                return StopResponse(
+                    status="error",
+                    error=str(e),
+                )
+            except Exception as e:
+                logger.error("POST /stop failed (session_id: %s): %s", request.session_id, e)
                 raise HTTPException(status_code=500, detail=str(e))
 
     async def _stream_agent_response(

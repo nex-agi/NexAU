@@ -7,7 +7,7 @@ This module provides HTTP-based transport servers and clients, including:
 """
 
 from nexau.archs.transports.http.config import HTTPConfig
-from nexau.archs.transports.http.models import AgentRequest, AgentResponse
+from nexau.archs.transports.http.models import AgentRequest, AgentResponse, StopRequest, StopResponse
 from nexau.archs.transports.http.sse_client import SSEClient
 from nexau.archs.transports.http.sse_server import SSETransportServer
 
@@ -17,4 +17,6 @@ __all__ = [
     "SSETransportServer",
     "AgentRequest",
     "AgentResponse",
+    "StopRequest",
+    "StopResponse",
 ]

@@ -18,6 +18,7 @@ from nexau.archs.main_sub.agent import Agent
 from nexau.archs.main_sub.context_value import ContextValue
 from nexau.archs.main_sub.execution.hooks import Middleware
 from nexau.archs.main_sub.execution.middleware.agent_events_middleware import AgentEventsMiddleware
+from nexau.archs.main_sub.execution.stop_result import StopResult
 from nexau.archs.session import SessionManager
 from nexau.archs.session.orm import DatabaseEngine
 from nexau.core.messages import Message
@@ -81,6 +82,11 @@ class TransportBase[TTransportConfig](ABC):
             lock_ttl=lock_ttl,
             heartbeat_interval=heartbeat_interval,
         )
+
+        # RFC-0001 Phase 4: 运行中 Agent 注册表，供 interrupt 查找
+        # key: (user_id, session_id, agent_id)
+        self._running_agents: dict[tuple[str, str, str], Agent] = {}
+        self._running_agents_lock = asyncio.Lock()
 
     @staticmethod
     def _recursively_apply_middlewares(
@@ -201,8 +207,18 @@ class TransportBase[TTransportConfig](ABC):
 
         agent: Agent = await asyncio.to_thread(create_agent)
 
-        # Run agent (agent handles locking and persistence internally)
-        response = cast(str, await agent.run_async(message=message, context=context, variables=variables))
+        # RFC-0001 Phase 4: 注册 agent 到运行表
+        agent_key = (user_id, session_id, agent.agent_id)
+        async with self._running_agents_lock:
+            self._running_agents[agent_key] = agent
+
+        try:
+            # Run agent (agent handles locking and persistence internally)
+            response = cast(str, await agent.run_async(message=message, context=context, variables=variables))
+        finally:
+            # RFC-0001 Phase 4: 从运行表移除
+            async with self._running_agents_lock:
+                self._running_agents.pop(agent_key, None)
 
         duration = (datetime.now() - start_time).total_seconds()
         logger.info("handle_request completed in %.2fs (session_id: %s)", duration, session_id)
@@ -267,28 +283,97 @@ class TransportBase[TTransportConfig](ABC):
 
         agent: Agent = await asyncio.to_thread(create_agent)
 
+        # RFC-0001 Phase 4: 注册 agent 到运行表
+        agent_key = (user_id, session_id, agent.agent_id)
+        async with self._running_agents_lock:
+            self._running_agents[agent_key] = agent
+
         async def run_agent() -> str:
             return cast(str, await agent.run_async(message=message, context=context, variables=variables))
 
         agent_task = asyncio.create_task(run_agent())
 
-        # Stream events from queue
-        while not agent_task.done():
-            try:
-                event = await asyncio.wait_for(event_queue.get(), timeout=0.1)
-                yield event
-            except TimeoutError:
-                continue
+        try:
+            # Stream events from queue
+            while not agent_task.done():
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=0.1)
+                    yield event
+                except TimeoutError:
+                    continue
 
-        # Drain remaining events
-        while not event_queue.empty():
-            yield event_queue.get_nowait()
+            # Drain remaining events
+            while not event_queue.empty():
+                yield event_queue.get_nowait()
 
-        # Wait for agent task to complete (RunFinishedEvent is emitted by middleware)
-        await agent_task
+            # Wait for agent task to complete (RunFinishedEvent is emitted by middleware)
+            await agent_task
+        finally:
+            # RFC-0001 Phase 4: 从运行表移除
+            async with self._running_agents_lock:
+                self._running_agents.pop(agent_key, None)
 
         duration = (datetime.now() - start_time).total_seconds()
         logger.info("handle_streaming_request completed in %.2fs (session_id: %s)", duration, session_id)
+
+    async def handle_stop_request(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        agent_id: str | None = None,
+        force: bool = False,
+        timeout: float = 30.0,
+    ) -> StopResult:
+        """Handle a stop request for a running agent.
+
+        RFC-0001 Phase 4: Transport 层 stop 端点
+
+        在运行表中查找匹配的 Agent 实例并调用 stop()。
+
+        Args:
+            user_id: User ID
+            session_id: Session ID
+            agent_id: Optional agent ID (if None, stops the first matching agent)
+            force: True 立即停止，False 优雅停止
+            timeout: Maximum seconds to wait for execution to complete
+
+        Returns:
+            StopResult with message snapshot and stop reason
+
+        Raises:
+            ValueError: If no matching running agent is found
+        """
+        logger.info(
+            "handle_stop_request (user_id: %s, session_id: %s, agent_id: %s, force: %s)",
+            user_id,
+            session_id,
+            agent_id or "any",
+            force,
+        )
+
+        # 查找匹配的运行中 Agent
+        agent: Agent | None = None
+        async with self._running_agents_lock:
+            if agent_id:
+                agent = self._running_agents.get((user_id, session_id, agent_id))
+            else:
+                # 未指定 agent_id 时，查找该 session 下任意运行中的 agent
+                for key, running_agent in self._running_agents.items():
+                    if key[0] == user_id and key[1] == session_id:
+                        agent = running_agent
+                        break
+
+        if agent is None:
+            raise ValueError(f"No running agent found for user_id={user_id}, session_id={session_id}, agent_id={agent_id or 'any'}")
+
+        result = await agent.stop(force=force, timeout=timeout)
+        logger.info(
+            "handle_stop_request completed (session_id: %s, messages: %d)",
+            session_id,
+            len(result.messages),
+        )
+        return result
 
     def __enter__(self) -> TransportBase[TTransportConfig]:
         self.start()

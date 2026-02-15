@@ -317,18 +317,18 @@ class TestSubAgentManager:
         subagent_manager.shutdown()
 
         assert subagent_manager._shutdown_event.is_set()
-        mock_sub_agent.stop.assert_called_once()
+        mock_sub_agent.sync_cleanup.assert_called_once()
 
     def test_shutdown_with_error(self, subagent_manager):
         """Test shutdown when sub-agent stop raises error."""
         mock_sub_agent = Mock()
-        mock_sub_agent.stop.side_effect = Exception("Stop error")
+        mock_sub_agent.sync_cleanup.side_effect = Exception("Stop error")
         subagent_manager.running_sub_agents["sub_123"] = mock_sub_agent
 
         subagent_manager.shutdown()
 
         assert subagent_manager._shutdown_event.is_set()
-        mock_sub_agent.stop.assert_called_once()
+        mock_sub_agent.sync_cleanup.assert_called_once()
 
     def test_shutdown_no_running_agents(self, subagent_manager):
         """Test shutdown when no agents are running."""
