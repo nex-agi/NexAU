@@ -32,6 +32,12 @@ from nexau.archs.main_sub.prompt_builder import PromptBuilder
 from nexau.archs.main_sub.skill import Skill, build_load_skill_tool
 from nexau.archs.main_sub.tool_call_modes import normalize_tool_call_mode
 from nexau.archs.main_sub.utils import import_from_string
+from nexau.archs.sandbox.base_sandbox import (
+    E2BSandboxConfig,
+    LocalSandboxConfig,
+    SandboxConfig,
+    parse_sandbox_config,
+)
 from nexau.archs.tool import Tool
 from nexau.archs.tracer.composite import CompositeTracer
 from nexau.archs.tracer.core import BaseTracer
@@ -102,7 +108,19 @@ class AgentConfig(
     skills: list[Skill] = Field(default_factory=_empty_skill_list)
     sub_agents: dict[str, AgentConfig] | None = None
     llm_config: LLMConfig | None = None
-    sandbox_config: dict[str, Any] | None = Field(default=None)
+    sandbox_config: SandboxConfig | None = Field(default=None)
+
+    @field_validator("sandbox_config", mode="before")
+    @classmethod
+    def _validate_sandbox_config(cls, value: object) -> SandboxConfig | None:
+        if value is None:
+            return None
+        if isinstance(value, (LocalSandboxConfig, E2BSandboxConfig)):
+            return value
+        if isinstance(value, dict):
+            return parse_sandbox_config(cast(dict[str, Any], value))
+        raise ValueError(f"Invalid sandbox_config type: {type(value)}")
+
     mcp_servers: list[dict[str, Any]] = Field(default_factory=_empty_dict_list)
     after_model_hooks: list[Callable[..., Any]] | None = None
     after_tool_hooks: list[Callable[..., Any]] | None = None

@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 from .base_sandbox import (
     BaseSandbox,
@@ -41,6 +41,7 @@ from .base_sandbox import (
     CommandResult,
     FileInfo,
     FileOperationResult,
+    SandboxConfig,
     SandboxFileError,
     SandboxStatus,
     extract_dataclass_init_kwargs,
@@ -107,6 +108,7 @@ class LocalSandbox(BaseSandbox):
         # For local subprocess, we must include os.environ as base
         return {**os.environ, **merged}
 
+    @override
     def execute_bash(
         self,
         command: str,
@@ -276,6 +278,7 @@ class LocalSandbox(BaseSandbox):
                 truncated=False,
             )
 
+    @override
     def get_background_task_status(self, pid: int) -> CommandResult:
         """
         Get the status and output of a background task.
@@ -325,6 +328,7 @@ class LocalSandbox(BaseSandbox):
             background_pid=pid,
         )
 
+    @override
     def kill_background_task(self, pid: int) -> CommandResult:
         """
         Kill a background task.
@@ -372,6 +376,7 @@ class LocalSandbox(BaseSandbox):
                 background_pid=pid,
             )
 
+    @override
     def execute_code(
         self,
         code: str,
@@ -472,6 +477,7 @@ class LocalSandbox(BaseSandbox):
                 except Exception as e:
                     logger.warning(f"Failed to delete temp file {temp_file}: {e}")
 
+    @override
     def read_file(
         self,
         file_path: str,
@@ -531,6 +537,7 @@ class LocalSandbox(BaseSandbox):
                 error=f"Failed to read file: {str(e)}",
             )
 
+    @override
     def write_file(
         self,
         file_path: str,
@@ -586,6 +593,7 @@ class LocalSandbox(BaseSandbox):
                 error=f"Failed to write file: {str(e)}",
             )
 
+    @override
     def delete_file(self, file_path: str) -> FileOperationResult:
         """
         Delete a file from the sandbox.
@@ -624,6 +632,7 @@ class LocalSandbox(BaseSandbox):
                 error=f"Failed to delete file: {str(e)}",
             )
 
+    @override
     def list_files(
         self,
         directory_path: str,
@@ -689,6 +698,7 @@ class LocalSandbox(BaseSandbox):
             logger.error(f"Failed to list files in {directory_path}: {e}")
             raise SandboxFileError(f"Failed to list files: {str(e)}")
 
+    @override
     def file_exists(self, file_path: str) -> bool:
         """
         Check if a file exists in the sandbox.
@@ -704,6 +714,7 @@ class LocalSandbox(BaseSandbox):
         except Exception:
             return False
 
+    @override
     def get_file_info(self, file_path: str) -> FileInfo:
         """
         Get information about a file in the sandbox.
@@ -750,7 +761,8 @@ class LocalSandbox(BaseSandbox):
             logger.error(f"Failed to get file info for {file_path}: {e}")
             raise SandboxFileError(f"Failed to get file info: {str(e)}")
 
-    def create_directory(self, directory_path: str, parents: bool = True) -> bool:
+    @override
+    def create_directory(self, directory_path: str, parents: bool = True, user: str | None = None) -> bool:
         """
         Create a directory in the sandbox.
 
@@ -771,6 +783,7 @@ class LocalSandbox(BaseSandbox):
             logger.error(f"Failed to create directory {directory_path}: {e}")
             raise SandboxFileError(f"Failed to create directory: {str(e)}")
 
+    @override
     def edit_file(
         self,
         file_path: str,
@@ -892,10 +905,12 @@ class LocalSandbox(BaseSandbox):
                 error=f"Failed to edit file: {str(e)}",
             )
 
+    @override
     def glob(
         self,
         pattern: str,
         recursive: bool = True,
+        user: str | None = None,
     ) -> list[str]:
         """
         Find files matching a glob pattern.
@@ -937,6 +952,7 @@ class LocalSandbox(BaseSandbox):
             logger.error(f"Failed to glob pattern {pattern}: {e}")
             raise SandboxFileError(f"Failed to glob: {str(e)}")
 
+    @override
     def upload_file(
         self,
         local_path: str,
@@ -986,6 +1002,7 @@ class LocalSandbox(BaseSandbox):
                 error=f"Failed to upload file: {str(e)}",
             )
 
+    @override
     def download_file(
         self,
         sandbox_path: str,
@@ -1035,6 +1052,7 @@ class LocalSandbox(BaseSandbox):
                 error=f"Failed to download file: {str(e)}",
             )
 
+    @override
     def upload_directory(
         self,
         local_path: str,
@@ -1070,6 +1088,7 @@ class LocalSandbox(BaseSandbox):
             logger.error(f"Failed to upload directory from {local_path} to {sandbox_path}: {e}")
             raise SandboxFileError(f"Failed to upload directory: {str(e)}")
 
+    @override
     def download_directory(
         self,
         sandbox_path: str,
@@ -1117,7 +1136,8 @@ class LocalSandboxManager(BaseSandboxManager[LocalSandbox]):
     - Managing sandbox lifecycle (start/stop)
     """
 
-    def start(self, session_manager: Any, user_id: str, session_id: str, sandbox_config: dict[str, Any]) -> LocalSandbox:
+    @override
+    def start(self, session_manager: Any, user_id: str, session_id: str, sandbox_config: SandboxConfig) -> LocalSandbox:
         """
         Start a local sandbox for a session.
 
@@ -1125,6 +1145,7 @@ class LocalSandboxManager(BaseSandboxManager[LocalSandbox]):
             session_manager: Session manager instance
             user_id: User ID
             session_id: Session ID
+            sandbox_config: Typed sandbox configuration
 
         Returns:
             Configured and started LocalSandbox instance
@@ -1149,14 +1170,9 @@ class LocalSandboxManager(BaseSandboxManager[LocalSandbox]):
                 logger.warning(f"Failed to restore sandbox from state: {e}. Creating new sandbox.")
 
         # Create new sandbox
-        sandbox_id = session_id  # Use session_id as sandbox_id for local sandboxes
+        logger.info(f"Creating new local sandbox with ID: {session_id}")
 
-        logger.info(f"Creating new local sandbox with ID: {sandbox_id}")
-
-        sandbox_kwargs = extract_dataclass_init_kwargs(LocalSandbox, sandbox_config)
-
-        # Create sandbox instance
-        sandbox = LocalSandbox(**sandbox_kwargs)
+        sandbox = LocalSandbox(_work_dir=sandbox_config.work_dir, envs=sandbox_config.envs)
 
         logger.info(f"Local sandbox created with ID: {sandbox.sandbox_id}, work_dir: {sandbox.work_dir}")
 
@@ -1165,6 +1181,7 @@ class LocalSandboxManager(BaseSandboxManager[LocalSandbox]):
 
         return sandbox
 
+    @override
     def stop(
         self,
     ) -> bool:
@@ -1176,6 +1193,7 @@ class LocalSandboxManager(BaseSandboxManager[LocalSandbox]):
         """
         return True
 
+    @override
     def pause(self) -> bool:
         """
         Stop the local sandbox for a session.
@@ -1185,5 +1203,6 @@ class LocalSandboxManager(BaseSandboxManager[LocalSandbox]):
         """
         return True
 
+    @override
     def is_running(self) -> bool:
         return self._instance is not None

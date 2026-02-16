@@ -7,6 +7,7 @@ import pytest
 
 from nexau.archs.sandbox.base_sandbox import (
     CodeLanguage,
+    E2BSandboxConfig,
     SandboxError,
     SandboxFileError,
     SandboxStatus,
@@ -28,7 +29,7 @@ def e2b_sandbox():
         session_manager=SessionManager(engine=InMemoryDatabaseEngine.get_shared_instance()),
         user_id="test_user",
         session_id="test_session",
-        sandbox_config={},
+        sandbox_config=E2BSandboxConfig(),
     )
     yield sandbox
     sandbox_manager.stop()

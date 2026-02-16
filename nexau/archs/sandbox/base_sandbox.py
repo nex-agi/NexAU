@@ -29,13 +29,85 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from pathlib import Path
 from threading import Thread
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
+
+from pydantic import BaseModel, Field, TypeAdapter
 
 from nexau.archs.main_sub.skill import Skill
 from nexau.archs.session.session_manager import SessionManager
 from nexau.core.utils import run_async_function_sync
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Typed Sandbox Configuration
+# =============================================================================
+
+
+class BaseSandboxConfig(BaseModel):
+    """Base configuration shared by all sandbox types."""
+
+    work_dir: str = "/home/user"
+    envs: dict[str, str] = Field(default_factory=dict)
+    status_after_run: Literal["pause", "stop", "none"] = "stop"
+
+
+class LocalSandboxConfig(BaseSandboxConfig):
+    """Configuration for local sandbox (no isolation, runs on host)."""
+
+    type: Literal["local"] = "local"
+
+
+class E2BSandboxConfig(BaseSandboxConfig):
+    """Configuration for E2B sandbox (remote isolated execution).
+
+    When ``sandbox_id`` is set the SDK connects to an existing sandbox;
+    otherwise it creates a new one via the Sandbox Manager API.
+    """
+
+    type: Literal["e2b"] = "e2b"
+    # API 凭证
+    api_url: str | None = None
+    api_key: str | None = None
+    # 创建参数
+    template: str = "base"
+    timeout: int = 300
+    metadata: dict[str, str] = Field(default_factory=dict)
+    # 连接到已有 sandbox（有值则 connect，无值则 create）
+    sandbox_id: str | None = None
+    # 行为控制
+    status_after_run: Literal["pause", "stop", "none"] = "pause"
+    keepalive_interval: int = 60  # 秒，0 禁用
+    # Self-host 场景下 envd 使用 HTTP 而非 HTTPS（E2B SDK 默认 HTTPS）
+    force_http: bool = Field(default_factory=lambda: os.getenv("E2B_FORCE_HTTP", "").lower() in ("1", "true", "yes"))
+
+
+SandboxConfig = LocalSandboxConfig | E2BSandboxConfig
+
+_sandbox_config_adapter: TypeAdapter[SandboxConfig] = TypeAdapter(SandboxConfig)
+
+
+def parse_sandbox_config(
+    raw: dict[str, Any] | SandboxConfig | None,
+) -> SandboxConfig | None:
+    """Parse sandbox_config from dict or typed model.
+
+    向后兼容：YAML 配置产生 dict，程序化调用可直接传 typed model。
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, (LocalSandboxConfig, E2BSandboxConfig)):
+        return raw
+    raw = dict(raw)  # shallow copy to avoid mutating caller's dict
+    if "type" not in raw:
+        raw["type"] = "local"
+    # _work_dir → work_dir 兼容映射
+    if "_work_dir" in raw and "work_dir" not in raw:
+        raw["work_dir"] = raw.pop("_work_dir")
+    elif "_work_dir" in raw:
+        raw.pop("_work_dir")
+    return _sandbox_config_adapter.validate_python(raw)
 
 
 class SandboxStatus(Enum):
@@ -429,13 +501,14 @@ class BaseSandbox(ABC):
         pass
 
     @abstractmethod
-    def create_directory(self, directory_path: str, parents: bool = True) -> bool:
+    def create_directory(self, directory_path: str, parents: bool = True, user: str | None = None) -> bool:
         """
         Create a directory in the sandbox.
 
         Args:
             directory_path: Path to the directory to create
             parents: Whether to create parent directories if they don't exist
+            user: Optional user to run the operation as
 
         Returns:
             True if directory created successfully, False otherwise
@@ -478,6 +551,7 @@ class BaseSandbox(ABC):
         self,
         pattern: str,
         recursive: bool = True,
+        user: str | None = None,
     ) -> list[str]:
         """
         Find files matching a glob pattern.
@@ -485,6 +559,7 @@ class BaseSandbox(ABC):
         Args:
             pattern: Glob pattern (e.g., '*.py', '**/*.txt')
             recursive: Whether to search recursively (default: True)
+            user: Optional user to run the operation as
 
         Returns:
             List of file paths matching the pattern
@@ -652,6 +727,10 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
     def work_dir(self):
         return Path(self._work_dir)
 
+    @property
+    def session_context(self) -> dict[str, Any]:
+        return self._session_context
+
     # Unserialized fields
     _instance: TSandbox | None = field(default=None, repr=False, init=False)
 
@@ -672,7 +751,7 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
         return self._instance
 
     @abstractmethod
-    def start(self, session_manager: SessionManager | None, user_id: str, session_id: str, sandbox_config: dict[str, Any]) -> TSandbox:
+    def start(self, session_manager: SessionManager | None, user_id: str, session_id: str, sandbox_config: SandboxConfig) -> TSandbox:
         """Start a sandbox for a session."""
         ...
 
@@ -694,6 +773,14 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
     def is_running(self) -> bool:
         """Check if the sandbox is running."""
         ...
+
+    def on_run_complete(self) -> None:
+        """Called when agent execution completes, before sandbox lifecycle action.
+
+        Subclasses can override to clean up run-specific resources (e.g. keepalive threads).
+        Called unconditionally regardless of status_after_run setting.
+        """
+        pass
 
     def persist_sandbox_state(
         self,
@@ -767,8 +854,8 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
         session_manager: SessionManager | None,
         user_id: str,
         session_id: str,
-        sandbox_config: dict[str, Any],
-        upload_assets: list[tuple[str, str]],
+        sandbox_config: SandboxConfig,
+        upload_assets: list[tuple[str, str]] | None = None,
     ):
         """Prepare session context for lazy sandbox initialization.
 
@@ -781,7 +868,7 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
             "user_id": user_id,
             "session_id": session_id,
             "sandbox_config": sandbox_config,
-            "upload_assets": upload_assets,
+            "upload_assets": upload_assets or [],
         }
 
     def start_no_wait(
@@ -789,15 +876,15 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
         session_manager: SessionManager | None,
         user_id: str,
         session_id: str,
-        sandbox_config: dict[str, Any],
-        upload_assets: list[tuple[str, str]],
+        sandbox_config: SandboxConfig,
+        upload_assets: list[tuple[str, str]] | None = None,
     ):
         self._session_context = {
             "session_manager": session_manager,
             "user_id": user_id,
             "session_id": session_id,
             "sandbox_config": sandbox_config,
-            "upload_assets": upload_assets,
+            "upload_assets": upload_assets or [],
         }
 
         def _inner():
@@ -807,7 +894,7 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
                 session_id=session_id,
                 sandbox_config=sandbox_config,
             )
-            for src, tgt in upload_assets:
+            for src, tgt in upload_assets or []:
                 sandbox.upload_directory(src, tgt)
             self._instance = sandbox
 
@@ -834,12 +921,11 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
             session_manager=self._session_context.get("session_manager"),
             user_id=self._session_context.get("user_id", ""),
             session_id=self._session_context.get("session_id", ""),
-            sandbox_config=self._session_context.get("sandbox_config", {}),
+            sandbox_config=self._session_context.get("sandbox_config") or LocalSandboxConfig(),
         )
 
-        # Upload assets if any
-        upload_assets = self._session_context.get("upload_assets", [])
-        for src, tgt in upload_assets:
+        # Upload skill assets if any
+        for src, tgt in self._session_context.get("upload_assets", []):
             sandbox.upload_directory(src, tgt)
 
         self._instance = sandbox

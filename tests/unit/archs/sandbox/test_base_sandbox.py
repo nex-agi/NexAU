@@ -12,6 +12,8 @@ from nexau.archs.sandbox.base_sandbox import (
     CommandResult,
     FileInfo,
     FileOperationResult,
+    LocalSandboxConfig,
+    SandboxConfig,
     SandboxError,
     SandboxFileError,
     SandboxStatus,
@@ -329,13 +331,13 @@ class DummySandbox(BaseSandbox):
     def get_file_info(self, file_path: str) -> FileInfo:
         return FileInfo(path=file_path, exists=False)
 
-    def create_directory(self, directory_path: str, parents: bool = True) -> bool:
+    def create_directory(self, directory_path: str, parents: bool = True, user: str | None = None) -> bool:
         return True
 
     def edit_file(self, file_path: str, old_string: str, new_string: str) -> FileOperationResult:
         return FileOperationResult(status=SandboxStatus.SUCCESS, file_path=file_path)
 
-    def glob(self, pattern: str, recursive: bool = True) -> list[str]:
+    def glob(self, pattern: str, recursive: bool = True, user: str | None = None) -> list[str]:
         return []
 
     def upload_file(self, local_path: str, sandbox_path: str, create_directories: bool = True) -> FileOperationResult:
@@ -436,7 +438,7 @@ class TestBaseSandboxManager:
                 session_manager: object | None,
                 user_id: str,
                 session_id: str,
-                sandbox_config: dict[str, object],
+                sandbox_config: SandboxConfig,
             ) -> DummySandbox:
                 return DummySandbox()
 
@@ -460,7 +462,7 @@ class TestBaseSandboxManager:
                 session_manager: object | None,
                 user_id: str,
                 session_id: str,
-                sandbox_config: dict[str, object],
+                sandbox_config: object,
             ) -> DummySandbox:
                 return DummySandbox()
 
@@ -478,12 +480,10 @@ class TestBaseSandboxManager:
             session_manager=None,
             user_id="user",
             session_id="session",
-            sandbox_config={},
-            upload_assets=[("/src", "/dest")],
+            sandbox_config=LocalSandboxConfig(),
         )
         instance = manager.instance
         assert instance is not None
-        assert instance.uploaded == [("/src", "/dest")]
 
     def test_start_sync_without_context_returns_none(self) -> None:
         class DummyManager(BaseSandboxManager["DummySandbox"]):
@@ -492,7 +492,7 @@ class TestBaseSandboxManager:
                 session_manager: object | None,
                 user_id: str,
                 session_id: str,
-                sandbox_config: dict[str, object],
+                sandbox_config: SandboxConfig,
             ) -> DummySandbox:
                 return DummySandbox()
 
@@ -508,14 +508,14 @@ class TestBaseSandboxManager:
         manager = DummyManager()
         assert manager.start_sync() is None
 
-    def test_start_sync_uploads_assets(self) -> None:
+    def test_start_sync_with_context(self) -> None:
         class DummyManager(BaseSandboxManager["DummySandbox"]):
             def start(
                 self,
                 session_manager: object | None,
                 user_id: str,
                 session_id: str,
-                sandbox_config: dict[str, object],
+                sandbox_config: object,
             ) -> DummySandbox:
                 return DummySandbox()
 
@@ -533,12 +533,10 @@ class TestBaseSandboxManager:
             session_manager=None,
             user_id="user",
             session_id="session",
-            sandbox_config={},
-            upload_assets=[("/src", "/dest"), ("/src2", "/dest2")],
+            sandbox_config=LocalSandboxConfig(),
         )
         instance = manager.start_sync()
         assert instance is not None
-        assert instance.uploaded == [("/src", "/dest"), ("/src2", "/dest2")]
 
     def test_persist_sandbox_state_event_loop_conflict(self, monkeypatch: pytest.MonkeyPatch) -> None:
         class DummySessionManager:
@@ -551,7 +549,7 @@ class TestBaseSandboxManager:
                 session_manager: object | None,
                 user_id: str,
                 session_id: str,
-                sandbox_config: dict[str, object],
+                sandbox_config: SandboxConfig,
             ) -> DummySandbox:
                 return DummySandbox()
 
@@ -588,7 +586,7 @@ class TestBaseSandboxManager:
                 session_manager: object | None,
                 user_id: str,
                 session_id: str,
-                sandbox_config: dict[str, object],
+                sandbox_config: SandboxConfig,
             ) -> DummySandbox:
                 return DummySandbox()
 

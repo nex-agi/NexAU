@@ -12,6 +12,7 @@ from packaging.version import Version
 
 from nexau.archs.sandbox import e2b_sandbox as e2b_module
 from nexau.archs.sandbox.base_sandbox import (
+    E2BSandboxConfig,
     FileInfo,
     FileOperationResult,
     SandboxFileError,
@@ -134,6 +135,9 @@ class _FakeManagerSandbox:
     _transport: object
     _SandboxBase__envd_api_url: str
     _envd_api: object | None = None
+    sandbox_domain: str | None = None
+    _envd_access_token: str | None = None
+    _envd_version: Version = Version("0.1.4")
 
     @property
     def envd_api_url(self) -> str:
@@ -183,6 +187,10 @@ class _FakeCommandExitError(Exception):
         self.exit_code = exit_code
 
 
+class _FakeTimeoutError(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class _FakeFileType:
     FILE: str = "file"
@@ -194,7 +202,25 @@ def _enable_fake_e2b(monkeypatch: pytest.MonkeyPatch, sandbox: _FakeSandbox) -> 
     monkeypatch.setattr(e2b_module, "E2B_AVAILABLE", True)
     monkeypatch.setattr(e2b_module, "FileType", _FakeFileType())
     monkeypatch.setattr(e2b_module, "Sandbox", fake_class)
-    monkeypatch.setattr(e2b_module, "CommandExitException", _FakeCommandExitError)
+    # CommandExitException and TimeoutException are imported inside functions from e2b package
+    # We need to mock them at the e2b package level, not at e2b_module level
+    if "e2b" not in sys.modules:
+        fake_e2b = types.ModuleType("e2b")
+        fake_e2b.CommandExitException = _FakeCommandExitError  # type: ignore
+        sys.modules["e2b"] = fake_e2b
+    else:
+        # If e2b module exists, patch CommandExitException
+        monkeypatch.setattr(sys.modules["e2b"], "CommandExitException", _FakeCommandExitError)
+
+    # Register e2b.exceptions submodule with TimeoutException
+    if "e2b.exceptions" not in sys.modules:
+        fake_exceptions = types.ModuleType("e2b.exceptions")
+        fake_exceptions.TimeoutException = _FakeTimeoutError  # type: ignore
+        sys.modules["e2b.exceptions"] = fake_exceptions
+        sys.modules["e2b"].exceptions = fake_exceptions  # type: ignore
+    else:
+        monkeypatch.setattr(sys.modules["e2b.exceptions"], "TimeoutException", _FakeTimeoutError)
+
     return fake_class
 
 
@@ -452,18 +478,39 @@ def test_manager_start_connects_from_config(monkeypatch: pytest.MonkeyPatch) -> 
         connection_config=_FakeConnectionConfig(sandbox_url="", extra_sandbox_headers={}),
         _transport=object(),
         _SandboxBase__envd_api_url="https://envd-service",
+        sandbox_domain="example.com",
+        _envd_access_token="token",
     )
     factory = _RecordingSandboxFactory(backend)
     _enable_fake_e2b_with_factory(monkeypatch, factory)
-    monkeypatch.setattr(e2b_module, "_get_connection_config_class", lambda: _FakeConnectionConfig)
+    # Mock ConnectionConfig from e2b.connection_config module
+    if "e2b" not in sys.modules:
+        fake_e2b = types.ModuleType("e2b")
+        fake_connection_config_module = types.ModuleType("e2b.connection_config")
+        fake_connection_config_module.ConnectionConfig = _FakeConnectionConfig  # type: ignore
+        fake_e2b.connection_config = fake_connection_config_module  # type: ignore
+        sys.modules["e2b"] = fake_e2b
+        sys.modules["e2b.connection_config"] = fake_connection_config_module
+    else:
+        if "e2b.connection_config" not in sys.modules:
+            fake_connection_config_module = types.ModuleType("e2b.connection_config")
+            fake_connection_config_module.ConnectionConfig = _FakeConnectionConfig  # type: ignore
+            sys.modules["e2b.connection_config"] = fake_connection_config_module
+        else:
+            monkeypatch.setattr(sys.modules["e2b.connection_config"], "ConnectionConfig", _FakeConnectionConfig)
 
-    manager = e2b_module.E2BSandboxManager(api_key="api-key", api_url="https://api", force_http=False)
-    sandbox_config = {
-        "sandbox_id": "sbx-123",
-        "sandbox_domain": "example.com",
-        "envd_access_token": "token",
-        "envd_version": "1.2.3",
-    }
+    manager = e2b_module.E2BSandboxManager(api_key="api-key", api_url="https://api")
+
+    # Mock load_sandbox_state to return None so it doesn't try to load from session
+    def fake_load_sandbox_state(session_manager: object, user_id: str, session_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(manager, "load_sandbox_state", fake_load_sandbox_state)
+
+    sandbox_config = E2BSandboxConfig(
+        sandbox_id="sbx-123",
+        force_http=True,
+    )
 
     sandbox = manager.start(object(), "user", "session", sandbox_config)
 
@@ -475,7 +522,6 @@ def test_manager_start_connects_from_config(monkeypatch: pytest.MonkeyPatch) -> 
     assert isinstance(connection_config, _FakeConnectionConfig)
     assert connection_config.sandbox_url == "http://49983-sbx-123.example.com"
     assert connection_config.sandbox_headers == {"X-Access-Token": "token"}
-    assert isinstance(factory.init_kwargs["envd_version"], Version)
 
 
 def test_manager_start_restores_state_and_patches_envd_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -487,30 +533,39 @@ def test_manager_start_restores_state_and_patches_envd_url(monkeypatch: pytest.M
         ),
         _transport=object(),
         _SandboxBase__envd_api_url="https://envd-service",
+        sandbox_domain="example.com",
+        _envd_access_token="token",
     )
     factory = _RecordingSandboxFactory(backend)
     _enable_fake_e2b_with_factory(monkeypatch, factory)
+    # Mock ConnectionConfig from e2b.connection_config module
+    if "e2b.connection_config" not in sys.modules:
+        fake_connection_config_module = types.ModuleType("e2b.connection_config")
+        fake_connection_config_module.ConnectionConfig = _FakeConnectionConfig  # type: ignore
+        sys.modules["e2b.connection_config"] = fake_connection_config_module
+    else:
+        monkeypatch.setattr(sys.modules["e2b.connection_config"], "ConnectionConfig", _FakeConnectionConfig)
 
-    fake_httpx = types.ModuleType("httpx")
-    setattr(fake_httpx, "Client", _FakeHttpxClient)
-    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
-
-    manager = e2b_module.E2BSandboxManager(api_key="api-key", api_url="https://api", force_http=True)
+    manager = e2b_module.E2BSandboxManager(api_key="api-key", api_url="https://api")
 
     def fake_load_sandbox_state(session_manager: object, user_id: str, session_id: str) -> dict[str, str]:
-        return {"sandbox_id": "sbx-state"}
+        return {
+            "sandbox_id": "sbx-state",
+            "sandbox_domain": "example.com",
+            "envd_access_token": "token",
+        }
 
     monkeypatch.setattr(manager, "load_sandbox_state", fake_load_sandbox_state)
 
-    sandbox = manager.start(object(), "user", "session", {})
+    # Set force_http=True to trigger _build_sandbox_with_connection_config
+    sandbox = manager.start(object(), "user", "session", E2BSandboxConfig(force_http=True))
 
-    assert factory.connect_called
     assert sandbox.sandbox is not None
     assert sandbox.sandbox_id == backend.sandbox_id
-    assert factory.connected_kwargs == {"sandbox_id": "sbx-state", "api_key": "api-key", "api_url": "https://api"}
-    assert backend.envd_api_url == "http://envd-service"
-    assert isinstance(backend.envd_api, _FakeHttpxClient)
-    assert backend.envd_api.base_url == "http://envd-service"
+    assert factory.init_kwargs is not None
+    connection_config = factory.init_kwargs["connection_config"]
+    assert isinstance(connection_config, _FakeConnectionConfig)
+    assert connection_config.sandbox_url == "http://49983-sbx-state.example.com"
 
 
 def test_manager_start_creates_sandbox_and_patches_envd_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -522,15 +577,20 @@ def test_manager_start_creates_sandbox_and_patches_envd_url(monkeypatch: pytest.
         ),
         _transport=object(),
         _SandboxBase__envd_api_url="https://envd-service",
+        sandbox_domain="example.com",
+        _envd_access_token="token",
     )
     factory = _RecordingSandboxFactory(backend)
     _enable_fake_e2b_with_factory(monkeypatch, factory)
+    # Mock ConnectionConfig from e2b.connection_config module
+    if "e2b.connection_config" not in sys.modules:
+        fake_connection_config_module = types.ModuleType("e2b.connection_config")
+        fake_connection_config_module.ConnectionConfig = _FakeConnectionConfig  # type: ignore
+        sys.modules["e2b.connection_config"] = fake_connection_config_module
+    else:
+        monkeypatch.setattr(sys.modules["e2b.connection_config"], "ConnectionConfig", _FakeConnectionConfig)
 
-    fake_httpx = types.ModuleType("httpx")
-    setattr(fake_httpx, "Client", _FakeHttpxClient)
-    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
-
-    manager = e2b_module.E2BSandboxManager(api_key="api-key", api_url="https://api", force_http=True)
+    manager = e2b_module.E2BSandboxManager(api_key="api-key", api_url="https://api")
 
     def fake_load_sandbox_state(session_manager: object, user_id: str, session_id: str) -> None:
         return None
@@ -543,12 +603,15 @@ def test_manager_start_creates_sandbox_and_patches_envd_url(monkeypatch: pytest.
 
     monkeypatch.setattr(manager, "persist_sandbox_state", fake_persist_sandbox_state)
 
-    sandbox = manager.start(object(), "user", "session", {})
+    sandbox = manager.start(object(), "user", "session", E2BSandboxConfig(force_http=True))
 
     assert factory.beta_create_called
     assert factory.created_kwargs is not None
     assert factory.created_kwargs["auto_pause"] is True
     assert sandbox.sandbox_id == "sbx-new"
-    assert backend.envd_api_url == "http://envd-service"
-    assert isinstance(backend.envd_api, _FakeHttpxClient)
+    # Step 2: rebuild with ConnectionConfig
+    assert factory.init_kwargs is not None
+    connection_config = factory.init_kwargs["connection_config"]
+    assert isinstance(connection_config, _FakeConnectionConfig)
+    assert connection_config.sandbox_url == "http://49983-sbx-new.example.com"
     assert persisted == [sandbox]

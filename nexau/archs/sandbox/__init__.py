@@ -18,18 +18,23 @@ from typing import TYPE_CHECKING
 
 from .base_sandbox import (
     BaseSandbox,
+    BaseSandboxConfig,
     BaseSandboxManager,
     CodeExecutionResult,
     CodeLanguage,
     CommandResult,
+    E2BSandboxConfig,
     FileInfo,
     FileOperationResult,
+    LocalSandboxConfig,
+    SandboxConfig,
     SandboxError,
     SandboxExecutionError,
     SandboxFileError,
     SandboxStatus,
     SandboxTimeoutError,
     extract_dataclass_init_kwargs,
+    parse_sandbox_config,
 )
 from .local_sandbox import LocalSandbox, LocalSandboxManager
 
@@ -55,6 +60,11 @@ __all__ = [
     "LocalSandbox",
     "E2BSandbox",
     "SandboxStatus",
+    "BaseSandboxConfig",
+    "SandboxConfig",
+    "LocalSandboxConfig",
+    "E2BSandboxConfig",
+    "parse_sandbox_config",
     "CodeLanguage",
     "CommandResult",
     "CodeExecutionResult",

@@ -50,9 +50,11 @@ from nexau.archs.main_sub.tool_call_modes import (
 from nexau.archs.main_sub.utils.cleanup_manager import cleanup_manager
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
 from nexau.archs.sandbox import (
+    BaseSandbox,
     BaseSandboxManager,
+    E2BSandboxManager,
+    LocalSandboxConfig,
     LocalSandboxManager,
-    extract_dataclass_init_kwargs,
 )
 from nexau.archs.session import AgentRunActionKey, SessionManager
 from nexau.archs.session.orm import InMemoryDatabaseEngine
@@ -507,28 +509,30 @@ class Agent:
 
     def _initialize_sandbox(self) -> None:
         """Initialize sandbox."""
-        # Shallow copy to avoid mutating the shared config reference
-        sandbox_config = dict(self.config.sandbox_config) if self.config.sandbox_config else {}
+        sandbox_config = self.config.sandbox_config
+        if sandbox_config is None:
+            sandbox_config = LocalSandboxConfig()
 
-        # Merge sandbox_env from variables into sandbox_config["envs"]
+        # RFC-0032: Merge sandbox_env from variables into sandbox config
         if self._variables and self._variables.sandbox_env:
-            existing_envs: dict[str, str] = sandbox_config.get("envs", {})
-            sandbox_config["envs"] = {**existing_envs, **self._variables.sandbox_env}
+            merged_envs = {**sandbox_config.envs, **self._variables.sandbox_env}
+            sandbox_config = sandbox_config.model_copy(update={"envs": merged_envs})
 
-        sandbox_type = sandbox_config.get("type", "local")
+        # 回写 typed config，确保后续代码可以直接访问 typed 属性
+        self.config.sandbox_config = sandbox_config
 
-        sandbox_manager_cls: type[BaseSandboxManager[Any]]
-
-        if sandbox_type == "local":
-            sandbox_manager_cls = LocalSandboxManager
-        elif sandbox_type == "e2b":
-            from nexau.archs.sandbox.e2b_sandbox import E2BSandboxManager
-
-            sandbox_manager_cls = E2BSandboxManager
+        if isinstance(sandbox_config, LocalSandboxConfig):
+            self.sandbox_manager: BaseSandboxManager[BaseSandbox] = LocalSandboxManager(_work_dir=sandbox_config.work_dir)
         else:
-            raise ValueError(f"Unsupported sandbox type: {sandbox_type}")
-        sandbox_manager_kwargs = extract_dataclass_init_kwargs(sandbox_manager_cls, sandbox_config)
-        self.sandbox_manager = sandbox_manager_cls(**sandbox_manager_kwargs)
+            self.sandbox_manager = E2BSandboxManager(
+                _work_dir=sandbox_config.work_dir,
+                template=sandbox_config.template,
+                timeout=sandbox_config.timeout,
+                api_key=sandbox_config.api_key,
+                api_url=sandbox_config.api_url,
+                metadata=sandbox_config.metadata,
+                envs=sandbox_config.envs,
+            )
 
         # Upload skill assets to sandbox
         upload_assets: list[tuple[str, str]] = []
@@ -686,8 +690,8 @@ class Agent:
             else:
                 # Sandbox not yet created — update the stored session context
                 # so envs are included when the sandbox is lazily initialized
-                ctx_data = getattr(self.sandbox_manager, "_session_context", None)
-                if ctx_data is not None:
+                ctx_data = self.sandbox_manager.session_context
+                if ctx_data:
                     cfg = ctx_data.get("sandbox_config")
                     if isinstance(cfg, dict):
                         sandbox_cfg = cast(dict[str, dict[str, str]], cfg)
@@ -808,7 +812,7 @@ class Agent:
             # 功能说明2：AgentState.get_sandbox() 会懒加载获取 sandbox 实例
             # 功能说明3：这避免了在不同事件循环中访问 asyncio 原语的问题
             # 功能说明4：sandbox 只在工具实际需要时才获取
-            sandbox_mgr = self.sandbox_manager if hasattr(self, "sandbox_manager") else None
+            sandbox_mgr = self.sandbox_manager
             agent_state = AgentState(
                 agent_name=self.agent_name,
                 agent_id=self.agent_id,
@@ -846,21 +850,17 @@ class Agent:
                 await self._persist_session_state(ctx.context)
 
                 # Handle sandbox lifecycle after agent execution
-                # Options:
-                #   - status_after_run=pause (default): Pause sandbox for later resume
-                #   - status_after_run=stop: Stop/kill sandbox
-                #   - status_after_run=none/something else: Let caller manage sandbox (for RL training scenarios)
-                if self.config.sandbox_config:
-                    if self.config.sandbox_config.get("status_after_run", "pause") == "pause":
-                        self.sandbox_manager.pause_no_wait()
-                    elif self.config.sandbox_config.get("status_after_run", "pause") == "stop":
-                        self.sandbox_manager.stop()
-                    else:
-                        # Let the caller manage sandbox lifecycle (useful for RL training)
-                        logger.info("Sandbox lifecycle managed by caller (persist_after_run=True)")
-                else:
-                    # No sandbox_config means local sandbox, call stop for consistency
+                self.sandbox_manager.on_run_complete()
+
+                sandbox_config = self.config.sandbox_config
+                status_after_run = sandbox_config.status_after_run if sandbox_config else "stop"
+                if status_after_run == "pause":
+                    self.sandbox_manager.pause_no_wait()
+                elif status_after_run == "stop":
                     self.sandbox_manager.stop()
+                else:
+                    # Let the caller manage sandbox lifecycle (useful for RL training)
+                    logger.info("Sandbox lifecycle managed by caller (status_after_run=none)")
 
                 logger.info(f"✅ Agent '{self.config.name}' completed execution")
                 return response

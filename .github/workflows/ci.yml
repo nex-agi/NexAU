@@ -93,6 +93,7 @@ jobs:
         LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         LLM_MODEL: ${{ vars.LLM_MODEL }}
         LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+        E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
       run: |
         make test
 
