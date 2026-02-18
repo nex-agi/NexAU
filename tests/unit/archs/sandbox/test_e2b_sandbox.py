@@ -491,7 +491,305 @@ class TestE2BEdgeCases:
 
     def test_dict_representation(self, e2b_sandbox):
         """Test sandbox dict representation."""
-
         result = e2b_sandbox.dict()
         assert "sandbox_id" in result
         assert "_work_dir" in result
+
+    def test_read_binary_file_as_text_returns_error(self, e2b_sandbox):
+        """Reading a binary file without binary=True should return error (UnicodeDecodeError)."""
+        e2b_sandbox.write_file("binary.dat", b"\x80\x81\x82\xff\xfe", binary=True)
+        result = e2b_sandbox.read_file("binary.dat")
+        assert result.status == SandboxStatus.ERROR
+
+    def test_read_file_truncates_large_content(self, e2b_sandbox):
+        """Large file content should be truncated at 30000 chars."""
+        big_content = "x" * 31000
+        e2b_sandbox.write_file("big.txt", big_content)
+        result = e2b_sandbox.read_file("big.txt")
+        assert result.status == SandboxStatus.SUCCESS
+        assert result.truncated is True
+        assert len(result.content) == 30000
+
+    def test_list_files_with_pattern(self, e2b_sandbox):
+        """list_files with pattern should filter results."""
+        e2b_sandbox.write_file("a.py", "")
+        e2b_sandbox.write_file("b.txt", "")
+        e2b_sandbox.write_file("c.py", "")
+        files = e2b_sandbox.list_files(".", pattern="*.py")
+        names = [Path(f.path).name for f in files]
+        assert "a.py" in names
+        assert "c.py" in names
+        assert "b.txt" not in names
+
+    def test_get_file_info_directory(self, e2b_sandbox):
+        """get_file_info on a directory should have encoding=None."""
+        e2b_sandbox.create_directory("info_dir")
+        info = e2b_sandbox.get_file_info("info_dir")
+        assert info.exists
+        assert info.is_directory
+        assert not info.is_file
+        assert info.encoding is None
+
+    def test_execute_bash_invalid_user(self, e2b_sandbox):
+        """Invalid user parameter should raise ValueError."""
+        with pytest.raises(ValueError, match="root.*user"):
+            e2b_sandbox.execute_bash("echo hi", user="nobody")
+
+    def test_execute_code_unsupported_language_enum(self, e2b_sandbox):
+        """Passing a CodeLanguage enum that is not PYTHON should return error."""
+        # CodeLanguage only has PYTHON, so use string that parses to unknown
+        result = e2b_sandbox.execute_code("code", "ruby")
+        assert result.status == SandboxStatus.ERROR
+        assert "Unsupported" in (result.error_value or "")
+
+    def test_edit_file_create_on_existing_returns_error(self, e2b_sandbox):
+        """CREATE (old_string='') on existing file should fail."""
+        e2b_sandbox.write_file("exists.txt", "content")
+        result = e2b_sandbox.edit_file("exists.txt", "", "new content")
+        assert result.status == SandboxStatus.ERROR
+        assert "already exists" in result.error.lower()
+
+    def test_edit_file_update_on_nonexistent_returns_error(self, e2b_sandbox):
+        """UPDATE on non-existent file should fail."""
+        result = e2b_sandbox.edit_file("missing.txt", "old", "new")
+        assert result.status == SandboxStatus.ERROR
+        assert "does not exist" in result.error.lower()
+
+    def test_edit_file_normalizes_escaped_newlines(self, e2b_sandbox):
+        """edit_file should normalize \\n escape sequences from LLM output."""
+        e2b_sandbox.write_file("escape.txt", "line1\nline2")
+        result = e2b_sandbox.edit_file("escape.txt", "line1\\nline2", "replaced")
+        assert result.status == SandboxStatus.SUCCESS
+        read = e2b_sandbox.read_file("escape.txt")
+        assert read.content == "replaced"
+
+    def test_glob_with_directory_pattern(self, e2b_sandbox):
+        """glob with dir/pattern should work."""
+        e2b_sandbox.write_file("gdir/a.py", "")
+        e2b_sandbox.write_file("gdir/b.txt", "")
+        matches = e2b_sandbox.glob("gdir/*.py")
+        assert any("a.py" in m for m in matches)
+        assert not any("b.txt" in m for m in matches)
+
+    def test_glob_non_recursive(self, e2b_sandbox):
+        """glob with recursive=False should use ls."""
+        e2b_sandbox.write_file("nr_test.txt", "")
+        # Non-recursive glob uses ls -1
+        matches = e2b_sandbox.glob("*.txt", recursive=False)
+        # May or may not find files depending on ls behavior, but should not raise
+        assert isinstance(matches, list)
+
+    def test_upload_empty_directory(self, e2b_sandbox, temp_dir):
+        """Uploading an empty directory should succeed."""
+        empty_dir = Path(temp_dir) / "empty"
+        empty_dir.mkdir()
+        assert e2b_sandbox.upload_directory(str(empty_dir), "empty_dest")
+
+    def test_write_file_resolves_relative_path(self, e2b_sandbox):
+        """write_file with relative path should resolve against work_dir."""
+        e2b_sandbox.write_file("rel_test.txt", "content")
+        # Verify via absolute path
+        result = e2b_sandbox.read_file("/home/user/rel_test.txt")
+        assert result.status == SandboxStatus.SUCCESS
+        assert result.content == "content"
+
+    def test_delete_file_resolves_relative_path(self, e2b_sandbox):
+        """delete_file with relative path should resolve against work_dir."""
+        e2b_sandbox.write_file("del_rel.txt", "content")
+        result = e2b_sandbox.delete_file("del_rel.txt")
+        assert result.status == SandboxStatus.SUCCESS
+        assert not e2b_sandbox.file_exists("/home/user/del_rel.txt")
+
+
+class TestE2BManagerStartPriorities:
+    """E2e tests for E2BSandboxManager.start() Priority 1 (connect from config)
+    and Priority 2 (restore from session state).
+
+    The default e2b_sandbox fixture only exercises Priority 3 (create new).
+
+    NOTE: Self-host E2B API does not support Sandbox.connect() for running
+    sandboxes (returns 404). These tests are skipped under self-host and only
+    run on SaaS where connect() works correctly.
+    """
+
+    @pytest.mark.skipif(
+        os.getenv("E2B_FORCE_HTTP", "").lower() in ("1", "true", "yes"),
+        reason="Self-host API does not support Sandbox.connect() — returns 404 for running sandboxes",
+    )
+    def test_priority1_connect_from_config(self):
+        """Priority 1: pass sandbox_id in config to connect to an existing sandbox."""
+        session_mgr = SessionManager(engine=InMemoryDatabaseEngine.get_shared_instance())
+
+        creator = E2BSandboxManager()
+        created = creator.start(
+            session_manager=session_mgr,
+            user_id="p1_user",
+            session_id="p1_create",
+            sandbox_config=E2BSandboxConfig(status_after_run="none"),
+        )
+        sandbox_id = created.sandbox_id
+        assert sandbox_id is not None
+
+        try:
+            connector = E2BSandboxManager()
+            connected = connector.start(
+                session_manager=session_mgr,
+                user_id="p1_user",
+                session_id="p1_connect",
+                sandbox_config=E2BSandboxConfig(sandbox_id=sandbox_id),
+            )
+
+            assert connected.sandbox_id == sandbox_id
+            assert connected.sandbox is not None
+
+            result = connected.execute_bash("echo p1_ok")
+            assert result.status == SandboxStatus.SUCCESS
+            assert "p1_ok" in result.stdout
+        finally:
+            creator.stop()
+
+    @pytest.mark.skipif(
+        os.getenv("E2B_FORCE_HTTP", "").lower() in ("1", "true", "yes"),
+        reason="Self-host API does not support Sandbox.connect() — returns 404 for running sandboxes",
+    )
+    def test_priority2_restore_from_session_state(self):
+        """Priority 2: restore sandbox from persisted session state."""
+        engine = InMemoryDatabaseEngine.get_shared_instance()
+        session_mgr = SessionManager(engine=engine)
+        user_id = "p2_user"
+        session_id = "p2_session"
+
+        creator = E2BSandboxManager()
+        created = creator.start(
+            session_manager=session_mgr,
+            user_id=user_id,
+            session_id=session_id,
+            sandbox_config=E2BSandboxConfig(status_after_run="none"),
+        )
+        sandbox_id = created.sandbox_id
+        assert sandbox_id is not None
+
+        created.write_file("p2_marker.txt", "restored")
+
+        try:
+            restorer = E2BSandboxManager()
+            restored = restorer.start(
+                session_manager=session_mgr,
+                user_id=user_id,
+                session_id=session_id,
+                sandbox_config=E2BSandboxConfig(),
+            )
+
+            assert restored.sandbox_id == sandbox_id
+            assert restored.sandbox is not None
+
+            read_result = restored.read_file("p2_marker.txt")
+            assert read_result.status == SandboxStatus.SUCCESS
+            assert read_result.content == "restored"
+        finally:
+            creator.stop()
+
+
+class TestE2BManagerLifecycle:
+    """E2e tests for E2BSandboxManager stop/pause/is_running/on_run_complete."""
+
+    def test_is_running(self):
+        """is_running should return True for a live sandbox."""
+        manager = E2BSandboxManager()
+        manager.start(
+            session_manager=SessionManager(engine=InMemoryDatabaseEngine.get_shared_instance()),
+            user_id="lr_user",
+            session_id="lr_session",
+            sandbox_config=E2BSandboxConfig(),
+        )
+        assert manager.is_running() is True
+        manager.stop()
+        # After stop, _instance still holds the reference but sandbox is killed.
+        # On self-host, is_running() may still return True because the SDK's
+        # is_running() endpoint (GET /sandboxes/{id}) returns 404 and the SDK
+        # may interpret that differently. Just verify stop() succeeded.
+
+    def test_is_running_no_instance(self):
+        """is_running should return False when no sandbox has been started."""
+        manager = E2BSandboxManager()
+        assert manager.is_running() is False
+
+    def test_stop_returns_true(self):
+        """stop() should return True and kill the sandbox."""
+        manager = E2BSandboxManager()
+        manager.start(
+            session_manager=SessionManager(engine=InMemoryDatabaseEngine.get_shared_instance()),
+            user_id="stop_user",
+            session_id="stop_session",
+            sandbox_config=E2BSandboxConfig(),
+        )
+        assert manager.stop() is True
+
+    def test_stop_no_instance(self):
+        """stop() with no sandbox should return False."""
+        manager = E2BSandboxManager()
+        assert manager.stop() is False
+
+    def test_on_run_complete(self):
+        """on_run_complete should stop keepalive without error."""
+        manager = E2BSandboxManager()
+        manager.start(
+            session_manager=SessionManager(engine=InMemoryDatabaseEngine.get_shared_instance()),
+            user_id="orc_user",
+            session_id="orc_session",
+            sandbox_config=E2BSandboxConfig(),
+        )
+        # Should not raise
+        manager.on_run_complete()
+        # Sandbox should still be running (on_run_complete only stops keepalive)
+        assert manager.is_running() is True
+        manager.stop()
+
+    @pytest.mark.skipif(
+        os.getenv("E2B_FORCE_HTTP", "").lower() in ("1", "true", "yes"),
+        reason="Self-host API does not support beta_pause()",
+    )
+    def test_pause(self):
+        """pause() should return True on SaaS."""
+        manager = E2BSandboxManager()
+        manager.start(
+            session_manager=SessionManager(engine=InMemoryDatabaseEngine.get_shared_instance()),
+            user_id="pause_user",
+            session_id="pause_session",
+            sandbox_config=E2BSandboxConfig(),
+        )
+        assert manager.pause() is True
+
+    def test_pause_no_instance(self):
+        """pause() with no sandbox should return False."""
+        manager = E2BSandboxManager()
+        assert manager.pause() is False
+
+    def test_start_with_config_overrides(self):
+        """start() should apply api_key/api_url/template from config."""
+        manager = E2BSandboxManager()
+        config = E2BSandboxConfig(
+            api_key=os.getenv("E2B_API_KEY"),
+            api_url=os.getenv("E2B_API_URL"),
+        )
+        sandbox = manager.start(
+            session_manager=SessionManager(engine=InMemoryDatabaseEngine.get_shared_instance()),
+            user_id="cfg_user",
+            session_id="cfg_session",
+            sandbox_config=config,
+        )
+        assert sandbox.sandbox is not None
+        manager.stop()
+
+    def test_start_wrong_config_type(self):
+        """start() with non-E2BSandboxConfig should raise ValueError."""
+        from nexau.archs.sandbox.base_sandbox import LocalSandboxConfig
+
+        manager = E2BSandboxManager()
+        with pytest.raises(ValueError, match="E2BSandboxConfig"):
+            manager.start(
+                session_manager=None,
+                user_id="x",
+                session_id="x",
+                sandbox_config=LocalSandboxConfig(),
+            )

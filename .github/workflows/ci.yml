@@ -75,7 +75,7 @@ jobs:
         name: type-coverage-html
         path: mypy_reports/type_html/
 
-  test:
+  test-saas:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -88,7 +88,16 @@ jobs:
     - *install-uv
     - *install-deps
 
-    - name: Run tests with coverage
+    - name: Verify E2B credentials
+      env:
+        E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+      run: |
+        if [ -z "$E2B_API_KEY" ]; then
+          echo "::error::E2B_API_KEY secret is not set. E2B tests would be silently skipped."
+          exit 1
+        fi
+
+    - name: Run tests with coverage (E2B SaaS)
       env:
         LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         LLM_MODEL: ${{ vars.LLM_MODEL }}
@@ -100,9 +109,9 @@ jobs:
     - name: Upload test coverage to Codecov
       uses: codecov/codecov-action@v5
       with:
-        name: test-coverage
+        name: test-coverage-saas
         files: ./coverage.xml
-        flags: unittests
+        flags: unittests-saas
         verbose: true
         use_oidc: true
       env:
@@ -111,5 +120,60 @@ jobs:
     - name: Upload test coverage HTML
       uses: actions/upload-artifact@v4
       with:
-        name: test-coverage-html
+        name: test-coverage-html-saas
+        path: htmlcov/
+
+  test-selfhost:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - *setup-python
+    - *install-uv
+    - *install-deps
+
+    - name: Verify E2B Self-Host credentials
+      env:
+        E2B_API_KEY: ${{ secrets.E2B_SELFHOST_API_KEY }}
+        E2B_API_URL: ${{ vars.E2B_SELFHOST_API_URL }}
+      run: |
+        if [ -z "$E2B_API_KEY" ]; then
+          echo "::error::E2B_SELFHOST_API_KEY secret is not set. Self-host E2B tests would be silently skipped."
+          exit 1
+        fi
+        if [ -z "$E2B_API_URL" ]; then
+          echo "::error::E2B_SELFHOST_API_URL variable is not set."
+          exit 1
+        fi
+
+    - name: Run tests with coverage (E2B Self-Host)
+      env:
+        LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        LLM_MODEL: ${{ vars.LLM_MODEL }}
+        LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+        E2B_API_KEY: ${{ secrets.E2B_SELFHOST_API_KEY }}
+        E2B_API_URL: ${{ vars.E2B_SELFHOST_API_URL }}
+        E2B_FORCE_HTTP: "true"
+      run: |
+        make test
+
+    - name: Upload test coverage to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        name: test-coverage-selfhost
+        files: ./coverage.xml
+        flags: unittests-selfhost
+        verbose: true
+        use_oidc: true
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+    - name: Upload test coverage HTML
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-coverage-html-selfhost
         path: htmlcov/

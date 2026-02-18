@@ -44,11 +44,16 @@ logger = logging.getLogger(__name__)
 # Typed Sandbox Configuration
 # =============================================================================
 
+# Default working directory for E2B sandboxes. Matches the home directory of
+# the default "user" account in E2B templates.  Every reference to this path
+# should use this constant so there is a single source of truth.
+E2B_DEFAULT_WORK_DIR = "/home/user"
+
 
 class BaseSandboxConfig(BaseModel):
     """Base configuration shared by all sandbox types."""
 
-    work_dir: str = "/home/user"
+    work_dir: str = E2B_DEFAULT_WORK_DIR
     envs: dict[str, str] = Field(default_factory=dict)
     status_after_run: Literal["pause", "stop", "none"] = "stop"
 
@@ -67,19 +72,19 @@ class E2BSandboxConfig(BaseSandboxConfig):
     """
 
     type: Literal["e2b"] = "e2b"
-    # API 凭证
+    # API credentials
     api_url: str | None = None
     api_key: str | None = None
-    # 创建参数
+    # Creation parameters
     template: str = "base"
     timeout: int = 300
     metadata: dict[str, str] = Field(default_factory=dict)
-    # 连接到已有 sandbox（有值则 connect，无值则 create）
+    # Connect to existing sandbox (if set); otherwise create a new one
     sandbox_id: str | None = None
-    # 行为控制
+    # Behavior control
     status_after_run: Literal["pause", "stop", "none"] = "pause"
-    keepalive_interval: int = 60  # 秒，0 禁用
-    # Self-host 场景下 envd 使用 HTTP 而非 HTTPS（E2B SDK 默认 HTTPS）
+    keepalive_interval: int = 60  # seconds, 0 to disable
+    # Self-host: use HTTP instead of HTTPS for envd (E2B SDK defaults to HTTPS)
     force_http: bool = Field(default_factory=lambda: os.getenv("E2B_FORCE_HTTP", "").lower() in ("1", "true", "yes"))
 
 
@@ -93,7 +98,7 @@ def parse_sandbox_config(
 ) -> SandboxConfig | None:
     """Parse sandbox_config from dict or typed model.
 
-    向后兼容：YAML 配置产生 dict，程序化调用可直接传 typed model。
+    Backward compatible: YAML configs produce dicts; programmatic calls can pass typed models directly.
     """
     if raw is None:
         return None
@@ -102,7 +107,7 @@ def parse_sandbox_config(
     raw = dict(raw)  # shallow copy to avoid mutating caller's dict
     if "type" not in raw:
         raw["type"] = "local"
-    # _work_dir → work_dir 兼容映射
+    # _work_dir → work_dir compatibility mapping
     if "_work_dir" in raw and "work_dir" not in raw:
         raw["work_dir"] = raw.pop("_work_dir")
     elif "_work_dir" in raw:
@@ -791,9 +796,9 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
     ):
         """Persist sandbox state.
 
-        功能说明1：将 sandbox 状态保存到 session manager
-        功能说明2：如果发生事件循环冲突，静默失败（非关键操作）
-        功能说明3：这避免了跨事件循环访问 asyncio 原语的问题
+        Saves sandbox state to the session manager.
+        Silently fails on event loop conflicts (non-critical operation).
+        This avoids cross-event-loop access to asyncio primitives.
         """
         if session_manager is None:
             return None
@@ -810,7 +815,7 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
         try:
             return run_async_function_sync(_persist_sandbox_state, raise_sync_error=False)
         except RuntimeError as e:
-            # 事件循环冲突，静默失败（保存状态是非关键操作）
+            # Event loop conflict — silently fail (persisting state is non-critical)
             if "bound to a different event loop" in str(e) or "Event loop is closed" in str(e):
                 logger.warning(f"Event loop conflict persisting sandbox state: {e}. State not saved.")
                 return None
@@ -824,9 +829,9 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
     ) -> dict[str, Any] | None:
         """Load sandbox state.
 
-        功能说明1：从 session manager 加载保存的 sandbox 状态
-        功能说明2：如果发生事件循环冲突，返回 None 让调用者创建新 sandbox
-        功能说明3：这避免了跨事件循环访问 asyncio 原语的问题
+        Loads saved sandbox state from the session manager.
+        Returns None on event loop conflicts, letting the caller create a new sandbox.
+        This avoids cross-event-loop access to asyncio primitives.
         """
         if session_manager is None:
             return None
@@ -843,7 +848,7 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
         try:
             return run_async_function_sync(_load_sandbox_state, raise_sync_error=False)
         except RuntimeError as e:
-            # 事件循环冲突，返回 None 让调用者创建新 sandbox
+            # Event loop conflict — return None so the caller creates a new sandbox
             if "bound to a different event loop" in str(e) or "Event loop is closed" in str(e):
                 logger.warning(f"Event loop conflict loading sandbox state: {e}. Will create new sandbox.")
                 return None
@@ -859,9 +864,9 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
     ):
         """Prepare session context for lazy sandbox initialization.
 
-        功能说明1：仅保存会话上下文，不启动 sandbox
-        功能说明2：sandbox 会在首次调用 start_sync() 时延迟启动
-        功能说明3：确保 sandbox 在正确的事件循环上下文中创建
+        Only stores the session context without starting the sandbox.
+        The sandbox is lazily started on the first call to start_sync().
+        Ensures the sandbox is created in the correct event loop context.
         """
         self._session_context = {
             "session_manager": session_manager,
@@ -904,10 +909,10 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
     def start_sync(self) -> TSandbox | None:
         """Start sandbox synchronously in the current thread/event loop.
 
-        功能说明1：在当前线程同步启动 sandbox，避免 asyncio 事件循环问题
-        功能说明2：E2B SDK 的 httpx 客户端会在当前事件循环中创建
-        功能说明3：确保 sandbox 和使用它的代码在同一个事件循环上下文中
-        功能说明4：用于解决跨线程/事件循环访问 asyncio 原语的问题
+        Starts the sandbox synchronously to avoid asyncio event loop issues.
+        The E2B SDK httpx client is created in the current event loop.
+        Ensures the sandbox and the code using it share the same event loop context.
+        Solves cross-thread/event-loop access to asyncio primitives.
         """
         if self._instance is not None:
             return self._instance

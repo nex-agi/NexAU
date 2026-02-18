@@ -1,5 +1,13 @@
+"""Unit tests for E2BSandbox — pure logic only, no SDK interaction.
+
+These tests cover deterministic, client-side logic that does not depend on
+the E2B SDK or a running sandbox instance.  All SDK-dependent behavior is
+tested via e2e tests in test_e2b_sandbox.py.
+"""
+
 from __future__ import annotations
 
+import builtins
 import sys
 import types
 from collections.abc import Sequence
@@ -20,6 +28,10 @@ from nexau.archs.sandbox.base_sandbox import (
 )
 from nexau.archs.sandbox.e2b_sandbox import E2BSandbox
 
+# ---------------------------------------------------------------------------
+# Minimal fakes
+# ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class _FakeCommandResult:
@@ -31,12 +43,10 @@ class _FakeCommandResult:
 class _FakeCommands:
     def __init__(self, behavior: Sequence[Exception | _FakeCommandResult] | None = None):
         self.behavior: list[Exception | _FakeCommandResult] = list(behavior or [])
-        self.calls: list[tuple[str, int | None, str | None]] = []
+        self.calls: list[tuple[str, dict]] = []
 
-    def run(
-        self, cmd: str, timeout: int | None = None, cwd: str | None = None, user: str | None = None, envs: dict[str, str] | None = None
-    ) -> _FakeCommandResult:
-        self.calls.append((cmd, timeout, cwd))
+    def run(self, cmd: str, **kwargs: object) -> _FakeCommandResult:
+        self.calls.append((cmd, kwargs))
         if self.behavior:
             action = self.behavior.pop(0)
             if isinstance(action, Exception):
@@ -61,18 +71,18 @@ class _FakeFilesystem:
     def __init__(self, read_content: bytes = b"", exists_error: Exception | None = None):
         self.read_content = read_content
         self.exists_error = exists_error
-        self.read_calls: list[tuple[str, str]] = []
+        self.written: list[tuple[str, bytes | str]] = []
+        self.removed: list[str] = []
         self.get_info_entry: _FakeEntry | None = None
 
     def read(self, path: str, format: str = "bytes") -> bytes:
-        self.read_calls.append((path, format))
         return self.read_content
 
-    def write(self, path: str, content: bytes | str) -> None:
-        return None
+    def write(self, path: str, content: bytes | str, **kw: object) -> None:
+        self.written.append((path, content))
 
     def remove(self, path: str) -> None:
-        return None
+        self.removed.append(path)
 
     def list(self, path: str) -> list[_FakeEntry]:
         return []
@@ -87,37 +97,51 @@ class _FakeFilesystem:
             raise RuntimeError("Missing entry info")
         return self.get_info_entry
 
+    def write_files(self, entries: builtins.list, **kw: object) -> None:  # type: ignore[type-arg]
+        pass
+
 
 class _FakeConnectionConfig:
-    def __init__(self, sandbox_url: str, extra_sandbox_headers: dict[str, str]) -> None:
+    def __init__(self, sandbox_url: str = "", extra_sandbox_headers: dict | None = None) -> None:
         self.sandbox_url = sandbox_url
-        self.sandbox_headers = extra_sandbox_headers
+        self.sandbox_headers = extra_sandbox_headers or {}
 
 
 class _FakeSandbox:
-    def __init__(self, commands: _FakeCommands, filesystem: _FakeFilesystem, sandbox_id: str = "sbx"):
-        self.commands = commands
-        self._filesystem = filesystem
+    def __init__(
+        self,
+        commands: _FakeCommands | None = None,
+        filesystem: _FakeFilesystem | None = None,
+        sandbox_id: str = "sbx",
+    ):
+        self.commands = commands or _FakeCommands()
+        self._filesystem = filesystem or _FakeFilesystem()
         self.sandbox_id = sandbox_id
-        self.connection_config = _FakeConnectionConfig(sandbox_url="", extra_sandbox_headers={})
+        self.connection_config = _FakeConnectionConfig()
         self._transport = object()
+        self.sandbox_domain: str | None = "example.com"
+        self._envd_access_token: str | None = "token"
+        self._envd_version: Version = Version("0.1.4")
+        self._killed = False
 
-    def kill(self) -> None:
-        return None
+    def kill(self, **kw: object) -> None:
+        self._killed = True
 
-    def beta_pause(self) -> None:
-        return None
+    def beta_pause(self, **kw: object) -> None:
+        pass
 
     def is_running(self) -> bool:
-        return True
+        return not self._killed
 
 
 class _FakeSandboxClass:
     def __init__(self, sandbox: _FakeSandbox):
         self._sandbox = sandbox
         self.connect_called = False
+        self.init_kwargs: dict | None = None
 
     def __call__(self, **kwargs: object) -> _FakeSandbox:
+        self.init_kwargs = kwargs
         return self._sandbox
 
     def connect(self, sandbox_id: str, **kwargs: object) -> _FakeSandbox:
@@ -127,56 +151,14 @@ class _FakeSandboxClass:
     def beta_create(self, **kwargs: object) -> _FakeSandbox:
         return self._sandbox
 
-
-@dataclass
-class _FakeManagerSandbox:
-    sandbox_id: str
-    connection_config: _FakeConnectionConfig
-    _transport: object
-    _SandboxBase__envd_api_url: str
-    _envd_api: object | None = None
-    sandbox_domain: str | None = None
-    _envd_access_token: str | None = None
-    _envd_version: Version = Version("0.1.4")
-
-    @property
-    def envd_api_url(self) -> str:
-        return self._SandboxBase__envd_api_url
-
-    @property
-    def envd_api(self) -> object | None:
-        return self._envd_api
+    def set_timeout(self, sandbox_id: str, timeout: int, **kw: object) -> None:
+        pass
 
 
-class _RecordingSandboxFactory:
-    def __init__(self, sandbox: _FakeManagerSandbox):
-        self._sandbox = sandbox
-        self.init_kwargs: dict[str, object] | None = None
-        self.connected_kwargs: dict[str, object] | None = None
-        self.created_kwargs: dict[str, object] | None = None
-        self.connect_called = False
-        self.beta_create_called = False
-
-    def __call__(self, **kwargs: object) -> _FakeManagerSandbox:
-        self.init_kwargs = kwargs
-        return self._sandbox
-
-    def connect(self, sandbox_id: str, **kwargs: object) -> _FakeManagerSandbox:
-        self.connect_called = True
-        self.connected_kwargs = {"sandbox_id": sandbox_id, **kwargs}
-        return self._sandbox
-
-    def beta_create(self, **kwargs: object) -> _FakeManagerSandbox:
-        self.beta_create_called = True
-        self.created_kwargs = kwargs
-        return self._sandbox
-
-
-class _FakeHttpxClient:
-    def __init__(self, base_url: str, transport: object, headers: dict[str, str]) -> None:
-        self.base_url = base_url
-        self.transport = transport
-        self.headers = headers
+@dataclass(frozen=True)
+class _FakeFileType:
+    FILE: str = "file"
+    DIR: str = "dir"
 
 
 class _FakeCommandExitError(Exception):
@@ -191,42 +173,24 @@ class _FakeTimeoutError(Exception):
     pass
 
 
-@dataclass(frozen=True)
-class _FakeFileType:
-    FILE: str = "file"
-    DIR: str = "dir"
-
-
-def _enable_fake_e2b(monkeypatch: pytest.MonkeyPatch, sandbox: _FakeSandbox) -> _FakeSandboxClass:
+def _enable_fake_e2b(monkeypatch: pytest.MonkeyPatch, sandbox: _FakeSandbox | None = None) -> _FakeSandboxClass:
+    sandbox = sandbox or _FakeSandbox()
     fake_class = _FakeSandboxClass(sandbox)
     monkeypatch.setattr(e2b_module, "E2B_AVAILABLE", True)
     monkeypatch.setattr(e2b_module, "FileType", _FakeFileType())
     monkeypatch.setattr(e2b_module, "Sandbox", fake_class)
-    # CommandExitException and TimeoutException are imported inside functions from e2b package
-    # We need to mock them at the e2b package level, not at e2b_module level
+    # Mock e2b exception classes used in execute_bash
     if "e2b" not in sys.modules:
         fake_e2b = types.ModuleType("e2b")
-        fake_e2b.CommandExitException = _FakeCommandExitError  # type: ignore
         sys.modules["e2b"] = fake_e2b
-    else:
-        # If e2b module exists, patch CommandExitException
-        monkeypatch.setattr(sys.modules["e2b"], "CommandExitException", _FakeCommandExitError)
-
-    # Register e2b.exceptions submodule with TimeoutException
+    fake_e2b = sys.modules["e2b"]
+    monkeypatch.setattr(fake_e2b, "CommandExitException", _FakeCommandExitError, raising=False)
     if "e2b.exceptions" not in sys.modules:
-        fake_exceptions = types.ModuleType("e2b.exceptions")
-        fake_exceptions.TimeoutException = _FakeTimeoutError  # type: ignore
-        sys.modules["e2b.exceptions"] = fake_exceptions
-        sys.modules["e2b"].exceptions = fake_exceptions  # type: ignore
-    else:
-        monkeypatch.setattr(sys.modules["e2b.exceptions"], "TimeoutException", _FakeTimeoutError)
-
+        fake_exc = types.ModuleType("e2b.exceptions")
+        sys.modules["e2b.exceptions"] = fake_exc
+        fake_e2b.exceptions = fake_exc  # type: ignore
+    monkeypatch.setattr(sys.modules["e2b.exceptions"], "TimeoutException", _FakeTimeoutError, raising=False)
     return fake_class
-
-
-def _enable_fake_e2b_with_factory(monkeypatch: pytest.MonkeyPatch, factory: _RecordingSandboxFactory) -> None:
-    monkeypatch.setattr(e2b_module, "E2B_AVAILABLE", True)
-    monkeypatch.setattr(e2b_module, "Sandbox", factory)
 
 
 def _attach_backend(sandbox: E2BSandbox, backend: _FakeSandbox) -> None:
@@ -234,384 +198,763 @@ def _attach_backend(sandbox: E2BSandbox, backend: _FakeSandbox) -> None:
     sandbox.sandbox_id = backend.sandbox_id
 
 
-def test_execute_bash_reconnects_on_event_loop_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    commands = _FakeCommands(
-        behavior=[
-            RuntimeError("Event loop is closed"),
-            _FakeCommandResult(stdout="ok", stderr="", exit_code=0),
-        ]
-    )
-    filesystem = _FakeFilesystem()
-    sandbox_backend = _FakeSandbox(commands, filesystem, sandbox_id="sbx-123")
-    fake_sandbox_class = _enable_fake_e2b(monkeypatch, sandbox_backend)
-
-    sandbox = E2BSandbox(sandbox_id="sbx-123")
-    _attach_backend(sandbox, sandbox_backend)
-    result = sandbox.execute_bash("echo hi")
-
-    assert result.status == SandboxStatus.SUCCESS
-    assert "ok" in result.stdout
-    assert fake_sandbox_class.connect_called
+# =============================================================================
+# _resolve_path tests
+# =============================================================================
 
 
-def test_execute_bash_handles_command_exit_exception(monkeypatch: pytest.MonkeyPatch) -> None:
-    commands = _FakeCommands(behavior=[_FakeCommandExitError(stdout="out", stderr="err", exit_code=2)])
-    filesystem = _FakeFilesystem()
-    sandbox_backend = _FakeSandbox(commands, filesystem)
-    _enable_fake_e2b(monkeypatch, sandbox_backend)
+class TestResolvePath:
+    """Tests for E2BSandbox._resolve_path — the client-side path resolution
+    that ensures consistent behavior across SaaS and self-host envd."""
 
-    sandbox = E2BSandbox(sandbox_id="sbx")
-    _attach_backend(sandbox, sandbox_backend)
-    result = sandbox.execute_bash("false")
+    def _make_sandbox(self, monkeypatch: pytest.MonkeyPatch, work_dir: str = "/home/user") -> E2BSandbox:
+        _enable_fake_e2b(monkeypatch)
+        return E2BSandbox(sandbox_id="sbx", _work_dir=work_dir)
 
-    assert result.status == SandboxStatus.ERROR
-    assert result.exit_code == 2
-    assert result.truncated is False
-    assert "exit code 2" in (result.error or "")
+    def test_absolute_path_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sandbox = self._make_sandbox(monkeypatch)
+        assert sandbox._resolve_path("/etc/hosts") == "/etc/hosts"
 
+    def test_relative_path_resolved_against_work_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sandbox = self._make_sandbox(monkeypatch)
+        assert sandbox._resolve_path("project/main.py") == "/home/user/project/main.py"
 
-def test_read_file_truncates_large_content(monkeypatch: pytest.MonkeyPatch) -> None:
-    content = b"a" * 30010
-    filesystem = _FakeFilesystem(read_content=content)
-    sandbox_backend = _FakeSandbox(_FakeCommands(), filesystem)
-    _enable_fake_e2b(monkeypatch, sandbox_backend)
+    def test_relative_path_with_custom_cwd(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sandbox = self._make_sandbox(monkeypatch)
+        assert sandbox._resolve_path("file.txt", cwd="/tmp") == "/tmp/file.txt"
 
-    sandbox = E2BSandbox(sandbox_id="sbx")
-    _attach_backend(sandbox, sandbox_backend)
+    def test_absolute_path_ignores_cwd(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sandbox = self._make_sandbox(monkeypatch)
+        assert sandbox._resolve_path("/var/log/app.log", cwd="/tmp") == "/var/log/app.log"
 
-    def fake_get_file_info(path: str) -> FileInfo:
-        return FileInfo(path=path, exists=True, size=len(content))
+    def test_dot_relative_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sandbox = self._make_sandbox(monkeypatch)
+        assert sandbox._resolve_path("./file.txt") == "/home/user/./file.txt"
 
-    monkeypatch.setattr(sandbox, "get_file_info", fake_get_file_info)
+    def test_custom_work_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sandbox = self._make_sandbox(monkeypatch, work_dir="/workspace")
+        assert sandbox._resolve_path("src/app.py") == "/workspace/src/app.py"
 
-    result = sandbox.read_file("big.txt")
-    assert result.status == SandboxStatus.SUCCESS
-    assert isinstance(result.content, str)
-    assert len(result.content) == 30000
-    assert result.truncated
-
-
-def test_file_exists_returns_false_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
-    filesystem = _FakeFilesystem(exists_error=RuntimeError("boom"))
-    sandbox_backend = _FakeSandbox(_FakeCommands(), filesystem)
-    _enable_fake_e2b(monkeypatch, sandbox_backend)
-
-    sandbox = E2BSandbox(sandbox_id="sbx")
-    _attach_backend(sandbox, sandbox_backend)
-    assert sandbox.file_exists("/missing") is False
+    def test_bare_filename(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sandbox = self._make_sandbox(monkeypatch)
+        assert sandbox._resolve_path("readme.md") == "/home/user/readme.md"
 
 
-def test_get_file_info_detects_encoding(monkeypatch: pytest.MonkeyPatch) -> None:
-    filesystem = _FakeFilesystem(read_content=b"hello")
-    entry = _FakeEntry(
-        name="file.txt",
-        path="/file.txt",
-        type="file",
-        size=5,
-        mode=0o600,
-        permissions="rw-------",
-        modified_time=datetime(2024, 1, 1, 12, 0, 0),
-        symlink_target=None,
-    )
-    filesystem.get_info_entry = entry
-    sandbox_backend = _FakeSandbox(_FakeCommands(), filesystem)
-    _enable_fake_e2b(monkeypatch, sandbox_backend)
-
-    sandbox = E2BSandbox(sandbox_id="sbx")
-    _attach_backend(sandbox, sandbox_backend)
-
-    def fake_detect(self: E2BSandbox, raw: bytes) -> str:
-        return "utf-16"
-
-    monkeypatch.setattr(E2BSandbox, "_detect_file_encoding", fake_detect)
-
-    info = sandbox.get_file_info("/file.txt")
-    assert info.exists
-    assert info.is_file
-    assert info.readable is True
-    assert info.writable is True
-    assert info.encoding == "utf-16"
+# =============================================================================
+# E2B_DEFAULT_WORK_DIR constant tests
+# =============================================================================
 
 
-def test_edit_file_normalizes_escaped_sequences(monkeypatch: pytest.MonkeyPatch) -> None:
-    sandbox_backend = _FakeSandbox(_FakeCommands(), _FakeFilesystem())
-    _enable_fake_e2b(monkeypatch, sandbox_backend)
+class TestDefaultWorkDir:
+    """Verify E2B_DEFAULT_WORK_DIR is the single source of truth."""
 
-    sandbox = E2BSandbox(sandbox_id="sbx")
-    _attach_backend(sandbox, sandbox_backend)
+    def test_constant_value(self) -> None:
+        from nexau.archs.sandbox.base_sandbox import E2B_DEFAULT_WORK_DIR
 
-    def fake_exists(path: str) -> bool:
-        return True
+        assert E2B_DEFAULT_WORK_DIR == "/home/user"
 
-    def fake_read(path: str, encoding: str = "utf-8", binary: bool = False) -> FileOperationResult:
-        return FileOperationResult(
-            status=SandboxStatus.SUCCESS,
-            file_path=path,
-            content="line1\nline2",
+    def test_e2b_sandbox_default_work_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from nexau.archs.sandbox.base_sandbox import E2B_DEFAULT_WORK_DIR
+
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        assert str(sandbox.work_dir) == E2B_DEFAULT_WORK_DIR
+
+    def test_e2b_sandbox_config_default_work_dir(self) -> None:
+        from nexau.archs.sandbox.base_sandbox import E2B_DEFAULT_WORK_DIR
+
+        config = E2BSandboxConfig()
+        assert config.work_dir == E2B_DEFAULT_WORK_DIR
+
+    def test_manager_default_work_dir(self) -> None:
+        from nexau.archs.sandbox.base_sandbox import E2B_DEFAULT_WORK_DIR
+
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        assert str(manager.work_dir) == E2B_DEFAULT_WORK_DIR
+
+
+# =============================================================================
+# Defensive code paths — exercised via fakes to reach 100% coverage
+# =============================================================================
+
+
+class TestExecuteBashDefensive:
+    """Cover execute_bash error/edge paths that can't be triggered via e2e."""
+
+    def test_reconnects_on_event_loop_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        commands = _FakeCommands(
+            behavior=[
+                RuntimeError("Event loop is closed"),
+                _FakeCommandResult(stdout="ok", stderr="", exit_code=0),
+            ]
         )
+        backend = _FakeSandbox(commands=commands)
+        cls = _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        result = sandbox.execute_bash("echo hi")
+        assert result.status == SandboxStatus.SUCCESS
+        assert cls.connect_called
 
-    def fake_write(
-        path: str,
-        content: str | bytes,
-        encoding: str = "utf-8",
-        binary: bool = False,
-        create_directories: bool = True,
-    ) -> FileOperationResult:
-        return FileOperationResult(
-            status=SandboxStatus.SUCCESS,
-            file_path=path,
-            content=content,
+    def test_command_exit_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        commands = _FakeCommands(behavior=[_FakeCommandExitError("out", "err", 2)])
+        backend = _FakeSandbox(commands=commands)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        result = sandbox.execute_bash("false")
+        assert result.status == SandboxStatus.ERROR
+        assert result.exit_code == 2
+
+    def test_timeout_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        commands = _FakeCommands(behavior=[_FakeTimeoutError()])
+        backend = _FakeSandbox(commands=commands)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        result = sandbox.execute_bash("sleep 999", timeout=1000)
+        assert result.status == SandboxStatus.TIMEOUT
+
+    def test_generic_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        commands = _FakeCommands(behavior=[ValueError("unexpected")])
+        backend = _FakeSandbox(commands=commands)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        result = sandbox.execute_bash("echo hi")
+        assert result.status == SandboxStatus.ERROR
+        assert "unexpected" in (result.error or "")
+
+    def test_invalid_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        with pytest.raises(ValueError, match="root.*user"):
+            sandbox.execute_bash("echo hi", user="nobody")
+
+    def test_no_sandbox_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.execute_bash("echo hi")
+
+
+class TestExecuteCodeDefensive:
+    def test_no_sandbox_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.execute_code("print(1)", "python")
+
+    def test_invalid_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        with pytest.raises(ValueError, match="root.*user"):
+            sandbox.execute_code("print(1)", "python", user="nobody")
+
+    def test_unsupported_language_enum(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """CodeLanguage enum that is not PYTHON."""
+
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        # CodeLanguage only has PYTHON; test with a string that doesn't parse
+        result = sandbox.execute_code("code", "ruby")
+        assert result.status == SandboxStatus.ERROR
+
+
+class TestFileOpsDefensive:
+    """Cover file operation defensive paths."""
+
+    def test_read_file_no_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.read_file("f.txt")
+
+    def test_write_file_no_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.write_file("f.txt", "c")
+
+    def test_write_file_invalid_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        with pytest.raises(ValueError, match="root.*user"):
+            sandbox.write_file("f.txt", "c", user="nobody")
+
+    def test_write_file_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fs = _FakeFilesystem()
+        fs.write = lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full"))  # type: ignore
+        backend = _FakeSandbox(filesystem=fs)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        result = sandbox.write_file("/tmp/f.txt", "c")
+        assert result.status == SandboxStatus.ERROR
+
+    def test_delete_file_no_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.delete_file("f.txt")
+
+    def test_delete_file_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fs = _FakeFilesystem()
+        fs.remove = lambda p: (_ for _ in ()).throw(OSError("perm"))  # type: ignore
+        backend = _FakeSandbox(filesystem=fs)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        result = sandbox.delete_file("/tmp/f.txt")
+        assert result.status == SandboxStatus.ERROR
+
+    def test_list_files_no_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.list_files(".")
+
+    def test_file_exists_no_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.file_exists("f.txt")
+
+    def test_file_exists_exception_returns_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fs = _FakeFilesystem(exists_error=RuntimeError("boom"))
+        backend = _FakeSandbox(filesystem=fs)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        assert sandbox.file_exists("/missing") is False
+
+    def test_get_file_info_no_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.get_file_info("f.txt")
+
+    def test_get_file_info_get_info_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_info raises → returns FileInfo(exists=False)."""
+        fs = _FakeFilesystem()
+        fs.get_info_entry = None  # will raise RuntimeError
+        backend = _FakeSandbox(filesystem=fs)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        info = sandbox.get_file_info("/some/file")
+        assert not info.exists
+
+    def test_create_directory_no_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.create_directory("d")
+
+    def test_create_directory_invalid_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        with pytest.raises(ValueError, match="root.*user"):
+            sandbox.create_directory("d", user="nobody")
+
+    def test_create_directory_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        commands = _FakeCommands(behavior=[_FakeCommandResult("", "perm denied", 1)])
+        backend = _FakeSandbox(commands=commands)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        with pytest.raises(SandboxFileError):
+            sandbox.create_directory("d")
+
+
+class TestEditFileDefensive:
+    def test_no_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.edit_file("f.txt", "a", "b")
+
+    def test_read_failure_during_edit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        monkeypatch.setattr(sandbox, "file_exists", lambda p: True)
+        monkeypatch.setattr(
+            sandbox, "read_file", lambda p, **kw: FileOperationResult(status=SandboxStatus.ERROR, file_path=p, error="read failed")
         )
-
-    monkeypatch.setattr(sandbox, "file_exists", fake_exists)
-    monkeypatch.setattr(sandbox, "read_file", fake_read)
-    monkeypatch.setattr(sandbox, "write_file", fake_write)
-
-    result = sandbox.edit_file("file.txt", "line1\\nline2", "replaced")
-    assert result.status == SandboxStatus.SUCCESS
+        result = sandbox.edit_file("f.txt", "old", "new")
+        assert result.status == SandboxStatus.ERROR
 
 
-def test_edit_file_multiple_matches_returns_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    sandbox_backend = _FakeSandbox(_FakeCommands(), _FakeFilesystem())
-    _enable_fake_e2b(monkeypatch, sandbox_backend)
+class TestGlobDefensive:
+    def test_no_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.glob("*.py")
 
-    sandbox = E2BSandbox(sandbox_id="sbx")
-    _attach_backend(sandbox, sandbox_backend)
+    def test_invalid_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        with pytest.raises(ValueError, match="root.*user"):
+            sandbox.glob("*.py", user="nobody")
 
-    def fake_exists(path: str) -> bool:
-        return True
+    def test_glob_command_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        commands = _FakeCommands(behavior=[_FakeCommandResult("", "bad", 2)])
+        backend = _FakeSandbox(commands=commands)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        with pytest.raises(SandboxFileError):
+            sandbox.glob("*.txt")
 
-    def fake_read(path: str, encoding: str = "utf-8", binary: bool = False) -> FileOperationResult:
-        return FileOperationResult(
-            status=SandboxStatus.SUCCESS,
-            file_path=path,
-            content="test test",
+    def test_glob_with_slash_pattern(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """glob('dir/*.py') should use find with dir and pattern."""
+        commands = _FakeCommands(behavior=[_FakeCommandResult("dir/a.py\n", "", 0)])
+        backend = _FakeSandbox(commands=commands)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        matches = sandbox.glob("dir/*.py")
+        assert "dir/a.py" in matches
+
+    def test_glob_non_recursive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        commands = _FakeCommands(behavior=[_FakeCommandResult("a.txt\n", "", 0)])
+        backend = _FakeSandbox(commands=commands)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        matches = sandbox.glob("*.txt", recursive=False)
+        assert "a.txt" in matches
+
+    def test_glob_leading_slash_pattern(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """glob('**//file') — file_pattern starts with /."""
+        commands = _FakeCommands(behavior=[_FakeCommandResult("", "", 0)])
+        backend = _FakeSandbox(commands=commands)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        sandbox.glob("**//*.py")
+        cmd = commands.calls[0][0]
+        assert "find" in cmd
+
+
+class TestFileTransferDefensive:
+    def test_upload_file_no_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.upload_file("/tmp/f", "dest")
+
+    def test_download_file_no_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.download_file("src", "/tmp/dest")
+
+    def test_download_file_empty_content(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        monkeypatch.setattr(
+            sandbox, "read_file", lambda p, **kw: FileOperationResult(status=SandboxStatus.SUCCESS, file_path=p, content=None)
         )
+        result = sandbox.download_file("remote.txt", "/tmp/local.txt")
+        assert result.status == SandboxStatus.ERROR
+        assert "Empty content" in (result.error or "")
 
-    monkeypatch.setattr(sandbox, "file_exists", fake_exists)
-    monkeypatch.setattr(sandbox, "read_file", fake_read)
-
-    result = sandbox.edit_file("file.txt", "test", "new")
-    assert result.status == SandboxStatus.ERROR
-    assert "matches" in (result.error or "")
-
-
-def test_glob_raises_on_command_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    commands = _FakeCommands(behavior=[_FakeCommandResult(stdout="", stderr="bad", exit_code=2)])
-    sandbox_backend = _FakeSandbox(commands, _FakeFilesystem())
-    _enable_fake_e2b(monkeypatch, sandbox_backend)
-
-    sandbox = E2BSandbox(sandbox_id="sbx")
-    _attach_backend(sandbox, sandbox_backend)
-
-    with pytest.raises(SandboxFileError):
-        sandbox.glob("*.txt", recursive=True)
-
-
-def test_download_file_empty_content_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    sandbox_backend = _FakeSandbox(_FakeCommands(), _FakeFilesystem())
-    _enable_fake_e2b(monkeypatch, sandbox_backend)
-
-    sandbox = E2BSandbox(sandbox_id="sbx")
-    _attach_backend(sandbox, sandbox_backend)
-
-    def fake_read(path: str, encoding: str = "utf-8", binary: bool = False) -> FileOperationResult:
-        return FileOperationResult(
-            status=SandboxStatus.SUCCESS,
-            file_path=path,
-            content=None,
+    def test_download_file_string_content(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """download_file with string content should encode to utf-8."""
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        monkeypatch.setattr(
+            sandbox, "read_file", lambda p, **kw: FileOperationResult(status=SandboxStatus.SUCCESS, file_path=p, content="hello")
         )
+        dest = tmp_path / "out.txt"
+        result = sandbox.download_file("remote.txt", str(dest))
+        assert result.status == SandboxStatus.SUCCESS
+        assert dest.read_text() == "hello"
 
-    monkeypatch.setattr(sandbox, "read_file", fake_read)
+    def test_upload_directory_no_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.upload_directory("/tmp", "dest")
 
-    result = sandbox.download_file("remote.txt", "local.txt")
-    assert result.status == SandboxStatus.ERROR
-    assert "Empty content" in (result.error or "")
+    def test_upload_directory_missing_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        with pytest.raises(SandboxFileError, match="does not exist"):
+            sandbox.upload_directory(str(tmp_path / "missing"), "dest")
+
+    def test_upload_directory_not_a_dir(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        f = tmp_path / "file.txt"
+        f.write_text("x")
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        with pytest.raises(SandboxFileError, match="not a directory"):
+            sandbox.upload_directory(str(f), "dest")
+
+    def test_upload_directory_empty(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        d = tmp_path / "empty"
+        d.mkdir()
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        assert sandbox.upload_directory(str(d), "dest") is True
+
+    def test_download_directory_no_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        with pytest.raises(Exception):
+            sandbox.download_directory("src", "/tmp/dest")
+
+    def test_download_directory_missing_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        fs = _FakeFilesystem()
+        fs.exists = lambda p: False  # type: ignore
+        backend = _FakeSandbox(filesystem=fs)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        with pytest.raises(SandboxFileError, match="does not exist"):
+            sandbox.download_directory("missing", str(tmp_path))
+
+    def test_download_directory_skips_unrelated_paths(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        monkeypatch.setattr(sandbox, "file_exists", lambda p: True)
+        monkeypatch.setattr(sandbox, "list_files", lambda p, **kw: [FileInfo(path="/other/path.txt", exists=True, is_file=True)])
+        downloaded: list[str] = []
+        monkeypatch.setattr(
+            sandbox,
+            "download_file",
+            lambda s, d, **kw: (
+                downloaded.append(s) or FileOperationResult(status=SandboxStatus.SUCCESS, file_path=d)  # type: ignore
+            ),
+        )
+        assert sandbox.download_directory("sandbox_dir", str(tmp_path))
+        assert downloaded == []
+
+    def test_download_directory_failed_file(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """download_directory should warn on failed individual file downloads."""
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        monkeypatch.setattr(sandbox, "file_exists", lambda p: True)
+        monkeypatch.setattr(
+            sandbox, "list_files", lambda p, **kw: [FileInfo(path="/home/user/sandbox_dir/fail.txt", exists=True, is_file=True)]
+        )
+        monkeypatch.setattr(
+            sandbox,
+            "download_file",
+            lambda s, d, **kw: FileOperationResult(status=SandboxStatus.ERROR, file_path=d, error="download failed"),
+        )
+        # Should not raise, just warn
+        assert sandbox.download_directory("sandbox_dir", str(tmp_path))
 
 
-def test_upload_directory_invalid_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    sandbox_backend = _FakeSandbox(_FakeCommands(), _FakeFilesystem())
-    _enable_fake_e2b(monkeypatch, sandbox_backend)
+class TestManagerDefensive:
+    """Cover Manager start/stop/pause/keepalive defensive paths."""
 
-    sandbox = E2BSandbox(sandbox_id="sbx")
-    _attach_backend(sandbox, sandbox_backend)
-
-    with pytest.raises(SandboxFileError):
-        sandbox.upload_directory(str(tmp_path / "missing"), "dest")
-
-    file_path = tmp_path / "file.txt"
-    file_path.write_text("content")
-    with pytest.raises(SandboxFileError):
-        sandbox.upload_directory(str(file_path), "dest")
-
-
-def test_download_directory_skips_unrelated_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    sandbox_backend = _FakeSandbox(_FakeCommands(), _FakeFilesystem())
-    _enable_fake_e2b(monkeypatch, sandbox_backend)
-
-    sandbox = E2BSandbox(sandbox_id="sbx")
-    _attach_backend(sandbox, sandbox_backend)
-
-    def fake_exists(path: str) -> bool:
-        return True
-
-    def fake_list(path: str, recursive: bool = True, pattern: str | None = None) -> list[FileInfo]:
-        return [FileInfo(path="/other/path.txt", exists=True, is_file=True)]
-
-    monkeypatch.setattr(sandbox, "file_exists", fake_exists)
-    monkeypatch.setattr(sandbox, "list_files", fake_list)
-    downloaded: list[str] = []
-
-    def fake_download(src: str, dst: str, create_directories: bool = True) -> FileOperationResult:
-        downloaded.append(src)
-        return FileOperationResult(status=SandboxStatus.SUCCESS, file_path=dst)
-
-    monkeypatch.setattr(sandbox, "download_file", fake_download)
-
-    assert sandbox.download_directory("sandbox_dir", str(tmp_path))
-    assert downloaded == []
-
-
-def test_manager_start_connects_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    backend = _FakeManagerSandbox(
-        sandbox_id="sbx-123",
-        connection_config=_FakeConnectionConfig(sandbox_url="", extra_sandbox_headers={}),
-        _transport=object(),
-        _SandboxBase__envd_api_url="https://envd-service",
-        sandbox_domain="example.com",
-        _envd_access_token="token",
-    )
-    factory = _RecordingSandboxFactory(backend)
-    _enable_fake_e2b_with_factory(monkeypatch, factory)
-    # Mock ConnectionConfig from e2b.connection_config module
-    if "e2b" not in sys.modules:
-        fake_e2b = types.ModuleType("e2b")
-        fake_connection_config_module = types.ModuleType("e2b.connection_config")
-        fake_connection_config_module.ConnectionConfig = _FakeConnectionConfig  # type: ignore
-        fake_e2b.connection_config = fake_connection_config_module  # type: ignore
-        sys.modules["e2b"] = fake_e2b
-        sys.modules["e2b.connection_config"] = fake_connection_config_module
-    else:
+    def test_start_p1_connect_and_rebuild(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """P1: connect from config with force_http=True triggers rebuild."""
+        backend = _FakeSandbox(sandbox_id="sbx-p1")
+        cls = _enable_fake_e2b(monkeypatch, backend)
+        # Mock ConnectionConfig
         if "e2b.connection_config" not in sys.modules:
-            fake_connection_config_module = types.ModuleType("e2b.connection_config")
-            fake_connection_config_module.ConnectionConfig = _FakeConnectionConfig  # type: ignore
-            sys.modules["e2b.connection_config"] = fake_connection_config_module
+            mod = types.ModuleType("e2b.connection_config")
+            mod.ConnectionConfig = _FakeConnectionConfig  # type: ignore
+            sys.modules["e2b.connection_config"] = mod
         else:
             monkeypatch.setattr(sys.modules["e2b.connection_config"], "ConnectionConfig", _FakeConnectionConfig)
 
-    manager = e2b_module.E2BSandboxManager(api_key="api-key", api_url="https://api")
+        # Mock TransportWithLogger
+        class _FakeTWL:
+            singleton = object()
 
-    # Mock load_sandbox_state to return None so it doesn't try to load from session
-    def fake_load_sandbox_state(session_manager: object, user_id: str, session_id: str) -> None:
-        return None
+        if "e2b.api" not in sys.modules:
+            sys.modules["e2b.api"] = types.ModuleType("e2b.api")
+        if "e2b.api.client_sync" not in sys.modules:
+            mod2 = types.ModuleType("e2b.api.client_sync")
+            mod2.TransportWithLogger = _FakeTWL  # type: ignore
+            sys.modules["e2b.api.client_sync"] = mod2
+        else:
+            monkeypatch.setattr(sys.modules["e2b.api.client_sync"], "TransportWithLogger", _FakeTWL)
 
-    monkeypatch.setattr(manager, "load_sandbox_state", fake_load_sandbox_state)
+        manager = e2b_module.E2BSandboxManager(api_key="key", api_url="http://api")
+        monkeypatch.setattr(manager, "load_sandbox_state", lambda *a: None)
+        sandbox = manager.start(object(), "u", "s", E2BSandboxConfig(sandbox_id="sbx-p1", force_http=True))
+        assert sandbox.sandbox_id == "sbx-p1"
+        assert cls.connect_called
+        assert cls.init_kwargs is not None  # rebuilt
 
-    sandbox_config = E2BSandboxConfig(
-        sandbox_id="sbx-123",
-        force_http=True,
-    )
+    def test_start_p1_connect_failure_falls_to_p3(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """P1 connect failure should fall through to P3."""
+        backend = _FakeSandbox(sandbox_id="sbx-new")
+        cls = _enable_fake_e2b(monkeypatch, backend)
 
-    sandbox = manager.start(object(), "user", "session", sandbox_config)
+        # Make connect raise
+        def failing_connect(sandbox_id: str, **kw: object) -> _FakeSandbox:
+            raise RuntimeError("connect failed")
 
-    assert sandbox.sandbox_id == "sbx-123"
-    assert sandbox.sandbox is not None
-    assert sandbox.sandbox_id == backend.sandbox_id
-    assert factory.init_kwargs is not None
-    connection_config = factory.init_kwargs["connection_config"]
-    assert isinstance(connection_config, _FakeConnectionConfig)
-    assert connection_config.sandbox_url == "http://49983-sbx-123.example.com"
-    assert connection_config.sandbox_headers == {"X-Access-Token": "token"}
+        cls.connect = failing_connect  # type: ignore
+
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        monkeypatch.setattr(manager, "load_sandbox_state", lambda *a: None)
+        monkeypatch.setattr(manager, "persist_sandbox_state", lambda *a: None)
+        sandbox = manager.start(object(), "u", "s", E2BSandboxConfig(sandbox_id="sbx-fail", force_http=False))
+        assert sandbox.sandbox is not None
+
+    def test_start_p2_restore_and_rebuild(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """P2: restore from state with force_http=True triggers rebuild."""
+        backend = _FakeSandbox(sandbox_id="sbx-p2")
+        cls = _enable_fake_e2b(monkeypatch, backend)
+        if "e2b.connection_config" not in sys.modules:
+            mod = types.ModuleType("e2b.connection_config")
+            mod.ConnectionConfig = _FakeConnectionConfig  # type: ignore
+            sys.modules["e2b.connection_config"] = mod
+        else:
+            monkeypatch.setattr(sys.modules["e2b.connection_config"], "ConnectionConfig", _FakeConnectionConfig)
+
+        class _FakeTWL:
+            singleton = object()
+
+        if "e2b.api.client_sync" not in sys.modules:
+            if "e2b.api" not in sys.modules:
+                sys.modules["e2b.api"] = types.ModuleType("e2b.api")
+            mod2 = types.ModuleType("e2b.api.client_sync")
+            mod2.TransportWithLogger = _FakeTWL  # type: ignore
+            sys.modules["e2b.api.client_sync"] = mod2
+        else:
+            monkeypatch.setattr(sys.modules["e2b.api.client_sync"], "TransportWithLogger", _FakeTWL)
+
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        monkeypatch.setattr(manager, "load_sandbox_state", lambda *a: {"sandbox_id": "sbx-p2"})
+        sandbox = manager.start(object(), "u", "s", E2BSandboxConfig(force_http=True))
+        assert sandbox.sandbox_id == "sbx-p2"
+        assert cls.connect_called
+
+    def test_start_p2_restore_failure_falls_to_p3(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """P2 restore failure should fall through to P3."""
+        backend = _FakeSandbox(sandbox_id="sbx-new")
+        cls = _enable_fake_e2b(monkeypatch, backend)
+        call_count = [0]
+
+        def counting_connect(sandbox_id: str, **kw: object) -> _FakeSandbox:
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("connect failed")
+            return backend
+
+        cls.connect = counting_connect  # type: ignore
+
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        monkeypatch.setattr(manager, "load_sandbox_state", lambda *a: {"sandbox_id": "sbx-old"})
+        monkeypatch.setattr(manager, "persist_sandbox_state", lambda *a: None)
+        sandbox = manager.start(object(), "u", "s", E2BSandboxConfig(force_http=False))
+        assert sandbox.sandbox is not None
+
+    def test_start_p2_missing_sandbox_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """P2 with empty sandbox_id in state should fall to P3."""
+        backend = _FakeSandbox(sandbox_id="sbx-new")
+        _enable_fake_e2b(monkeypatch, backend)
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        monkeypatch.setattr(manager, "load_sandbox_state", lambda *a: {"sandbox_id": ""})
+        monkeypatch.setattr(manager, "persist_sandbox_state", lambda *a: None)
+        sandbox = manager.start(object(), "u", "s", E2BSandboxConfig())
+        assert sandbox.sandbox is not None
+
+    def test_start_config_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """start() should apply api_key/api_url/template from config."""
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        manager = e2b_module.E2BSandboxManager(api_key="old")
+        monkeypatch.setattr(manager, "load_sandbox_state", lambda *a: None)
+        monkeypatch.setattr(manager, "persist_sandbox_state", lambda *a: None)
+        config = E2BSandboxConfig(api_key="new-key", api_url="http://new", template="custom")
+        manager.start(object(), "u", "s", config)
+        assert manager.api_key == "new-key"
+        assert manager.api_url == "http://new"
+        assert manager.template == "custom"
+
+    def test_maybe_rebuild_warning_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_maybe_rebuild_for_http with missing domain/token should warn and return original."""
+        backend = _FakeSandbox()
+        backend.sandbox_domain = None
+        backend._envd_access_token = None
+        _enable_fake_e2b(monkeypatch, backend)
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        result = manager._maybe_rebuild_for_http(backend, E2BSandboxConfig(force_http=True))  # type: ignore
+        assert result is backend  # returned unchanged
+
+    def test_stop_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """stop() should return False on kill exception."""
+        backend = _FakeSandbox()
+        backend.kill = lambda **kw: (_ for _ in ()).throw(RuntimeError("kill failed"))  # type: ignore
+        _enable_fake_e2b(monkeypatch, backend)
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        manager._instance = sandbox
+        assert manager.stop() is False
+
+    def test_pause_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """pause() should return False on beta_pause exception."""
+        backend = _FakeSandbox()
+        backend.beta_pause = lambda **kw: (_ for _ in ()).throw(RuntimeError("pause failed"))  # type: ignore
+        _enable_fake_e2b(monkeypatch, backend)
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        manager._instance = sandbox
+        assert manager.pause() is False
+
+    def test_is_running_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """is_running() should return False on exception."""
+        backend = _FakeSandbox()
+        backend.is_running = lambda: (_ for _ in ()).throw(RuntimeError("check failed"))  # type: ignore
+        _enable_fake_e2b(monkeypatch, backend)
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        manager._instance = sandbox
+        assert manager.is_running() is False
+
+    def test_keepalive_skipped_when_interval_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        manager._start_keepalive("sbx", 0)
+        assert manager._keepalive_thread is None
+
+    def test_keepalive_starts_and_stops(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import time
+
+        backend = _FakeSandbox()
+        cls = _enable_fake_e2b(monkeypatch, backend)
+        set_timeout_calls = []
+        cls.set_timeout = lambda sid, t, **kw: set_timeout_calls.append(sid)  # type: ignore
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        manager._start_keepalive("sbx-ka", 1)
+        assert manager._keepalive_thread is not None
+        time.sleep(1.5)
+        manager._stop_keepalive()
+        assert manager._keepalive_thread is None
+        assert len(set_timeout_calls) >= 1
+
+    def test_keepalive_handles_409_auto_resume(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import time
+
+        backend = _FakeSandbox()
+        cls = _enable_fake_e2b(monkeypatch, backend)
+        call_count = [0]
+
+        def failing_set_timeout(sid: str, t: int, **kw: object) -> None:
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("409 sandbox not running")
+
+        cls.set_timeout = failing_set_timeout  # type: ignore
+        connect_calls: list[str] = []
+
+        def tracking_connect(sandbox_id: str, **kw: object) -> _FakeSandbox:
+            connect_calls.append(sandbox_id)
+            return backend
+
+        cls.connect = tracking_connect  # type: ignore
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        manager._start_keepalive("sbx-409", 1)
+        time.sleep(1.5)
+        manager._stop_keepalive()
+        assert len(connect_calls) >= 1
+
+    def test_keepalive_handles_generic_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import time
+
+        backend = _FakeSandbox()
+        cls = _enable_fake_e2b(monkeypatch, backend)
+        cls.set_timeout = lambda sid, t, **kw: (_ for _ in ()).throw(RuntimeError("network error"))  # type: ignore
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        manager._start_keepalive("sbx-err", 1)
+        time.sleep(1.5)
+        manager._stop_keepalive()
+        # Should not crash
+
+    def test_keepalive_auto_resume_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import time
+
+        backend = _FakeSandbox()
+        cls = _enable_fake_e2b(monkeypatch, backend)
+        cls.set_timeout = lambda sid, t, **kw: (_ for _ in ()).throw(RuntimeError("409 not running"))  # type: ignore
+
+        def failing_connect(sandbox_id: str, **kw: object) -> _FakeSandbox:
+            raise RuntimeError("resume failed")
+
+        cls.connect = failing_connect  # type: ignore
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        manager._start_keepalive("sbx-rf", 1)
+        time.sleep(1.5)
+        manager._stop_keepalive()
+        # Should not crash
+
+    def test_on_run_complete_stops_keepalive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = _FakeSandbox()
+        cls = _enable_fake_e2b(monkeypatch, backend)
+        cls.set_timeout = lambda sid, t, **kw: None  # type: ignore
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        manager._start_keepalive("sbx-orc", 60)
+        assert manager._keepalive_thread is not None
+        manager.on_run_complete()
+        assert manager._keepalive_thread is None
 
 
-def test_manager_start_restores_state_and_patches_envd_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    backend = _FakeManagerSandbox(
-        sandbox_id="sbx-state",
-        connection_config=_FakeConnectionConfig(
-            sandbox_url="",
-            extra_sandbox_headers={"X-Access-Token": "token"},
-        ),
-        _transport=object(),
-        _SandboxBase__envd_api_url="https://envd-service",
-        sandbox_domain="example.com",
-        _envd_access_token="token",
-    )
-    factory = _RecordingSandboxFactory(backend)
-    _enable_fake_e2b_with_factory(monkeypatch, factory)
-    # Mock ConnectionConfig from e2b.connection_config module
-    if "e2b.connection_config" not in sys.modules:
-        fake_connection_config_module = types.ModuleType("e2b.connection_config")
-        fake_connection_config_module.ConnectionConfig = _FakeConnectionConfig  # type: ignore
-        sys.modules["e2b.connection_config"] = fake_connection_config_module
-    else:
-        monkeypatch.setattr(sys.modules["e2b.connection_config"], "ConnectionConfig", _FakeConnectionConfig)
+class TestBuildSandboxResetsSingleton:
+    def test_transport_singleton_reset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        if "e2b.connection_config" not in sys.modules:
+            mod = types.ModuleType("e2b.connection_config")
+            mod.ConnectionConfig = _FakeConnectionConfig  # type: ignore
+            sys.modules["e2b.connection_config"] = mod
+        else:
+            monkeypatch.setattr(sys.modules["e2b.connection_config"], "ConnectionConfig", _FakeConnectionConfig)
 
-    manager = e2b_module.E2BSandboxManager(api_key="api-key", api_url="https://api")
+        class _FakeTWL:
+            singleton = object()
 
-    def fake_load_sandbox_state(session_manager: object, user_id: str, session_id: str) -> dict[str, str]:
-        return {
-            "sandbox_id": "sbx-state",
-            "sandbox_domain": "example.com",
-            "envd_access_token": "token",
-        }
-
-    monkeypatch.setattr(manager, "load_sandbox_state", fake_load_sandbox_state)
-
-    # Set force_http=True to trigger _build_sandbox_with_connection_config
-    sandbox = manager.start(object(), "user", "session", E2BSandboxConfig(force_http=True))
-
-    assert sandbox.sandbox is not None
-    assert sandbox.sandbox_id == backend.sandbox_id
-    assert factory.init_kwargs is not None
-    connection_config = factory.init_kwargs["connection_config"]
-    assert isinstance(connection_config, _FakeConnectionConfig)
-    assert connection_config.sandbox_url == "http://49983-sbx-state.example.com"
-
-
-def test_manager_start_creates_sandbox_and_patches_envd_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    backend = _FakeManagerSandbox(
-        sandbox_id="sbx-new",
-        connection_config=_FakeConnectionConfig(
-            sandbox_url="",
-            extra_sandbox_headers={"X-Access-Token": "token"},
-        ),
-        _transport=object(),
-        _SandboxBase__envd_api_url="https://envd-service",
-        sandbox_domain="example.com",
-        _envd_access_token="token",
-    )
-    factory = _RecordingSandboxFactory(backend)
-    _enable_fake_e2b_with_factory(monkeypatch, factory)
-    # Mock ConnectionConfig from e2b.connection_config module
-    if "e2b.connection_config" not in sys.modules:
-        fake_connection_config_module = types.ModuleType("e2b.connection_config")
-        fake_connection_config_module.ConnectionConfig = _FakeConnectionConfig  # type: ignore
-        sys.modules["e2b.connection_config"] = fake_connection_config_module
-    else:
-        monkeypatch.setattr(sys.modules["e2b.connection_config"], "ConnectionConfig", _FakeConnectionConfig)
-
-    manager = e2b_module.E2BSandboxManager(api_key="api-key", api_url="https://api")
-
-    def fake_load_sandbox_state(session_manager: object, user_id: str, session_id: str) -> None:
-        return None
-
-    monkeypatch.setattr(manager, "load_sandbox_state", fake_load_sandbox_state)
-    persisted: list[E2BSandbox] = []
-
-    def fake_persist_sandbox_state(session_manager: object, user_id: str, session_id: str, sandbox: E2BSandbox) -> None:
-        persisted.append(sandbox)
-
-    monkeypatch.setattr(manager, "persist_sandbox_state", fake_persist_sandbox_state)
-
-    sandbox = manager.start(object(), "user", "session", E2BSandboxConfig(force_http=True))
-
-    assert factory.beta_create_called
-    assert factory.created_kwargs is not None
-    assert factory.created_kwargs["auto_pause"] is True
-    assert sandbox.sandbox_id == "sbx-new"
-    # Step 2: rebuild with ConnectionConfig
-    assert factory.init_kwargs is not None
-    connection_config = factory.init_kwargs["connection_config"]
-    assert isinstance(connection_config, _FakeConnectionConfig)
-    assert connection_config.sandbox_url == "http://49983-sbx-new.example.com"
-    assert persisted == [sandbox]
+        if "e2b.api" not in sys.modules:
+            sys.modules["e2b.api"] = types.ModuleType("e2b.api")
+        if "e2b.api.client_sync" not in sys.modules:
+            mod2 = types.ModuleType("e2b.api.client_sync")
+            mod2.TransportWithLogger = _FakeTWL  # type: ignore
+            sys.modules["e2b.api.client_sync"] = mod2
+        else:
+            monkeypatch.setattr(sys.modules["e2b.api.client_sync"], "TransportWithLogger", _FakeTWL)
+        manager = e2b_module.E2BSandboxManager(api_key="key")
+        assert _FakeTWL.singleton is not None
+        manager._build_sandbox_with_connection_config("sbx", "example.com", "token", Version("0.1.4"))
+        assert _FakeTWL.singleton is None

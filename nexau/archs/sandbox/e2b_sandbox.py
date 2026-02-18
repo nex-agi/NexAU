@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 from packaging.version import Version
 
 from .base_sandbox import (
+    E2B_DEFAULT_WORK_DIR,
     BaseSandbox,
     BaseSandboxManager,
     CodeExecutionResult,
@@ -66,11 +67,11 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# E2B SDK 动态导入
+# E2B SDK dynamic import
 # =============================================================================
-# e2b 是可选依赖，通过 import_module 动态加载。
-# 类型标注使用 TYPE_CHECKING 导入的真实 e2b 类型。
-# Fallback 值仅防止 NameError，实际代码路径由 E2B_AVAILABLE 守护。
+# e2b is an optional dependency, loaded dynamically via import_module.
+# Type annotations use real e2b types imported under TYPE_CHECKING.
+# Fallback values only prevent NameError; actual code paths are guarded by E2B_AVAILABLE.
 
 Sandbox: type[E2BRawSandbox] | None = None
 FileType: type[E2BFileType] | None = None
@@ -102,7 +103,7 @@ class E2BSandbox(BaseSandbox):
     """
 
     default_user: str = field(default="user")
-    _work_dir: str = field(default="/home/user")
+    _work_dir: str = field(default=E2B_DEFAULT_WORK_DIR)
     envd_version: str | None = field(default=None)
     _api_key: str | None = field(default=None, repr=False)
     _api_url: str | None = field(default=None, repr=False)
@@ -122,6 +123,22 @@ class E2BSandbox(BaseSandbox):
     def set_api_credentials(self, api_key: str | None, api_url: str | None) -> None:
         self._api_key = api_key
         self._api_url = api_url
+
+    def _resolve_path(self, path: str, cwd: str | None = None) -> str:
+        """Resolve a relative path to an absolute path.
+
+        E2B SaaS envd resolves relative paths server-side, but self-host envd
+        (e.g. 0.4.2) does not. This method ensures consistent behavior across
+        both environments by always resolving on the client side.
+
+        Args:
+            path: File or directory path (absolute or relative).
+            cwd: Working directory for resolution. Defaults to self.work_dir.
+        """
+        if path.startswith("/"):
+            return path
+        base = cwd or str(self.work_dir)
+        return f"{base}/{path}"
 
     @override
     def execute_bash(
@@ -235,8 +252,8 @@ class E2BSandbox(BaseSandbox):
 
             # Foreground mode: execute command directly
             # E2B SDK will raise exception on non-zero exit code
-            # 功能说明1：E2B SDK 可能有事件循环问题，添加重试逻辑
-            # 功能说明2：如果遇到 "Event loop is closed"，重新连接后重试
+            # E2B SDK may have event loop issues; add retry logic.
+            # If "Event loop is closed" is encountered, reconnect and retry.
             max_retries = 2
             last_error: RuntimeError | None = None
             result: E2BCommandResult | None = None
@@ -254,7 +271,7 @@ class E2BSandbox(BaseSandbox):
                     last_error = e
                     if "Event loop is closed" in str(e) and retry < max_retries:
                         logger.warning(f"Event loop closed error, reconnecting sandbox (retry {retry + 1}/{max_retries})")
-                        # 尝试重新连接
+                        # Attempt to reconnect
                         try:
                             assert Sandbox is not None, "E2B SDK not installed. Install it with: pip install e2b"
                             if not self.sandbox_id:
@@ -565,11 +582,7 @@ class E2BSandbox(BaseSandbox):
             raise SandboxError("Sandbox not started. Call start() first.")
 
         try:
-            # Resolve to absolute path if relative
-            resolved_path = file_path
-            if not file_path.startswith("/"):
-                work_dir = str(self.work_dir) if self.work_dir else "/home/user"
-                resolved_path = f"{work_dir}/{file_path}"
+            resolved_path = self._resolve_path(file_path)
 
             max_output_size = 30000  # Default: 30000 characters
 
@@ -641,11 +654,7 @@ class E2BSandbox(BaseSandbox):
             raise ValueError(f"User must be 'root' or 'user' for E2B sandbox. But got {user}")
 
         try:
-            # Resolve to absolute path if relative
-            resolved_path = file_path
-            if not file_path.startswith("/"):
-                work_dir = str(self.work_dir) if self.work_dir else "/home/user"
-                resolved_path = f"{work_dir}/{file_path}"
+            resolved_path = self._resolve_path(file_path)
 
             # Create parent directories if needed
             if create_directories:
@@ -695,11 +704,7 @@ class E2BSandbox(BaseSandbox):
             raise SandboxError("Sandbox not started. Call start() first.")
 
         try:
-            # Resolve to absolute path if relative
-            resolved_path = file_path
-            if not file_path.startswith("/"):
-                work_dir = str(self.work_dir) if self.work_dir else "/home/user"
-                resolved_path = f"{work_dir}/{file_path}"
+            resolved_path = self._resolve_path(file_path)
 
             # Check if file exists
             if not self.file_exists(resolved_path):
@@ -749,12 +754,14 @@ class E2BSandbox(BaseSandbox):
             raise SandboxError("Sandbox not started. Call start() first.")
 
         try:
+            resolved_path = self._resolve_path(directory_path)
+
             # Check if directory exists
-            if not self.file_exists(directory_path):
+            if not self.file_exists(resolved_path):
                 raise SandboxFileError(f"Directory does not exist: {directory_path}")
 
             # Use E2B filesystem list
-            entries = self._sandbox._filesystem.list(directory_path)
+            entries = self._sandbox._filesystem.list(resolved_path)
 
             files: list[FileInfo] = []
             for entry in entries:
@@ -820,7 +827,8 @@ class E2BSandbox(BaseSandbox):
             raise SandboxError("Sandbox not started. Call start() first.")
 
         try:
-            return self._sandbox._filesystem.exists(file_path)
+            resolved_path = self._resolve_path(file_path)
+            return self._sandbox._filesystem.exists(resolved_path)
         except Exception:
             return False
 
@@ -841,8 +849,10 @@ class E2BSandbox(BaseSandbox):
             raise SandboxError("Sandbox not started. Call start() first.")
 
         try:
+            resolved_path = self._resolve_path(file_path)
+
             # Check if file exists
-            exists = self.file_exists(file_path)
+            exists = self.file_exists(resolved_path)
 
             if not exists:
                 return FileInfo(
@@ -852,7 +862,7 @@ class E2BSandbox(BaseSandbox):
 
             # Use E2B filesystem get_info API
             try:
-                entry = self._sandbox._filesystem.get_info(file_path)
+                entry = self._sandbox._filesystem.get_info(resolved_path)
             except Exception:
                 return FileInfo(
                     path=file_path,
@@ -869,7 +879,7 @@ class E2BSandbox(BaseSandbox):
                 writable = bool(entry.mode & 0o200)
 
             if entry.type == FileType.FILE:
-                raw_data = self._sandbox._filesystem.read(file_path, format="bytes")
+                raw_data = self._sandbox._filesystem.read(resolved_path, format="bytes")
                 encoding = self._detect_file_encoding(bytes(raw_data))
             else:
                 encoding = None
@@ -916,11 +926,10 @@ class E2BSandbox(BaseSandbox):
 
         try:
             # Use mkdir command
-            # Note: Use /home/user as cwd since the target directory may not exist yet
             cmd = f"mkdir -p {directory_path}" if parents else f"mkdir {directory_path}"
             result = self._sandbox.commands.run(
                 cmd=cmd,
-                cwd="/home/user",
+                cwd=str(self.work_dir),
                 user=user,
             )
 
@@ -1265,14 +1274,16 @@ class E2BSandbox(BaseSandbox):
             if not local_dir.is_dir():
                 raise SandboxFileError(f"Source path is not a directory: {local_path}")
 
-            # 1. 收集所有文件和需要创建的目录
+            resolved_sandbox_path = self._resolve_path(sandbox_path)
+
+            # 1. Collect all files and directories to create
             files_to_write: list[WriteEntry] = []
-            parent_dirs: set[str] = {sandbox_path}
+            parent_dirs: set[str] = {resolved_sandbox_path}
 
             for item in local_dir.rglob("*"):
                 if item.is_file():
                     rel_path = item.relative_to(local_dir)
-                    dest_path = f"{sandbox_path}/{rel_path}"
+                    dest_path = f"{resolved_sandbox_path}/{rel_path}"
                     parent_dirs.add(str(Path(dest_path).parent))
 
                     with open(item, "rb") as f:
@@ -1281,11 +1292,11 @@ class E2BSandbox(BaseSandbox):
             if not files_to_write:
                 return True
 
-            # 2. 一次性创建所有父目录
+            # 2. Create all parent directories in one shot
             dirs_cmd = " ".join(f'"{d}"' for d in sorted(parent_dirs))
             self._sandbox.commands.run(cmd=f"mkdir -p {dirs_cmd}", user="user")
 
-            # 3. 批量写入所有文件
+            # 3. Batch-write all files
             self._sandbox._filesystem.write_files(files_to_write, request_timeout=300.0)
 
             return True
@@ -1327,10 +1338,7 @@ class E2BSandbox(BaseSandbox):
             files = self.list_files(sandbox_path, recursive=True)
 
             # Resolve sandbox_path to absolute path for comparison
-            resolved_sandbox_path = sandbox_path
-            if not sandbox_path.startswith("/"):
-                work_dir = str(self.work_dir) if self.work_dir else "/home/user"
-                resolved_sandbox_path = f"{work_dir}/{sandbox_path}"
+            resolved_sandbox_path = self._resolve_path(sandbox_path)
 
             # Download all files
             for file_info in files:
@@ -1379,7 +1387,7 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
     """
 
     # E2B configuration fields
-    _work_dir: str = field(default="/home/user")
+    _work_dir: str = field(default=E2B_DEFAULT_WORK_DIR)
     template: str = field(default_factory=lambda: os.getenv("E2B_TEMPLATE", "base"))
     timeout: int = field(default_factory=lambda: int(os.getenv("E2B_TIMEOUT", "300")))
     api_key: str | None = field(default_factory=lambda: os.getenv("E2B_API_KEY"))
@@ -1391,6 +1399,45 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
     _keepalive_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _keepalive_stop_event: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
 
+    def _maybe_rebuild_for_http(
+        self,
+        e2b_sandbox_raw: E2BRawSandbox,
+        sandbox_config: E2BSandboxConfig,
+    ) -> E2BRawSandbox:
+        """Conditionally rebuild a Sandbox instance for HTTP (self-host).
+
+        If force_http is enabled and the raw sandbox has the required domain
+        and access token, rebuilds the instance with an HTTP ConnectionConfig.
+        Otherwise returns the original SDK instance unchanged (SaaS path).
+
+        Args:
+            e2b_sandbox_raw: Sandbox instance from connect() or beta_create()
+            sandbox_config: Sandbox configuration with force_http flag
+
+        Returns:
+            The original or rebuilt Sandbox instance
+        """
+        if not sandbox_config.force_http:
+            return e2b_sandbox_raw
+
+        domain = e2b_sandbox_raw.sandbox_domain
+        envd_token = getattr(e2b_sandbox_raw, "_envd_access_token", None)
+
+        if domain and envd_token:
+            return self._build_sandbox_with_connection_config(
+                sandbox_id=e2b_sandbox_raw.sandbox_id,
+                domain=domain,
+                envd_access_token=envd_token,
+                envd_version=e2b_sandbox_raw._envd_version,
+            )
+
+        logger.warning(
+            f"force_http=True but cannot rebuild sandbox {e2b_sandbox_raw.sandbox_id[:16]}...: "
+            f"domain={domain!r}, envd_token={'<set>' if envd_token else None}. "
+            "Keeping original instance."
+        )
+        return e2b_sandbox_raw
+
     def _build_sandbox_with_connection_config(
         self,
         sandbox_id: str,
@@ -1398,10 +1445,15 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
         envd_access_token: str,
         envd_version: Version,
     ) -> E2BRawSandbox:
-        """使用 ConnectionConfig 构建 HTTP Sandbox 实例（self-host 专用）。
+        """Build an HTTP Sandbox instance using ConnectionConfig (self-host only).
 
-        确保 SDK 内部所有组件（_envd_api, _filesystem._envd_api 等）
-        从初始化起就使用 HTTP URL 和 X-Access-Token header。
+        Ensures all internal SDK components (_envd_api, _filesystem._envd_api, etc.)
+        use the HTTP URL and X-Access-Token header from initialization.
+
+        Important: Must reset TransportWithLogger.singleton before creating a new
+        Sandbox instance. Otherwise the new instance reuses the httpcore.ConnectionPool
+        from beta_create/connect, whose cached HTTPS connections to the API server
+        interfere with HTTP streaming connections to envd, causing commands.run to hang.
 
         Args:
             sandbox_id: E2B sandbox ID
@@ -1414,6 +1466,7 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
         """
         assert Sandbox is not None, "E2B SDK not installed. Install it with: pip install e2b"
 
+        from e2b.api.client_sync import TransportWithLogger
         from e2b.connection_config import ConnectionConfig
 
         sandbox_url = f"http://49983-{sandbox_id}.{domain}"
@@ -1421,6 +1474,11 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
             sandbox_url=sandbox_url,
             extra_sandbox_headers={"X-Access-Token": envd_access_token},
         )
+
+        # Reset singleton transport to avoid reusing the connection pool from
+        # beta_create/connect. Cached connections in that pool cause subsequent
+        # HTTP streaming requests (e.g. commands.run) to hang indefinitely.
+        TransportWithLogger.singleton = None
 
         return Sandbox(  # type: ignore[call-arg]
             sandbox_id=sandbox_id,
@@ -1474,21 +1532,8 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
                 )
 
                 # Extract connection info from response and rebuild with ConnectionConfig
-                domain = e2b_sandbox_raw.sandbox_domain
-                envd_token = getattr(e2b_sandbox_raw, "_envd_access_token", None)
+                e2b_sandbox = self._maybe_rebuild_for_http(e2b_sandbox_raw, sandbox_config)
                 envd_ver = e2b_sandbox_raw._envd_version
-
-                # Self-host 需要 rebuild 为 HTTP + X-Access-Token；
-                # E2B cloud 直接用 SDK 返回的实例（已有正确的 HTTPS + 内置认证）
-                if sandbox_config.force_http and domain and envd_token:
-                    e2b_sandbox = self._build_sandbox_with_connection_config(
-                        sandbox_id=config_sandbox_id,
-                        domain=domain,
-                        envd_access_token=envd_token,
-                        envd_version=envd_ver,
-                    )
-                else:
-                    e2b_sandbox = e2b_sandbox_raw
 
                 sandbox = E2BSandbox(_work_dir=sandbox_config.work_dir)
                 sandbox.set_api_credentials(self.api_key, self.api_url)
@@ -1523,26 +1568,15 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
                     raise SandboxError("Sandbox ID not found in state, failed to restore.")
 
                 # Try to reconnect to existing E2B sandbox
-                # 与 Priority 1 一致：self-host 才需要 rebuild
+                # Same as Priority 1: only self-host needs rebuild
                 e2b_sandbox_raw = Sandbox.connect(
                     sandbox_id=sandbox.sandbox_id,
                     api_key=self.api_key,
                     api_url=self.api_url,
                 )
 
-                domain = e2b_sandbox_raw.sandbox_domain
-                envd_token = getattr(e2b_sandbox_raw, "_envd_access_token", None)
+                e2b_sandbox = self._maybe_rebuild_for_http(e2b_sandbox_raw, sandbox_config)
                 envd_ver = e2b_sandbox_raw._envd_version
-
-                if sandbox_config.force_http and domain and envd_token:
-                    e2b_sandbox = self._build_sandbox_with_connection_config(
-                        sandbox_id=sandbox.sandbox_id,
-                        domain=domain,
-                        envd_access_token=envd_token,
-                        envd_version=envd_ver,
-                    )
-                else:
-                    e2b_sandbox = e2b_sandbox_raw
 
                 sandbox.envd_version = str(envd_ver)
                 sandbox.sandbox = e2b_sandbox
@@ -1573,24 +1607,8 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
         created_sandbox_id = e2b_sandbox.sandbox_id
         envd_ver = e2b_sandbox._envd_version
 
-        # Step 2: Self-host 需要 rebuild 为 HTTP + X-Access-Token
-        if sandbox_config.force_http:
-            domain = getattr(e2b_sandbox.connection_config, "domain", None) or e2b_sandbox.sandbox_domain
-            envd_token = getattr(e2b_sandbox, "_envd_access_token", None)
-
-            if domain and envd_token:
-                e2b_sandbox = self._build_sandbox_with_connection_config(
-                    sandbox_id=created_sandbox_id,
-                    domain=domain,
-                    envd_access_token=envd_token,
-                    envd_version=envd_ver,
-                )
-            else:
-                logger.warning(
-                    f"force_http=True but cannot rebuild sandbox {created_sandbox_id[:16]}...: "
-                    f"domain={domain!r}, envd_token={'<set>' if envd_token else None}. "
-                    "Keeping original beta_create instance."
-                )
+        # Step 2: Self-host needs rebuild with HTTP + X-Access-Token
+        e2b_sandbox = self._maybe_rebuild_for_http(e2b_sandbox, sandbox_config)
 
         # Create our wrapper instance
         sandbox = E2BSandbox(_work_dir=sandbox_config.work_dir)
@@ -1623,7 +1641,7 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
     def _start_keepalive(self, sandbox_id: str | None, interval: int) -> None:
         """Start a daemon thread that periodically calls set_timeout.
 
-        防止 idle checker 在 Agent 长时间运行期间 pause sandbox。
+        Prevents the idle checker from pausing the sandbox during long agent runs.
         """
         if interval <= 0 or not sandbox_id or Sandbox is None:
             return
