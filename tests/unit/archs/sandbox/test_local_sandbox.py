@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from nexau.archs.sandbox.base_sandbox import (
+    BASH_TOOL_RESULTS_BASE_PATH,
     CodeLanguage,
     SandboxFileError,
     SandboxStatus,
@@ -565,6 +566,125 @@ class TestBackgroundExecution:
         # Cleanup
         sandbox.kill_background_task(pid1)
         sandbox.kill_background_task(pid2)
+
+
+class TestSaveOutputToTempFile:
+    def test_foreground_save_output_creates_files(self, sandbox):
+        """Test that save_output_to_temp_file creates command.txt, stdout.log, stderr.log in foreground mode."""
+        result = sandbox.execute_bash("echo 'hello save'", save_output_to_temp_file=True)
+        assert result.status == SandboxStatus.SUCCESS
+        assert "[Output saved to:" in result.stdout
+
+        # Extract temp dir path from stdout
+        marker = "[Output saved to: "
+        start = result.stdout.index(marker) + len(marker)
+        end = result.stdout.index("]", start)
+        temp_dir = result.stdout[start:end]
+
+        # Verify files exist and have correct content
+        assert Path(f"{temp_dir}/command.txt").exists()
+        assert Path(f"{temp_dir}/stdout.log").exists()
+        assert Path(f"{temp_dir}/stderr.log").exists()
+
+        assert Path(f"{temp_dir}/command.txt").read_text() == "echo 'hello save'"
+        assert "hello save" in Path(f"{temp_dir}/stdout.log").read_text()
+
+        # Cleanup
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_foreground_save_output_with_stderr(self, sandbox):
+        """Test that stderr is also saved when save_output_to_temp_file is enabled."""
+        result = sandbox.execute_bash("echo 'out' && echo 'err' >&2", save_output_to_temp_file=True)
+        assert "[Output saved to:" in result.stdout
+
+        marker = "[Output saved to: "
+        start = result.stdout.index(marker) + len(marker)
+        end = result.stdout.index("]", start)
+        temp_dir = result.stdout[start:end]
+
+        assert "out" in Path(f"{temp_dir}/stdout.log").read_text()
+        assert "err" in Path(f"{temp_dir}/stderr.log").read_text()
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_foreground_no_save_output_by_default(self, sandbox):
+        """Test that output is NOT saved to temp file when save_output_to_temp_file is False (default)."""
+        result = sandbox.execute_bash("echo 'no save'")
+        assert result.status == SandboxStatus.SUCCESS
+        assert "[Output saved to:" not in result.stdout
+
+    def test_foreground_save_output_with_failed_command(self, sandbox):
+        """Test save_output_to_temp_file works even when the command fails."""
+        result = sandbox.execute_bash("echo 'before fail' && exit 1", save_output_to_temp_file=True)
+        assert result.status == SandboxStatus.ERROR
+        assert "[Output saved to:" in result.stdout
+
+        marker = "[Output saved to: "
+        start = result.stdout.index(marker) + len(marker)
+        end = result.stdout.index("]", start)
+        temp_dir = result.stdout[start:end]
+
+        assert Path(f"{temp_dir}/stdout.log").exists()
+        assert "before fail" in Path(f"{temp_dir}/stdout.log").read_text()
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_background_save_output_creates_files(self, sandbox):
+        """Test that save_output_to_temp_file works in background mode."""
+        import time
+
+        result = sandbox.execute_bash("echo 'bg output'", background=True, save_output_to_temp_file=True)
+        assert result.status == SandboxStatus.SUCCESS
+        assert result.background_pid is not None
+        assert "Output will be saved to" in result.stdout
+
+        # Wait for background task to finish
+        time.sleep(1)
+
+        status = sandbox.get_background_task_status(result.background_pid)
+        assert status.status == SandboxStatus.SUCCESS
+        assert "[Output saved to:" in status.stdout
+
+        # Extract temp dir from status stdout
+        marker = "[Output saved to: "
+        start = status.stdout.index(marker) + len(marker)
+        end = status.stdout.index("]", start)
+        temp_dir = status.stdout[start:end]
+
+        assert Path(f"{temp_dir}/command.txt").exists()
+        assert Path(f"{temp_dir}/stdout.log").exists()
+        assert Path(f"{temp_dir}/stderr.log").exists()
+        assert "bg output" in Path(f"{temp_dir}/stdout.log").read_text()
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_background_no_save_output_by_default(self, sandbox):
+        """Test that background mode does NOT save to temp file by default."""
+        import time
+
+        result = sandbox.execute_bash("echo 'bg no save'", background=True)
+        assert result.status == SandboxStatus.SUCCESS
+        assert "Output will be saved to" not in result.stdout
+
+        time.sleep(0.5)
+        status = sandbox.get_background_task_status(result.background_pid)
+        assert "[Output saved to:" not in status.stdout
+
+        sandbox.kill_background_task(result.background_pid)
+
+    def test_save_output_temp_dir_under_expected_path(self, sandbox):
+        """Test that temp files are created under the expected base path."""
+        result = sandbox.execute_bash("echo 'path test'", save_output_to_temp_file=True)
+        assert "[Output saved to:" in result.stdout
+
+        marker = "[Output saved to: "
+        start = result.stdout.index(marker) + len(marker)
+        end = result.stdout.index("]", start)
+        temp_dir = result.stdout[start:end]
+
+        assert temp_dir.startswith(f"{BASH_TOOL_RESULTS_BASE_PATH}/")
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 class TestSandboxDict:

@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 from packaging.version import Version
 
 from .base_sandbox import (
+    BASH_TOOL_RESULTS_BASE_PATH,
     E2B_DEFAULT_WORK_DIR,
     BaseSandbox,
     BaseSandboxManager,
@@ -124,6 +125,51 @@ class E2BSandbox(BaseSandbox):
         self._api_key = api_key
         self._api_url = api_url
 
+    def _save_output_to_temp_file(
+        self,
+        command: str,
+        stdout: str,
+        stderr: str,
+        temp_dir: str | None = None,
+    ) -> str:
+        """
+        Save command output to temporary files in the sandbox.
+        If temp_dir is provided, overwrites existing files; otherwise creates new directory.
+
+        Args:
+            command: The command that was executed
+            stdout: Standard output content
+            stderr: Standard error content
+            temp_dir: Optional existing temp directory path (for streaming updates)
+
+        Returns:
+            The directory path where files were saved
+        """
+        if self._sandbox is None:
+            raise SandboxError("Sandbox not started. Call start() first.")
+
+        # Generate unique ID if temp_dir not provided
+        if temp_dir is None:
+            temp_dir = f"{BASH_TOOL_RESULTS_BASE_PATH}/{uuid.uuid4().hex[:8]}"
+
+        try:
+            # Create the directory if it doesn't exist
+            self._sandbox.commands.run(f"mkdir -p {temp_dir}")
+
+            # Write/overwrite command to command.txt
+            self._sandbox._filesystem.write(f"{temp_dir}/command.txt", command)
+
+            # Write/overwrite stdout to stdout.log
+            self._sandbox._filesystem.write(f"{temp_dir}/stdout.log", stdout)
+
+            # Write/overwrite stderr to stderr.log
+            self._sandbox._filesystem.write(f"{temp_dir}/stderr.log", stderr)
+
+            return temp_dir
+        except Exception as e:
+            logger.error(f"Failed to save output to temp file: {e}")
+            raise SandboxError(f"Failed to save output to temp file: {e}")
+
     def _resolve_path(self, path: str, cwd: str | None = None) -> str:
         """Resolve a relative path to an absolute path.
 
@@ -149,6 +195,7 @@ class E2BSandbox(BaseSandbox):
         user: str | None = None,
         envs: dict[str, str] | None = None,
         background: bool = False,
+        save_output_to_temp_file: bool = False,
     ) -> CommandResult:
         """
         Execute a bash command in the E2B sandbox.
@@ -160,6 +207,7 @@ class E2BSandbox(BaseSandbox):
             user: Optional user to run the command as
             envs: Optional environment variables
             background: Optional flag to run the command in the background
+            save_output_to_temp_file: Optional flag to save the output (stdout and stderr) to a temporary file
 
         Returns:
             CommandResult containing execution results
@@ -186,6 +234,11 @@ class E2BSandbox(BaseSandbox):
 
         try:
             if background:
+                # Generate temp directory for streaming if requested
+                temp_dir = None
+                if save_output_to_temp_file:
+                    temp_dir = f"{BASH_TOOL_RESULTS_BASE_PATH}/{uuid.uuid4().hex[:8]}"
+
                 # Background mode: use E2B SDK's background=True to get a CommandHandle
                 handle = self._sandbox.commands.run(
                     cmd=command,
@@ -208,6 +261,7 @@ class E2BSandbox(BaseSandbox):
                     "stdout": "",
                     "stderr": "",
                     "error": None,
+                    "temp_dir": temp_dir,
                 }
 
                 def _consume_events(h: Any, info: dict[str, Any]) -> None:
@@ -217,6 +271,18 @@ class E2BSandbox(BaseSandbox):
                                 info["stdout"] += stdout_chunk
                             if stderr_chunk is not None:
                                 info["stderr"] += stderr_chunk
+
+                            # Overwrite log files with complete output if streaming enabled
+                            if save_output_to_temp_file:
+                                try:
+                                    self._save_output_to_temp_file(
+                                        info["command"],
+                                        info["stdout"],
+                                        info["stderr"],
+                                        temp_dir=temp_dir,
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Failed to update streaming log files: {e}")
                     except StopIteration:
                         pass
                     except Exception as exc:
@@ -241,9 +307,14 @@ class E2BSandbox(BaseSandbox):
 
                 self._background_tasks[bg_pid] = task_info
                 duration_ms = int((time.time() - start_time) * 1000)
+
+                stdout_msg = f"Background task started (pid: {bg_pid})"
+                if save_output_to_temp_file:
+                    stdout_msg += f"\nOutput will be saved to {BASH_TOOL_RESULTS_BASE_PATH}/{{unique_id}}/ when task completes"
+
                 return CommandResult(
                     status=SandboxStatus.SUCCESS,
-                    stdout=f"Background task started (pid: {bg_pid})",
+                    stdout=stdout_msg,
                     stderr="",
                     exit_code=0,
                     duration_ms=duration_ms,
@@ -298,15 +369,28 @@ class E2BSandbox(BaseSandbox):
             stderr = result.stderr or ""
             exit_code = result.exit_code
 
+            # Save output to temp file if requested
+            temp_file_path = None
+            if save_output_to_temp_file:
+                try:
+                    temp_file_path = self._save_output_to_temp_file(command, stdout, stderr)
+                except Exception as e:
+                    logger.error(f"Failed to save output to temp file: {e}")
+
             stdout_truncated = len(stdout) > max_output_size
             stderr_truncated = len(stderr) > max_output_size
 
             original_stdout_len = len(stdout) if stdout_truncated else None
             original_stderr_len = len(stderr) if stderr_truncated else None
 
+            # Append temp file path info to stdout if saved
+            stdout_output = stdout[:max_output_size]
+            if temp_file_path:
+                stdout_output += f"\n\n[Output saved to: {temp_file_path}]"
+
             return CommandResult(
                 status=SandboxStatus.SUCCESS if exit_code == 0 else SandboxStatus.ERROR,
-                stdout=stdout[:max_output_size],
+                stdout=stdout_output,
                 stderr=stderr[:max_output_size],
                 exit_code=exit_code,
                 duration_ms=duration_ms,
@@ -336,17 +420,35 @@ class E2BSandbox(BaseSandbox):
             stderr = getattr(e, "stderr", "") or ""
             exit_code = getattr(e, "exit_code", -1)
 
+            # Save output to temp file if requested
+            temp_file_path = None
+            if save_output_to_temp_file:
+                try:
+                    temp_file_path = self._save_output_to_temp_file(command, stdout, stderr)
+                except Exception as save_err:
+                    logger.error(f"Failed to save output to temp file: {save_err}")
+
             stdout_truncated = len(stdout) > max_output_size
             stderr_truncated = len(stderr) > max_output_size
 
+            original_stdout_len = len(stdout) if stdout_truncated else None
+            original_stderr_len = len(stderr) if stderr_truncated else None
+
+            # Append temp file path info to stdout if saved
+            stdout_output = stdout[:max_output_size]
+            if temp_file_path:
+                stdout_output += f"\n\n[Output saved to: {temp_file_path}]"
+
             return CommandResult(
                 status=SandboxStatus.ERROR,
-                stdout=stdout[:max_output_size],
+                stdout=stdout_output,
                 stderr=stderr[:max_output_size],
                 exit_code=exit_code,
                 duration_ms=duration_ms,
                 error=f"Command failed with exit code {exit_code}",
                 truncated=stdout_truncated or stderr_truncated,
+                original_stdout_length=original_stdout_len,
+                original_stderr_length=original_stderr_len,
             )
 
         except Exception as e:
@@ -391,12 +493,19 @@ class E2BSandbox(BaseSandbox):
 
         stdout = task_info.get("stdout", "") or ""
         stderr = task_info.get("stderr", "") or ""
+        temp_file_path = task_info.get("temp_dir")
 
         if task_info["finished"]:
             exit_code = task_info["exit_code"]
+
+            # Append temp file path info to stdout if saved
+            stdout_output = stdout[:max_output_size]
+            if temp_file_path:
+                stdout_output += f"\n\n[Output saved to: {temp_file_path}]"
+
             return CommandResult(
                 status=SandboxStatus.SUCCESS if exit_code == 0 else SandboxStatus.ERROR,
-                stdout=stdout[:max_output_size],
+                stdout=stdout_output,
                 stderr=stderr[:max_output_size],
                 exit_code=exit_code,
                 duration_ms=duration_ms,

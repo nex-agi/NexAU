@@ -39,6 +39,8 @@ from nexau.core.utils import run_async_function_sync
 
 logger = logging.getLogger(__name__)
 
+BASH_TOOL_RESULTS_BASE_PATH = "/tmp/nexau_bash_tool_results"
+
 
 # =============================================================================
 # Typed Sandbox Configuration
@@ -296,6 +298,7 @@ class BaseSandbox(ABC):
         user: str | None = None,
         envs: dict[str, str] | None = None,
         background: bool = False,
+        save_output_to_temp_file: bool = False,
     ) -> CommandResult:
         """
         Execute a bash command in the sandbox.
@@ -307,6 +310,7 @@ class BaseSandbox(ABC):
             user: Optional user to run the command as (not available in LocalSandbox)
             envs: Optional environment variables
             background: Optional flag to run the command in the background
+            save_output_to_temp_file: Optional flag to save the output (stdout and stderr) to a temporary file
 
         Returns:
             CommandResult containing execution results

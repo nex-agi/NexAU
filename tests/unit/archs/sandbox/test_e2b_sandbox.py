@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from nexau.archs.sandbox.base_sandbox import (
+    BASH_TOOL_RESULTS_BASE_PATH,
     CodeLanguage,
     E2BSandboxConfig,
     SandboxError,
@@ -469,6 +470,127 @@ class TestE2BBackgroundExecution:
         # Cleanup
         e2b_sandbox.kill_background_task(pid1)
         e2b_sandbox.kill_background_task(pid2)
+
+
+class TestE2BSaveOutputToTempFile:
+    def test_foreground_save_output_creates_files(self, e2b_sandbox):
+        """Test that save_output_to_temp_file creates command.txt, stdout.log, stderr.log in the sandbox."""
+        result = e2b_sandbox.execute_bash("echo 'hello save'", save_output_to_temp_file=True)
+        assert result.status == SandboxStatus.SUCCESS
+        assert "[Output saved to:" in result.stdout
+
+        # Extract temp dir path from stdout
+        marker = "[Output saved to: "
+        start = result.stdout.index(marker) + len(marker)
+        end = result.stdout.index("]", start)
+        temp_dir = result.stdout[start:end]
+
+        # Verify files exist in the sandbox
+        assert e2b_sandbox.file_exists(f"{temp_dir}/command.txt")
+        assert e2b_sandbox.file_exists(f"{temp_dir}/stdout.log")
+        assert e2b_sandbox.file_exists(f"{temp_dir}/stderr.log")
+
+        # Verify content
+        cmd_content = e2b_sandbox.read_file(f"{temp_dir}/command.txt")
+        assert cmd_content.status == SandboxStatus.SUCCESS
+        assert cmd_content.content == "echo 'hello save'"
+
+        stdout_content = e2b_sandbox.read_file(f"{temp_dir}/stdout.log")
+        assert stdout_content.status == SandboxStatus.SUCCESS
+        assert "hello save" in stdout_content.content
+
+    def test_foreground_save_output_with_stderr(self, e2b_sandbox):
+        """Test that stderr is also saved when save_output_to_temp_file is enabled."""
+        result = e2b_sandbox.execute_bash("echo 'out' && echo 'err' >&2", save_output_to_temp_file=True)
+        assert "[Output saved to:" in result.stdout
+
+        marker = "[Output saved to: "
+        start = result.stdout.index(marker) + len(marker)
+        end = result.stdout.index("]", start)
+        temp_dir = result.stdout[start:end]
+
+        stdout_content = e2b_sandbox.read_file(f"{temp_dir}/stdout.log")
+        assert "out" in stdout_content.content
+
+        stderr_content = e2b_sandbox.read_file(f"{temp_dir}/stderr.log")
+        assert "err" in stderr_content.content
+
+    def test_foreground_no_save_output_by_default(self, e2b_sandbox):
+        """Test that output is NOT saved to temp file when save_output_to_temp_file is False (default)."""
+        result = e2b_sandbox.execute_bash("echo 'no save'")
+        assert result.status == SandboxStatus.SUCCESS
+        assert "[Output saved to:" not in result.stdout
+
+    def test_foreground_save_output_with_failed_command(self, e2b_sandbox):
+        """Test save_output_to_temp_file works even when the command fails."""
+        result = e2b_sandbox.execute_bash("echo 'before fail' && exit 1", save_output_to_temp_file=True)
+        assert result.status == SandboxStatus.ERROR
+        assert "[Output saved to:" in result.stdout
+
+        marker = "[Output saved to: "
+        start = result.stdout.index(marker) + len(marker)
+        end = result.stdout.index("]", start)
+        temp_dir = result.stdout[start:end]
+
+        stdout_content = e2b_sandbox.read_file(f"{temp_dir}/stdout.log")
+        assert stdout_content.status == SandboxStatus.SUCCESS
+        assert "before fail" in stdout_content.content
+
+    def test_background_save_output_creates_files(self, e2b_sandbox):
+        """Test that save_output_to_temp_file works in background mode."""
+        import time
+
+        result = e2b_sandbox.execute_bash("echo 'bg output'", background=True, save_output_to_temp_file=True)
+        assert result.status == SandboxStatus.SUCCESS
+        assert result.background_pid is not None
+        assert "Output will be saved to" in result.stdout
+
+        # Wait for background task to finish
+        time.sleep(5)
+
+        status = e2b_sandbox.get_background_task_status(result.background_pid)
+        assert status.status == SandboxStatus.SUCCESS
+        assert "[Output saved to:" in status.stdout
+
+        # Extract temp dir from status stdout
+        marker = "[Output saved to: "
+        start = status.stdout.index(marker) + len(marker)
+        end = status.stdout.index("]", start)
+        temp_dir = status.stdout[start:end]
+
+        # Verify files exist in the sandbox
+        assert e2b_sandbox.file_exists(f"{temp_dir}/command.txt")
+        assert e2b_sandbox.file_exists(f"{temp_dir}/stdout.log")
+        assert e2b_sandbox.file_exists(f"{temp_dir}/stderr.log")
+
+        stdout_content = e2b_sandbox.read_file(f"{temp_dir}/stdout.log")
+        assert "bg output" in stdout_content.content
+
+    def test_background_no_save_output_by_default(self, e2b_sandbox):
+        """Test that background mode does NOT save to temp file by default."""
+        import time
+
+        result = e2b_sandbox.execute_bash("echo 'bg no save'", background=True)
+        assert result.status == SandboxStatus.SUCCESS
+        assert "Output will be saved to" not in result.stdout
+
+        time.sleep(2)
+        status = e2b_sandbox.get_background_task_status(result.background_pid)
+        assert "[Output saved to:" not in status.stdout
+
+        e2b_sandbox.kill_background_task(result.background_pid)
+
+    def test_save_output_temp_dir_under_expected_path(self, e2b_sandbox):
+        """Test that temp files are created under the expected base path in the sandbox."""
+        result = e2b_sandbox.execute_bash("echo 'path test'", save_output_to_temp_file=True)
+        assert "[Output saved to:" in result.stdout
+
+        marker = "[Output saved to: "
+        start = result.stdout.index(marker) + len(marker)
+        end = result.stdout.index("]", start)
+        temp_dir = result.stdout[start:end]
+
+        assert temp_dir.startswith(f"{BASH_TOOL_RESULTS_BASE_PATH}/")
 
 
 class TestE2BEdgeCases:

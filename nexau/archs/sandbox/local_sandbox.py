@@ -28,12 +28,14 @@ import stat as stat_module
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, override
 
 from .base_sandbox import (
+    BASH_TOOL_RESULTS_BASE_PATH,
     BaseSandbox,
     BaseSandboxManager,
     CodeExecutionResult,
@@ -70,6 +72,48 @@ class LocalSandbox(BaseSandbox):
         """
         Path(self.work_dir).mkdir(parents=True, exist_ok=True)
         return Path(self.work_dir)
+
+    def _save_output_to_temp_file(
+        self,
+        command: str,
+        stdout: str,
+        stderr: str,
+        temp_dir: str | None = None,
+    ) -> str:
+        """
+        Save command output to temporary files in the local filesystem.
+        If temp_dir is provided, overwrites existing files; otherwise creates new directory.
+
+        Args:
+            command: The command that was executed
+            stdout: Standard output content
+            stderr: Standard error content
+            temp_dir: Optional existing temp directory path (for streaming updates)
+
+        Returns:
+            The directory path where files were saved
+        """
+        # Generate unique ID if temp_dir not provided
+        if temp_dir is None:
+            temp_dir = f"{BASH_TOOL_RESULTS_BASE_PATH}/{uuid.uuid4().hex[:8]}"
+
+        try:
+            # Create the directory if it doesn't exist
+            Path(temp_dir).mkdir(parents=True, exist_ok=True)
+
+            # Write/overwrite command to command.txt
+            Path(f"{temp_dir}/command.txt").write_text(command, encoding="utf-8")
+
+            # Write/overwrite stdout to stdout.log
+            Path(f"{temp_dir}/stdout.log").write_text(stdout, encoding="utf-8")
+
+            # Write/overwrite stderr to stderr.log
+            Path(f"{temp_dir}/stderr.log").write_text(stderr, encoding="utf-8")
+
+            return temp_dir
+        except Exception as e:
+            logger.error(f"Failed to save output to temp file: {e}")
+            raise Exception(f"Failed to save output to temp file: {e}")
 
     def _resolve_path(self, path: str) -> Path:
         """
@@ -117,6 +161,7 @@ class LocalSandbox(BaseSandbox):
         user: str | None = None,
         envs: dict[str, str] | None = None,
         background: bool = False,
+        save_output_to_temp_file: bool = False,
     ) -> CommandResult:
         """
         Execute a bash command in the sandbox.
@@ -128,6 +173,7 @@ class LocalSandbox(BaseSandbox):
             user: Optional user to run the command as (not available in LocalSandbox)
             envs: Optional environment variables
             background: Optional flag to run the command in the background
+            save_output_to_temp_file: Optional flag to save the output (stdout and stderr) to a temporary file
 
         Returns:
             CommandResult containing execution results
@@ -146,6 +192,11 @@ class LocalSandbox(BaseSandbox):
 
         try:
             if background:
+                # Generate temp directory for streaming if requested
+                temp_dir = None
+                if save_output_to_temp_file:
+                    temp_dir = f"{BASH_TOOL_RESULTS_BASE_PATH}/{uuid.uuid4().hex[:8]}"
+
                 # Background mode: start process without waiting
                 process = subprocess.Popen(
                     command,
@@ -167,6 +218,7 @@ class LocalSandbox(BaseSandbox):
                     "stdout": "",
                     "stderr": "",
                     "error": None,
+                    "temp_dir": temp_dir,
                 }
 
                 def _consume_output(proc: subprocess.Popen[str], info: dict[str, Any]) -> None:
@@ -174,6 +226,17 @@ class LocalSandbox(BaseSandbox):
                         if proc.stdout:
                             for line in proc.stdout:
                                 info["stdout"] += line
+                                # Overwrite log files with complete output if streaming enabled
+                                if save_output_to_temp_file and info.get("temp_dir"):
+                                    try:
+                                        self._save_output_to_temp_file(
+                                            info["command"],
+                                            info["stdout"],
+                                            info["stderr"],
+                                            temp_dir=info["temp_dir"],
+                                        )
+                                    except Exception as e:
+                                        logger.error(f"Failed to update streaming log files: {e}")
                     except (ValueError, OSError):
                         pass
 
@@ -182,6 +245,17 @@ class LocalSandbox(BaseSandbox):
                         if proc.stderr:
                             for line in proc.stderr:
                                 info["stderr"] += line
+                                # Overwrite log files with complete output if streaming enabled
+                                if save_output_to_temp_file and info.get("temp_dir"):
+                                    try:
+                                        self._save_output_to_temp_file(
+                                            info["command"],
+                                            info["stdout"],
+                                            info["stderr"],
+                                            temp_dir=info["temp_dir"],
+                                        )
+                                    except Exception as e:
+                                        logger.error(f"Failed to update streaming log files: {e}")
                     except (ValueError, OSError):
                         pass
 
@@ -208,9 +282,14 @@ class LocalSandbox(BaseSandbox):
 
                 self._background_tasks[bg_pid] = task_info
                 duration_ms = int((time.time() - start_time) * 1000)
+
+                stdout_msg = f"Background task started (pid: {bg_pid})"
+                if save_output_to_temp_file:
+                    stdout_msg += f"\nOutput will be saved to {temp_dir}/ when task completes"
+
                 return CommandResult(
                     status=SandboxStatus.SUCCESS,
-                    stdout=f"Background task started (pid: {bg_pid})",
+                    stdout=stdout_msg,
                     stderr="",
                     exit_code=0,
                     duration_ms=duration_ms,
@@ -247,15 +326,28 @@ class LocalSandbox(BaseSandbox):
 
             duration_ms = int((time.time() - start_time) * 1000)
 
+            # Save output to temp file if requested
+            temp_file_path = None
+            if save_output_to_temp_file:
+                try:
+                    temp_file_path = self._save_output_to_temp_file(command, stdout or "", stderr or "")
+                except Exception as e:
+                    logger.error(f"Failed to save output to temp file: {e}")
+
             stdout_truncated = len(stdout) > max_output_size if stdout else False
             stderr_truncated = len(stderr) > max_output_size if stderr else False
 
             original_stdout_len = len(stdout) if stdout_truncated else None
             original_stderr_len = len(stderr) if stderr_truncated else None
 
+            # Append temp file path info to stdout if saved
+            stdout_output = stdout[:max_output_size] if stdout else ""
+            if temp_file_path:
+                stdout_output += f"\n\n[Output saved to: {temp_file_path}]"
+
             return CommandResult(
                 status=SandboxStatus.SUCCESS if process.returncode == 0 else SandboxStatus.ERROR,
-                stdout=stdout[:max_output_size] if stdout else "",
+                stdout=stdout_output,
                 stderr=stderr[:max_output_size] if stderr else "",
                 exit_code=process.returncode,
                 duration_ms=duration_ms,
@@ -303,12 +395,19 @@ class LocalSandbox(BaseSandbox):
 
         stdout = task_info.get("stdout", "") or ""
         stderr = task_info.get("stderr", "") or ""
+        temp_file_path = task_info.get("temp_dir")
 
         if task_info["finished"]:
             exit_code = task_info["exit_code"]
+
+            # Append temp file path info to stdout if saved
+            stdout_output = stdout[:max_output_size]
+            if temp_file_path:
+                stdout_output += f"\n\n[Output saved to: {temp_file_path}]"
+
             return CommandResult(
                 status=SandboxStatus.SUCCESS if exit_code == 0 else SandboxStatus.ERROR,
-                stdout=stdout[:max_output_size],
+                stdout=stdout_output,
                 stderr=stderr[:max_output_size],
                 exit_code=exit_code,
                 duration_ms=duration_ms,
