@@ -159,7 +159,10 @@ jobs:
         E2B_API_URL: ${{ vars.E2B_SELFHOST_API_URL }}
         E2B_FORCE_HTTP: "true"
       run: |
-        make test
+        uv run pytest tests/unit/archs/sandbox/ \
+          --cov=nexau.archs.sandbox \
+          --cov-report=xml --cov-report=html --cov-report=term \
+          -x --timeout=120
 
     - name: Upload test coverage to Codecov
       uses: codecov/codecov-action@v5

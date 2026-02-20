@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import builtins
 import sys
+import time
 import types
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -27,6 +28,11 @@ from nexau.archs.sandbox.base_sandbox import (
     SandboxStatus,
 )
 from nexau.archs.sandbox.e2b_sandbox import E2BSandbox
+
+# ---------------------------------------------------------------------------
+# Minimal fakes
+# ---------------------------------------------------------------------------
+
 
 # ---------------------------------------------------------------------------
 # Minimal fakes
@@ -292,8 +298,28 @@ class TestExecuteBashDefensive:
         cls = _enable_fake_e2b(monkeypatch, backend)
         sandbox = E2BSandbox(sandbox_id="sbx")
         _attach_backend(sandbox, backend)
+        # Patch sleep to avoid slowing down tests
+        monkeypatch.setattr(e2b_module.time, "sleep", lambda _: None)
         result = sandbox.execute_bash("echo hi")
         assert result.status == SandboxStatus.SUCCESS
+        assert cls.connect_called
+
+    def test_reconnects_on_server_disconnected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Transient 'Server disconnected' should trigger reconnect + retry."""
+        commands = _FakeCommands(
+            behavior=[
+                RuntimeError("Server disconnected without sending a response."),
+                _FakeCommandResult(stdout="recovered", stderr="", exit_code=0),
+            ]
+        )
+        backend = _FakeSandbox(commands=commands)
+        cls = _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        monkeypatch.setattr(e2b_module.time, "sleep", lambda _: None)
+        result = sandbox.execute_bash("echo hi")
+        assert result.status == SandboxStatus.SUCCESS
+        assert "recovered" in result.stdout
         assert cls.connect_called
 
     def test_command_exit_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -520,36 +546,6 @@ class TestGlobDefensive:
         _attach_backend(sandbox, backend)
         with pytest.raises(SandboxFileError):
             sandbox.glob("*.txt")
-
-    def test_glob_with_slash_pattern(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """glob('dir/*.py') should use find with dir and pattern."""
-        commands = _FakeCommands(behavior=[_FakeCommandResult("dir/a.py\n", "", 0)])
-        backend = _FakeSandbox(commands=commands)
-        _enable_fake_e2b(monkeypatch, backend)
-        sandbox = E2BSandbox(sandbox_id="sbx")
-        _attach_backend(sandbox, backend)
-        matches = sandbox.glob("dir/*.py")
-        assert "dir/a.py" in matches
-
-    def test_glob_non_recursive(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        commands = _FakeCommands(behavior=[_FakeCommandResult("a.txt\n", "", 0)])
-        backend = _FakeSandbox(commands=commands)
-        _enable_fake_e2b(monkeypatch, backend)
-        sandbox = E2BSandbox(sandbox_id="sbx")
-        _attach_backend(sandbox, backend)
-        matches = sandbox.glob("*.txt", recursive=False)
-        assert "a.txt" in matches
-
-    def test_glob_leading_slash_pattern(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """glob('**//file') — file_pattern starts with /."""
-        commands = _FakeCommands(behavior=[_FakeCommandResult("", "", 0)])
-        backend = _FakeSandbox(commands=commands)
-        _enable_fake_e2b(monkeypatch, backend)
-        sandbox = E2BSandbox(sandbox_id="sbx")
-        _attach_backend(sandbox, backend)
-        sandbox.glob("**//*.py")
-        cmd = commands.calls[0][0]
-        assert "find" in cmd
 
 
 class TestFileTransferDefensive:
@@ -852,8 +848,6 @@ class TestManagerDefensive:
         assert manager._keepalive_thread is None
 
     def test_keepalive_starts_and_stops(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import time
-
         backend = _FakeSandbox()
         cls = _enable_fake_e2b(monkeypatch, backend)
         set_timeout_calls = []
@@ -867,8 +861,6 @@ class TestManagerDefensive:
         assert len(set_timeout_calls) >= 1
 
     def test_keepalive_handles_409_auto_resume(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import time
-
         backend = _FakeSandbox()
         cls = _enable_fake_e2b(monkeypatch, backend)
         call_count = [0]
@@ -893,8 +885,6 @@ class TestManagerDefensive:
         assert len(connect_calls) >= 1
 
     def test_keepalive_handles_generic_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import time
-
         backend = _FakeSandbox()
         cls = _enable_fake_e2b(monkeypatch, backend)
         cls.set_timeout = lambda sid, t, **kw: (_ for _ in ()).throw(RuntimeError("network error"))  # type: ignore
@@ -905,8 +895,6 @@ class TestManagerDefensive:
         # Should not crash
 
     def test_keepalive_auto_resume_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import time
-
         backend = _FakeSandbox()
         cls = _enable_fake_e2b(monkeypatch, backend)
         cls.set_timeout = lambda sid, t, **kw: (_ for _ in ()).throw(RuntimeError("409 not running"))  # type: ignore

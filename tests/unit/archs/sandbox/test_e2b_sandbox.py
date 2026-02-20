@@ -1,6 +1,7 @@
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -20,21 +21,83 @@ from nexau.archs.session.orm import InMemoryDatabaseEngine
 pytestmark = pytest.mark.skipif(not os.getenv("E2B_API_KEY"), reason="E2B_API_KEY not set, skipping E2B tests")
 
 
-@pytest.fixture
+def _create_sandbox() -> tuple[E2BSandboxManager, E2BSandbox]:
+    """Create a fresh E2B sandbox with retry on transient failures."""
+    max_attempts = 3
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        manager = E2BSandboxManager()
+        try:
+            sandbox = manager.start(
+                session_manager=SessionManager(engine=InMemoryDatabaseEngine.get_shared_instance()),
+                user_id="test_user",
+                session_id=f"test_session_{attempt}",
+                sandbox_config=E2BSandboxConfig(),
+            )
+            # Smoke-test: retry the healthcheck a few times within the same sandbox
+            # because self-host envd may need a moment to stabilize after creation.
+            for _hc in range(5):
+                result = sandbox.execute_bash("echo __healthcheck__", timeout=15000)
+                if result.status == SandboxStatus.SUCCESS and "__healthcheck__" in result.stdout:
+                    return manager, sandbox
+                time.sleep(2)
+            last_exc = RuntimeError(f"Healthcheck failed after retries: {result.error or result.stderr}")
+        except Exception as exc:
+            last_exc = exc
+        try:
+            manager.stop()
+        except Exception:
+            pass
+        if attempt < max_attempts:
+            wait = attempt * 3
+            print(f"[e2b_sandbox fixture] attempt {attempt}/{max_attempts} failed ({last_exc}), retrying in {wait}s …")
+            time.sleep(wait)
+    raise last_exc or RuntimeError("Failed to create sandbox")
+
+
+@pytest.fixture(scope="class")
 def e2b_sandbox():
-    """Create a real E2B sandbox for testing with proper cleanup."""
-    # Note: In real usage, E2BSandboxManager.start() would be called with session_manager, user_id, session_id, sandbox_config
-    # For testing, we create a sandbox instance directly
-    sandbox_manager = E2BSandboxManager()
-    sandbox = sandbox_manager.start(
-        session_manager=SessionManager(engine=InMemoryDatabaseEngine.get_shared_instance()),
-        user_id="test_user",
-        session_id="test_session",
-        sandbox_config=E2BSandboxConfig(),
-    )
+    """Create a real E2B sandbox shared across tests in a class.
+
+    Using class scope so each test class gets its own sandbox. This avoids
+    sandbox timeout on self-hosted E2B (default 300s) while still reducing
+    creation overhead vs per-test scope.  The work directory is cleaned
+    between tests via the autouse ``_clean_workdir`` fixture below.
+
+    Includes retry logic: if the sandbox fails the initial healthcheck
+    (common on self-hosted E2B due to transient connection resets), it
+    tears down and retries up to 3 times.
+    """
+    manager, sandbox = _create_sandbox()
     yield sandbox
-    sandbox_manager.stop()
-    # Cleanup would be handled by E2BSandboxManager.stop() in real usage
+    manager.stop()
+
+
+@pytest.fixture(autouse=True)
+def _clean_workdir(request):
+    """Reset the sandbox work directory before each test to avoid cross-test pollution.
+
+    Also adds a small delay between tests to reduce request density on
+    self-hosted E2B instances and avoid connection-reset errors.
+
+    Only runs for tests that actually use the shared e2b_sandbox fixture (skipped for
+    Manager tests that manage their own sandbox lifecycle).
+    """
+    if "e2b_sandbox" not in request.fixturenames:
+        yield
+        return
+    sandbox = request.getfixturevalue("e2b_sandbox")
+    # Retry cleanup — transient disconnects should not poison the whole class
+    for attempt in range(3):
+        try:
+            sandbox.execute_bash("rm -rf /home/user/* /home/user/.* 2>/dev/null || true", timeout=15000)
+            break
+        except Exception:
+            if attempt < 2:
+                time.sleep(1)
+    yield
+    # Delay between tests to let self-host envd recover
+    time.sleep(0.5)
 
 
 @pytest.fixture
@@ -324,6 +387,132 @@ class TestE2BGlobPattern:
         matches = e2b_sandbox.glob("**/*.txt", recursive=True)
         assert len(matches) >= 3
 
+    def test_glob_absolute_path_with_doublestar(self, e2b_sandbox):
+        """Absolute path + ** should search the correct directory."""
+        e2b_sandbox.write_file("absglob/foo.py", "")
+        e2b_sandbox.write_file("absglob/sub/bar.py", "")
+        work_dir = str(e2b_sandbox.work_dir)
+        matches = e2b_sandbox.glob(f"{work_dir}/absglob/**/*.py")
+        assert len(matches) >= 2
+        assert any("foo.py" in m for m in matches)
+        assert any("bar.py" in m for m in matches)
+
+    def test_glob_absolute_path_no_doublestar(self, e2b_sandbox):
+        """Absolute path without ** should find files in that directory."""
+        e2b_sandbox.write_file("absdir/hello.md", "")
+        work_dir = str(e2b_sandbox.work_dir)
+        matches = e2b_sandbox.glob(f"{work_dir}/absdir/*.md")
+        assert any("hello.md" in m for m in matches)
+
+    def test_glob_bare_doublestar(self, e2b_sandbox):
+        """** alone should find all files recursively."""
+        e2b_sandbox.write_file("bareglob_marker.txt", "")
+        matches = e2b_sandbox.glob("**")
+        assert len(matches) >= 1
+        assert any("bareglob_marker.txt" in m for m in matches)
+
+    def test_glob_doublestar_trailing_no_slash(self, e2b_sandbox):
+        """/path/** (no trailing slash) should find all files under path."""
+        e2b_sandbox.write_file("tdir/a.txt", "")
+        e2b_sandbox.write_file("tdir/sub/b.txt", "")
+        work_dir = str(e2b_sandbox.work_dir)
+        matches = e2b_sandbox.glob(f"{work_dir}/tdir/**")
+        assert len(matches) >= 2
+
+    def test_glob_relative_doublestar(self, e2b_sandbox):
+        """src/**/*.ts style relative pattern."""
+        e2b_sandbox.write_file("srcg/index.ts", "")
+        e2b_sandbox.write_file("srcg/lib/util.ts", "")
+        matches = e2b_sandbox.glob("srcg/**/*.ts")
+        assert len(matches) >= 2
+        assert any("index.ts" in m for m in matches)
+        assert any("util.ts" in m for m in matches)
+
+    def test_glob_no_matches_returns_empty(self, e2b_sandbox):
+        """Pattern that matches nothing should return empty list, not raise."""
+        matches = e2b_sandbox.glob("**/*.nonexistent_extension_xyz")
+        assert matches == []
+
+    def test_glob_results_are_sorted(self, e2b_sandbox):
+        """Results should be returned in sorted order."""
+        e2b_sandbox.write_file("sortglob/c.py", "")
+        e2b_sandbox.write_file("sortglob/a.py", "")
+        e2b_sandbox.write_file("sortglob/b.py", "")
+        matches = e2b_sandbox.glob("sortglob/*.py")
+        filenames = [m.split("/")[-1] for m in matches]
+        assert filenames == sorted(filenames)
+
+    def test_glob_wildcard_in_dir_finds_directories(self, e2b_sandbox):
+        """Test that a wildcard in the directory portion of a pattern finds matching directories."""
+        e2b_sandbox.write_file("testlibs/python3.12/site-packages/.keep", "")
+        e2b_sandbox.write_file("testlibs/python3.11/site-packages/.keep", "")
+
+        # Trailing slash → directory search via `find -type d -path`
+        matches = e2b_sandbox.glob("testlibs/python*/site-packages/", recursive=True)
+        assert len(matches) >= 2
+        assert any("python3.12" in m for m in matches)
+        assert any("python3.11" in m for m in matches)
+        assert all("site-packages" in m for m in matches)
+
+    def test_glob_wildcard_in_dir_finds_files(self, e2b_sandbox):
+        """Test that a wildcard in the directory portion of a pattern finds matching files."""
+        e2b_sandbox.write_file("testlibs/python3.12/site-packages/requests.py", "")
+        e2b_sandbox.write_file("testlibs/python3.11/site-packages/flask.py", "")
+
+        # No trailing slash, file pattern at end → `find -path`
+        matches = e2b_sandbox.glob("testlibs/python*/site-packages/*.py", recursive=True)
+        assert len(matches) >= 2
+        assert any("requests.py" in m for m in matches)
+        assert any("flask.py" in m for m in matches)
+
+    def test_glob_absolute_path_wildcard_in_dir(self, e2b_sandbox):
+        """Test absolute pattern with wildcard in directory component.
+
+        Previously this raised 'directory does not exist' because bash tried to expand the glob.
+        Now find handles the wildcard itself.
+        """
+        work_dir = str(e2b_sandbox.work_dir)
+        e2b_sandbox.write_file("abslib/python3.12/site-packages/.keep", "")
+        e2b_sandbox.write_file("abslib/python3.11/site-packages/.keep", "")
+
+        matches = e2b_sandbox.glob(f"{work_dir}/abslib/python*/site-packages/", recursive=True)
+        assert isinstance(matches, list)
+        assert len(matches) >= 2
+        assert all("site-packages" in m for m in matches)
+
+    def test_glob_double_slash_normalized(self, e2b_sandbox):
+        """Test that double slashes within an absolute pattern are normalized before processing.
+
+        /home/user//testpkg/requests/models.py should be treated as
+        /home/user/testpkg/requests/models.py and find the file.
+        """
+        e2b_sandbox.write_file("testpkg/requests/models.py", "")
+
+        work_dir = str(e2b_sandbox.work_dir)  # e.g. /home/user
+
+        # Absolute path with // injected in the middle
+        double_slash_pattern = f"{work_dir}//testpkg/requests/models.py"
+        matches = e2b_sandbox.glob(double_slash_pattern, recursive=True)
+
+        assert len(matches) >= 1
+        assert any("models.py" in m for m in matches)
+
+    def test_glob_double_slash_no_permission_error(self, e2b_sandbox):
+        """Test that //pattern does not raise due to permission-denied errors.
+
+        Before the fix, //astropy*/units/core.py would compute root_dir='/'
+        and run `find /`, hitting /proc /sys etc. and failing with exit code 1.
+        """
+        # This should complete without raising SandboxFileError, returning an empty list
+        # (no /astropy* directory exists in a stock sandbox).
+        from nexau.archs.sandbox.base_sandbox import SandboxFileError
+
+        try:
+            matches = e2b_sandbox.glob("//astropy*/units/core.py", recursive=True)
+            assert isinstance(matches, list)
+        except SandboxFileError:
+            raise AssertionError("//pattern raised SandboxFileError; double-slash normalization or 2>/dev/null fix is missing")
+
 
 class TestE2BFileTransfer:
     def test_upload_file(self, e2b_sandbox, temp_dir):
@@ -415,8 +604,6 @@ class TestE2BBackgroundExecution:
         result = e2b_sandbox.execute_bash("echo done", background=True)
         pid = result.background_pid
         assert pid is not None
-
-        import time
 
         time.sleep(2)  # Wait for the short command to finish
 
@@ -538,8 +725,6 @@ class TestE2BSaveOutputToTempFile:
 
     def test_background_save_output_creates_files(self, e2b_sandbox):
         """Test that save_output_to_temp_file works in background mode."""
-        import time
-
         result = e2b_sandbox.execute_bash("echo 'bg output'", background=True, save_output_to_temp_file=True)
         assert result.status == SandboxStatus.SUCCESS
         assert result.background_pid is not None
@@ -568,8 +753,6 @@ class TestE2BSaveOutputToTempFile:
 
     def test_background_no_save_output_by_default(self, e2b_sandbox):
         """Test that background mode does NOT save to temp file by default."""
-        import time
-
         result = e2b_sandbox.execute_bash("echo 'bg no save'", background=True)
         assert result.status == SandboxStatus.SUCCESS
         assert "Output will be saved to" not in result.stdout
@@ -734,6 +917,12 @@ class TestE2BManagerStartPriorities:
     run on SaaS where connect() works correctly.
     """
 
+    @pytest.fixture(autouse=True)
+    def _throttle(self):
+        """Small delay between Manager tests to avoid overwhelming self-host."""
+        yield
+        time.sleep(1)
+
     @pytest.mark.skipif(
         os.getenv("E2B_FORCE_HTTP", "").lower() in ("1", "true", "yes"),
         reason="Self-host API does not support Sandbox.connect() — returns 404 for running sandboxes",
@@ -815,21 +1004,19 @@ class TestE2BManagerStartPriorities:
 class TestE2BManagerLifecycle:
     """E2e tests for E2BSandboxManager stop/pause/is_running/on_run_complete."""
 
+    @pytest.fixture(autouse=True)
+    def _throttle(self):
+        """Small delay between Manager tests to avoid overwhelming self-host."""
+        yield
+        time.sleep(1)
+
     def test_is_running(self):
         """is_running should return True for a live sandbox."""
-        manager = E2BSandboxManager()
-        manager.start(
-            session_manager=SessionManager(engine=InMemoryDatabaseEngine.get_shared_instance()),
-            user_id="lr_user",
-            session_id="lr_session",
-            sandbox_config=E2BSandboxConfig(),
-        )
-        assert manager.is_running() is True
-        manager.stop()
-        # After stop, _instance still holds the reference but sandbox is killed.
-        # On self-host, is_running() may still return True because the SDK's
-        # is_running() endpoint (GET /sandboxes/{id}) returns 404 and the SDK
-        # may interpret that differently. Just verify stop() succeeded.
+        manager, _sandbox = _create_sandbox()
+        try:
+            assert manager.is_running() is True
+        finally:
+            manager.stop()
 
     def test_is_running_no_instance(self):
         """is_running should return False when no sandbox has been started."""
@@ -838,13 +1025,7 @@ class TestE2BManagerLifecycle:
 
     def test_stop_returns_true(self):
         """stop() should return True and kill the sandbox."""
-        manager = E2BSandboxManager()
-        manager.start(
-            session_manager=SessionManager(engine=InMemoryDatabaseEngine.get_shared_instance()),
-            user_id="stop_user",
-            session_id="stop_session",
-            sandbox_config=E2BSandboxConfig(),
-        )
+        manager, _sandbox = _create_sandbox()
         assert manager.stop() is True
 
     def test_stop_no_instance(self):
@@ -854,18 +1035,14 @@ class TestE2BManagerLifecycle:
 
     def test_on_run_complete(self):
         """on_run_complete should stop keepalive without error."""
-        manager = E2BSandboxManager()
-        manager.start(
-            session_manager=SessionManager(engine=InMemoryDatabaseEngine.get_shared_instance()),
-            user_id="orc_user",
-            session_id="orc_session",
-            sandbox_config=E2BSandboxConfig(),
-        )
-        # Should not raise
-        manager.on_run_complete()
-        # Sandbox should still be running (on_run_complete only stops keepalive)
-        assert manager.is_running() is True
-        manager.stop()
+        manager, _sandbox = _create_sandbox()
+        try:
+            # Should not raise
+            manager.on_run_complete()
+            # Sandbox should still be running (on_run_complete only stops keepalive)
+            assert manager.is_running() is True
+        finally:
+            manager.stop()
 
     @pytest.mark.skipif(
         os.getenv("E2B_FORCE_HTTP", "").lower() in ("1", "true", "yes"),

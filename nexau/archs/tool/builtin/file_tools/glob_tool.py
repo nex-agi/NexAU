@@ -147,13 +147,11 @@ def glob(
         # Find matching paths through sandbox
         matches = sandbox.glob(full_pattern, recursive=True)
 
-        # Filter to files + excludes and collect modification times
+        # Filter by excludes and collect modification times (include both files and dirs)
         files_with_mtime: list[tuple[str, str | None]] = []
         for m in matches:
             try:
                 info = sandbox.get_file_info(m)
-                if not info.is_file:
-                    continue
 
                 try:
                     rel = str(Path(m).relative_to(search_dir))
@@ -186,7 +184,7 @@ def glob(
         file_count = len(sorted_paths)
         file_list = "\n".join(sorted_paths)
 
-        result_message = f'Found {file_count} file(s) matching "{pattern}" within {search_dir}'
+        result_message = f'Found {file_count} match(es) for "{pattern}" within {search_dir}'
         if ignored_count > 0:
             result_message += f" ({ignored_count} additional files were ignored)"
         result_message += f", sorted by modification time (newest first):\n{file_list}"

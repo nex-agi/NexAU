@@ -30,13 +30,15 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, override
+from typing import TYPE_CHECKING, Any, TypeVar, override
 
 if TYPE_CHECKING:
     from e2b import CommandResult as E2BCommandResult
@@ -65,6 +67,8 @@ from .base_sandbox import (
 )
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 
 # =============================================================================
@@ -186,6 +190,65 @@ class E2BSandbox(BaseSandbox):
         base = cwd or str(self.work_dir)
         return f"{base}/{path}"
 
+    # Transient error patterns that warrant a reconnect + retry
+    _TRANSIENT_PATTERNS = (
+        "Event loop is closed",
+        "Server disconnected",
+        "Connection reset",
+        "Connection refused",
+        "RemoteProtocolError",
+    )
+
+    def _is_transient_error(self, exc: Exception) -> bool:
+        """Return True if the exception looks like a transient network error."""
+        msg = str(exc)
+        return any(p in msg for p in self._TRANSIENT_PATTERNS)
+
+    def _reconnect(self) -> None:
+        """Attempt to reconnect to the sandbox by sandbox_id."""
+        assert Sandbox is not None, "E2B SDK not installed."
+        if not self.sandbox_id:
+            raise SandboxError("Sandbox ID not set; cannot reconnect.")
+        self._sandbox = Sandbox.connect(
+            sandbox_id=self.sandbox_id,
+            api_key=self._api_key,
+            api_url=self._api_url,
+        )
+
+    def _retry_on_transient(self, fn: Callable[[], _T], max_retries: int = 2) -> _T:
+        """Execute *fn* with automatic reconnect + retry on transient errors.
+
+        Args:
+            fn: Zero-arg callable that performs the SDK operation.
+            max_retries: How many times to retry after the first failure.
+
+        Returns:
+            Whatever *fn* returns on success.
+
+        Raises:
+            The original exception if it is not transient or retries are exhausted.
+        """
+        for attempt in range(max_retries + 1):
+            try:
+                return fn()
+            except Exception as e:
+                if not self._is_transient_error(e) or attempt >= max_retries:
+                    raise
+                logger.warning(
+                    "Transient error (attempt %d/%d), reconnecting: %s",
+                    attempt + 1,
+                    max_retries,
+                    e,
+                )
+                try:
+                    time.sleep(1 * (attempt + 1))
+                    self._reconnect()
+                except Exception as reconnect_err:
+                    logger.error(f"Reconnect failed: {reconnect_err}")
+                    raise e from reconnect_err
+        # Should never reach here, but satisfy type checker
+        raise SandboxError("Retries exhausted")
+
     @override
     def execute_bash(
         self,
@@ -239,15 +302,18 @@ class E2BSandbox(BaseSandbox):
                 if save_output_to_temp_file:
                     temp_dir = f"{BASH_TOOL_RESULTS_BASE_PATH}/{uuid.uuid4().hex[:8]}"
 
-                # Background mode: use E2B SDK's background=True to get a CommandHandle
-                handle = self._sandbox.commands.run(
-                    cmd=command,
-                    background=True,
-                    timeout=int(timeout_seconds),
-                    cwd=cwd or str(self.work_dir),
-                    user=user,
-                    envs=self._merge_envs(envs),
+                # Background mode: retry on transient network errors
+                handle = self._retry_on_transient(
+                    lambda: self._sandbox.commands.run(  # type: ignore[union-attr]
+                        cmd=command,
+                        background=True,
+                        timeout=int(timeout_seconds),
+                        cwd=cwd or str(self.work_dir),
+                        user=user,
+                        envs=self._merge_envs(envs),
+                    )
                 )
+
                 bg_pid: int = handle.pid  # background=True → CommandHandle
 
                 # E2B CommandHandle requires iterating events to populate _result.
@@ -322,46 +388,16 @@ class E2BSandbox(BaseSandbox):
                 )
 
             # Foreground mode: execute command directly
-            # E2B SDK will raise exception on non-zero exit code
-            # E2B SDK may have event loop issues; add retry logic.
-            # If "Event loop is closed" is encountered, reconnect and retry.
-            max_retries = 2
-            last_error: RuntimeError | None = None
-            result: E2BCommandResult | None = None
-            for retry in range(max_retries + 1):
-                try:
-                    result = self._sandbox.commands.run(
-                        cmd=command,
-                        timeout=int(timeout_seconds),
-                        cwd=cwd or str(self.work_dir),
-                        user=user,
-                        envs=self._merge_envs(envs),
-                    )
-                    break
-                except RuntimeError as e:
-                    last_error = e
-                    if "Event loop is closed" in str(e) and retry < max_retries:
-                        logger.warning(f"Event loop closed error, reconnecting sandbox (retry {retry + 1}/{max_retries})")
-                        # Attempt to reconnect
-                        try:
-                            assert Sandbox is not None, "E2B SDK not installed. Install it with: pip install e2b"
-                            if not self.sandbox_id:
-                                raise SandboxError("Sandbox ID not set; cannot reconnect.")
-                            self._sandbox = Sandbox.connect(
-                                sandbox_id=self.sandbox_id,
-                                api_key=self._api_key,
-                                api_url=self._api_url,
-                            )
-                            continue
-                        except Exception as reconnect_error:
-                            logger.error(f"Failed to reconnect sandbox: {reconnect_error}")
-                    raise
-            else:
-                if last_error:
-                    raise last_error
-
-            if result is None:
-                raise SandboxError("E2B command returned no result after retries.")
+            # Retry on transient network errors (disconnects, resets, etc.)
+            result: E2BCommandResult = self._retry_on_transient(
+                lambda: self._sandbox.commands.run(  # type: ignore[union-attr]
+                    cmd=command,
+                    timeout=int(timeout_seconds),
+                    cwd=cwd or str(self.work_dir),
+                    user=user,
+                    envs=self._merge_envs(envs),
+                )
+            )
 
             duration_ms = int((time.time() - start_time) * 1000)
 
@@ -695,7 +731,9 @@ class E2BSandbox(BaseSandbox):
 
             max_output_size = 30000  # Default: 30000 characters
 
-            raw_content = self._sandbox._filesystem.read(resolved_path, format="bytes")
+            raw_content = self._retry_on_transient(
+                lambda: self._sandbox._filesystem.read(resolved_path, format="bytes")  # type: ignore[union-attr]
+            )
             content: str | bytearray
             if binary:
                 content = raw_content
@@ -769,13 +807,17 @@ class E2BSandbox(BaseSandbox):
             if create_directories:
                 parent_dir = str(Path(resolved_path).parent)
                 if parent_dir and parent_dir != ".":
-                    self._sandbox.commands.run(
-                        cmd=f"mkdir -p {parent_dir}",
-                        user=user,
+                    self._retry_on_transient(
+                        lambda: self._sandbox.commands.run(  # type: ignore[union-attr]
+                            cmd=f"mkdir -p {parent_dir}",
+                            user=user,
+                        )
                     )
 
-            # Write file using E2B filesystem API
-            self._sandbox._filesystem.write(resolved_path, content, request_timeout=300.0)
+            # Write file using E2B filesystem API (with retry)
+            self._retry_on_transient(
+                lambda: self._sandbox._filesystem.write(resolved_path, content, request_timeout=300.0)  # type: ignore[union-attr]
+            )
 
             # Calculate size from content directly (avoid extra round trip)
             if isinstance(content, (bytes, bytearray)):
@@ -1189,6 +1231,8 @@ class E2BSandbox(BaseSandbox):
             List of file paths matching the pattern
         """
         assert E2B_AVAILABLE, "E2B SDK not installed. Install it with: pip install e2b"
+        from e2b import CommandExitException
+
         if not self._sandbox:
             raise SandboxError("Sandbox not started. Call start() first.")
 
@@ -1198,26 +1242,57 @@ class E2BSandbox(BaseSandbox):
             raise ValueError(f"User must be 'root' or 'user' for E2B sandbox. But got {user}")
 
         try:
+            # Normalize repeated slashes (e.g. //foo -> /foo) to avoid
+            # accidentally computing root '/' as the search base.
+            pattern = re.sub(r"/{2,}", "/", pattern)
+
             # Use find command with pattern matching
             if recursive:
-                # Handle ** glob pattern by converting to find command
                 if "**" in pattern:
-                    # Remove ** and extract the file pattern
-                    file_pattern = pattern.replace("**/", "").replace("**", "")
-                    if file_pattern.startswith("/"):
-                        file_pattern = file_pattern[1:]
-                    search_dir = "."
-                    cmd = f'find "{search_dir}" -type f -name "{file_pattern}"'
+                    # Split on the first occurrence of ** to get search_dir and remainder.
+                    # e.g. "/home/user/project/**/*.py" → search_dir="/home/user/project", file_pattern="*.py"
+                    # e.g. "src/**/*.ts"               → search_dir="src",                file_pattern="*.ts"
+                    # e.g. "**/*.py"                   → search_dir=".",                  file_pattern="*.py"
+                    # e.g. "/home/user/project/**"     → search_dir="/home/user/project", file_pattern="*"
+                    # e.g. "**"                        → search_dir=".",                  file_pattern="*"
+                    idx = pattern.index("**")
+                    search_dir = pattern[:idx].rstrip("/") or "."
+                    remainder = pattern[idx + 2 :].lstrip("/")  # skip "**" and any trailing /
+                    # If remainder contains more **, take only the final filename pattern
+                    if "**" in remainder:
+                        remainder = remainder.rsplit("**/", 1)[-1].lstrip("/")
+                    file_pattern = remainder if remainder else "*"
+                    cmd = f'find "{search_dir}" -type f -name "{file_pattern}" 2>/dev/null'
                 elif "/" in pattern:
                     search_dir, file_pattern = pattern.rsplit("/", 1)
                     search_dir = search_dir or "."
-                    cmd = f'find "{search_dir}" -name "{file_pattern}"'
+                    # If the directory portion contains wildcards, let find handle
+                    # them via -path instead of quoting the dir (which would cause
+                    # bash to fail when the glob path doesn't literally exist).
+                    if "*" in search_dir or "?" in search_dir:
+                        # Find the deepest non-glob ancestor as the search root
+                        parts = search_dir.lstrip("/").split("/")
+                        root_parts = []
+                        for part in parts:
+                            if "*" in part or "?" in part:
+                                break
+                            root_parts.append(part)
+                        root_dir = ("/" if search_dir.startswith("/") else "") + "/".join(root_parts) or "."
+                        # Reconstruct the full path pattern (strip trailing slash)
+                        full_pattern = pattern.rstrip("/")
+                        if file_pattern:
+                            cmd = f'find "{root_dir}" -path "{full_pattern}" 2>/dev/null'
+                        else:
+                            cmd = f'find "{root_dir}" -type d -path "{full_pattern}" -print 2>/dev/null'
+                    else:
+                        cmd = f'find "{search_dir}" -name "{file_pattern}" 2>/dev/null || true'
                 else:
                     search_dir = "."
                     file_pattern = pattern
-                    cmd = f'find "{search_dir}" -name "{file_pattern}"'
+                    cmd = f'find "{search_dir}" -name "{file_pattern}" 2>/dev/null || true'
             else:
                 cmd = f'ls -1 "{pattern}" 2>/dev/null || true'
+
             result = self._sandbox.commands.run(
                 cmd=cmd,
                 cwd=str(self.work_dir),
@@ -1231,6 +1306,13 @@ class E2BSandbox(BaseSandbox):
             stdout_text = result.stdout or ""
             matches = [line.strip() for line in stdout_text.split("\n") if line.strip()]
 
+            return sorted(matches)
+
+        except CommandExitException as e:
+            # find returns exit code 1 when it encounters permission errors
+            # (e.g. /proc, /sys) but may still have found valid matches in stdout.
+            stdout = getattr(e, "stdout", "") or ""
+            matches = [line.strip() for line in stdout.split("\n") if line.strip()]
             return sorted(matches)
 
         except Exception as e:
