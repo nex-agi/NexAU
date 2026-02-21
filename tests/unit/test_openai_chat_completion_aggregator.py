@@ -26,6 +26,7 @@ from openai.types.chat.chat_completion_chunk import (
 from openai.types.chat.chat_completion_chunk import (
     ChoiceDelta,
     ChoiceDeltaToolCall,
+    ChoiceDeltaToolCallFunction,
 )
 
 from nexau.archs.llm.llm_aggregators import OpenAIChatCompletionAggregator
@@ -134,8 +135,6 @@ class TestOpenAIChatCompletionAggregator:
         """Test aggregating chunks with tool calls."""
         mock_on_event = Mock()
         aggregator = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="test-run")
-
-        from openai.types.chat.chat_completion_chunk import ChoiceDeltaToolCallFunction
 
         chunk1 = ChatCompletionChunk(
             id="chatcmpl-123",
@@ -351,8 +350,6 @@ class TestOpenAIChatCompletionAggregator:
         mock_on_event = Mock()
         aggregator = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="test-run")
 
-        from openai.types.chat.chat_completion_chunk import ChoiceDeltaToolCallFunction
-
         # First chunk with first tool call
         chunk1 = ChatCompletionChunk(
             id="chatcmpl-123",
@@ -522,8 +519,6 @@ class TestOpenAIChatCompletionAggregator:
         """Test aggregating multiple tool calls where arguments arrive in multiple chunks."""
         mock_on_event = Mock()
         aggregator = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="test-run")
-
-        from openai.types.chat.chat_completion_chunk import ChoiceDeltaToolCallFunction
 
         # First chunk: tool call 0 with initial arguments
         chunk1 = ChatCompletionChunk(
@@ -712,6 +707,391 @@ class TestOpenAIChatCompletionAggregator:
         assert aggregator._value.type == "function"
         # Verify parent_message_id is preserved (not reset on clear)
         assert aggregator._parent_message_id == "msg-123"
+
+    # ==================== Tests for DeepSeek/nex streaming behavior fixes ====================
+
+    def test_tool_call_split_id_and_name_across_chunks(self):
+        """Test that ToolCallStartEvent fires when id and name arrive in separate chunks.
+
+        DeepSeek-based models (e.g. nex-agi/deepseek-v3.1-nex-1) may send the tool call
+        id in one chunk and the function name in a subsequent chunk. The aggregator must
+        use the accumulated name (self._value.function.name) as fallback.
+        """
+        mock_on_event = Mock()
+        aggregator = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="test-run")
+
+        # Chunk 1: id arrives, but NO name yet
+        chunk1 = ChatCompletionChunk(
+            id="chatcmpl-split",
+            choices=[
+                ChatCompletionChunkChoice(
+                    index=0,
+                    delta=ChoiceDelta(
+                        role="assistant",
+                        tool_calls=[
+                            ChoiceDeltaToolCall(
+                                index=0,
+                                id="call_split_001",
+                                function=ChoiceDeltaToolCallFunction(name=None, arguments=""),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            created=1234567890,
+            model="nex-agi/deepseek-v3.1-nex-1",
+            object="chat.completion.chunk",
+        )
+
+        # Chunk 2: name arrives (no id this time)
+        chunk2 = ChatCompletionChunk(
+            id="chatcmpl-split",
+            choices=[
+                ChatCompletionChunkChoice(
+                    index=0,
+                    delta=ChoiceDelta(
+                        tool_calls=[
+                            ChoiceDeltaToolCall(
+                                index=0,
+                                function=ChoiceDeltaToolCallFunction(name="read_file", arguments=""),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            created=1234567890,
+            model="nex-agi/deepseek-v3.1-nex-1",
+            object="chat.completion.chunk",
+        )
+
+        # Chunk 3: arguments
+        chunk3 = ChatCompletionChunk(
+            id="chatcmpl-split",
+            choices=[
+                ChatCompletionChunkChoice(
+                    index=0,
+                    delta=ChoiceDelta(
+                        tool_calls=[
+                            ChoiceDeltaToolCall(
+                                index=0,
+                                function=ChoiceDeltaToolCallFunction(arguments='{"path": "main.py"}'),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            created=1234567890,
+            model="nex-agi/deepseek-v3.1-nex-1",
+            object="chat.completion.chunk",
+        )
+
+        # Chunk 4: finish
+        chunk4 = ChatCompletionChunk(
+            id="chatcmpl-split",
+            choices=[
+                ChatCompletionChunkChoice(
+                    index=0,
+                    delta=ChoiceDelta(),
+                    finish_reason="tool_calls",
+                )
+            ],
+            created=1234567890,
+            model="nex-agi/deepseek-v3.1-nex-1",
+            object="chat.completion.chunk",
+        )
+
+        aggregator.aggregate(chunk1)
+        aggregator.aggregate(chunk2)
+        aggregator.aggregate(chunk3)
+        aggregator.aggregate(chunk4)
+
+        result = aggregator.build()
+
+        # Verify the tool call was built correctly
+        assert result.choices[0].message.tool_calls is not None
+        assert len(result.choices[0].message.tool_calls) == 1
+        tc = result.choices[0].message.tool_calls[0]
+        assert tc.id == "call_split_001"
+        assert tc.function.name == "read_file"
+        assert tc.function.arguments == '{"path": "main.py"}'
+
+        # Verify exactly one ToolCallStartEvent was emitted
+        start_events = [c for c in mock_on_event.call_args_list if c[0][0].__class__.__name__ == "ToolCallStartEvent"]
+        assert len(start_events) == 1
+        assert start_events[0][0][0].tool_call_id == "call_split_001"
+        assert start_events[0][0][0].tool_call_name == "read_file"
+
+        # Verify exactly one ToolCallEndEvent was emitted
+        end_events = [c for c in mock_on_event.call_args_list if c[0][0].__class__.__name__ == "ToolCallEndEvent"]
+        assert len(end_events) == 1
+        assert end_events[0][0][0].tool_call_id == "call_split_001"
+
+    def test_tool_call_name_in_first_chunk_with_id(self):
+        """Test the normal case: id and name arrive together in the first chunk (OpenAI behavior).
+
+        This ensures the split-chunk fix doesn't break the standard path.
+        """
+        mock_on_event = Mock()
+
+        aggregator = _ToolCallAggregator(on_event=mock_on_event, parent_message_id="msg-normal")
+
+        # Single chunk with both id and name
+        aggregator.aggregate(
+            ChoiceDeltaToolCall(
+                index=0,
+                id="call_normal_001",
+                function=ChoiceDeltaToolCallFunction(name="get_weather", arguments='{"city": "Tokyo"}'),
+            )
+        )
+
+        start_events = [c for c in mock_on_event.call_args_list if c[0][0].__class__.__name__ == "ToolCallStartEvent"]
+        assert len(start_events) == 1
+        assert start_events[0][0][0].tool_call_name == "get_weather"
+
+    def test_tool_call_ended_flag_prevents_duplicate_end_events(self):
+        """Test that _ended flag prevents duplicate ToolCallEndEvent.
+
+        When JSON is complete, ToolCallEndEvent fires. Then when finish_reason arrives,
+        ensure_ended() is called — it must NOT emit a second ToolCallEndEvent.
+        """
+        mock_on_event = Mock()
+
+        aggregator = _ToolCallAggregator(on_event=mock_on_event, parent_message_id="msg-dup")
+
+        # Chunk with id + name + complete JSON args
+        aggregator.aggregate(
+            ChoiceDeltaToolCall(
+                index=0,
+                id="call_dup_001",
+                function=ChoiceDeltaToolCallFunction(name="write_file", arguments='{"path": "a.txt", "content": "hi"}'),
+            )
+        )
+
+        # At this point, JSON is complete → ToolCallEndEvent should have fired
+        end_events_before = [c for c in mock_on_event.call_args_list if c[0][0].__class__.__name__ == "ToolCallEndEvent"]
+        assert len(end_events_before) == 1
+
+        # Now simulate finish_reason arriving → ensure_ended() is called
+        aggregator.ensure_ended()
+
+        # Should still be exactly 1 end event (no duplicate)
+        end_events_after = [c for c in mock_on_event.call_args_list if c[0][0].__class__.__name__ == "ToolCallEndEvent"]
+        assert len(end_events_after) == 1
+
+    def test_ensure_ended_emits_late_start_and_end(self):
+        """Test ensure_ended() emits both start and end events for tool calls that never started.
+
+        Some model providers may send tool call data in a way that never triggers the
+        normal start condition. ensure_ended() must emit a late ToolCallStartEvent
+        (with accumulated name or 'unknown') followed by ToolCallEndEvent.
+        """
+        mock_on_event = Mock()
+
+        aggregator = _ToolCallAggregator(on_event=mock_on_event, parent_message_id="msg-late")
+
+        # Directly set internal state to simulate an edge case where id and name
+        # were accumulated but the start condition in aggregate() was never met
+        # (e.g. chunks arrived without item.function set).  This cannot be
+        # reproduced through normal aggregate() calls, hence the direct access.
+        aggregator._value.id = "call_late_001"
+        aggregator._value.function.name = "search"
+        aggregator._value.function.arguments = '{"q": "test"}'
+
+        # _started is still False — ensure_ended should emit both start + end
+        assert not aggregator._started
+        assert not aggregator._ended
+
+        aggregator.ensure_ended()
+
+        start_events = [c for c in mock_on_event.call_args_list if c[0][0].__class__.__name__ == "ToolCallStartEvent"]
+        end_events = [c for c in mock_on_event.call_args_list if c[0][0].__class__.__name__ == "ToolCallEndEvent"]
+
+        assert len(start_events) == 1
+        assert start_events[0][0][0].tool_call_id == "call_late_001"
+        assert start_events[0][0][0].tool_call_name == "search"
+
+        assert len(end_events) == 1
+        assert end_events[0][0][0].tool_call_id == "call_late_001"
+
+    def test_ensure_ended_uses_unknown_when_no_name(self):
+        """Test ensure_ended() falls back to 'unknown' when no function name was accumulated."""
+        mock_on_event = Mock()
+
+        aggregator = _ToolCallAggregator(on_event=mock_on_event, parent_message_id="msg-unknown")
+
+        # Directly set id without name — same rationale as
+        # test_ensure_ended_emits_late_start_and_end above.
+        aggregator._value.id = "call_noname_001"
+
+        aggregator.ensure_ended()
+
+        start_events = [c for c in mock_on_event.call_args_list if c[0][0].__class__.__name__ == "ToolCallStartEvent"]
+        assert len(start_events) == 1
+        assert start_events[0][0][0].tool_call_name == "unknown"
+
+    def test_ensure_ended_noop_when_already_ended(self):
+        """Test ensure_ended() is a no-op when tool call already ended normally."""
+        mock_on_event = Mock()
+
+        aggregator = _ToolCallAggregator(on_event=mock_on_event, parent_message_id="msg-noop")
+
+        # Normal flow: start + complete args → auto end
+        aggregator.aggregate(
+            ChoiceDeltaToolCall(
+                index=0,
+                id="call_noop_001",
+                function=ChoiceDeltaToolCallFunction(name="ls", arguments="{}"),
+            )
+        )
+
+        call_count_before = mock_on_event.call_count
+
+        # ensure_ended should do nothing
+        aggregator.ensure_ended()
+
+        assert mock_on_event.call_count == call_count_before
+
+    def test_ensure_ended_noop_when_no_id(self):
+        """Test ensure_ended() does nothing when no tool call id was ever received."""
+        mock_on_event = Mock()
+
+        aggregator = _ToolCallAggregator(on_event=mock_on_event, parent_message_id="msg-noid")
+
+        # No data at all
+        aggregator.ensure_ended()
+
+        # No events should be emitted
+        assert mock_on_event.call_count == 0
+
+    def test_full_stream_with_split_chunks_end_to_end(self):
+        """End-to-end test: full aggregation with split id/name chunks produces correct event sequence.
+
+        Verifies the complete event lifecycle:
+        TextMessageStart → ToolCallStart → ToolCallArgs → ToolCallEnd → TextMessageEnd
+        """
+        events: list = []
+        aggregator = OpenAIChatCompletionAggregator(on_event=lambda e: events.append(e), run_id="test-run")
+
+        chunks = [
+            # Chunk 1: id only
+            ChatCompletionChunk(
+                id="chatcmpl-e2e",
+                choices=[
+                    ChatCompletionChunkChoice(
+                        index=0,
+                        delta=ChoiceDelta(
+                            role="assistant",
+                            tool_calls=[
+                                ChoiceDeltaToolCall(
+                                    index=0, id="call_e2e_001", function=ChoiceDeltaToolCallFunction(name=None, arguments="")
+                                ),
+                            ],
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+                created=1000,
+                model="nex-agi/deepseek-v3.1-nex-1",
+                object="chat.completion.chunk",
+            ),
+            # Chunk 2: name arrives
+            ChatCompletionChunk(
+                id="chatcmpl-e2e",
+                choices=[
+                    ChatCompletionChunkChoice(
+                        index=0,
+                        delta=ChoiceDelta(
+                            tool_calls=[
+                                ChoiceDeltaToolCall(index=0, function=ChoiceDeltaToolCallFunction(name="bash", arguments="")),
+                            ]
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+                created=1000,
+                model="nex-agi/deepseek-v3.1-nex-1",
+                object="chat.completion.chunk",
+            ),
+            # Chunk 3: args part 1
+            ChatCompletionChunk(
+                id="chatcmpl-e2e",
+                choices=[
+                    ChatCompletionChunkChoice(
+                        index=0,
+                        delta=ChoiceDelta(
+                            tool_calls=[
+                                ChoiceDeltaToolCall(index=0, function=ChoiceDeltaToolCallFunction(arguments='{"cmd":')),
+                            ]
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+                created=1000,
+                model="nex-agi/deepseek-v3.1-nex-1",
+                object="chat.completion.chunk",
+            ),
+            # Chunk 4: args part 2 (completes JSON)
+            ChatCompletionChunk(
+                id="chatcmpl-e2e",
+                choices=[
+                    ChatCompletionChunkChoice(
+                        index=0,
+                        delta=ChoiceDelta(
+                            tool_calls=[
+                                ChoiceDeltaToolCall(index=0, function=ChoiceDeltaToolCallFunction(arguments=' "ls -la"}')),
+                            ]
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+                created=1000,
+                model="nex-agi/deepseek-v3.1-nex-1",
+                object="chat.completion.chunk",
+            ),
+            # Chunk 5: finish
+            ChatCompletionChunk(
+                id="chatcmpl-e2e",
+                choices=[
+                    ChatCompletionChunkChoice(
+                        index=0,
+                        delta=ChoiceDelta(),
+                        finish_reason="tool_calls",
+                    )
+                ],
+                created=1000,
+                model="nex-agi/deepseek-v3.1-nex-1",
+                object="chat.completion.chunk",
+            ),
+        ]
+
+        for chunk in chunks:
+            aggregator.aggregate(chunk)
+
+        result = aggregator.build()
+
+        # Verify built result
+        assert result.choices[0].message.tool_calls is not None
+        tc = result.choices[0].message.tool_calls[0]
+        assert tc.id == "call_e2e_001"
+        assert tc.function.name == "bash"
+        assert tc.function.arguments == '{"cmd": "ls -la"}'
+
+        # Verify event sequence
+        event_types = [type(e).__name__ for e in events]
+        assert event_types[0] == "TextMessageStartEvent"
+        assert "ToolCallStartEvent" in event_types
+        assert "ToolCallArgsEvent" in event_types
+        assert "ToolCallEndEvent" in event_types
+        assert event_types[-1] == "TextMessageEndEvent"
+
+        # Verify exactly one start and one end for the tool call
+        tc_starts = [e for e in events if type(e).__name__ == "ToolCallStartEvent"]
+        tc_ends = [e for e in events if type(e).__name__ == "ToolCallEndEvent"]
+        assert len(tc_starts) == 1
+        assert len(tc_ends) == 1
 
 
 if __name__ == "__main__":

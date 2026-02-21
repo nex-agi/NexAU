@@ -730,10 +730,13 @@ class TestE2BSaveOutputToTempFile:
         assert result.background_pid is not None
         assert "Output will be saved to" in result.stdout
 
-        # Wait for background task to finish
-        time.sleep(5)
+        # Poll until background task finishes (self-host can be slow)
+        for _ in range(15):
+            time.sleep(2)
+            status = e2b_sandbox.get_background_task_status(result.background_pid)
+            if status.status != SandboxStatus.RUNNING:
+                break
 
-        status = e2b_sandbox.get_background_task_status(result.background_pid)
         assert status.status == SandboxStatus.SUCCESS
         assert "[Output saved to:" in status.stdout
 

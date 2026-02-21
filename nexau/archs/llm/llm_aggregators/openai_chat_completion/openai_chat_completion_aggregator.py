@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from datetime import datetime
 from typing import Literal
@@ -54,6 +55,9 @@ SERVICE_TIER_LITERAL = Literal["auto", "default", "flex", "scale", "priority"]
 def _noop_event_handler(_: Event) -> None:
     """No-op event handler for non-first choices to avoid duplicate UI updates."""
     return None
+
+
+_logger = logging.getLogger(__name__)
 
 
 class OpenAIChatCompletionAggregator(Aggregator[ChatCompletionChunk, ChatCompletion]):
@@ -263,6 +267,9 @@ class _ChoiceAggregator(Aggregator[ChatCompletionChunkChoice, ChatCompletionChoi
 
         # Emit message end event when choice is complete
         if item.finish_reason is not None:
+            # Ensure all tool calls have emitted their start+end events
+            for aggregator in self._tool_call_aggregators.values():
+                aggregator.ensure_ended()
             self._on_event(
                 TextMessageEndEvent(
                     message_id=self._message_id,
@@ -342,6 +349,7 @@ class _ToolCallAggregator(Aggregator[ChoiceDeltaToolCall, ChatCompletionMessageT
             id="", type="function", function=ChatCompletionMessageToolCallFunction(name="", arguments="")
         )
         self._started = False
+        self._ended = False
         self._json_state: Literal["init", "in_object", "complete"] = "init"
 
     def aggregate(self, item: ChoiceDeltaToolCall) -> None:
@@ -351,6 +359,22 @@ class _ToolCallAggregator(Aggregator[ChoiceDeltaToolCall, ChatCompletionMessageT
         Args:
             delta: Tool call data from a stream chunk
         """
+        fn_args = None
+        if item.function and item.function.arguments:
+            raw = item.function.arguments
+            fn_args = (raw[:80] + "...") if len(raw) > 80 else raw
+        _logger.debug(
+            "tool_call_chunk id=%s index=%s type=%s fn.name=%s fn.args=%s accumulated_id=%s accumulated_name=%s started=%s",
+            item.id,
+            item.index,
+            item.type,
+            item.function.name if item.function else None,
+            fn_args,
+            self._value.id,
+            self._value.function.name,
+            self._started,
+        )
+
         # Accumulate tool call ID and type first
         if item.id:
             self._value.id = item.id
@@ -363,12 +387,15 @@ class _ToolCallAggregator(Aggregator[ChoiceDeltaToolCall, ChatCompletionMessageT
             fn = item.function
 
             # Emit tool call start event once we have ID and name
-            if not self._started and self._value.id and fn.name:
+            # Check both current chunk name and accumulated name for cases where
+            # name arrives in a different chunk than id
+            if not self._started and self._value.id and (fn.name or self._value.function.name):
                 self._started = True
+                effective_name = fn.name or self._value.function.name
                 self._on_event(
                     ToolCallStartEvent(
                         tool_call_id=self._value.id,
-                        tool_call_name=fn.name,
+                        tool_call_name=effective_name,
                         parent_message_id=self._parent_message_id,
                         timestamp=int(datetime.now().timestamp() * 1000),
                     )
@@ -390,9 +417,44 @@ class _ToolCallAggregator(Aggregator[ChoiceDeltaToolCall, ChatCompletionMessageT
                 # Update JSON state
                 self._update_json_state()
 
-        # Emit tool call end event when JSON is complete
-        # Detect by: JSON is balanced AND we're not expecting more arguments
-        if self._json_state == "complete":
+        # Emit tool call end event once when JSON is complete AND start was emitted
+        if self._json_state == "complete" and self._started and not self._ended:
+            self._ended = True
+            self._on_event(
+                ToolCallEndEvent(
+                    tool_call_id=self._value.id,
+                    timestamp=int(datetime.now().timestamp() * 1000),
+                )
+            )
+
+    def ensure_ended(self) -> None:
+        """Ensure ToolCallEndEvent is emitted for this tool call.
+
+        Called by the parent ChoiceAggregator when finish_reason is received,
+        to guarantee the frontend always gets a paired end event.
+        If ToolCallStartEvent was never emitted (e.g. name arrived late or
+        never arrived at all for some model providers), emit it first using
+        the accumulated name or 'unknown' as fallback.
+        """
+        if not self._started and self._value.id:
+            self._started = True
+            effective_name = self._value.function.name or "unknown"
+            _logger.warning(
+                "ensure_ended: emitting late TOOL_CALL_START id=%s name=%s accumulated_args_len=%d",
+                self._value.id,
+                effective_name,
+                len(self._value.function.arguments),
+            )
+            self._on_event(
+                ToolCallStartEvent(
+                    tool_call_id=self._value.id,
+                    tool_call_name=effective_name,
+                    parent_message_id=self._parent_message_id,
+                    timestamp=int(datetime.now().timestamp() * 1000),
+                )
+            )
+        if self._started and not self._ended:
+            self._ended = True
             self._on_event(
                 ToolCallEndEvent(
                     tool_call_id=self._value.id,
@@ -439,6 +501,7 @@ class _ToolCallAggregator(Aggregator[ChoiceDeltaToolCall, ChatCompletionMessageT
             id="", type="function", function=ChatCompletionMessageToolCallFunction(name="", arguments="")
         )
         self._started = False
+        self._ended = False
         # Reset JSON tracking
         self._json_state = "init"
         # Note: _parent_message_id is intentionally not reset as it's a constant reference
