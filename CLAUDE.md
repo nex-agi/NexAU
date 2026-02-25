@@ -324,9 +324,9 @@ class GetUploadUrlRequest:
 
 ### RFC 生成流程
 
-1. **参考模板**: 使用 `docs/rfcs/0000-template.md` 作为模板
-2. **编号规则**: 查看 `docs/rfcs/` 目录下现有 RFC，使用下一个可用编号（如 `0023`）
-3. **文件命名**: `docs/rfcs/XXXX-feature-name.md`（使用短横线分隔的小写英文）
+1. **参考模板**: 使用 `rfcs/0000-template.md` 作为模板
+2. **编号规则**: 查看 `rfcs/` 目录下现有 RFC，使用下一个可用编号（如 `0023`）
+3. **文件命名**: `rfcs/XXXX-feature-name.md`（使用短横线分隔的小写英文）
 4. **必填字段**:
    - 状态: `draft`（初始状态）
    - 优先级: P0-P3

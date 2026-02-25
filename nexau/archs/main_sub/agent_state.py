@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from nexau.archs.main_sub.execution.executor import Executor
+    from nexau.archs.main_sub.team.state import AgentTeamState
     from nexau.archs.sandbox.base_sandbox import BaseSandbox, BaseSandboxManager
     from nexau.archs.tool.tool import Tool
 
@@ -49,6 +50,7 @@ class AgentState:
         sandbox: Optional["BaseSandbox"] = None,
         sandbox_manager: Optional["BaseSandboxManager[Any]"] = None,
         variables: ContextValue | None = None,
+        team_state: Optional["AgentTeamState"] = None,
     ):
         """Initialize agent state.
 
@@ -76,6 +78,7 @@ class AgentState:
         self._sandbox = sandbox
         self._sandbox_manager = sandbox_manager
         self._variables = variables or ContextValue()
+        self.team_state = team_state
 
     def get_context_value(self, key: str, default: Any = None) -> Any:
         """Get a value from the context.

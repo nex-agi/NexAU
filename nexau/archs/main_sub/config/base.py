@@ -40,6 +40,7 @@ class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
     description: str | None = None
     system_prompt: str | None = None
     system_prompt_type: Literal["string", "file", "jinja"] = "string"
+    system_prompt_suffix: str | None = None
     tools: list[Any] = Field(default_factory=list)
     sub_agents: TSubAgent | None = None
     skills: list[Any] = Field(default_factory=list)

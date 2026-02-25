@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +25,9 @@ from nexau.archs.transports.base import TransportBase
 from nexau.archs.transports.http.config import HTTPConfig
 from nexau.archs.transports.http.models import AgentRequest, AgentResponse, StopRequest, StopResponse
 from nexau.core.messages import Message
+
+if TYPE_CHECKING:
+    from nexau.archs.transports.http.team_registry import TeamRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,9 @@ class SSETransportServer(TransportBase[HTTPConfig]):
         engine: DatabaseEngine,
         config: HTTPConfig = HTTPConfig(),
         default_agent_config: AgentConfig,
+        on_stream_event: Callable[[str, str, dict[str, object]], None] | None = None,
+        get_history: Callable[[str, str, int], list[dict[str, object]]] | None = None,
+        count_events: Callable[[str, str], int] | None = None,
     ):
         """Initialize the SSE transport server.
 
@@ -68,6 +74,9 @@ class SSETransportServer(TransportBase[HTTPConfig]):
             engine: DatabaseEngine for all model storage
             config: HTTP-specific configuration (default: HTTPConfig())
             default_agent_config: Default agent configuration
+            on_stream_event: Optional callback(user_id, session_id, envelope_dict) for team event persistence.
+            get_history: Optional callback(user_id, session_id, after) returning stored envelopes for reconnection.
+            count_events: Optional callback(user_id, session_id) returning total event count.
         """
         super().__init__(
             engine=engine,
@@ -75,7 +84,13 @@ class SSETransportServer(TransportBase[HTTPConfig]):
             default_agent_config=default_agent_config,
         )
 
-        # Create FastAPI app
+        # RFC-0002: Team registry for managing AgentTeam instances
+        self._team_registry: TeamRegistry | None = None
+        self._on_stream_event = on_stream_event
+        self._get_history = get_history
+        self._count_events = count_events
+
+        # Create FastAPI app (_create_app sets self._team_registry)
         self.app = self._create_app()
 
         # Runtime context
@@ -117,6 +132,22 @@ class SSETransportServer(TransportBase[HTTPConfig]):
 
         # Add routes
         self._add_routes(app)
+
+        # RFC-0002: Mount team endpoints with registry
+        from nexau.archs.transports.http.team_registry import TeamRegistry
+        from nexau.archs.transports.http.team_routes import create_team_router
+
+        self._team_registry = TeamRegistry(
+            engine=self._engine,
+            session_manager=self._session_manager,
+        )
+        team_router = create_team_router(
+            self._team_registry,
+            on_stream_event=self._on_stream_event,
+            get_history=self._get_history,
+            count_events=self._count_events,
+        )
+        app.include_router(team_router)
 
         return app
 
@@ -299,6 +330,17 @@ class SSETransportServer(TransportBase[HTTPConfig]):
         """
         return getattr(self, "_is_running", False)
 
+    @property
+    def team_registry(self) -> TeamRegistry | None:
+        """Get the team registry for config registration.
+
+        RFC-0002: 获取 team 注册表
+
+        Returns:
+            TeamRegistry instance, or None if not initialized.
+        """
+        return self._team_registry
+
     def run(self) -> None:
         """Run the server (blocking).
 
@@ -311,4 +353,5 @@ class SSETransportServer(TransportBase[HTTPConfig]):
             host=self.host,
             port=self.port,
             log_level=self._config.log_level,
+            loop="asyncio",
         )

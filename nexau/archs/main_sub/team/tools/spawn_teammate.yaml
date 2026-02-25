@@ -1,0 +1,16 @@
+type: tool
+name: spawn_teammate
+description: >-
+  Spawn a new teammate agent instance from the configured candidates.
+  Only the team leader can call this tool. The same role can be spawned
+  multiple times to create multiple instances (e.g. coder-1, coder-2).
+input_schema:
+  type: object
+  properties:
+    role_name:
+      type: string
+      description: The role name to spawn (must be in candidates config)
+  required:
+    - role_name
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

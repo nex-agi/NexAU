@@ -14,13 +14,11 @@
 
 """Unit tests for ask_user builtin tool."""
 
-import pytest
-
 from nexau.archs.tool.builtin.session_tools import ask_user
 
 
-class TestAskUser:
-    """Test ask_user tool functionality."""
+class TestAskUserValidation:
+    """Test ask_user input validation."""
 
     def test_validate_questions_required(self):
         """Should return error when questions list is empty."""
@@ -37,7 +35,7 @@ class TestAskUser:
 
     def test_validate_header_required(self):
         """Should return error when header is missing."""
-        result = ask_user(questions=[{"question": "What is your name?"}])
+        result = ask_user(questions=[{"question": "What?"}])
         assert result.get("error") is not None
         assert result["error"]["type"] == "INVALID_PARAMETER"
         assert "header" in result["content"].lower()
@@ -52,19 +50,17 @@ class TestAskUser:
                     "type": "text",
                 }
             ],
-            user_answers={},
         )
         assert result.get("error") is not None
         assert result["error"]["type"] == "INVALID_PARAMETER"
         assert "32" in result["content"]
 
     def test_validate_max_questions(self):
-        """Should return error when more than 4 questions provided."""
+        """More than 4 questions is allowed (no upper limit enforced)."""
         questions = [{"question": f"Q{i}", "header": f"H{i}", "type": "text"} for i in range(5)]
         result = ask_user(questions=questions)
-        assert result.get("error") is not None
-        assert result["error"]["type"] == "INVALID_PARAMETER"
-        assert "4" in result["content"]
+        assert result.get("error") is None
+        assert result["content"] == "Asking user questions, waiting for user answers..."
 
     def test_validate_choice_options_required(self):
         """Should return error when choice type has no options."""
@@ -103,7 +99,43 @@ class TestAskUser:
                     "question": "Choose one",
                     "header": "Choice",
                     "type": "choice",
-                    "options": [{"label": f"Option {i}", "description": f"desc {i}"} for i in range(5)],
+                    "options": [{"label": f"Opt {i}", "description": f"d {i}"} for i in range(5)],
+                }
+            ]
+        )
+        assert result.get("error") is not None
+        assert result["error"]["type"] == "INVALID_PARAMETER"
+
+    def test_validate_option_label_required(self):
+        """Should return error when option label is missing."""
+        result = ask_user(
+            questions=[
+                {
+                    "question": "Choose one",
+                    "header": "Choice",
+                    "type": "choice",
+                    "options": [
+                        {"label": "A", "description": "desc A"},
+                        {"description": "no label"},
+                    ],
+                }
+            ]
+        )
+        assert result.get("error") is not None
+        assert result["error"]["type"] == "INVALID_PARAMETER"
+
+    def test_validate_option_description_required(self):
+        """Should return error when option description is missing."""
+        result = ask_user(
+            questions=[
+                {
+                    "question": "Choose one",
+                    "header": "Choice",
+                    "type": "choice",
+                    "options": [
+                        {"label": "A", "description": "desc A"},
+                        {"label": "B"},
+                    ],
                 }
             ]
         )
@@ -111,11 +143,11 @@ class TestAskUser:
         assert result["error"]["type"] == "INVALID_PARAMETER"
 
 
-class TestAskUserOutputFormat:
+class TestAskUserOutput:
     """Test ask_user output format."""
 
-    def test_user_cancelled_format(self):
-        """Should format correctly when user cancels."""
+    def test_valid_text_question_returns_content(self):
+        """Should return simple content string for valid text question."""
         result = ask_user(
             questions=[
                 {
@@ -124,43 +156,30 @@ class TestAskUserOutputFormat:
                     "type": "text",
                 }
             ],
-            was_cancelled=True,
         )
-        assert "dismissed" in result["content"].lower()
         assert result.get("error") is None
+        assert result["content"] == "Asking user questions, waiting for user answers..."
 
-    def test_raises_when_user_answers_missing(self):
-        """Should raise ValueError when user_answers is None (middleware not configured)."""
-        with pytest.raises(ValueError, match="user_answers|AskUserMiddleware"):
-            ask_user(
-                questions=[
-                    {
-                        "question": "What is your name?",
-                        "header": "Name",
-                        "type": "text",
-                    }
-                ],
-                user_answers=None,
-                was_cancelled=False,
-            )
-
-    def test_user_answers_format(self):
-        """Should format user answers correctly."""
+    def test_valid_choice_question_returns_content(self):
+        """Should return simple content string for valid choice question."""
         result = ask_user(
             questions=[
                 {
-                    "question": "What is your name?",
-                    "header": "Name",
-                    "type": "text",
+                    "question": "Select your language:",
+                    "header": "Language",
+                    "type": "choice",
+                    "options": [
+                        {"label": "Python", "description": "Python lang"},
+                        {"label": "JavaScript", "description": "JS lang"},
+                    ],
                 }
             ],
-            user_answers={"0": "Alice"},
         )
-        assert "answers" in result["content"]
-        assert "Alice" in result["returnDisplay"]
+        assert result.get("error") is None
+        assert result["content"] == "Asking user questions, waiting for user answers..."
 
-    def test_yesno_question(self):
-        """Should handle yesno type questions."""
+    def test_valid_yesno_question_returns_content(self):
+        """Should return simple content string for valid yesno question."""
         result = ask_user(
             questions=[
                 {
@@ -169,25 +188,17 @@ class TestAskUserOutputFormat:
                     "type": "yesno",
                 }
             ],
-            user_answers={"0": "Yes"},
         )
         assert result.get("error") is None
-        assert "Yes" in result["returnDisplay"]
+        assert result["content"] == "Asking user questions, waiting for user answers..."
 
-    def test_choice_question(self):
-        """Should handle choice type questions."""
+    def test_multiple_valid_questions_returns_content(self):
+        """Should return simple content string for multiple valid questions."""
         result = ask_user(
             questions=[
-                {
-                    "question": "Select your language:",
-                    "header": "Language",
-                    "type": "choice",
-                    "options": [
-                        {"label": "Python", "description": "Python programming language"},
-                        {"label": "JavaScript", "description": "JavaScript programming language"},
-                    ],
-                }
+                {"question": "Q1?", "header": "H1", "type": "text"},
+                {"question": "Q2?", "header": "H2", "type": "yesno"},
             ],
-            user_answers={"0": "Python"},
         )
         assert result.get("error") is None
+        assert result["content"] == "Asking user questions, waiting for user answers..."

@@ -1,0 +1,16 @@
+type: tool
+name: broadcast
+description: >-
+  Broadcast a message to all teammates in the team.
+  The message will be delivered to every active teammate
+  at their next iteration boundary.
+input_schema:
+  type: object
+  properties:
+    content:
+      type: string
+      description: The message content to broadcast
+  required:
+    - content
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

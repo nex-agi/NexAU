@@ -1,0 +1,31 @@
+type: tool
+name: update_task_status
+description: >-
+  Update the status of a task on the shared task board.
+  Valid transitions: pending -> in_progress -> completed.
+  When completing a task, the deliverable file must exist at
+  the task's deliverable_path (write it using write_file first).
+  Optionally include a result summary when completing a task.
+input_schema:
+  type: object
+  properties:
+    task_id:
+      type: string
+      description: The ID of the task to update (e.g. T-001)
+    status:
+      type: string
+      description: The new status for the task
+      enum:
+        - pending
+        - in_progress
+        - completed
+    result_summary:
+      type: string
+      description: >-
+        Optional summary of the task result. Recommended when
+        setting status to completed.
+  required:
+    - task_id
+    - status
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

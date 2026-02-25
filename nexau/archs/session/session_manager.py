@@ -27,6 +27,7 @@ from .agent_service import AgentService
 from .models import AgentModel, AgentRunActionModel, SessionModel
 from .models.agent_lock import AgentLockModel
 from .orm import AndFilter, ComparisonFilter, DatabaseEngine
+from .task_lock_service import TaskLockService
 
 
 class SessionManager:
@@ -74,6 +75,7 @@ class SessionManager:
             lock_ttl=lock_ttl,
             heartbeat_interval=heartbeat_interval,
         )
+        self._task_lock = TaskLockService(engine=engine)
         self._models_initialized = False
 
     # Public services (exposed for direct use)
@@ -86,6 +88,11 @@ class SessionManager:
     def agent_lock(self) -> AgentLockService:
         """Get the AgentLockService for agent-level locking."""
         return self._agent_lock
+
+    @property
+    def task_lock(self) -> TaskLockService:
+        """Get the TaskLockService for team task-level locking."""
+        return self._task_lock
 
     # Session management API
     async def get_session(self, *, user_id: str, session_id: str) -> SessionModel | None:

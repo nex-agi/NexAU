@@ -15,6 +15,7 @@
 """Tool execution management with XML parsing and parallel execution."""
 
 import _thread
+import dataclasses
 import json
 import logging
 import threading
@@ -244,6 +245,8 @@ class ToolExecutor:
         def _make_jsonable(obj: Any) -> Any:
             if isinstance(obj, BaseModel):
                 return obj.model_dump()
+            if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+                return {str(k): _make_jsonable(v) for k, v in dataclasses.asdict(obj).items()}
             if isinstance(obj, dict):
                 obj_dict = cast(dict[Any, Any], obj)
                 return {str(k): _make_jsonable(v) for k, v in obj_dict.items()}

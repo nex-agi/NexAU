@@ -1,0 +1,11 @@
+type: tool
+name: list_teammates
+description: >-
+  List all teammate agents in the team and their current status.
+  Returns agent ID, role name, and status (idle/running/stopped)
+  for each teammate.
+input_schema:
+  type: object
+  properties: {}
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

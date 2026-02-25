@@ -1,0 +1,97 @@
+type: agent
+name: rfc_writer
+description: >-
+  An RFC Writer agent that designs detailed RFC documents for NexAU agents.
+  Reads requirements, studies the codebase, writes comprehensive design docs,
+  and iterates with the user until the design is approved.
+max_context_tokens: 200000
+system_prompt: ./systemprompt_rfc_writer.md
+system_prompt_type: jinja
+tool_call_mode: openai
+max_iterations: 80
+
+llm_config:
+  model: ${env.LLM_MODEL}
+  base_url: ${env.LLM_BASE_URL}
+  api_key: ${env.LLM_API_KEY}
+  max_tokens: 16000
+  # temperature: 0.3
+  stream: true
+  api_type: openai_responses
+  reasoning:
+    effort: "medium"
+    summary: "detailed"
+  # api_type: gemini_rest
+  # thinking_budget: -1
+  # include_thoughts: true
+
+
+sandbox_config:
+  type: local
+  _work_dir: ${env.SANDBOX_WORK_DIR}
+
+# RFC Writer needs read/write/search tools + teammate tools (injected).
+tools:
+  - name: read_file
+    yaml_path: ./tools/read_file.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:read_file
+  - name: write_file
+    yaml_path: ./tools/write_file.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:write_file
+  - name: replace
+    yaml_path: ./tools/replace.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:replace
+  # Search and navigation
+  - name: search_file_content
+    yaml_path: ./tools/search_file_content.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:search_file_content
+  - name: glob
+    yaml_path: ./tools/Glob.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:glob
+  - name: list_directory
+    yaml_path: ./tools/list_directory.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:list_directory
+  # Shell (synchronous only - no background option)
+  - name: run_shell_command
+    yaml_path: ./tools/run_shell_command_sync.tool.yaml
+    binding: nexau.archs.tool.builtin.shell_tools:run_shell_command
+  # Web
+  - name: web_search
+    yaml_path: ./tools/WebSearch.tool.yaml
+    binding: nexau.archs.tool.builtin.web_tools:google_web_search
+  - name: web_read
+    yaml_path: ./tools/WebFetch.tool.yaml
+    binding: nexau.archs.tool.builtin.web_tools:web_fetch
+  - name: ask_user
+    yaml_path: ./tools/ask_user.tool.yaml
+    binding: nexau.archs.tool.builtin.session_tools:ask_user
+skills:
+  - skills/rfc
+  - skills/nexau-agent
+  - skills/skill-creator
+
+tracers:
+  - import: nexau.archs.tracer.adapters.langfuse:LangfuseTracer
+    params:
+      public_key: ${env.LANGFUSE_PUBLIC_KEY}
+      secret_key: ${env.LANGFUSE_SECRET_KEY}
+      host: https://langfuse.xiaobei.top/
+
+stop_tools: [ask_user]
+
+middlewares:
+  - import: nexau.archs.main_sub.execution.middleware.context_compaction:ContextCompactionMiddleware
+    params:
+      max_context_tokens: 200000
+      auto_compact: true
+      threshold: 0.75
+      compaction_strategy: "sliding_window"
+      keep_iterations: 2  # Keep last 2 iterations uncompacted
+
+      # Required: LLM for summarization
+      summary_model: ${env.SUMMARY_MODEL}
+      summary_base_url: ${env.SUMMARY_BASE_URL}
+      summary_api_key: ${env.SUMMARY_API_KEY}
+
+      # Optional: Custom summary prompt
+      compact_prompt_path: compact_prompt.md

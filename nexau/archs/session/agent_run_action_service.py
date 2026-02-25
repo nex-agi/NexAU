@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import NamedTuple
 
 from nexau.core.messages import Message, Role
@@ -23,6 +24,8 @@ from nexau.core.messages import Message, Role
 from .models import AgentRunActionModel
 from .models.agent_run_action_model import RunActionType
 from .orm import AndFilter, ComparisonFilter, DatabaseEngine
+
+logger = logging.getLogger(__name__)
 
 
 class AgentRunActionKey(NamedTuple):
@@ -92,6 +95,23 @@ class AgentRunActionService:
         messages = [m for m in messages if m.role != Role.SYSTEM]
         if not messages:
             raise ValueError("Cannot persist APPEND action with no messages")
+
+        logger.debug(
+            "🔍 [HISTORY-DEBUG] persist_append key=%s run_id=%s: %d messages, roles=%s",
+            key,
+            run_id,
+            len(messages),
+            [m.role.value for m in messages],
+        )
+        for i, msg in enumerate(messages):
+            block_types = [type(b).__name__ for b in msg.content]
+            logger.debug(
+                "🔍 [HISTORY-DEBUG]   persist msg[%d] role=%s blocks=%s text=%.80s",
+                i,
+                msg.role.value,
+                block_types,
+                msg.get_text_content()[:80] if msg.get_text_content() else "<empty>",
+            )
 
         record = AgentRunActionModel.create_append(
             user_id=key.user_id,
@@ -254,12 +274,26 @@ class AgentRunActionService:
 
             cursor = int(page[-1].created_at_ns)
 
+        logger.debug(
+            "🔍 [HISTORY-DEBUG] load_messages key=%s: found %d APPEND actions, base_replace=%s",
+            key,
+            len(appends_desc),
+            base_replace is not None,
+        )
+
         messages: list[Message] = []
         message_by_id: dict[str, int] = {}
 
-        def apply_messages(msgs: list[Message] | None) -> None:
+        def apply_messages(msgs: list[Message] | None, source: str) -> None:
             if not msgs:
+                logger.debug("🔍 [HISTORY-DEBUG] apply_messages(%s): no messages", source)
                 return
+            logger.debug(
+                "🔍 [HISTORY-DEBUG] apply_messages(%s): %d messages, roles=%s",
+                source,
+                len(msgs),
+                [m.role.value for m in msgs],
+            )
             for msg in msgs:
                 if msg.role == Role.SYSTEM:
                     continue
@@ -271,9 +305,24 @@ class AgentRunActionService:
                     messages[message_by_id[msg_id]] = msg
 
         if base_replace is not None:
-            apply_messages(base_replace.replace_messages)
+            apply_messages(base_replace.replace_messages, "REPLACE")
 
-        for action in reversed(appends_desc):
-            apply_messages(action.append_messages)
+        for i, action in enumerate(reversed(appends_desc)):
+            apply_messages(action.append_messages, f"APPEND[{i}] run_id={action.run_id}")
+
+        logger.debug(
+            "🔍 [HISTORY-DEBUG] load_messages RESULT: %d messages, roles=%s",
+            len(messages),
+            [m.role.value for m in messages],
+        )
+        for i, msg in enumerate(messages):
+            block_types = [type(b).__name__ for b in msg.content]
+            logger.debug(
+                "🔍 [HISTORY-DEBUG]   msg[%d] role=%s blocks=%s text_preview=%.100s",
+                i,
+                msg.role.value,
+                block_types,
+                msg.get_text_content()[:100] if msg.get_text_content() else "<empty>",
+            )
 
         return messages

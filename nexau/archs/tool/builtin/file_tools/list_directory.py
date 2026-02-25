@@ -38,6 +38,7 @@ def list_directory(
     dir_path: str,
     ignore: list[str] | None = None,
     file_filtering_options: dict[str, bool] | None = None,
+    show_hidden: bool = True,
     agent_state: AgentState | None = None,
 ) -> dict[str, Any]:
     """
@@ -50,6 +51,7 @@ def list_directory(
         dir_path: Path to the directory to list
         ignore: List of glob patterns to ignore
         file_filtering_options: Options for respecting .gitignore/.geminiignore
+        show_hidden: Whether to include hidden files/directories (starting with '.')
 
     Returns:
         Dict with content and returnDisplay matching gemini-cli format
@@ -137,6 +139,12 @@ def list_directory(
                 continue
 
             entry = Path(item.path).name
+
+            # Skip hidden entries when show_hidden is False
+            if not show_hidden and entry.startswith("."):
+                ignored_count += 1
+                continue
+
             # Check ignore patterns
             if _should_ignore(entry, ignore_patterns):
                 ignored_count += 1

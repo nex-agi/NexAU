@@ -1,0 +1,16 @@
+type: tool
+name: finish_team
+description: >-
+  Finish the team collaboration session. Only the team leader can call this.
+  Call this when all tasks are completed and no further work is needed.
+  This will stop all teammate agents and end the team run.
+input_schema:
+  type: object
+  properties:
+    summary:
+      type: string
+      description: A brief summary of the team's work and results
+  required:
+    - summary
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

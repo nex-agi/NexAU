@@ -1,0 +1,20 @@
+type: tool
+name: list_tasks
+description: >-
+  List tasks on the shared task board. Optionally filter by status.
+  Returns task ID, title, status, priority, dependencies, assignee,
+  and whether the task is blocked.
+input_schema:
+  type: object
+  properties:
+    status:
+      type: string
+      description: >-
+        Optional status filter (pending, in_progress, completed).
+        If omitted, returns all tasks.
+      enum:
+        - pending
+        - in_progress
+        - completed
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

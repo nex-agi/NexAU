@@ -57,6 +57,7 @@ from nexau.archs.main_sub.execution.response_parser import ResponseParser
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
 from nexau.archs.main_sub.execution.tool_executor import ToolExecutor
+from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
     normalize_tool_call_mode,
@@ -97,6 +98,7 @@ class Executor:
         serial_tool_name: list[str] | None = None,
         global_storage: Any = None,
         tool_call_mode: str = "openai",
+        team_mode: bool = False,
         openai_tools: list[ChatCompletionToolParam] | list[ToolParam] | None = None,
         session_manager: "SessionManager | None" = None,
         user_id: str | None = None,
@@ -124,6 +126,7 @@ class Executor:
             after_tool_hooks: Optional list of hooks called after tool execution
             middlewares: Optional list of middleware objects applied to all phases
             tool_call_mode: Preferred tool call format ('xml', 'openai', or 'anthropic')
+            team_mode: If True, executor runs in "forever run" mode for team agents
             openai_tools: Structured tool definitions for OpenAI/anthropic tool calls
             session_manager: Optional SessionManager for unified data access
             user_id: Optional user ID for persistence
@@ -202,6 +205,11 @@ class Executor:
         # Message queue for dynamic message enqueueing during execution
         self.queued_messages: list[Message] = []
 
+        # RFC-0002: Team mode — "forever run" loop that waits for messages when idle
+        self.team_mode = team_mode
+        self._message_available = threading.Event()
+        self._is_idle = False  # True when waiting for messages in team_mode
+
     @property
     def shutdown_event(self) -> threading.Event:
         """Public accessor for the shutdown event."""
@@ -221,6 +229,14 @@ class Executor:
         return not self._execution_done.is_set()
 
     @property
+    def is_idle(self) -> bool:
+        """Check if executor is idle (waiting for messages in team_mode).
+
+        RFC-0002: 用于全员空闲检测。
+        """
+        return self._is_idle
+
+    @property
     def execution_done_event(self) -> threading.Event:
         """Public accessor for the _execution_done event.
 
@@ -228,6 +244,21 @@ class Executor:
         Event is set when execute() is NOT running, cleared when running.
         """
         return self._execution_done
+
+    def _wait_for_messages(self) -> bool:
+        """Enter idle wait until new messages arrive or stop signal is received.
+
+        RFC-0002: team_mode 下的 idle 等待辅助方法
+
+        Returns:
+            True if new messages arrived, False if stop signal received.
+        """
+        self._is_idle = True
+        while not self.stop_signal and len(self.queued_messages) == 0:
+            self._message_available.clear()
+            self._message_available.wait(timeout=30)
+        self._is_idle = False
+        return not self.stop_signal
 
     def enqueue_message(self, message: dict[str, str]) -> None:
         """Enqueue a message to be processed during execution.
@@ -239,6 +270,8 @@ class Executor:
         role = Role(message.get("role", "user"))
         content = message.get("content", "")
         self.queued_messages.append(Message(role=role, content=[TextBlock(text=content)]))
+        # RFC-0002: 唤醒 team_mode 下等待消息的主循环
+        self._message_available.set()
         logger.info(
             f"📝 Message enqueued during execution: {message.get('role', 'unknown')} - {message.get('content', '')[:50]}...",
         )
@@ -268,6 +301,13 @@ class Executor:
         self._execution_done.clear()
 
         messages: list[Message] = []
+
+        # Keep a reference to the original history (HistoryList) so we can
+        # sync the executor's local ``messages`` back before blocking waits.
+        # This ensures that if the agent is cancelled (e.g. browser refresh)
+        # while waiting, the HistoryList already contains all messages and
+        # the ``finally`` block in ``_run_inner`` can flush them to storage.
+        _origin_history = history
 
         force_stop_reason = AgentStopReason.SUCCESS
 
@@ -326,6 +366,38 @@ class Executor:
                     )
                     messages.extend(self.queued_messages)
                     self.queued_messages = []
+
+                # RFC-0002: team_mode 下，若无用户内容（仅 system prompt），
+                # 跳过 LLM 调用，直接进入 idle 等待，避免浪费 token。
+                if self.team_mode and not any(m.role != Role.SYSTEM for m in messages):
+                    # Sync messages back to HistoryList before blocking wait
+                    if isinstance(_origin_history, HistoryList):
+                        _origin_history.replace_all(messages)
+                    if not self._wait_for_messages():
+                        break
+                    iteration += 1
+                    continue
+
+                # RFC-0002: team_mode 下，若最后一条非 system 消息是 assistant 消息，
+                # 跳过 LLM 调用，进入 idle 等待。恢复 session 时历史可能以 assistant
+                # 消息结尾，此时调用 LLM 会导致空响应（多数 LLM 不接受 assistant 结尾）。
+                if self.team_mode:
+                    last_non_system: Message | None = None
+                    for m in reversed(messages):
+                        if m.role != Role.SYSTEM:
+                            last_non_system = m
+                            break
+                    if last_non_system is not None and last_non_system.role == Role.ASSISTANT:
+                        logger.info(
+                            f"⏸️ team_mode: last message is assistant, skipping LLM call for '{self.agent_name}'",
+                        )
+                        # Sync messages back to HistoryList before blocking wait
+                        if isinstance(_origin_history, HistoryList):
+                            _origin_history.replace_all(messages)
+                        if not self._wait_for_messages():
+                            break
+                        iteration += 1
+                        continue
 
                 before_model_hook_input = BeforeModelHookInput(
                     agent_state=agent_state,
@@ -506,6 +578,22 @@ class Executor:
 
                 # Check if a stop tool was executed
                 if should_stop and len(self.queued_messages) == 0:
+                    # RFC-0002: team_mode 下，任何 should_stop（包括 stop_tool）都不退出，
+                    # 而是持续等待新消息到达后再继续循环。
+                    # 必须在循环中等待，避免超时后以 assistant 消息结尾调用 LLM。
+                    if self.team_mode:
+                        # RFC-0002: team_mode 下无限等待新消息，不设超时。
+                        # Leader 需要等待 teammate 完成工作（可能远超 120s），
+                        # watchdog 负责检测全员空闲并唤醒 leader。
+                        # Sync messages back to HistoryList before blocking wait
+                        if isinstance(_origin_history, HistoryList):
+                            _origin_history.replace_all(messages)
+                        if not self._wait_for_messages():
+                            force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
+                            final_response = processed_response
+                            break
+                        iteration += 1
+                        continue
                     # Return the stop tool result directly, formatted as JSON if it's not a string
                     if stop_tool_result is not None:
                         logger.info(
@@ -540,6 +628,11 @@ class Executor:
             )
             logger.info(
                 f"🔄 Final response for agent '{self.agent_name}': {final_response[:100]}",
+            )
+            logger.debug(
+                "🔍 [HISTORY-DEBUG] executor returning: %d messages, roles=%s",
+                len(messages),
+                [m.role.value for m in messages],
             )
             return final_response, messages
 
@@ -1073,6 +1166,17 @@ class Executor:
             batch_call.data_format,
             batch_call.message_template,
         )
+
+    def force_stop(self) -> None:
+        """Force-stop the executor, breaking the team_mode forever-run loop.
+
+        RFC-0002: 强制停止 team_mode 下的永久运行循环
+
+        Sets stop_signal and wakes the message wait so the loop exits immediately.
+        """
+        self.stop_signal = True
+        self._shutdown_event.set()
+        self._message_available.set()
 
     def cleanup(self) -> None:
         """Clean up executor resources."""

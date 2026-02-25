@@ -1,0 +1,23 @@
+# NexAU Tool YAML Definition Template
+# Copy this file and customize for your tool.
+
+type: tool
+name: my_tool                        # TODO: Replace with tool name
+description: >-                      # TODO: Replace with detailed description
+  Describe what this tool does, what it returns,
+  and any important behavior notes.
+input_schema:
+  type: object
+  properties:
+    param_name:                      # TODO: Replace with actual parameter
+      type: string
+      description: Description of this parameter.
+    optional_param:                  # TODO: Replace or remove
+      type: string
+      description: >-
+        (OPTIONAL) Description of this optional parameter.
+        If not provided, defaults to X.
+  required:
+    - param_name                     # TODO: List required parameters
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

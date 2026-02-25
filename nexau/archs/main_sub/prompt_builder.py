@@ -145,12 +145,23 @@ class PromptBuilder:
             )
 
             # Process the system prompt
-            return self.prompt_handler.create_dynamic_prompt(
+            rendered = self.prompt_handler.create_dynamic_prompt(
                 agent_config.system_prompt,
                 agent_config,  # Pass agent config as agent parameter
                 additional_context=context,
                 template_type=agent_config.system_prompt_type,
             )
+
+            # Append suffix (e.g. team context injected after template resolution)
+            if agent_config.system_prompt_suffix:
+                rendered += agent_config.system_prompt_suffix
+
+            # 自动注入 NEXAU.md（如果存在于 sandbox work dir 中）
+            nexau_md = self._load_nexau_md(agent_config, runtime_context)
+            if nexau_md:
+                rendered += f"\n\n# Project Instructions (NEXAU.md)\n\n{nexau_md}"
+
+            return rendered
         except Exception as e:
             logger.error(f"❌ Error processing system prompt: {e}")
             raise ValueError("Error processing system prompt") from e
@@ -167,6 +178,44 @@ class PromptBuilder:
             logger.warning(f"⚠️ Error loading default system prompt: {e}")
             raise ValueError("Error loading default system prompt") from e
         return "You are a helpful assistant."
+
+    def _load_nexau_md(
+        self,
+        agent_config: "AgentConfig",
+        runtime_context: dict[str, Any],
+    ) -> str | None:
+        """Load NEXAU.md from sandbox work dir if it exists.
+
+        自动寻找 SANDBOX_WORK_DIR 内的 NEXAU.md 并返回其内容，
+        用于注入到 system prompt 的末尾。
+
+        Resolution order for work dir:
+        1. runtime_context["working_directory"]
+        2. agent_config.sandbox_config.work_dir
+        """
+        # 1. 确定 work dir
+        work_dir_str = runtime_context.get("working_directory")
+        if not work_dir_str and agent_config.sandbox_config:
+            work_dir_str = agent_config.sandbox_config.work_dir
+
+        if not work_dir_str:
+            return None
+
+        # 2. 查找 NEXAU.md
+        nexau_md_path = Path(work_dir_str) / "NEXAU.md"
+        if not nexau_md_path.is_file():
+            return None
+
+        # 3. 读取并返回内容
+        try:
+            content = nexau_md_path.read_text(encoding="utf-8").strip()
+            if content:
+                logger.info("📄 Injecting NEXAU.md from %s", nexau_md_path)
+                return content
+        except Exception as e:
+            logger.warning("⚠️ Failed to read NEXAU.md at %s: %s", nexau_md_path, e)
+
+        return None
 
     def _build_capabilities_docs(
         self,

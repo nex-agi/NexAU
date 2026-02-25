@@ -25,7 +25,11 @@ from typing import TYPE_CHECKING, TypeGuard
 from openai.types.chat import ChatCompletionChunk
 from openai.types.responses import ResponseStreamEvent
 
-from nexau.archs.llm.llm_aggregators import OpenAIChatCompletionAggregator, OpenAIResponsesAggregator
+from nexau.archs.llm.llm_aggregators import (
+    GeminiRestEventAggregator,
+    OpenAIChatCompletionAggregator,
+    OpenAIResponsesAggregator,
+)
 from nexau.archs.llm.llm_aggregators.events import (
     Event,
     RunErrorEvent,
@@ -62,6 +66,11 @@ def is_anthropic_event(event: object) -> TypeGuard[MessageStreamEvent]:
 def is_openai_responses_event(event: object) -> TypeGuard[ResponseStreamEvent]:
     event_module = event.__class__.__module__
     return event_module.startswith("openai.types.responses") or event_module.startswith("openai.lib.streaming")
+
+
+def is_gemini_rest_chunk(chunk: object) -> TypeGuard[dict[str, object]]:
+    """Check if a chunk is a Gemini REST API streaming dict."""
+    return isinstance(chunk, dict) and "candidates" in chunk
 
 
 class AgentEventsMiddleware(Middleware):
@@ -103,6 +112,7 @@ class AgentEventsMiddleware(Middleware):
         self.openai_chat_completion_aggregators: dict[str, OpenAIChatCompletionAggregator] = {}
         # Use lazy initialization to avoid passing on_event too early
         self._openai_responses_aggregator: OpenAIResponsesAggregator | None = None
+        self._gemini_rest_aggregator: GeminiRestEventAggregator | None = None
 
     def openai_responses_aggregator(self, *, run_id: str) -> OpenAIResponsesAggregator:
         """Lazy initialization for OpenAIResponsesAggregator."""
@@ -112,6 +122,15 @@ class AgentEventsMiddleware(Middleware):
                 run_id=run_id,
             )
         return self._openai_responses_aggregator
+
+    def gemini_rest_aggregator(self, *, run_id: str) -> GeminiRestEventAggregator:
+        """Lazy initialization for GeminiRestEventAggregator."""
+        if self._gemini_rest_aggregator is None:
+            self._gemini_rest_aggregator = GeminiRestEventAggregator(
+                on_event=self.on_event,
+                run_id=run_id,
+            )
+        return self._gemini_rest_aggregator
 
     def before_agent(self, hook_input: BeforeAgentHookInput) -> HookResult:
         """Hook called before agent execution starts.
@@ -198,8 +217,10 @@ class AgentEventsMiddleware(Middleware):
         return HookResult.no_changes()
 
     def stream_chunk(
-        self, chunk: ChatCompletionChunk | ResponseStreamEvent | MessageStreamEvent, params: ModelCallParams
-    ) -> ChatCompletionChunk | ResponseStreamEvent | MessageStreamEvent:
+        self,
+        chunk: ChatCompletionChunk | ResponseStreamEvent | MessageStreamEvent | dict[str, object],
+        params: ModelCallParams,
+    ) -> ChatCompletionChunk | ResponseStreamEvent | MessageStreamEvent | dict[str, object]:
         """Process raw stream chunks from LLM.
 
         This hook receives raw chunks from the LLM API streaming response. The chunks
@@ -207,6 +228,7 @@ class AgentEventsMiddleware(Middleware):
         - ChatCompletionChunk (OpenAI Chat Completions API)
         - ResponseStreamEvent (OpenAI Responses API)
         - MessageDeltaEvent (Anthropic Messages API)
+        - dict (Gemini REST API)
 
         Note: The actual Event objects (from llm_aggregators.events) are generated
         internally by the aggregator and passed to the on_event callback. The aggregator
@@ -218,12 +240,6 @@ class AgentEventsMiddleware(Middleware):
 
         Returns:
             The chunk (potentially modified) to pass to the next middleware
-
-        Example:
-            async def handle_streaming_request(...):
-                middleware = AgentEventsMiddleware(on_event=process_event)
-                # Need to configure llm_aggregator with middleware.on_event
-                # so aggregator triggers callbacks as it processes chunks
         """
 
         # Get run_id from agent_state - agent_state is always present in stream_chunk
@@ -248,6 +264,10 @@ class AgentEventsMiddleware(Middleware):
             if chunk.type == "response.created":
                 self.openai_responses_aggregator(run_id=run_id).clear()
             openai_responses_aggregator.aggregate(chunk)
+
+        if is_gemini_rest_chunk(chunk):
+            gemini_aggregator = self.gemini_rest_aggregator(run_id=run_id)
+            gemini_aggregator.aggregate(chunk)
 
         # This middleware doesn't modify chunks, just observes them
         # The actual event emission happens in the aggregator's on_event callback

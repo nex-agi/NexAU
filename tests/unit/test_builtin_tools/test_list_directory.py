@@ -127,6 +127,35 @@ class TestListDirectory:
         assert adir_pos < afile_pos
         assert zdir_pos < zfile_pos
 
+    def test_show_hidden_default_true(self):
+        """Should include hidden files and directories by default."""
+        os.makedirs(os.path.join(self.temp_dir, ".hidden_dir"))
+        with open(os.path.join(self.temp_dir, ".hidden_file"), "w") as f:
+            f.write("hidden")
+        with open(os.path.join(self.temp_dir, "visible.txt"), "w") as f:
+            f.write("visible")
+
+        result = list_directory(dir_path=self.temp_dir, agent_state=self.agent_state)
+
+        assert ".hidden_dir" in result["content"]
+        assert ".hidden_file" in result["content"]
+        assert "visible.txt" in result["content"]
+
+    def test_show_hidden_false_excludes_dotfiles(self):
+        """Should exclude hidden files and directories when show_hidden=False."""
+        os.makedirs(os.path.join(self.temp_dir, ".hidden_dir"))
+        with open(os.path.join(self.temp_dir, ".hidden_file"), "w") as f:
+            f.write("hidden")
+        with open(os.path.join(self.temp_dir, "visible.txt"), "w") as f:
+            f.write("visible")
+
+        result = list_directory(dir_path=self.temp_dir, show_hidden=False, agent_state=self.agent_state)
+
+        assert ".hidden_dir" not in result["content"]
+        assert ".hidden_file" not in result["content"]
+        assert "visible.txt" in result["content"]
+        assert "ignored" in result["returnDisplay"]
+
 
 class TestListDirectoryOutputFormat:
     """Test list_directory output format."""

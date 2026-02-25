@@ -23,9 +23,6 @@ tools: # Builtin tools (nexau.archs.tool.builtin)
   - name: read_file
     yaml_path: ./tools/read_file.tool.yaml
     binding: nexau.archs.tool.builtin.file_tools:read_file
-  - name: read_many_files
-    yaml_path: ./tools/read_many_files.tool.yaml
-    binding: nexau.archs.tool.builtin.file_tools:read_many_files
   - name: write_file
     yaml_path: ./tools/write_file.tool.yaml
     binding: nexau.archs.tool.builtin.file_tools:write_file
@@ -73,10 +70,6 @@ skills: # Skills are used to hint the agent to solve specific tasks
   - ./skills/skill-creator
   - ./skills/template-skill
 stop_tools: [complete_task]
-middlewares:
-  - import: nexau.archs.tool.builtin.session_tools.ask_user_hook:AskUserMiddleware
+middlewares: []
 tracers:
   - import: nexau.archs.tracer.adapters.in_memory:InMemoryTracer
-
-
-

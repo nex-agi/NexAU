@@ -253,6 +253,38 @@ class TransportErrorEvent(BaseEvent):
     # BaseEvent already has timestamp: int | None = None
 
 
+class UserMessageEvent(BaseEvent):
+    """Event for user messages sent to an agent during streaming.
+
+    RFC-0002: 用户消息事件
+
+    Attributes:
+        content: Message text
+        to_agent_id: Target agent ID
+    """
+
+    type: Literal["USER_MESSAGE"] = "USER_MESSAGE"  # type: ignore[assignment]
+    content: str
+    to_agent_id: str
+
+
+class TeamMessageEvent(BaseEvent):
+    """Event for inter-agent messages via the message bus.
+
+    RFC-0002: Agent 间消息事件
+
+    Attributes:
+        content: Message text
+        from_agent_id: Sender agent ID
+        to_agent_id: Receiver agent ID (None for broadcast)
+    """
+
+    type: Literal["TEAM_MESSAGE"] = "TEAM_MESSAGE"  # type: ignore[assignment]
+    content: str
+    from_agent_id: str
+    to_agent_id: str | None = None
+
+
 # ============= UNION TYPES =============
 
 # Unified Event type that includes all AG UI core events and multimodal events
@@ -280,6 +312,9 @@ Event = (
     | ImageMessageStartEvent
     | ImageMessageContentEvent
     | ImageMessageEndEvent
+    # Team message events (RFC-0002)
+    | UserMessageEvent
+    | TeamMessageEvent
 )
 
 __all__ = [
@@ -307,4 +342,7 @@ __all__ = [
     "ImageMessageStartEvent",
     "ImageMessageContentEvent",
     "ImageMessageEndEvent",
+    # Team message events
+    "UserMessageEvent",
+    "TeamMessageEvent",
 ]

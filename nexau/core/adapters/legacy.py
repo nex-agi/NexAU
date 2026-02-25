@@ -357,7 +357,13 @@ def messages_to_legacy_openai_chat(
             if tr is None:
                 output.append({"role": "tool", "content": msg.get_text_content()})
             else:
-                output.extend(_emit_tool_result_as_messages(tool_call_id=tr.tool_use_id, tool_content=tr.content))
+                tool_msgs = _emit_tool_result_as_messages(tool_call_id=tr.tool_use_id, tool_content=tr.content)
+                # Propagate tool_name from metadata (used by Gemini REST for functionResponse.name)
+                tool_name = msg.metadata.get("tool_name")
+                if tool_name:
+                    for tm in tool_msgs:
+                        tm["name"] = tool_name
+                output.extend(tool_msgs)
             continue
 
         entry: dict[str, Any] = {"role": role, "content": ""}

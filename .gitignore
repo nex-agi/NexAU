@@ -1,3 +1,5 @@
+.nexau/
+.skills/
 *.pyc
 .env
 *.egg-info

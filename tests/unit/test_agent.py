@@ -341,8 +341,8 @@ class TestAgent:
 
             assert global_storage.get("tracer") is tracer
 
-    def test_agent_raises_on_conflicting_tracers(self, agent_config, global_storage):
-        """Agent should raise ValueError when global_storage has tracer and config also provides one."""
+    def test_agent_config_tracer_overwrites_existing(self, agent_config, global_storage):
+        """Config tracer should overwrite any existing tracer in global_storage."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
@@ -355,8 +355,9 @@ class TestAgent:
             config_with_tracer = AgentConfig(**agent_payload)
             config_with_tracer.resolved_tracer = child_tracer
 
-            with pytest.raises(ValueError, match="Conflicting tracers"):
-                Agent(config=config_with_tracer, global_storage=global_storage)
+            Agent(config=config_with_tracer, global_storage=global_storage)
+
+            assert global_storage.get("tracer") is child_tracer
 
     def test_initialize_mcp_tools_success(self, agent_config, global_storage):
         """Test successful MCP tools initialization."""

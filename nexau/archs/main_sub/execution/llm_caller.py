@@ -18,7 +18,7 @@ import json
 import logging
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any, Literal, cast
 
 import openai
@@ -32,7 +32,7 @@ from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.tracer.context import TraceContext, get_current_span
 from nexau.archs.tracer.core import BaseTracer, SpanType
 from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
-from nexau.core.messages import Message
+from nexau.core.messages import Message, Role, ToolResultBlock, ToolUseBlock
 
 from ..agent_state import AgentState
 from ..tool_call_modes import STRUCTURED_TOOL_CALL_MODES, normalize_tool_call_mode
@@ -41,6 +41,88 @@ from .model_response import ModelResponse
 from .stop_reason import AgentStopReason
 
 logger = logging.getLogger(__name__)
+
+_MISSING_TOOL_RESULT_CONTENT = "no tool result (canceled, compacted or failed)"
+
+
+def _ensure_tool_results(messages: list[Message]) -> list[Message]:
+    """Ensure every ToolUseBlock has a matching ToolResultBlock.
+
+    When a tool execution is interrupted (canceled, compacted, or failed),
+    the next LLM call will error with "No tool output found for function call".
+    This function detects orphaned tool calls and injects synthetic tool result
+    messages so the conversation remains valid.
+    """
+    # 1. 收集所有 tool_use id、所在消息索引、以及工具名称
+    tool_use_ids: dict[str, int] = {}
+    tool_use_names: dict[str, str] = {}
+    for idx, msg in enumerate(messages):
+        if msg.role == Role.ASSISTANT:
+            for block in msg.content:
+                if isinstance(block, ToolUseBlock):
+                    tool_use_ids[block.id] = idx
+                    tool_use_names[block.id] = block.name
+
+    if not tool_use_ids:
+        return messages
+
+    # 2. 收集所有已有的 tool_result tool_use_id，同时支持前缀匹配
+    #    （框架的工具执行系统可能在 tool_call_id 后追加 UUID，如 "tool_call" -> "tool_call_a45a..."）
+    matched_tool_use_ids: set[str] = set()
+    for msg in messages:
+        if msg.role == Role.TOOL:
+            for block in msg.content:
+                if isinstance(block, ToolResultBlock):
+                    result_id = block.tool_use_id
+                    # 精确匹配
+                    if result_id in tool_use_ids:
+                        matched_tool_use_ids.add(result_id)
+                    else:
+                        # 前缀匹配：tool_use_id 以某个 ToolUseBlock.id 开头
+                        for use_id in tool_use_ids:
+                            if result_id.startswith(use_id):
+                                matched_tool_use_ids.add(use_id)
+                                break
+
+    # 3. 找出缺失的 tool_use_id
+    missing_ids = set(tool_use_ids.keys()) - matched_tool_use_ids
+    if not missing_ids:
+        return messages
+
+    logger.warning(
+        "🔧 Found %d tool call(s) without results, injecting synthetic tool results: %s",
+        len(missing_ids),
+        missing_ids,
+    )
+
+    # 4. 按所属 assistant 消息索引分组，以便在正确位置插入
+    missing_by_index: dict[int, list[str]] = {}
+    for tid in missing_ids:
+        assistant_idx = tool_use_ids[tid]
+        missing_by_index.setdefault(assistant_idx, []).append(tid)
+
+    # 5. 构建新消息列表，在每个有缺失结果的 assistant 消息后插入合成结果
+    result: list[Message] = []
+    for idx, msg in enumerate(messages):
+        result.append(msg)
+        if idx in missing_by_index:
+            for tid in missing_by_index[idx]:
+                result.append(
+                    Message(
+                        role=Role.TOOL,
+                        content=[
+                            ToolResultBlock(
+                                tool_use_id=tid,
+                                content=_MISSING_TOOL_RESULT_CONTENT,
+                                is_error=True,
+                            )
+                        ],
+                        # 保存工具名称，供 Gemini REST 转换使用（functionResponse 需要 name）
+                        metadata={"tool_name": tool_use_names.get(tid, "")},
+                    )
+                )
+
+    return result
 
 
 class LLMCaller:
@@ -156,6 +238,10 @@ class LLMCaller:
 
         logger.info(f"🧠 Calling LLM with {max_tokens} max tokens...")
 
+        # Ensure all tool calls have corresponding tool results to avoid
+        # "No tool output found for function call" errors after interruptions.
+        messages = _ensure_tool_results(messages)
+
         model_call_params = ModelCallParams(
             messages=messages,
             max_tokens=max_tokens,
@@ -218,7 +304,17 @@ class LLMCaller:
                 tool_image_policy: Literal["inject_user_message", "embed_in_tool_message"] = (
                     "embed_in_tool_message" if self.llm_config.api_type == "openai_responses" else "inject_user_message"
                 )
+                logger.debug(
+                    "🔍 [HISTORY-DEBUG] LLM call: %d Message objects, roles=%s",
+                    len(params.messages),
+                    [m.role.value for m in params.messages],
+                )
                 kwargs["messages"] = messages_to_legacy_openai_chat(params.messages, tool_image_policy=tool_image_policy)
+                logger.debug(
+                    "🔍 [HISTORY-DEBUG] After legacy conversion: %d dicts, roles=%s",
+                    len(kwargs["messages"]),
+                    [m.get("role") for m in kwargs["messages"]],
+                )
                 client = params.openai_client if params.openai_client is not None else self.openai_client
                 response_content = call_llm_with_different_client(
                     client,
@@ -619,6 +715,15 @@ def call_llm_with_openai_responses(
     if "reasoning.encrypted_content" not in include_list:
         include_list.append("reasoning.encrypted_content")
 
+    # 将代理专用参数（如 prompt_cache_key）移入 extra_body，
+    # 因为 OpenAI SDK v2+ 不接受非标准 kwargs。
+    extra_body: dict[str, Any] = request_payload.pop("extra_body", None) or {}
+    prompt_cache_key = request_payload.pop("prompt_cache_key", None)
+    if prompt_cache_key is not None:
+        extra_body["prompt_cache_key"] = prompt_cache_key
+    if extra_body:
+        request_payload["extra_body"] = extra_body
+
     # Check if tracing is active (there's a current span and we have a tracer)
     should_trace = tracer is not None and get_current_span() is not None
 
@@ -930,6 +1035,9 @@ def _sanitize_response_items_for_input(items: list[Any], *, drop_ephemeral_ids: 
                 # preserve the original summary as-is (API expects [] for encrypted items).
                 if not item_copy.get("encrypted_content"):
                     item_copy["summary"] = _ensure_reasoning_summary(item_copy)
+                else:
+                    # API requires summary even for encrypted reasoning; default to []
+                    item_copy.setdefault("summary", [])
         else:
             sanitized.append(item)
             continue
@@ -1406,9 +1514,11 @@ class ReasoningSummaryBuilder:
         *,
         content: list[dict[str, Any]] | None = None,
         summary: list[dict[str, Any]] | None = None,
+        encrypted_content: str | None = None,
     ) -> None:
         self.item_id = item_id
         self.content: list[dict[str, Any]] = list(content or [])
+        self.encrypted_content: str | None = encrypted_content
         self._summary_parts: dict[int, dict[str, Any]] = {}
         self._summary_order: list[int] = []
         self._seed_initial_summary(summary)
@@ -1421,6 +1531,9 @@ class ReasoningSummaryBuilder:
             for content_part in content_list:
                 content_dicts.append(dict(content_part))
             self.content = content_dicts
+        encrypted = item.get("encrypted_content")
+        if isinstance(encrypted, str):
+            self.encrypted_content = encrypted
         summary = item.get("summary")
         if isinstance(summary, list):
             summary_parts: list[dict[str, Any]] = []
@@ -1450,10 +1563,12 @@ class ReasoningSummaryBuilder:
             "type": "reasoning",
             "id": self.item_id,
         }
+        if self.encrypted_content is not None:
+            item["encrypted_content"] = self.encrypted_content
         if self.content:
             item["content"] = self.content
-        if summary_parts:
-            item["summary"] = summary_parts
+        # Always include summary — API requires it even as [] for encrypted reasoning items
+        item["summary"] = summary_parts
         return item
 
 
@@ -1476,6 +1591,8 @@ class OpenAIResponsesStreamAggregator:
 
         if event_type == "response.output_item.added":
             self._handle_output_item_added(payload)
+        elif event_type == "response.output_item.done":
+            self._handle_output_item_done(payload)
         elif event_type == "response.content_part.added":
             self._handle_content_part_added(payload)
         elif event_type == "response.output_text.delta":
@@ -1553,9 +1670,26 @@ class OpenAIResponsesStreamAggregator:
         elif item_type == "reasoning":
             reasoning_builder = self._reasoning_builders.setdefault(
                 item_id,
-                ReasoningSummaryBuilder(item_id, content=item.get("content"), summary=item.get("summary")),
+                ReasoningSummaryBuilder(
+                    item_id,
+                    content=item.get("content"),
+                    summary=item.get("summary"),
+                    encrypted_content=item.get("encrypted_content"),
+                ),
             )
             reasoning_builder.update_from_item(item)
+
+    def _handle_output_item_done(self, payload: dict[str, Any]) -> None:
+        """Handle response.output_item.done to capture final encrypted_content for reasoning items."""
+        item = _to_serializable_dict(payload.get("item", {}))
+        item_id = item.get("id")
+        if not item_id:
+            return
+        item_type = item.get("type")
+        if item_type == "reasoning":
+            reasoning_builder = self._reasoning_builders.get(item_id)
+            if reasoning_builder is not None:
+                reasoning_builder.update_from_item(item)
 
     def _handle_content_part_added(self, payload: dict[str, Any]) -> None:
         item_id = payload.get("item_id")
@@ -1598,10 +1732,167 @@ class OpenAIResponsesStreamAggregator:
         reasoning_builder.append_summary_delta(summary_index, delta)
 
 
-def _gemini_sanitize_parameters(params: dict[str, Any]) -> dict[str, Any]:
-    """Keep only type, properties, required for Gemini (strip $schema, additionalProperties, etc.)."""
-    allowed = {"type", "properties", "required"}
-    return {k: v for k, v in params.items() if k in allowed}
+class GeminiRestStreamAggregator:
+    """Aggregate Gemini REST API SSE stream chunks into a final response dict.
+
+    RFC-0003: Gemini REST 流式响应聚合器
+
+    Each SSE chunk from Gemini streamGenerateContent has the same structure
+    as a non-streaming generateContent response.  This aggregator merges
+    text deltas, thinking content, thought signatures, function calls,
+    and usage metadata across all chunks into a single dict compatible
+    with ModelResponse.from_gemini_rest().
+    """
+
+    def __init__(self) -> None:
+        self._content_parts: list[str] = []
+        self._reasoning_parts: list[str] = []
+        self._thought_signature: str | None = None
+        self._tool_calls: list[dict[str, Any]] = []
+        self._usage_metadata: dict[str, Any] = {}
+        self.model_name: str | None = None
+
+    def consume(self, chunk_json: dict[str, Any]) -> None:
+        """Process a single SSE chunk (parsed JSON dict).
+
+        RFC-0003: 处理单个 SSE 数据块
+        """
+        # 1. 提取 candidates
+        candidates = chunk_json.get("candidates", [])
+        if not candidates:
+            return
+
+        candidate = candidates[0]
+        content_obj = candidate.get("content", {})
+        parts = content_obj.get("parts", [])
+
+        # 2. 遍历 parts，分类聚合
+        for part in parts:
+            if part.get("thought"):
+                text = part.get("text", "")
+                if text:
+                    self._reasoning_parts.append(text)
+
+            if "thoughtSignature" in part:
+                self._thought_signature = part["thoughtSignature"]
+
+            if "text" in part and not part.get("thought"):
+                self._content_parts.append(part["text"])
+
+            if "functionCall" in part:
+                self._tool_calls.append(part)
+
+        # 3. 提取 usage metadata（通常在最后一个 chunk）
+        usage_meta = chunk_json.get("usageMetadata")
+        if usage_meta:
+            self._usage_metadata = usage_meta
+
+        # 4. 提取 model name（如果存在）
+        model = chunk_json.get("modelVersion")
+        if isinstance(model, str):
+            self.model_name = model
+
+    def finalize(self) -> dict[str, Any]:
+        """Return aggregated response dict compatible with ModelResponse.from_gemini_rest().
+
+        RFC-0003: 返回与 ModelResponse.from_gemini_rest() 兼容的聚合响应
+        """
+        if not self._content_parts and not self._tool_calls and not self._reasoning_parts:
+            raise RuntimeError("No stream chunks were received from Gemini REST API")
+
+        # Build parts list matching Gemini response structure
+        parts: list[dict[str, Any]] = []
+
+        if self._reasoning_parts:
+            parts.append({"text": "".join(self._reasoning_parts), "thought": True})
+
+        if self._thought_signature is not None:
+            parts.append({"thoughtSignature": self._thought_signature})
+
+        if self._content_parts:
+            parts.append({"text": "".join(self._content_parts)})
+
+        for tc_part in self._tool_calls:
+            parts.append(tc_part)
+
+        result: dict[str, Any] = {
+            "candidates": [{"content": {"parts": parts, "role": "model"}}],
+        }
+        if self._usage_metadata:
+            result["usageMetadata"] = self._usage_metadata
+
+        return result
+
+
+def _iter_gemini_sse_chunks(response: requests.Response) -> Iterator[dict[str, Any]]:
+    """Parse streaming chunks from a Gemini streaming response.
+
+    RFC-0003: 解析 Gemini 流式响应
+
+    Supports two response formats:
+    1. SSE format (``alt=sse``): lines prefixed with ``data:`` contain JSON payloads.
+    2. JSON array format (default ``streamGenerateContent``): the response body is
+       a JSON array of candidate objects, streamed incrementally.
+
+    The parser first attempts SSE parsing.  If no ``data:`` lines are found it
+    falls back to accumulating the raw bytes and parsing them as a JSON array.
+    """
+    raw_lines: list[str] = []
+    yielded_any = False
+
+    for line_bytes in response.iter_lines():
+        if not line_bytes:
+            continue
+        line = line_bytes.decode() if isinstance(line_bytes, bytes) else line_bytes
+
+        # 1. SSE 格式: 处理 "data:" 前缀行（兼容有无空格）
+        if line.startswith("data:"):
+            json_str = line[5:].lstrip()  # strip "data:" and optional leading space
+            if not json_str:
+                continue
+            try:
+                chunk = json.loads(json_str)
+                yielded_any = True
+                yield chunk
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse Gemini SSE chunk: %s", json_str[:200])
+            continue
+
+        # 2. 非 SSE 行: 收集用于 JSON 数组回退解析
+        raw_lines.append(line)
+
+    # 3. 回退: 如果没有 SSE 数据，尝试将收集的行解析为 JSON 数组
+    if not yielded_any and raw_lines:
+        body = "\n".join(raw_lines)
+        try:
+            parsed = json.loads(body)
+            if isinstance(parsed, list):
+                for item_obj in cast(list[object], parsed):
+                    if isinstance(item_obj, dict):
+                        yield cast(dict[str, object], item_obj)
+            elif isinstance(parsed, dict):
+                yield parsed
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse Gemini streaming response as JSON: %s", body[:500])
+
+
+def _gemini_sanitize_parameters(params: dict[str, object]) -> dict[str, object]:
+    """Recursively sanitize schema for Gemini (strip $schema, additionalProperties, etc.)."""
+    allowed = {"type", "properties", "required", "description", "enum", "items", "format", "nullable"}
+    sanitized: dict[str, object] = {}
+    for k, v in params.items():
+        if k not in allowed:
+            continue
+        if k == "properties" and isinstance(v, dict):
+            v_dict = cast(dict[str, object], v)
+            sanitized[k] = {
+                pk: _gemini_sanitize_parameters(cast(dict[str, object], pv)) for pk, pv in v_dict.items() if isinstance(pv, dict)
+            }
+        elif k == "items" and isinstance(v, dict):
+            sanitized[k] = _gemini_sanitize_parameters(cast(dict[str, object], v))
+        else:
+            sanitized[k] = v
+    return sanitized
 
 
 def convert_tools_to_gemini(tools: list[Any]) -> list[dict[str, Any]]:
@@ -1616,7 +1907,7 @@ def convert_tools_to_gemini(tools: list[Any]) -> list[dict[str, Any]]:
                 {
                     "name": func.get("name"),
                     "description": func.get("description", ""),
-                    "parameters": _gemini_sanitize_parameters(raw_params),
+                    "parameters": _gemini_sanitize_parameters(cast(dict[str, object], raw_params) if isinstance(raw_params, dict) else {}),
                 }
             )
     return gemini_tools
@@ -1627,6 +1918,8 @@ def openai_to_gemini_rest_messages(messages: list[dict[str, Any]]) -> tuple[list
     gemini_contents: list[dict[str, Any]] = []
     system_instruction: dict[str, Any] | None = None
     # Track function names from last assistant tool_calls for filling functionResponse.name (tool messages have no name)
+    # Use ID-based mapping for robust matching (positional matching breaks when synthetic tool results are injected)
+    last_tool_call_id_to_name: dict[str, str] = {}
     last_model_function_names: list[str] = []
     tool_result_index = 0
 
@@ -1648,6 +1941,18 @@ def openai_to_gemini_rest_messages(messages: list[dict[str, Any]]) -> tuple[list
                 tool_calls_list = cast(list[dict[str, Any]], tool_calls)
                 last_model_function_names = [str(cast(dict[str, Any], tc.get("function", {})).get("name", "")) for tc in tool_calls_list]
                 tool_result_index = 0
+                # Build ID-based mapping for robust matching (handles synthetic/reordered tool results)
+                for tc in tool_calls_list:
+                    tc_id = str(tc.get("id", ""))
+                    tc_name = str(cast(dict[str, Any], tc.get("function", {})).get("name", ""))
+                    if tc_id and tc_name:
+                        last_tool_call_id_to_name[tc_id] = tc_name
+                logger.debug(
+                    "🔍 [DEBUG] Assistant tool_calls: ids=%r, names=%r, id_map=%r",
+                    [tc.get("id") for tc in tool_calls_list],
+                    last_model_function_names,
+                    last_tool_call_id_to_name,
+                )
                 # Gemini 3 Requirement: The first functionCall in a turn needs the thought_signature
                 # Check for top-level signature or OpenAI-compatible nested signature
                 thought_sig: str | None = cast(str | None, msg.get("thought_signature"))
@@ -1681,14 +1986,35 @@ def openai_to_gemini_rest_messages(messages: list[dict[str, Any]]) -> tuple[list
             gemini_contents.append({"role": "user", "parts": parts})
 
         elif role == "tool":
-            # Fill name from last assistant's tool_calls by order (tool messages from legacy have no name)
-            func_name: str | None = None
-            if tool_result_index < len(last_model_function_names):
+            # Fill name from last assistant's tool_calls.
+            # Resolution order: exact ID match → prefix ID match → positional → msg["name"]
+            tool_call_id = str(msg.get("tool_call_id", ""))
+            func_name: str | None = last_tool_call_id_to_name.get(tool_call_id) if tool_call_id else None
+            # 前缀匹配：框架可能在 tool_call_id 后追加 UUID（如 "tool_call" → "tool_call_a45a..."）
+            if func_name is None and tool_call_id:
+                for known_id, known_name in last_tool_call_id_to_name.items():
+                    if tool_call_id.startswith(known_id):
+                        func_name = known_name
+                        break
+            if func_name is None and tool_result_index < len(last_model_function_names):
                 func_name = last_model_function_names[tool_result_index] or None
             tool_result_index += 1
             if func_name is None:
                 func_name = msg.get("name")
                 if func_name is None:
+                    logger.error(
+                        "🔍 [DEBUG] Cannot resolve function name for tool result. "
+                        "tool_call_id=%r, id_map_keys=%r, "
+                        "positional_names=%r, tool_result_index=%d, "
+                        "msg_keys=%r, msg_name=%r, full_msg=%r",
+                        tool_call_id,
+                        list(last_tool_call_id_to_name.keys()),
+                        last_model_function_names,
+                        tool_result_index - 1,
+                        list(msg.keys()),
+                        msg.get("name"),
+                        {k: (v if k != "content" else f"<{len(str(v))} chars>") for k, v in msg.items()},
+                    )
                     raise ValueError("Function name is required for tool result messages")
             resp_part = {"functionResponse": {"name": func_name, "response": {"result": content}}}
             if gemini_contents and gemini_contents[-1]["role"] == "user":
@@ -1720,10 +2046,7 @@ def call_llm_with_gemini_rest(
             for block in msg.content:
                 if isinstance(block, ImageBlock):
                     raise ValueError("Image input is not supported for Gemini REST API")
-    # TODO: Support stream for Gemini REST API
     stream_requested = bool(kwargs.pop("stream", False) or getattr(llm_config, "stream", False))
-    if stream_requested:
-        raise ValueError("Stream is not supported for Gemini REST API")
     if not llm_config:
         raise ValueError("llm_config is required for gemini_rest call")
 
@@ -1738,12 +2061,18 @@ def call_llm_with_gemini_rest(
     model_name = llm_config.model
     api_key = llm_config.api_key
 
+    # RFC-0003: 根据是否流式选择不同的 endpoint
+    endpoint = "streamGenerateContent" if stream_requested else "generateContent"
+
     if not base_url or "generativelanguage.googleapis.com" in base_url:
         if not base_url:
             base_url = "https://generativelanguage.googleapis.com"
-        url = f"{base_url}/v1beta/models/{model_name}:generateContent?key={api_key}"
+        url = f"{base_url}/v1beta/models/{model_name}:{endpoint}?key={api_key}"
     else:
-        url = f"{base_url}/models/{model_name}:generateContent?key={api_key}"
+        url = f"{base_url}/models/{model_name}:{endpoint}?key={api_key}"
+
+    if stream_requested:
+        url += "&alt=sse"
 
     # Construct request body - only include non-None values
     generation_config: dict[str, Any] = {
@@ -1782,6 +2111,94 @@ def call_llm_with_gemini_rest(
     # Check if tracing is active (there's a current span and we have a tracer)
     should_trace = tracer is not None and get_current_span() is not None
 
+    # RFC-0003: 流式请求路径
+    if stream_requested:
+
+        def do_stream_request() -> dict[str, Any]:
+            """Execute streaming request and return aggregated response dict.
+
+            RFC-0003: 执行 Gemini REST 流式请求
+            """
+            aggregator = GeminiRestStreamAggregator()
+            _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
+
+            if should_trace and tracer is not None:
+                trace_ctx = TraceContext(
+                    tracer,
+                    "Gemini REST streamGenerateContent",
+                    SpanType.LLM,
+                    inputs=request_body,
+                )
+                with trace_ctx:
+                    start_time = time.time()
+                    first_token_time = None
+                    resp = requests.post(
+                        url,
+                        json=request_body,
+                        timeout=llm_config.timeout or 120,
+                        stream=True,
+                    )
+                    resp.raise_for_status()
+                    for chunk_json in _iter_gemini_sse_chunks(resp):
+                        if _shutdown_ev is not None and _shutdown_ev.is_set():
+                            logger.info(
+                                "🛑 Shutdown event detected during Gemini REST streaming, finalizing partial response",
+                            )
+                            break
+                        if first_token_time is None:
+                            first_token_time = time.time()
+                        processed_chunk = _process_stream_chunk(
+                            chunk_json,
+                            middleware_manager,
+                            model_call_params,
+                        )
+                        if processed_chunk is None:
+                            continue
+                        aggregator.consume(processed_chunk)
+                    result = aggregator.finalize()
+                    trace_ctx.set_outputs(result)
+                    if first_token_time is not None:
+                        trace_ctx.set_attributes(
+                            {"time_to_first_token_ms": (first_token_time - start_time) * 1000},
+                        )
+                    return result
+            else:
+                resp = requests.post(
+                    url,
+                    json=request_body,
+                    timeout=llm_config.timeout or 120,
+                    stream=True,
+                )
+                resp.raise_for_status()
+                for chunk_json in _iter_gemini_sse_chunks(resp):
+                    if _shutdown_ev is not None and _shutdown_ev.is_set():
+                        logger.info(
+                            "🛑 Shutdown event detected during Gemini REST streaming, finalizing partial response",
+                        )
+                        break
+                    processed_chunk = _process_stream_chunk(
+                        chunk_json,
+                        middleware_manager,
+                        model_call_params,
+                    )
+                    if processed_chunk is None:
+                        continue
+                    aggregator.consume(processed_chunk)
+                return aggregator.finalize()
+
+        try:
+            response_json = do_stream_request()
+            return ModelResponse.from_gemini_rest(response_json)
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Gemini REST API streaming call failed: {e}")
+            if e.response is not None:
+                logger.error(f"Response content: {e.response.text}")
+            raise
+        except Exception as e:
+            logger.error(f"Gemini REST API streaming call failed: {e}")
+            raise
+
+    # Non-streaming request path
     def do_request() -> dict[str, Any]:
         response = requests.post(url, json=request_body, timeout=llm_config.timeout or 120)
         response.raise_for_status()

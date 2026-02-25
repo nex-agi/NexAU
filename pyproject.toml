@@ -157,6 +157,7 @@ warn_unused_configs = true
 [tool.pyright]
 typeCheckingMode = "strict"
 reportMissingTypeStubs = false
+reportUnusedFunction = false
 
 # Ensure Pyright looks at the correct root
 include = ["nexau"]

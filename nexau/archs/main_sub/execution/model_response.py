@@ -756,10 +756,12 @@ class ModelResponse:
             # Handle function calls
             if "functionCall" in part:
                 fc = part["functionCall"]
+                # Gemini REST 非流式响应不提供 call ID，生成唯一 ID 以匹配后续 tool result
+                gemini_call_id = f"gemini_tc_{len(tool_calls)}"
                 # Convert to ModelToolCall format
                 tool_calls.append(
                     ModelToolCall(
-                        call_id=None,  # Gemini doesn't always provide a call ID in the same way
+                        call_id=gemini_call_id,
                         name=fc["name"],
                         arguments=fc.get("args", {}),
                         raw_arguments=json.dumps(fc.get("args", {}), ensure_ascii=False),

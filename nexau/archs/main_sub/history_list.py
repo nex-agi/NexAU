@@ -148,6 +148,12 @@ class HistoryList(list[Message]):
                            Use this when loading history from storage to set initial state.
                            Default is False to allow flush() to detect changes.
         """
+        logger.debug(
+            "🔍 [HISTORY-DEBUG] replace_all: incoming=%d roles=%s, update_baseline=%s",
+            len(new_messages),
+            [m.role.value for m in new_messages],
+            update_baseline,
+        )
         self.clear()
         super().extend(new_messages)
         if self._persistence_enabled:
@@ -233,6 +239,23 @@ class HistoryList(list[Message]):
             return
 
         current_non_system = [m for m in self if m.role != Role.SYSTEM]
+
+        logger.debug(
+            "🔍 [HISTORY-DEBUG] flush: total=%d, non_system=%d, baseline_len=%d, roles=%s",
+            len(self),
+            len(current_non_system),
+            len(self._baseline_fingerprints),
+            [m.role.value for m in current_non_system],
+        )
+        for i, msg in enumerate(current_non_system):
+            block_types = [type(b).__name__ for b in msg.content]
+            logger.debug(
+                "🔍 [HISTORY-DEBUG]   flush msg[%d] role=%s blocks=%s text=%.80s",
+                i,
+                msg.role.value,
+                block_types,
+                msg.get_text_content()[:80] if msg.get_text_content() else "<empty>",
+            )
 
         is_append_only = True
         if len(current_non_system) < len(self._baseline_fingerprints):

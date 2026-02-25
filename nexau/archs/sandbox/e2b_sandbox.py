@@ -744,9 +744,10 @@ class E2BSandbox(BaseSandbox):
             file_info = self.get_file_info(resolved_path)
             file_size = file_info.size
 
-            truncated = len(content) > max_output_size if isinstance(content, str) else len(content) > max_output_size
-
-            if truncated:
+            # 二进制文件不截断，调用方（read_file tool）已有 MAX_FILE_SIZE_BYTES 限制
+            truncated = False
+            if not binary and isinstance(content, str) and len(content) > max_output_size:
+                truncated = True
                 content = content[:max_output_size]
 
             return FileOperationResult(

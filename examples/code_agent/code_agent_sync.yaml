@@ -70,7 +70,6 @@ skills: # Skills are used to hint the agent to solve specific tasks
   - ./skills/skill-creator
   - ./skills/template-skill
 stop_tools: [complete_task]
-middlewares:
-  - import: nexau.archs.tool.builtin.session_tools.ask_user_hook:AskUserMiddleware
+middlewares: []
 tracers:
   - import: nexau.archs.tracer.adapters.in_memory:InMemoryTracer

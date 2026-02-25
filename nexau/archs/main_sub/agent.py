@@ -22,7 +22,10 @@ import uuid
 import warnings
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from nexau.archs.main_sub.team.state import AgentTeamState
 
 import anthropic
 import dotenv
@@ -84,6 +87,8 @@ class Agent:
         session_id: str | None = None,
         is_root: bool = True,
         variables: ContextValue | None = None,
+        team_state: "AgentTeamState | None" = None,
+        sandbox_manager: "BaseSandboxManager[BaseSandbox] | None" = None,
     ):
         """Initialize agent with configuration.
 
@@ -104,6 +109,8 @@ class Agent:
         self._is_root = is_root
         self.config: AgentConfig = config
         self._variables = variables
+        self._team_state = team_state
+        self._shared_sandbox_manager = sandbox_manager
         self._user_id = user_id or f"local_user_{uuid.uuid4().hex[:8]}"
         self._session_id = session_id or f"local_{uuid.uuid4().hex[:8]}"
 
@@ -137,6 +144,14 @@ class Agent:
         # Initialize services
         logger.info("Initializing LLM client (api_type=%s)", self.config.llm_config.api_type if self.config.llm_config else "default")
         self.openai_client = self._initialize_openai_client()
+
+        # 为 OpenAI Responses API 注入 prompt_cache_key，在代理上启用 prompt 缓存。
+        # 每个 agent 生命周期使用固定的 key（跨轮次不变），不同 agent 使用不同 key。
+        if self.config.llm_config and self.config.llm_config.api_type == "openai_responses":
+            if not self.config.llm_config.get_param("prompt_cache_key"):
+                cache_key = str(uuid.uuid4())
+                self.config.llm_config.set_param("prompt_cache_key", cache_key)
+                logger.info("Injected prompt_cache_key=%s for agent '%s'", cache_key, self.config.name)
 
         # Initialize MCP tools if configured
         if self.config.mcp_servers:
@@ -302,18 +317,11 @@ class Agent:
         return run_async_function_sync(_init, raise_sync_error=False)
 
     def _setup_tracer(self) -> None:
-        """Set up tracer in global_storage with conflict detection.
+        """Set up tracer in global_storage.
 
-        Raises:
-            ValueError: If both global_storage and config have conflicting tracers
+        If config.resolved_tracer is provided, it always takes precedence
+        (overwrites any stale tracer restored from session storage).
         """
-        existing_tracer = self.global_storage.get("tracer")
-        if existing_tracer is not None and self.config.resolved_tracer is not None:
-            raise ValueError(
-                "Conflicting tracers: global_storage already has a tracer, "
-                "but config.resolved_tracer is also provided. "
-                "For nested agents, do not set resolved_tracer in config."
-            )
         if self.config.resolved_tracer is not None:
             self.global_storage.set("tracer", self.config.resolved_tracer)
             logger.debug("Tracer set from config.resolved_tracer")
@@ -501,6 +509,7 @@ class Agent:
             middlewares=self.config.middlewares,
             global_storage=self.global_storage,
             tool_call_mode=self.tool_call_mode,
+            team_mode=self._team_state is not None,
             openai_tools=self.tool_call_payload,
             session_manager=self._session_manager,
             user_id=self._user_id,
@@ -521,40 +530,56 @@ class Agent:
         # 回写 typed config，确保后续代码可以直接访问 typed 属性
         self.config.sandbox_config = sandbox_config
 
-        if isinstance(sandbox_config, LocalSandboxConfig):
-            self.sandbox_manager: BaseSandboxManager[BaseSandbox] = LocalSandboxManager(_work_dir=sandbox_config.work_dir)
+        if self._shared_sandbox_manager is not None:
+            # 共享模式：使用外部注入的 sandbox_manager（Team 场景）
+            self.sandbox_manager: BaseSandboxManager[BaseSandbox] = self._shared_sandbox_manager
+
+            # 仅处理 skill.folder 路径映射，通过 add_upload_assets 动态注册
+            upload_assets: list[tuple[str, str]] = []
+            for i, skill in enumerate(self.config.skills):
+                if skill.folder:
+                    local_folder = skill.folder
+                    skill.folder = os.path.join(self.sandbox_manager.work_dir, ".skills", os.path.basename(local_folder))
+                    self.config.skills[i] = skill
+                    upload_assets.append((local_folder, skill.folder))
+            self.sandbox_manager.add_upload_assets(upload_assets)
+            # 不注册 cleanup_manager，由 Team 统一管理生命周期
         else:
-            self.sandbox_manager = E2BSandboxManager(
-                _work_dir=sandbox_config.work_dir,
-                template=sandbox_config.template,
-                timeout=sandbox_config.timeout,
-                api_key=sandbox_config.api_key,
-                api_url=sandbox_config.api_url,
-                metadata=sandbox_config.metadata,
-                envs=sandbox_config.envs,
+            # 独立模式：创建独立 sandbox_manager（原有逻辑）
+            if isinstance(sandbox_config, LocalSandboxConfig):
+                self.sandbox_manager = LocalSandboxManager(_work_dir=sandbox_config.work_dir)
+            else:
+                self.sandbox_manager = E2BSandboxManager(
+                    _work_dir=sandbox_config.work_dir,
+                    template=sandbox_config.template,
+                    timeout=sandbox_config.timeout,
+                    api_key=sandbox_config.api_key,
+                    api_url=sandbox_config.api_url,
+                    metadata=sandbox_config.metadata,
+                    envs=sandbox_config.envs,
+                )
+
+            # Upload skill assets to sandbox
+            upload_assets = []
+            for i, skill in enumerate(self.config.skills):
+                if skill.folder:
+                    local_folder = skill.folder
+                    skill.folder = os.path.join(self.sandbox_manager.work_dir, ".skills", os.path.basename(local_folder))
+                    self.config.skills[i] = skill
+                    upload_assets.append((local_folder, skill.folder))
+
+            # 功能说明1：仅保存会话上下文，不启动 sandbox
+            # 功能说明2：sandbox 会在首次调用工具时通过 start_sync() 延迟启动
+            # 功能说明3：确保 sandbox 在正确的事件循环上下文中创建，避免 asyncio 问题
+            self.sandbox_manager.prepare_session_context(
+                session_manager=self._session_manager,
+                user_id=self._user_id,
+                session_id=self._session_id,
+                sandbox_config=sandbox_config,
+                upload_assets=upload_assets,
             )
 
-        # Upload skill assets to sandbox
-        upload_assets: list[tuple[str, str]] = []
-        for i, skill in enumerate(self.config.skills):
-            if skill.folder:
-                local_folder = skill.folder
-                skill.folder = os.path.join(self.sandbox_manager.work_dir, ".skills", os.path.basename(local_folder))
-                self.config.skills[i] = skill
-                upload_assets.append((local_folder, skill.folder))
-
-        # 功能说明1：仅保存会话上下文，不启动 sandbox
-        # 功能说明2：sandbox 会在首次调用工具时通过 start_sync() 延迟启动
-        # 功能说明3：确保 sandbox 在正确的事件循环上下文中创建，避免 asyncio 问题
-        self.sandbox_manager.prepare_session_context(
-            session_manager=self._session_manager,
-            user_id=self._user_id,
-            session_id=self._session_id,
-            sandbox_config=sandbox_config,
-            upload_assets=upload_assets,
-        )
-
-        cleanup_manager.register_sandbox_manager(self.sandbox_manager)
+            cleanup_manager.register_sandbox_manager(self.sandbox_manager)
 
     def _resolve_token_counter(self) -> TokenCounter:
         """Cast configured token counter to TokenCounter instance."""
@@ -766,6 +791,13 @@ class Agent:
                 )
                 stored_messages = await self._session_manager.agent_run_action.load_messages(key=history_key)
                 stored_non_system_messages = [msg for msg in stored_messages if msg.role != Role.SYSTEM]
+                logger.debug(
+                    "🔍 [HISTORY-DEBUG] agent '%s' restore: stored=%d, non_system=%d, roles=%s",
+                    self.config.name,
+                    len(stored_messages),
+                    len(stored_non_system_messages),
+                    [m.role.value for m in stored_non_system_messages],
+                )
 
                 if stored_non_system_messages:
                     logger.info(f"📚 Restored {len(stored_non_system_messages)} messages from storage for agent '{self.config.name}'")
@@ -824,6 +856,7 @@ class Agent:
                 executor=self.executor,
                 sandbox_manager=sandbox_mgr,
                 variables=effective_variables,
+                team_state=self._team_state,
             )
 
             # Execute with or without tracing
@@ -850,17 +883,19 @@ class Agent:
                 await self._persist_session_state(ctx.context)
 
                 # Handle sandbox lifecycle after agent execution
-                self.sandbox_manager.on_run_complete()
+                # 共享 sandbox 由 AgentTeam 统一管理生命周期，单个 agent 不应 stop/pause
+                if self._shared_sandbox_manager is None:
+                    self.sandbox_manager.on_run_complete()
 
-                sandbox_config = self.config.sandbox_config
-                status_after_run = sandbox_config.status_after_run if sandbox_config else "stop"
-                if status_after_run == "pause":
-                    self.sandbox_manager.pause_no_wait()
-                elif status_after_run == "stop":
-                    self.sandbox_manager.stop()
-                else:
-                    # Let the caller manage sandbox lifecycle (useful for RL training)
-                    logger.info("Sandbox lifecycle managed by caller (status_after_run=none)")
+                    sandbox_config = self.config.sandbox_config
+                    status_after_run = sandbox_config.status_after_run if sandbox_config else "stop"
+                    if status_after_run == "pause":
+                        self.sandbox_manager.pause_no_wait()
+                    elif status_after_run == "stop":
+                        self.sandbox_manager.stop()
+                    else:
+                        # Let the caller manage sandbox lifecycle (useful for RL training)
+                        logger.info("Sandbox lifecycle managed by caller (status_after_run=none)")
 
                 logger.info(f"✅ Agent '{self.config.name}' completed execution")
                 return response
@@ -986,7 +1021,17 @@ class Agent:
                 custom_llm_client_provider=custom_llm_client_provider,
             )
             # HistoryList will automatically persist any changes made by executor
+            logger.debug(
+                "🔍 [HISTORY-DEBUG] _run_inner: executor returned %d messages, roles=%s",
+                len(updated_messages),
+                [m.role.value for m in updated_messages],
+            )
             self.history = updated_messages
+            logger.debug(
+                "🔍 [HISTORY-DEBUG] _run_inner: after assign, history has %d messages, roles=%s",
+                len(self.history),
+                [m.role.value for m in self.history],
+            )
 
             # Expose full trace captured by ContextCompactionMiddleware (best-effort).
             try:
@@ -1004,12 +1049,13 @@ class Agent:
             return response
 
         except Exception as e:
+            logger.debug(
+                "🔍 [HISTORY-DEBUG] _run_inner EXCEPTION: %s, history=%d msgs",
+                str(e)[:100],
+                len(self.history),
+            )
             if self.config.error_handler:
-                error_response = self.config.error_handler(
-                    e,
-                    self,
-                    merged_context,
-                )
+                error_response = self.config.error_handler(e, self, merged_context)
                 assistant_error_message = Message.assistant(error_response)
                 # HistoryList will automatically persist this message
                 self.history.append(assistant_error_message)
@@ -1030,9 +1076,11 @@ class Agent:
             # RFC-0001: 无论正常返回、异常还是取消，都尝试 flush 未持久化的消息
             # CancelledError (BaseException) 不会被 except Exception 捕获，
             # 因此 finally 块是唯一能保证 flush 的位置
+            # 注意: 始终调用 flush()，不依赖 has_pending_messages，
+            # 因为 team_mode 下 executor 通过 replace_all 同步消息会清空 _pending_messages，
+            # 但 flush() 通过 fingerprint 比较仍能检测到新消息并持久化。
             try:
-                if self.history.has_pending_messages:
-                    self.history.flush()
+                self.history.flush()
             except Exception:
                 logger.warning("Failed to flush history in finally block")
 
@@ -1189,7 +1237,7 @@ class Agent:
         if not completed:
             # 超时：执行硬清理
             logger.warning(
-                f"Interrupt timeout ({timeout}s) reached for agent '{self.config.name}', performing hard cleanup",
+                f"Interrupt timeout ({timeout}s) reached for agent '{self.agent_name} id {self.agent_id}', performing hard cleanup",
             )
             self.executor.cleanup()
 

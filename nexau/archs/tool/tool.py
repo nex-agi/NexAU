@@ -14,6 +14,8 @@
 
 """Tool implementation for the NexAU framework."""
 
+import asyncio
+import dataclasses
 import functools
 import inspect
 import json
@@ -287,10 +289,26 @@ class Tool:
 
             raw_result: Any = impl(**filtered_params)
 
+            # Support async tool implementations.
+            # Tools run in ThreadPoolExecutor workers (no running event loop),
+            # so asyncio.run() is safe here.
+            if inspect.iscoroutine(raw_result):
+                raw_result = asyncio.run(raw_result)
+
             # Ensure result is a dictionary
             final_result: dict[str, Any]
             if isinstance(raw_result, dict):
                 final_result = cast(dict[str, Any], raw_result)
+            elif dataclasses.is_dataclass(raw_result) and not isinstance(raw_result, type):
+                final_result = dataclasses.asdict(raw_result)
+            elif isinstance(raw_result, list):
+                result_list = cast(list[object], raw_result)
+                final_result = {
+                    "result": [
+                        dataclasses.asdict(item) if (dataclasses.is_dataclass(item) and not isinstance(item, type)) else item
+                        for item in result_list
+                    ]
+                }
             else:
                 final_result = {"result": raw_result}
 

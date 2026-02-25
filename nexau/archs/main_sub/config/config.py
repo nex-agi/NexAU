@@ -350,7 +350,15 @@ class AgentConfigBuilder:
                 params = cast(dict[str, Any], params_raw)
             else:
                 raise ConfigError("Hook configuration 'params' must be a mapping when provided")
-            return self._instantiate_hook_object(hook_obj, import_string, params)
+            # Resolve relative path params against the YAML file's base directory.
+            resolved_params: dict[str, Any] = {}
+            for k, v in params.items():
+                if isinstance(v, str) and (k.endswith("_path") or k.endswith("_file")):
+                    p = Path(v)
+                    if not p.is_absolute():
+                        v = str(self.base_path / p)
+                resolved_params[k] = v
+            return self._instantiate_hook_object(hook_obj, import_string, resolved_params)
         elif callable(hook_config):
             # Direct callable function (e.g., from overrides)
             return hook_config

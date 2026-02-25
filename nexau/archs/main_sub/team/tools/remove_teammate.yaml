@@ -1,0 +1,16 @@
+type: tool
+name: remove_teammate
+description: >-
+  Remove a teammate agent instance from the team.
+  Only the team leader can call this tool. The teammate must be in
+  idle state before removal.
+input_schema:
+  type: object
+  properties:
+    agent_id:
+      type: string
+      description: The agent ID of the teammate to remove
+  required:
+    - agent_id
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

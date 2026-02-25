@@ -1,0 +1,34 @@
+type: tool
+name: create_task
+description: >-
+  Create a new task on the shared task board.
+  Only the team leader can call this tool. Tasks can have
+  dependencies on other tasks which must complete first.
+  A deliverable file path (.nexau/tasks/{task_id}-{slug}.md)
+  is auto-generated — teammates must write detailed results
+  to this path before completing the task.
+input_schema:
+  type: object
+  properties:
+    title:
+      type: string
+      description: Short title describing the task
+    description:
+      type: string
+      description: Detailed description of what needs to be done
+    priority:
+      type: integer
+      description: >-
+        Task priority (higher = more important). Default is 0.
+        Used as a hint for agents, does not affect claim logic.
+    dependencies:
+      type: array
+      items:
+        type: string
+      description: >-
+        List of task IDs that must complete before this task
+        can be claimed.
+  required:
+    - title
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

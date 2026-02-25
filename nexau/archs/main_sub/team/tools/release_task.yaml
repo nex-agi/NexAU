@@ -1,0 +1,16 @@
+type: tool
+name: release_task
+description: >-
+  Release a claimed task back to the task board (unassign).
+  The task status reverts to pending and can be claimed by
+  another teammate.
+input_schema:
+  type: object
+  properties:
+    task_id:
+      type: string
+      description: The ID of the task to release (e.g. T-001)
+  required:
+    - task_id
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

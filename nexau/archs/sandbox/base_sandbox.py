@@ -28,7 +28,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from pathlib import Path
-from threading import Thread
+from threading import Lock, Thread
 from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel, Field, TypeAdapter
@@ -731,6 +731,7 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
         init=False,
         repr=False,
     )
+    _start_lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
     @property
     def work_dir(self):
@@ -918,27 +919,59 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
         Ensures the sandbox and the code using it share the same event loop context.
         Solves cross-thread/event-loop access to asyncio primitives.
         """
+        # 快速路径：已初始化则直接返回（无锁）
         if self._instance is not None:
             return self._instance
 
-        if not self._session_context:
-            logger.warning("No session context available for sandbox start")
-            return None
+        with self._start_lock:
+            # Double-check：获取锁后再次检查，避免重复创建
+            if self._instance is not None:
+                return self._instance
 
-        logger.info("Starting sandbox synchronously in current event loop context...")
-        sandbox = self.start(
-            session_manager=self._session_context.get("session_manager"),
-            user_id=self._session_context.get("user_id", ""),
-            session_id=self._session_context.get("session_id", ""),
-            sandbox_config=self._session_context.get("sandbox_config") or LocalSandboxConfig(),
-        )
+            if not self._session_context:
+                logger.warning("No session context available for sandbox start")
+                return None
 
-        # Upload skill assets if any
-        for src, tgt in self._session_context.get("upload_assets", []):
-            sandbox.upload_directory(src, tgt)
+            logger.info("Starting sandbox synchronously in current event loop context...")
+            sandbox = self.start(
+                session_manager=self._session_context.get("session_manager"),
+                user_id=self._session_context.get("user_id", ""),
+                session_id=self._session_context.get("session_id", ""),
+                sandbox_config=self._session_context.get("sandbox_config") or LocalSandboxConfig(),
+            )
 
-        self._instance = sandbox
-        return sandbox
+            # Upload skill assets if any
+            for src, tgt in self._session_context.get("upload_assets", []):
+                sandbox.upload_directory(src, tgt)
+
+            self._instance = sandbox
+            return sandbox
+
+    def add_upload_assets(self, upload_assets: list[tuple[str, str]]) -> None:
+        """Add upload assets to the sandbox, uploading immediately if already running.
+
+        动态添加 upload assets（支持 teammate 后期 spawn）
+
+        Thread-safe: uses _start_lock to coordinate with start_sync().
+        If sandbox is already running, uploads immediately.
+        If not yet started, appends to session_context for deferred upload.
+
+        Args:
+            upload_assets: List of (local_path, sandbox_path) tuples to upload.
+        """
+        if not upload_assets:
+            return
+
+        with self._start_lock:
+            if self._instance is not None:
+                # Sandbox already running: upload immediately
+                for src, tgt in upload_assets:
+                    self._instance.upload_directory(src, tgt)
+            else:
+                # Sandbox not yet started: append to deferred upload list
+                existing = self._session_context.get("upload_assets", [])
+                existing.extend(upload_assets)
+                self._session_context["upload_assets"] = existing
 
     def pause_no_wait(
         self,

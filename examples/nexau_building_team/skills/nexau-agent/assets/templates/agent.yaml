@@ -1,0 +1,61 @@
+# NexAU Agent YAML Config Template
+# Copy this file and customize for your agent.
+
+type: agent
+name: my_agent                       # TODO: Replace with agent name
+description: >-                      # TODO: Replace with agent description
+  A brief description of what this agent does.
+max_context_tokens: 200000
+system_prompt: ./systemprompt.md
+system_prompt_type: jinja            # Use "string" if no template variables needed
+tool_call_mode: openai
+max_iterations: 80                   # Adjust based on complexity
+
+llm_config:
+  model: ${env.LLM_MODEL}
+  base_url: ${env.LLM_BASE_URL}
+  api_key: ${env.LLM_API_KEY}
+  max_tokens: 16000
+  temperature: 0.7                   # 0.3 for precise, 0.7 for creative
+  api_type: openai_chat_completion
+
+sandbox_config:
+  type: local
+  _work_dir: ${env.SANDBOX_WORK_DIR}
+
+tools:
+  # File operations
+  - name: read_file
+    yaml_path: ./tools/read_file.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:read_file
+  - name: write_file
+    yaml_path: ./tools/write_file.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:write_file
+  - name: replace
+    yaml_path: ./tools/replace.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:replace
+  # Search and navigation
+  - name: search_file_content
+    yaml_path: ./tools/search_file_content.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:search_file_content
+  - name: glob
+    yaml_path: ./tools/Glob.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:glob
+  - name: list_directory
+    yaml_path: ./tools/list_directory.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:list_directory
+  # Shell
+  - name: run_shell_command
+    yaml_path: ./tools/run_shell_command.tool.yaml
+    binding: nexau.archs.tool.builtin.shell_tools:run_shell_command
+  # TODO: Add more tools as needed (web, session, custom)
+
+# skills:
+#   - ./skills/skill-name            # TODO: Add skills if needed
+
+# stop_tools: [complete_task]        # TODO: Uncomment if using task-based workflow
+
+middlewares: []
+
+tracers:
+  - import: nexau.archs.tracer.adapters.in_memory:InMemoryTracer

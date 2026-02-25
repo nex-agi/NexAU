@@ -1,0 +1,23 @@
+type: tool
+name: claim_task
+description: >-
+  Claim a task from the shared task board. Without assignee_agent_id,
+  the caller claims the task for themselves. With assignee_agent_id,
+  the leader assigns the task to a specific teammate.
+  Fails if the task has unfinished dependencies or is already claimed.
+input_schema:
+  type: object
+  properties:
+    task_id:
+      type: string
+      description: The ID of the task to claim (e.g. T-001)
+    assignee_agent_id:
+      type: string
+      description: >-
+        Optional agent ID to assign the task to. If omitted,
+        the caller claims the task for themselves. Only the
+        leader can assign tasks to other agents.
+  required:
+    - task_id
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

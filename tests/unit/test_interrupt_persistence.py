@@ -153,7 +153,12 @@ class TestRunInnerFinallyFlush:
 
     @pytest.mark.anyio
     async def test_finally_flush_skipped_when_no_pending(self):
-        """finally block should skip flush when no pending messages."""
+        """finally block always calls flush, even when no pending messages.
+
+        The finally block unconditionally calls flush() to handle team_mode
+        where executor syncs via replace_all (clearing _pending_messages), but
+        flush() uses fingerprint comparison to detect and persist new messages.
+        """
         from nexau import Agent, AgentConfig
         from nexau.archs.llm.llm_config import LLMConfig
 
@@ -183,10 +188,9 @@ class TestRunInnerFinallyFlush:
                 )
 
             assert result == "response"
-            # flush is called in the try block (normal path), but NOT again in finally
-            # because _pending_messages is empty
+            # flush is called once in the try block (normal path) and once in finally
             flush_call_count = agent.history.flush.call_count
-            assert flush_call_count == 1  # Only the normal-path flush
+            assert flush_call_count == 2
 
 
 class TestStreamingShutdownEvent:
