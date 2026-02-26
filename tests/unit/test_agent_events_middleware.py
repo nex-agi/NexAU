@@ -310,6 +310,92 @@ class TestTypeGuards:
         assert is_openai_responses_event(mock_event) is False
 
 
+class TestAgentEventsMiddlewareAnthropicAPI:
+    """Test cases for AgentEventsMiddleware with Anthropic Messages API."""
+
+    @pytest.fixture
+    def mock_agent_state(self):
+        """Create a mock agent state."""
+        state = Mock()
+        state.agent_id = "test_agent_anthropic"
+        state.run_id = "run_anthropic_123"
+        state.parent_agent_state = None
+        return state
+
+    @pytest.fixture
+    def events_captured(self):
+        return []
+
+    @pytest.fixture
+    def middleware(self, events_captured):
+        def capture_event(event):
+            events_captured.append(event)
+
+        return AgentEventsMiddleware(session_id="test_session", on_event=capture_event)
+
+    def test_anthropic_aggregator_lazy_init(self, middleware):
+        """Test anthropic_aggregator is lazily initialized."""
+        assert middleware._anthropic_aggregator is None
+
+        aggregator = middleware.anthropic_aggregator(run_id="test_run")
+
+        assert middleware._anthropic_aggregator is not None
+        assert aggregator is middleware._anthropic_aggregator
+
+    def test_anthropic_aggregator_reuses_instance(self, middleware):
+        """Test anthropic_aggregator returns same instance on subsequent calls."""
+        aggregator1 = middleware.anthropic_aggregator(run_id="run1")
+        aggregator2 = middleware.anthropic_aggregator(run_id="run2")
+
+        assert aggregator1 is aggregator2
+
+    def test_stream_chunk_routes_anthropic_event(self, middleware, mock_agent_state, events_captured):
+        """Test stream_chunk routes anthropic events to the anthropic aggregator."""
+        from anthropic.types import (
+            Message,
+            RawMessageStartEvent,
+            Usage,
+        )
+
+        event = RawMessageStartEvent(
+            type="message_start",
+            message=Message(
+                id="msg_route_test",
+                type="message",
+                role="assistant",
+                content=[],
+                model="claude-sonnet-4-20250514",
+                stop_reason=None,
+                stop_sequence=None,
+                usage=Usage(input_tokens=10, output_tokens=0),
+            ),
+        )
+
+        params = ModelCallParams(
+            messages=[],
+            max_tokens=1000,
+            force_stop_reason=None,
+            agent_state=mock_agent_state,
+            tool_call_mode="openai",
+            tools=None,
+            api_params={},
+        )
+
+        result = middleware.stream_chunk(event, params)
+
+        assert result == event
+        assert middleware._anthropic_aggregator is not None
+
+        start_events = [e for e in events_captured if type(e).__name__ == "TextMessageStartEvent"]
+        assert len(start_events) == 1
+        assert start_events[0].message_id == "msg_route_test"
+
+    def test_initialization_includes_anthropic_aggregator_slot(self):
+        """Test that middleware initializes with _anthropic_aggregator = None."""
+        middleware = AgentEventsMiddleware(session_id="session_init")
+        assert middleware._anthropic_aggregator is None
+
+
 class TestAgentEventsMiddlewareResponsesAPI:
     """Test cases for AgentEventsMiddleware with OpenAI Responses API."""
 

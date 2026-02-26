@@ -345,6 +345,7 @@ class LLMCaller:
                     return None
                 logger.error(
                     f"❌ LLM call failed (attempt {i + 1}/{self.retry_attempts}): {e}",
+                    exc_info=True,
                 )
                 if i == self.retry_attempts - 1:
                     raise e
@@ -509,7 +510,7 @@ def call_llm_with_anthropic_chat_completion(
                 first_token_time = None
                 # RFC-0001: shutdown_event 检测
                 _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
-                with client.messages.stream(**api_kwargs) as stream:
+                with client.messages.create(**api_kwargs, stream=True) as stream:
                     for event in stream:
                         if _shutdown_ev is not None and _shutdown_ev.is_set():
                             logger.info("🛑 Shutdown event detected during Anthropic streaming, finalizing partial response")
@@ -532,7 +533,7 @@ def call_llm_with_anthropic_chat_completion(
         else:
             # RFC-0001: shutdown_event 检测
             _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
-            with client.messages.stream(**api_kwargs) as stream:
+            with client.messages.create(**api_kwargs, stream=True) as stream:
                 for event in stream:
                     if _shutdown_ev is not None and _shutdown_ev.is_set():
                         logger.info("🛑 Shutdown event detected during Anthropic streaming, finalizing partial response")

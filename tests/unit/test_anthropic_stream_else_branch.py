@@ -80,16 +80,15 @@ def _anthropic_text_events() -> list[dict[str, Any]]:
 
 
 def _make_anthropic_client(events: list[dict[str, Any]]) -> Any:
-    """Build a fake Anthropic client whose messages.stream() yields *events*."""
+    """Build a fake Anthropic client whose messages.create(stream=True) yields *events*."""
 
     class _FakeClient:
         def __init__(self) -> None:
-            self.messages = SimpleNamespace(stream=self._stream, create=self._create)
+            self.messages = SimpleNamespace(create=self._create)
 
-        def _stream(self, **_payload: Any) -> _IterableStream:
-            return _IterableStream(events)
-
-        def _create(self, **_payload: Any) -> dict[str, Any]:
+        def _create(self, **_payload: Any) -> _IterableStream:
+            if _payload.get("stream"):
+                return _IterableStream(events)
             raise NotImplementedError("non-stream create should not be called")
 
     return _FakeClient()
@@ -181,9 +180,9 @@ def test_anthropic_stream_shutdown_event_interrupts_mid_stream() -> None:
 
     class _FakeClient:
         def __init__(self) -> None:
-            self.messages = SimpleNamespace(stream=self._stream, create=lambda **kw: None)
+            self.messages = SimpleNamespace(create=self._create)
 
-        def _stream(self, **_payload: Any) -> _InterruptingStream:
+        def _create(self, **_payload: Any) -> _InterruptingStream:
             return _InterruptingStream()
 
     client = _FakeClient()

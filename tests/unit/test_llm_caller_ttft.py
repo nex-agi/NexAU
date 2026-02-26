@@ -116,9 +116,9 @@ def test_anthropic_stream_records_time_to_first_token_ms(monkeypatch: pytest.Mon
 
     class FakeAnthropicClient:
         def __init__(self) -> None:
-            self.messages = SimpleNamespace(stream=self._stream)
+            self.messages = SimpleNamespace(create=self._create)
 
-        def _stream(self, **payload: Any) -> _IterableStream:  # noqa: ARG002
+        def _create(self, **payload: Any) -> _IterableStream:  # noqa: ARG002
             return _IterableStream(events)
 
     tracer = InMemoryTracer()

@@ -26,6 +26,7 @@ from openai.types.chat import ChatCompletionChunk
 from openai.types.responses import ResponseStreamEvent
 
 from nexau.archs.llm.llm_aggregators import (
+    AnthropicEventAggregator,
     GeminiRestEventAggregator,
     OpenAIChatCompletionAggregator,
     OpenAIResponsesAggregator,
@@ -48,7 +49,7 @@ from nexau.archs.main_sub.execution.hooks import (
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 
 if TYPE_CHECKING:
-    from anthropic.types import MessageStreamEvent
+    from anthropic.types import RawMessageStreamEvent
 
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ def _noop_event_handler(_: Event) -> None:
     return None
 
 
-def is_anthropic_event(event: object) -> TypeGuard[MessageStreamEvent]:
+def is_anthropic_event(event: object) -> TypeGuard[RawMessageStreamEvent]:
     return event.__class__.__module__.startswith("anthropic.")
 
 
@@ -113,6 +114,9 @@ class AgentEventsMiddleware(Middleware):
         # Use lazy initialization to avoid passing on_event too early
         self._openai_responses_aggregator: OpenAIResponsesAggregator | None = None
         self._gemini_rest_aggregator: GeminiRestEventAggregator | None = None
+        self._anthropic_aggregator: AnthropicEventAggregator | None = None
+        # Track current run_id per aggregator to detect stream boundaries
+        self._current_gemini_run_id: str = ""
 
     def openai_responses_aggregator(self, *, run_id: str) -> OpenAIResponsesAggregator:
         """Lazy initialization for OpenAIResponsesAggregator."""
@@ -130,7 +134,21 @@ class AgentEventsMiddleware(Middleware):
                 on_event=self.on_event,
                 run_id=run_id,
             )
+            self._current_gemini_run_id = run_id
+        elif self._current_gemini_run_id != run_id:
+            # New agent run — clear stale state from the previous stream
+            self._gemini_rest_aggregator.clear()
+            self._current_gemini_run_id = run_id
         return self._gemini_rest_aggregator
+
+    def anthropic_aggregator(self, *, run_id: str) -> AnthropicEventAggregator:
+        """Lazy initialization for AnthropicEventAggregator."""
+        if self._anthropic_aggregator is None:
+            self._anthropic_aggregator = AnthropicEventAggregator(
+                on_event=self.on_event,
+                run_id=run_id,
+            )
+        return self._anthropic_aggregator
 
     def before_agent(self, hook_input: BeforeAgentHookInput) -> HookResult:
         """Hook called before agent execution starts.
@@ -218,9 +236,9 @@ class AgentEventsMiddleware(Middleware):
 
     def stream_chunk(
         self,
-        chunk: ChatCompletionChunk | ResponseStreamEvent | MessageStreamEvent | dict[str, object],
+        chunk: ChatCompletionChunk | ResponseStreamEvent | RawMessageStreamEvent | dict[str, object],
         params: ModelCallParams,
-    ) -> ChatCompletionChunk | ResponseStreamEvent | MessageStreamEvent | dict[str, object]:
+    ) -> ChatCompletionChunk | ResponseStreamEvent | RawMessageStreamEvent | dict[str, object]:
         """Process raw stream chunks from LLM.
 
         This hook receives raw chunks from the LLM API streaming response. The chunks
@@ -268,6 +286,12 @@ class AgentEventsMiddleware(Middleware):
         if is_gemini_rest_chunk(chunk):
             gemini_aggregator = self.gemini_rest_aggregator(run_id=run_id)
             gemini_aggregator.aggregate(chunk)
+
+        if is_anthropic_event(chunk):
+            anthropic_agg = self.anthropic_aggregator(run_id=run_id)
+            if chunk.type == "message_start":
+                anthropic_agg.clear()
+            anthropic_agg.aggregate(chunk)
 
         # This middleware doesn't modify chunks, just observes them
         # The actual event emission happens in the aggregator's on_event callback
