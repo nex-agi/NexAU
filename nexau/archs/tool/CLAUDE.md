@@ -71,7 +71,6 @@ description: >-
 
 skill_description: "Optional context for skills"
 
-use_cache: false          # Enable result caching (diskcache backend)
 disable_parallel: false   # Prevent parallel execution
 lazy: false               # Defer import until first use
 
@@ -235,20 +234,6 @@ tools:
 ```
 
 **Note**: Call-time arguments with the same name override preset values.
-
-### Tool Caching Pattern
-
-Enable result caching with `use_cache: true` in YAML:
-
-```yaml
-type: tool
-name: expensive_operation
-description: "An expensive operation"
-use_cache: true  # ← Enable caching
-input_schema: {...}
-```
-
-Caching uses diskcache backend with TTL (time-to-live).
 
 ### Parallel Execution Control
 

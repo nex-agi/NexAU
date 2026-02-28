@@ -3,16 +3,21 @@ name: nexau_code_agent
 max_context_tokens: 200000
 system_prompt: ./systemprompt.md
 system_prompt_type: jinja
-tool_call_mode: openai # xml, openai or anthorpic
+tool_call_mode: anthropic # xml, openai or anthropic
 max_iterations: 300
 llm_config: # Support environment variable replacement in YAML config
   model: ${env.LLM_MODEL}
   base_url: ${env.LLM_BASE_URL}
   api_key: ${env.LLM_API_KEY}
-  max_tokens: 64000
-  temperature: 0.7
-  stream: False
-  api_type: openai_chat_completion # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
+  max_tokens: 32000
+  temperature: 1
+  stream: True
+  api_type: anthropic_chat_completion
+  thinking:
+    type: adaptive
+  output_config:
+    effort: medium
+  # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
 # Sandbox for file/shell tools.
 # Set SANDBOX_WORK_DIR env before running, e.g. export SANDBOX_WORK_DIR=/tmp/code_agent_work
 sandbox_config:
@@ -73,3 +78,8 @@ stop_tools: [complete_task]
 middlewares: []
 tracers:
   - import: nexau.archs.tracer.adapters.in_memory:InMemoryTracer
+  - import: nexau.archs.tracer.adapters.langfuse:LangfuseTracer
+    params:
+      public_key: ${env.LANGFUSE_PUBLIC_KEY}
+      secret_key: ${env.LANGFUSE_SECRET_KEY}
+      host: https://langfuse.xiaobei.top/

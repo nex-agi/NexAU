@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from mcp import ClientSession, StdioServerParameters
 from mcp.types import Tool as MCPToolType
 
-from ..tool import Tool, cache_result
+from ..tool import Tool
 
 if TYPE_CHECKING:
     import httpx
@@ -628,8 +628,6 @@ class MCPServerConfig:
     url: str | None = None
     headers: dict[str, str] | None = None
     timeout: float | None = 30
-    # result cache
-    use_cache: bool = False
     # disable parallel
     disable_parallel: bool = False
 
@@ -660,9 +658,6 @@ class MCPTool(Tool):
         elif server_config is not None:
             # For stdio sessions, store the server config for recreation
             self._session_params = server_config
-
-        if server_config and server_config.use_cache:
-            self._sync_executor = cache_result(self._sync_executor)
 
         # Convert MCP tool to NexAU tool format
         super().__init__(
@@ -1397,7 +1392,6 @@ class MCPManager:
         self,
         name: str,
         server_type: str = "stdio",
-        use_cache: bool = False,
         command: str | None = None,
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
@@ -1416,7 +1410,6 @@ class MCPManager:
             url=url,
             headers=headers,
             timeout=timeout,
-            use_cache=use_cache,
             disable_parallel=disable_parallel,
         )
         self.client.add_server(config)
@@ -1529,7 +1522,6 @@ async def initialize_mcp_tools(server_configs: list[dict[str, Any]]) -> Sequence
             url=config.get("url"),
             headers=config.get("headers"),
             timeout=config.get("timeout"),
-            use_cache=config.get("use_cache", False),
             disable_parallel=config.get("disable_parallel", False),
         )
 

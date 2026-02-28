@@ -4,7 +4,6 @@
 .env
 *.egg-info
 data/
-.tool_cache/
 .DS_Store
 htmlcov/
 node_modules/

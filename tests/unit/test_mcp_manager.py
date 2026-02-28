@@ -79,7 +79,6 @@ class TestMCPServerConfig:
         assert config.url is None
         assert config.headers is None
         assert config.timeout == 30  # Default timeout is 30 seconds
-        assert config.use_cache is False
         assert config.disable_parallel is False
 
 
@@ -178,7 +177,6 @@ class TestMCPManager:
             url="http://localhost:8080",
             headers={"Auth": "token"},
             timeout=30.0,
-            use_cache=True,
             disable_parallel=True,
         )
 
@@ -187,7 +185,6 @@ class TestMCPManager:
         assert config.url == "http://localhost:8080"
         assert config.headers == {"Auth": "token"}
         assert config.timeout == 30.0
-        assert config.use_cache is True
         assert config.disable_parallel is True
 
     def test_get_available_tools_empty(self):

@@ -1408,6 +1408,10 @@ class AnthropicStreamAggregator:
         if delta_type == "text_delta":
             block["type"] = "text"
             block["text"] = block.get("text", "") + delta.get("text", "")
+        elif delta_type == "thinking_delta":
+            # Anthropic streams thinking in fragments; append like text.
+            block["type"] = "thinking"
+            block["thinking"] = block.get("thinking", "") + delta.get("thinking", "")
         elif delta_type == "input_json_delta":
             block.setdefault("type", "tool_use")
             fragment = delta.get("partial_json", "")

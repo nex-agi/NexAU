@@ -284,7 +284,6 @@ function ToolConfigView({ doc }: { doc: Rec }) {
 
       {/* Options */}
       <Section title="Options">
-        <Field label="Cache" value={doc.use_cache} />
         <Field label="Disable Parallel" value={doc.disable_parallel} />
         <Field label="Lazy" value={doc.lazy} />
       </Section>

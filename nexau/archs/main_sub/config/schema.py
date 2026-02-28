@@ -51,7 +51,6 @@ class MCPServerBaseModel(BaseModel):
     name: str
     timeout: int | None = Field(default=None, gt=0)
     env: dict[str, str] | None = None
-    use_cache: bool = False
     disable_parallel: bool = False
 
 

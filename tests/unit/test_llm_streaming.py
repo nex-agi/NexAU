@@ -165,6 +165,62 @@ def test_anthropic_stream_aggregator_does_not_overwrite_tool_block_on_duplicate_
     assert message["content"][0]["input"] == {"file_path": "/tmp/image.png"}
 
 
+def test_anthropic_stream_aggregator_thinking_delta_accumulates():
+    """thinking_delta events should accumulate thinking content in a thinking block."""
+    aggregator = AnthropicStreamAggregator()
+
+    aggregator.consume({"type": "message_start", "message": {"role": "assistant", "model": "claude-3"}})
+    aggregator.consume({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}})
+    aggregator.consume({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Step 1: "}})
+    aggregator.consume({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "analyze the problem"}})
+    aggregator.consume({"type": "content_block_stop", "index": 0})
+
+    message = aggregator.finalize()
+
+    assert len(message["content"]) == 1
+    block = message["content"][0]
+    assert block["type"] == "thinking"
+    assert block["thinking"] == "Step 1: analyze the problem"
+
+
+def test_anthropic_stream_aggregator_thinking_then_text():
+    """A thinking block followed by a text block should both appear in the final message."""
+    aggregator = AnthropicStreamAggregator()
+
+    aggregator.consume({"type": "message_start", "message": {"role": "assistant", "model": "claude-3"}})
+    # Thinking block
+    aggregator.consume({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}})
+    aggregator.consume({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Let me think"}})
+    aggregator.consume({"type": "content_block_stop", "index": 0})
+    # Text block
+    aggregator.consume({"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}})
+    aggregator.consume({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "The answer is 42"}})
+    aggregator.consume({"type": "content_block_stop", "index": 1})
+
+    message = aggregator.finalize()
+
+    assert len(message["content"]) == 2
+    assert message["content"][0]["type"] == "thinking"
+    assert message["content"][0]["thinking"] == "Let me think"
+    assert message["content"][1]["type"] == "text"
+    assert message["content"][1]["text"] == "The answer is 42"
+
+
+def test_anthropic_stream_aggregator_thinking_delta_without_block_start():
+    """thinking_delta before content_block_start should still create a thinking block."""
+    aggregator = AnthropicStreamAggregator()
+
+    aggregator.consume({"type": "message_start", "message": {"role": "assistant"}})
+    # Delta arrives before block_start (edge case)
+    aggregator.consume({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "hmm"}})
+    aggregator.consume({"type": "content_block_stop", "index": 0})
+
+    message = aggregator.finalize()
+
+    assert message["content"][0]["type"] == "thinking"
+    assert message["content"][0]["thinking"] == "hmm"
+
+
 def test_openai_responses_stream_aggregator_reconstructs_items():
     aggregator = OpenAIResponsesStreamAggregator()
 

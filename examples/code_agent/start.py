@@ -19,13 +19,19 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from nexau import Agent
+
+from nexau import Agent, AgentConfig
+from nexau.archs.main_sub.execution.middleware.agent_events_middleware import AgentEventsMiddleware, Event
 
 logging.basicConfig(level=logging.INFO)
 
 
 def get_date():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def handler(event: Event) -> None:
+    print(event)
 
 
 def main():
@@ -38,7 +44,14 @@ def main():
         print("Loading Code agent from YAML configuration...")
 
         script_dir = Path(__file__).parent
-        claude_code_agent = Agent.from_yaml(config_path=script_dir / "code_agent.yaml")
+        config = AgentConfig.from_yaml(config_path=script_dir / "code_agent.yaml")
+        event_middleware = AgentEventsMiddleware(session_id="test", on_event=handler)
+        if config.middlewares:
+            config.middlewares.append(event_middleware)
+        else:
+            config.middlewares = [event_middleware]
+
+        claude_code_agent = Agent(config=config)
         print("✓ Agent loaded successfully from YAML")
 
         sandbox = claude_code_agent.sandbox_manager.instance

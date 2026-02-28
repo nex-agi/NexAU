@@ -4,20 +4,10 @@ from unittest.mock import patch
 
 import pytest
 import yaml
-from diskcache import Cache
 from pytest import CaptureFixture
 
 from nexau.archs.main_sub.agent_state import AgentState
-from nexau.archs.tool import tool as tool_module
 from nexau.archs.tool.tool import Tool
-
-
-@pytest.fixture
-def dummy_cache(monkeypatch, tmp_path: Path) -> Cache:
-    cache = Cache(tmp_path / "cache")
-    monkeypatch.setattr(tool_module, "cache", cache)
-    yield cache
-    cache.close()
 
 
 @pytest.fixture
@@ -28,26 +18,6 @@ def validator_tool() -> Tool:
         input_schema={"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]},
         implementation=lambda x: x,
     )
-
-
-def test_cache_result_skips_agent_state_in_cache_key(agent_state: AgentState, dummy_cache):
-    class Counter:
-        def __init__(self):
-            self.calls = 0
-
-        @tool_module.cache_result
-        def add(self, value: int, agent_state: Any | None = None):
-            self.calls += 1
-            return self.calls
-
-    counter = Counter()
-
-    first = counter.add(1, agent_state=agent_state)
-    second = counter.add(1, agent_state=agent_state)
-
-    assert first == second == 1
-    assert counter.calls == 1  # second call served from cache
-    assert len(dummy_cache) == 1
 
 
 def test_from_yaml_missing_file_raises_file_not_found():
@@ -107,32 +77,6 @@ def test_from_yaml_rejects_reserved_fields(tmp_path: Path, reserved_field):
 
     with pytest.raises(ValueError, match=reserved_field):
         Tool.from_yaml(str(yaml_path), binding=lambda **_: None)
-
-
-def test_execute_dynamic_import_wrapped_with_cache(monkeypatch, dummy_cache):
-    call_counter: dict[str, int] = {"count": 0}
-
-    def imported_impl(x: int):
-        call_counter["count"] += 1
-        return {"value": x}
-
-    with patch("nexau.archs.main_sub.utils.import_from_string", return_value=imported_impl) as mock_import:
-        tool = Tool(
-            name="cached_tool",
-            description="desc",
-            input_schema={"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]},
-            implementation="pkg:func",
-            use_cache=True,
-        )
-
-        first = tool.execute(x=1)
-        second = tool.execute(x=1)
-
-    assert first == {"value": 1}
-    assert second == {"value": 1}
-    assert call_counter["count"] == 1  # cached by cache_result wrapper
-    assert mock_import.call_count == 1
-    assert len(dummy_cache) == 1
 
 
 def test_execute_without_implementation_raises():

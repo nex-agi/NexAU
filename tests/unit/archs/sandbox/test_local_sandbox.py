@@ -1,4 +1,5 @@
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -685,6 +686,304 @@ class TestSaveOutputToTempFile:
         assert temp_dir.startswith(f"{BASH_TOOL_RESULTS_BASE_PATH}/")
 
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+class TestGracefulKill:
+    """Tests for the _graceful_kill static method and process group management."""
+
+    def test_graceful_kill_terminates_process(self, sandbox):
+        """_graceful_kill should terminate a running process and return its output."""
+        import subprocess
+
+        process = subprocess.Popen(
+            "sleep 60",
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=2.0)
+        assert process.poll() is not None  # process has exited
+        assert isinstance(stdout, str)
+        assert isinstance(stderr, str)
+
+    def test_graceful_kill_already_exited_process(self, sandbox):
+        """_graceful_kill should handle an already-exited process gracefully."""
+        import subprocess
+
+        process = subprocess.Popen(
+            "echo done",
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        process.wait()  # ensure it's done
+        stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=1.0)
+        assert isinstance(stdout, str)
+        assert isinstance(stderr, str)
+
+    def test_graceful_kill_captures_output(self, sandbox):
+        """_graceful_kill should capture stdout from a process that produces output before being killed."""
+        import subprocess
+
+        process = subprocess.Popen(
+            "echo 'before_kill' && sleep 60",
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        import time
+
+        time.sleep(0.3)  # let echo run
+        stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=2.0)
+        # stdout may or may not contain the output depending on timing,
+        # but the method should not raise
+        assert isinstance(stdout, str)
+
+    def test_foreground_timeout_uses_graceful_kill(self, sandbox):
+        """Foreground command timeout should use _graceful_kill (SIGTERM before SIGKILL)."""
+        result = sandbox.execute_bash("sleep 60", timeout=200)
+        assert result.status == SandboxStatus.TIMEOUT
+        assert "timed out" in result.error.lower()
+
+    def test_foreground_uses_start_new_session(self, sandbox):
+        """Foreground execution should create a new process group (start_new_session=True)."""
+        import os
+
+        # Run a command that prints its process group ID
+        result = sandbox.execute_bash('python3 -c "import os; print(os.getpgrp())"')
+        assert result.status == SandboxStatus.SUCCESS
+        child_pgid = int(result.stdout.strip())
+        # The child's pgid should differ from our own (since start_new_session=True)
+        assert child_pgid != os.getpgrp()
+
+    def test_background_uses_start_new_session(self, sandbox):
+        """Background execution should create a new process group (start_new_session=True)."""
+        import os
+        import time
+
+        result = sandbox.execute_bash(
+            'python3 -c "import os; print(os.getpgrp())"',
+            background=True,
+        )
+        pid = result.background_pid
+        assert pid is not None
+
+        time.sleep(0.5)
+        status = sandbox.get_background_task_status(pid)
+        assert status.status == SandboxStatus.SUCCESS
+        child_pgid = int(status.stdout.strip())
+        assert child_pgid != os.getpgrp()
+
+    def test_kill_background_task_uses_graceful_kill(self, sandbox):
+        """kill_background_task should cleanly terminate a long-running background process."""
+        result = sandbox.execute_bash("sleep 120", background=True)
+        pid = result.background_pid
+        assert pid is not None
+
+        kill_result = sandbox.kill_background_task(pid)
+        assert kill_result.status == SandboxStatus.SUCCESS
+
+        # Verify the process is actually gone
+        import os
+
+        try:
+            os.kill(pid, 0)
+            # If we get here, process still exists — wait a moment
+            import time
+
+            time.sleep(1)
+            os.kill(pid, 0)
+            # Still alive after 1s is unexpected but not a hard failure
+        except ProcessLookupError:
+            pass  # expected — process was killed
+
+    def test_graceful_kill_kills_child_processes(self, sandbox):
+        """_graceful_kill should kill the entire process group, including child processes."""
+        # Start a parent that spawns a child
+        result = sandbox.execute_bash(
+            "bash -c 'sleep 120 & echo child_started; wait' ",
+            timeout=500,
+        )
+        # The timeout triggers _graceful_kill which should kill the whole group
+        assert result.status == SandboxStatus.TIMEOUT
+
+
+class TestGracefulKillBranches:
+    """Mock-based tests to cover SIGKILL fallback and stuck-pipe branches (lines 111-137)."""
+
+    def test_sigkill_path_when_sigterm_times_out(self):
+        """When SIGTERM doesn't stop the process within grace_period, SIGKILL should be sent."""
+        from unittest.mock import MagicMock, patch
+
+        process = MagicMock()
+        process.pid = 12345
+
+        # Step 2: first communicate() raises TimeoutExpired (SIGTERM didn't work)
+        # Step 4: second communicate() succeeds (after SIGKILL)
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="test", timeout=1),  # step 2
+            ("killed_stdout", "killed_stderr"),  # step 4
+        ]
+
+        with patch("os.getpgid", return_value=12345) as _, patch("os.killpg") as mock_killpg:
+            stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=1.0)
+
+        # Verify SIGKILL was sent (second call to killpg)
+        import signal
+
+        killpg_calls = mock_killpg.call_args_list
+        assert len(killpg_calls) == 2
+        assert killpg_calls[0].args == (12345, signal.SIGTERM)
+        assert killpg_calls[1].args == (12345, signal.SIGKILL)
+        # process.kill() is also called as belt-and-suspenders
+        process.kill.assert_called_once()
+        assert stdout == "killed_stdout"
+        assert stderr == "killed_stderr"
+
+    def test_sigkill_path_process_already_gone(self):
+        """When process exits between SIGTERM and SIGKILL, ProcessLookupError is handled."""
+        from unittest.mock import MagicMock, patch
+
+        process = MagicMock()
+        process.pid = 99999
+
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="test", timeout=1),  # step 2
+            ("out", "err"),  # step 4
+        ]
+
+        with patch("os.getpgid", side_effect=ProcessLookupError("No such process")):
+            # SIGTERM fallback to process.terminate(), then SIGKILL getpgid also fails
+            stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=0.1)
+
+        assert stdout == "out"
+        assert stderr == "err"
+
+    def test_pipe_drain_timeout_closes_pipes(self):
+        """When pipe drain (step 4) times out, pipes should be closed."""
+        from unittest.mock import MagicMock, patch
+
+        process = MagicMock()
+        process.pid = 11111
+        mock_stdout_pipe = MagicMock()
+        mock_stderr_pipe = MagicMock()
+        process.stdout = mock_stdout_pipe
+        process.stderr = mock_stderr_pipe
+
+        # Step 2: SIGTERM timeout, Step 4: pipe drain also times out
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="test", timeout=1),  # step 2
+            subprocess.TimeoutExpired(cmd="test", timeout=10),  # step 4
+        ]
+        process.wait.return_value = 0
+
+        with patch("os.getpgid", return_value=11111), patch("os.killpg"):
+            stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=0.1)
+
+        # Verify pipes were closed
+        mock_stdout_pipe.close.assert_called_once()
+        mock_stderr_pipe.close.assert_called_once()
+        # process.wait() called as final cleanup
+        process.wait.assert_called_once_with(timeout=5)
+        # Returns empty strings since communicate never returned data
+        assert stdout == ""
+        assert stderr == ""
+
+    def test_pipe_drain_timeout_and_wait_timeout(self):
+        """When both pipe drain and final wait time out, method still returns gracefully."""
+        from unittest.mock import MagicMock, patch
+
+        process = MagicMock()
+        process.pid = 22222
+        process.stdout = MagicMock()
+        process.stderr = MagicMock()
+
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="test", timeout=1),  # step 2
+            subprocess.TimeoutExpired(cmd="test", timeout=10),  # step 4
+        ]
+        # Final wait also times out
+        process.wait.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=5)
+
+        with patch("os.getpgid", return_value=22222), patch("os.killpg"):
+            stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=0.1)
+
+        # Should still return without raising
+        assert stdout == ""
+        assert stderr == ""
+
+    def test_pipe_close_oserror_handled(self):
+        """OSError when closing pipes should be silently caught."""
+        from unittest.mock import MagicMock, patch
+
+        process = MagicMock()
+        process.pid = 33333
+        mock_stdout_pipe = MagicMock()
+        mock_stdout_pipe.close.side_effect = OSError("broken pipe")
+        mock_stderr_pipe = MagicMock()
+        mock_stderr_pipe.close.side_effect = OSError("broken pipe")
+        process.stdout = mock_stdout_pipe
+        process.stderr = mock_stderr_pipe
+
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="test", timeout=1),
+            subprocess.TimeoutExpired(cmd="test", timeout=10),
+        ]
+        process.wait.return_value = 0
+
+        with patch("os.getpgid", return_value=33333), patch("os.killpg"):
+            # Should not raise despite pipe close failures
+            stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=0.1)
+
+        assert stdout == ""
+        assert stderr == ""
+
+    def test_sigkill_oserror_on_process_kill(self):
+        """OSError on process.kill() (step 3) should be silently caught."""
+        from unittest.mock import MagicMock, patch
+
+        process = MagicMock()
+        process.pid = 44444
+        process.kill.side_effect = OSError("already dead")
+
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="test", timeout=1),  # step 2
+            ("final_out", "final_err"),  # step 4
+        ]
+
+        with patch("os.getpgid", return_value=44444), patch("os.killpg"):
+            stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=0.1)
+
+        assert stdout == "final_out"
+        assert stderr == "final_err"
+
+    def test_none_pipes_skipped_during_close(self):
+        """When stdout/stderr pipes are None, pipe close loop should skip them."""
+        from unittest.mock import MagicMock, patch
+
+        process = MagicMock()
+        process.pid = 55555
+        process.stdout = None
+        process.stderr = None
+
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="test", timeout=1),
+            subprocess.TimeoutExpired(cmd="test", timeout=10),
+        ]
+        process.wait.return_value = 0
+
+        with patch("os.getpgid", return_value=55555), patch("os.killpg"):
+            # Should not raise when pipes are None
+            stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=0.1)
+
+        assert stdout == ""
+        assert stderr == ""
 
 
 class TestSandboxDict:

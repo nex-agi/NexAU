@@ -16,55 +16,22 @@
 
 import asyncio
 import dataclasses
-import functools
 import inspect
-import json
 import logging
 import traceback
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Literal, Protocol, TypeVar, cast
+from typing import Any, Literal, cast
 
 import jsonschema
 import yaml
 from anthropic.types import ToolParam
-from diskcache import Cache  # type: ignore[import-untyped]
 from jsonschema.validators import validator_for
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 from pydantic import BaseModel, ConfigDict, Field
 
-from nexau.archs.main_sub.agent_state import AgentState
-
 logger = logging.getLogger(__name__)
-
-
-class _CacheProtocol(Protocol):
-    def get(
-        self,
-        key: str,
-        default: Any | None = None,
-        *,
-        read: bool = False,
-        expire_time: bool = False,
-        tag: bool = False,
-        retry: bool = False,
-    ) -> Any | None: ...
-
-    def set(
-        self,
-        key: str,
-        value: Any,
-        *,
-        expire: Any | None = None,
-        read: bool = False,
-        tag: Any | None = None,
-        retry: bool = False,
-    ) -> bool: ...
-
-
-cache: _CacheProtocol = Cache("./.tool_cache")
-F = TypeVar("F", bound=Callable[..., Any])
 
 
 class ToolYamlSchema(BaseModel):
@@ -77,44 +44,11 @@ class ToolYamlSchema(BaseModel):
     description: str
     input_schema: dict[str, Any] = Field(default_factory=dict)
     skill_description: str | None = None
-    use_cache: bool = False
     disable_parallel: bool = False
     lazy: bool = False
     template_override: str | None = None
     builtin: str | None = None
     binding: str | None = None
-
-
-def cache_result(func: F) -> F:  # noqa: UP047
-    @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        bound_self = getattr(func, "__self__", None)
-        if bound_self is not None:
-            method = f"{bound_self.__class__.__name__}."
-        else:
-            method = ""
-        method += func.__name__
-
-        filtered_args = tuple(arg for arg in args if not isinstance(arg, AgentState))
-
-        filtered_kwargs = {k: v for k, v in kwargs.items() if not isinstance(v, AgentState)}
-
-        key = json.dumps(
-            {"method": method, "args": filtered_args, "kwargs": filtered_kwargs},
-            sort_keys=True,
-            default=str,
-            ensure_ascii=False,
-        )
-
-        cached_result: Any | None = cache.get(key)
-        if cached_result is None:
-            result: Any = func(*args, **kwargs)
-            cache.set(key, result)
-            return result
-
-        return cached_result
-
-    return cast(F, wrapper)
 
 
 class ConfigError(Exception):
@@ -134,7 +68,6 @@ class Tool:
         implementation: Callable[..., Any] | str | None,
         skill_description: str | None = None,
         as_skill: bool = False,
-        use_cache: bool = False,
         disable_parallel: bool = False,
         lazy: bool = False,
         template_override: str | None = None,
@@ -157,14 +90,11 @@ class Tool:
                 from ..main_sub.utils import import_from_string
 
                 func = import_from_string(implementation)
-                if use_cache:
-                    func = cache_result(func)
                 self.implementation = func
         else:
             self.implementation = implementation
         self.template_override = template_override
         self.disable_parallel = disable_parallel
-        self.use_cache = use_cache
         reserved_keys = {"agent_state", "global_storage"}
         extra_kwargs = extra_kwargs or {}
         conflict_keys = set(extra_kwargs) & reserved_keys
@@ -201,7 +131,6 @@ class Tool:
         description = tool_def["description"]
         skill_description = tool_def.get("skill_description", "")
         input_schema = tool_def.get("input_schema", {})
-        use_cache = tool_def.get("use_cache", False)
         disable_parallel = tool_def.get("disable_parallel", False)
         yaml_lazy = tool_def.get("lazy", False)
         effective_lazy = yaml_lazy if lazy is None else lazy
@@ -231,7 +160,6 @@ class Tool:
             input_schema=input_schema,
             implementation=binding,
             as_skill=as_skill,
-            use_cache=use_cache,
             disable_parallel=disable_parallel,
             lazy=effective_lazy,
             template_override=template_override,
@@ -249,9 +177,6 @@ class Tool:
                 from ..main_sub.utils import import_from_string
 
                 func = import_from_string(str(self.implementation_import_path))
-
-                if self.use_cache:
-                    func = cache_result(func)
                 self.implementation = func
             else:
                 raise ValueError(f"Tool '{self.name}' has no implementation")

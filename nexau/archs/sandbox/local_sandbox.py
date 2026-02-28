@@ -24,6 +24,7 @@ import glob as glob_module
 import logging
 import os
 import shutil
+import signal
 import stat as stat_module
 import subprocess
 import threading
@@ -72,6 +73,68 @@ class LocalSandbox(BaseSandbox):
         """
         Path(self.work_dir).mkdir(parents=True, exist_ok=True)
         return Path(self.work_dir)
+
+    @staticmethod
+    def _graceful_kill(process: subprocess.Popen[str], grace_period: float = 5.0) -> tuple[str, str]:
+        """Gracefully terminate a process: SIGTERM → wait → SIGKILL → drain pipes.
+
+        1. Send SIGTERM to the process group (kills child processes too).
+        2. Wait *grace_period* seconds for a clean exit.
+        3. If still alive, SIGKILL the entire process group.
+        4. Drain remaining pipe output with a 10-second deadline.
+
+        Returns:
+            (stdout, stderr) collected from the process.
+        """
+        stdout = ""
+        stderr = ""
+
+        # 1. SIGTERM — give the process group a chance to clean up.
+        try:
+            pgid = os.getpgid(process.pid)
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            # Process already exited or we can't signal the group; fall back.
+            try:
+                process.terminate()
+            except OSError:
+                pass
+
+        # 2. Wait for graceful exit.
+        try:
+            stdout, stderr = process.communicate(timeout=grace_period)
+            return stdout or "", stderr or ""
+        except subprocess.TimeoutExpired:
+            pass
+
+        # 3. SIGKILL — force-kill the entire process group.
+        try:
+            pgid = os.getpgid(process.pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+        # 4. Drain pipes with a 10-second deadline; close pipes if still stuck.
+        try:
+            stdout, stderr = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            # Pipes are stuck (large buffered output). Close them to unblock.
+            for pipe in (process.stdout, process.stderr):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+
+        return stdout or "", stderr or ""
 
     def _save_output_to_temp_file(
         self,
@@ -206,6 +269,7 @@ class LocalSandbox(BaseSandbox):
                     text=True,
                     cwd=cwd or str(work_dir),
                     env=self._build_local_envs(envs),
+                    start_new_session=True,
                 )
                 bg_pid = process.pid
 
@@ -305,13 +369,13 @@ class LocalSandbox(BaseSandbox):
                 text=True,
                 cwd=cwd or str(work_dir),
                 env=self._build_local_envs(envs),
+                start_new_session=True,
             )
 
             try:
                 stdout, stderr = process.communicate(timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
-                process.kill()
-                stdout, stderr = process.communicate()
+                stdout, stderr = self._graceful_kill(process)
                 duration_ms = int((time.time() - start_time) * 1000)
 
                 return CommandResult(
@@ -450,8 +514,7 @@ class LocalSandbox(BaseSandbox):
         process: subprocess.Popen[str] = task_info["process"]
 
         try:
-            process.kill()
-            process.wait(timeout=5)
+            self._graceful_kill(process)
             # Wait for consumer threads to finish flushing output
             for thread_key in ("stdout_thread", "stderr_thread", "wait_thread"):
                 t = task_info.get(thread_key)
