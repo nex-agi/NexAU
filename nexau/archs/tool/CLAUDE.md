@@ -263,6 +263,37 @@ input_schema: {...}
 
 Useful for tools with heavy dependencies to speed up initialization.
 
+### Tool Return Value: `returnDisplay`
+
+Tools can return a dict with a `returnDisplay` field to provide a concise, human-readable
+summary for the frontend UI, separate from the full `content` sent to the LLM.
+
+**Behavior**: The framework strips `returnDisplay` from the result before passing it to the
+LLM. This avoids duplicate token consumption when `content` and `returnDisplay` carry similar
+information. The frontend still receives `returnDisplay` via the `ToolCallResultEvent` stream
+(emitted by `AgentEventsMiddleware.after_tool` before the strip).
+
+```python
+def my_tool(query: str, agent_state=None) -> dict:
+    results = search(query)
+    return {
+        "content": json.dumps(results),          # Full data → sent to LLM
+        "returnDisplay": f"Found {len(results)} results",  # Summary → frontend only
+    }
+```
+
+**Flow**:
+
+```
+Tool returns {"content": "...", "returnDisplay": "..."}
+  → after_tool middleware streams full dict to frontend (returnDisplay included)
+  → framework strips returnDisplay from result
+  → LLM receives only content (and other fields like error, duration_ms)
+```
+
+All built-in tools use this pattern. Custom tools can adopt it to reduce token usage
+while still providing rich UI feedback.
+
 ### Tool Error Handling Pattern
 
 ```python

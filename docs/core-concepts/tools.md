@@ -158,3 +158,22 @@ tools:
     yaml_path: ./tools/SimpleCalculator.tool.yaml
     binding: my_tools.calculator.simple_calculator:simple_calculator
 ```
+
+## Tool Return Values: `returnDisplay`
+
+When a tool returns a dictionary, you can include a `returnDisplay` field to provide a short, human-readable summary for the frontend UI. The framework automatically strips `returnDisplay` before sending the result to the LLM, so it won't consume extra tokens.
+
+```python
+def my_search_tool(query: str, agent_state=None) -> dict:
+    results = perform_search(query)
+    return {
+        "content": json.dumps(results),                    # Sent to LLM
+        "returnDisplay": f"Found {len(results)} results",  # Shown in frontend only
+    }
+```
+
+**How it works:**
+- `content` — the full tool output, forwarded to the LLM as the tool result.
+- `returnDisplay` — a concise summary streamed to the frontend for display, then stripped before the LLM sees it.
+
+This is the same pattern used by all NexAU built-in tools (file tools, web tools, shell tools, etc.). Use it in your custom tools whenever the full output is verbose but you want a clean one-liner in the UI.

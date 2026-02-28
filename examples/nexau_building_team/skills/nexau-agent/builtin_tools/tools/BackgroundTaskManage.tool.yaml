@@ -22,7 +22,7 @@ description: >-
 
 
   Usage notes:
-    - Use the `pid` returned by run_shell_command when is_background=true (shown in content/returnDisplay).
+    - Use the `pid` returned by run_shell_command when is_background=true (shown in content).
     - Use `list` first if you don't remember the pid of a task.
     - After killing a task, it will no longer appear in the list.
     - Finished tasks remain in the list until explicitly killed.

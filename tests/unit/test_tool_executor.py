@@ -1039,6 +1039,113 @@ class TestToolExecutorIntegration:
         hook.assert_called_once()
 
 
+class TestToolExecutorReturnDisplayStripping:
+    """Test that returnDisplay is stripped from tool results before returning to LLM."""
+
+    def test_return_display_stripped_from_result(self, agent_state):
+        """returnDisplay should be removed from the result dict."""
+
+        def tool_with_display(file_path: str, agent_state=None) -> dict:
+            return {
+                "content": "file contents here",
+                "returnDisplay": "Read 42 lines",
+            }
+
+        tool = Tool(
+            name="read_tool",
+            description="A tool that returns returnDisplay",
+            input_schema={"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"]},
+            implementation=tool_with_display,
+        )
+
+        executor = ToolExecutor(
+            tool_registry={"read_tool": tool},
+            stop_tools=set(),
+        )
+
+        result = executor.execute_tool(
+            agent_state=agent_state,
+            tool_name="read_tool",
+            parameters={"file_path": "test.txt"},
+            tool_call_id="call_123",
+        )
+
+        assert "returnDisplay" not in result
+        assert result["content"] == "file contents here"
+
+    def test_return_display_streamed_to_middleware_before_stripping(self, agent_state):
+        """Middleware (e.g. AgentEventsMiddleware) should still see returnDisplay."""
+        captured_return_display = None
+
+        def after_hook(hook_input: AfterToolHookInput) -> HookResult:
+            nonlocal captured_return_display
+            captured_return_display = hook_input.tool_output.get("returnDisplay")
+            return HookResult.no_changes()
+
+        def tool_with_display(agent_state=None) -> dict:
+            return {
+                "content": "data",
+                "returnDisplay": "Summary for UI",
+            }
+
+        tool = Tool(
+            name="display_tool",
+            description="Tool with display",
+            input_schema={"type": "object", "properties": {}},
+            implementation=tool_with_display,
+        )
+
+        middleware_manager = MiddlewareManager(
+            [FunctionMiddleware(after_tool_hook=after_hook)],
+        )
+
+        executor = ToolExecutor(
+            tool_registry={"display_tool": tool},
+            stop_tools=set(),
+            middleware_manager=middleware_manager,
+        )
+
+        result = executor.execute_tool(
+            agent_state=agent_state,
+            tool_name="display_tool",
+            parameters={},
+            tool_call_id="call_456",
+        )
+
+        # Middleware saw returnDisplay (for streaming to frontend)
+        assert captured_return_display == "Summary for UI"
+        # But final result does not contain it (for LLM)
+        assert "returnDisplay" not in result
+        assert result["content"] == "data"
+
+    def test_no_return_display_is_noop(self, agent_state):
+        """Tools without returnDisplay should work unchanged."""
+
+        def plain_tool(agent_state=None) -> dict:
+            return {"result": "plain output"}
+
+        tool = Tool(
+            name="plain_tool",
+            description="Plain tool",
+            input_schema={"type": "object", "properties": {}},
+            implementation=plain_tool,
+        )
+
+        executor = ToolExecutor(
+            tool_registry={"plain_tool": tool},
+            stop_tools=set(),
+        )
+
+        result = executor.execute_tool(
+            agent_state=agent_state,
+            tool_name="plain_tool",
+            parameters={},
+            tool_call_id="call_789",
+        )
+
+        assert result == {"result": "plain output"}
+
+
 class TestToolExecutorParallelExecutionId:
     """Test parallel_execution_id propagation in ToolExecutor."""
 

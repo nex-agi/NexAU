@@ -290,6 +290,10 @@ class ToolExecutor:
                 f"❌ Finish Tool '{tool_name}' execution failed, will continue.",
             )
             result_dict["_is_stop_tool"] = False
+        # Strip returnDisplay — already streamed to frontend via ToolCallResultEvent
+        # in after_tool middleware. Keeping it doubles token consumption for the LLM.
+        result_dict.pop("returnDisplay", None)
+
         return result_dict
 
     def convert_parameter_type(
