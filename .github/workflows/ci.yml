@@ -140,6 +140,7 @@ jobs:
       env:
         E2B_API_KEY: ${{ secrets.E2B_SELFHOST_API_KEY }}
         E2B_API_URL: ${{ vars.E2B_SELFHOST_API_URL }}
+        E2B_DOMAIN: ${{ vars.E2B_SELFHOST_DOMAIN }}
       run: |
         if [ -z "$E2B_API_KEY" ]; then
           echo "::error::E2B_SELFHOST_API_KEY secret is not set. Self-host E2B tests would be silently skipped."
@@ -147,6 +148,10 @@ jobs:
         fi
         if [ -z "$E2B_API_URL" ]; then
           echo "::error::E2B_SELFHOST_API_URL variable is not set."
+          exit 1
+        fi
+        if [ -z "$E2B_DOMAIN" ]; then
+          echo "::error::E2B_SELFHOST_DOMAIN variable is not set."
           exit 1
         fi
 
@@ -157,7 +162,7 @@ jobs:
         LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
         E2B_API_KEY: ${{ secrets.E2B_SELFHOST_API_KEY }}
         E2B_API_URL: ${{ vars.E2B_SELFHOST_API_URL }}
-        E2B_FORCE_HTTP: "true"
+        E2B_DOMAIN: ${{ vars.E2B_SELFHOST_DOMAIN }}
       run: |
         uv run pytest tests/unit/archs/sandbox/ \
           --cov=nexau.archs.sandbox \

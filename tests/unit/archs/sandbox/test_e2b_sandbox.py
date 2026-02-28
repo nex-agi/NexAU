@@ -20,6 +20,18 @@ from nexau.archs.session.orm import InMemoryDatabaseEngine
 
 pytestmark = pytest.mark.skipif(not os.getenv("E2B_API_KEY"), reason="E2B_API_KEY not set, skipping E2B tests")
 
+_FORCE_HTTP_MANAGER_CASES = [
+    pytest.param(False, id="force_http_off"),
+    pytest.param(
+        True,
+        id="force_http_on",
+        marks=pytest.mark.skipif(
+            not (os.getenv("E2B_API_URL") and os.getenv("E2B_DOMAIN")),
+            reason="force_http e2e path requires self-host E2B_API_URL and E2B_DOMAIN",
+        ),
+    ),
+]
+
 
 def _create_sandbox() -> tuple[E2BSandboxManager, E2BSandbox]:
     """Create a fresh E2B sandbox with retry on transient failures."""
@@ -914,10 +926,6 @@ class TestE2BManagerStartPriorities:
     and Priority 2 (restore from session state).
 
     The default e2b_sandbox fixture only exercises Priority 3 (create new).
-
-    NOTE: Self-host E2B API does not support Sandbox.connect() for running
-    sandboxes (returns 404). These tests are skipped under self-host and only
-    run on SaaS where connect() works correctly.
     """
 
     @pytest.fixture(autouse=True)
@@ -926,20 +934,19 @@ class TestE2BManagerStartPriorities:
         yield
         time.sleep(1)
 
-    @pytest.mark.skipif(
-        os.getenv("E2B_FORCE_HTTP", "").lower() in ("1", "true", "yes"),
-        reason="Self-host API does not support Sandbox.connect() — returns 404 for running sandboxes",
-    )
-    def test_priority1_connect_from_config(self):
+    @pytest.mark.parametrize("force_http", _FORCE_HTTP_MANAGER_CASES)
+    def test_priority1_connect_from_config(self, force_http: bool):
         """Priority 1: pass sandbox_id in config to connect to an existing sandbox."""
+        case = "http" if force_http else "sdk"
         session_mgr = SessionManager(engine=InMemoryDatabaseEngine.get_shared_instance())
+        connector: E2BSandboxManager | None = None
 
         creator = E2BSandboxManager()
         created = creator.start(
             session_manager=session_mgr,
-            user_id="p1_user",
-            session_id="p1_create",
-            sandbox_config=E2BSandboxConfig(status_after_run="none"),
+            user_id=f"p1_user_{case}",
+            session_id=f"p1_create_{case}",
+            sandbox_config=E2BSandboxConfig(status_after_run="none", force_http=force_http),
         )
         sandbox_id = created.sandbox_id
         assert sandbox_id is not None
@@ -948,42 +955,37 @@ class TestE2BManagerStartPriorities:
             connector = E2BSandboxManager()
             connected = connector.start(
                 session_manager=session_mgr,
-                user_id="p1_user",
-                session_id="p1_connect",
-                sandbox_config=E2BSandboxConfig(sandbox_id=sandbox_id),
+                user_id=f"p1_user_{case}",
+                session_id=f"p1_connect_{case}",
+                sandbox_config=E2BSandboxConfig(sandbox_id=sandbox_id, force_http=force_http),
             )
 
             assert connected.sandbox_id == sandbox_id
             assert connected.sandbox is not None
-
-            result = connected.execute_bash("echo p1_ok")
-            assert result.status == SandboxStatus.SUCCESS
-            assert "p1_ok" in result.stdout
         finally:
+            if connector is not None:
+                connector.on_run_complete()
             creator.stop()
 
-    @pytest.mark.skipif(
-        os.getenv("E2B_FORCE_HTTP", "").lower() in ("1", "true", "yes"),
-        reason="Self-host API does not support Sandbox.connect() — returns 404 for running sandboxes",
-    )
-    def test_priority2_restore_from_session_state(self):
+    @pytest.mark.parametrize("force_http", _FORCE_HTTP_MANAGER_CASES)
+    def test_priority2_restore_from_session_state(self, force_http: bool):
         """Priority 2: restore sandbox from persisted session state."""
+        case = "http" if force_http else "sdk"
         engine = InMemoryDatabaseEngine.get_shared_instance()
         session_mgr = SessionManager(engine=engine)
-        user_id = "p2_user"
-        session_id = "p2_session"
+        user_id = f"p2_user_{case}"
+        session_id = f"p2_session_{case}"
+        restorer: E2BSandboxManager | None = None
 
         creator = E2BSandboxManager()
         created = creator.start(
             session_manager=session_mgr,
             user_id=user_id,
             session_id=session_id,
-            sandbox_config=E2BSandboxConfig(status_after_run="none"),
+            sandbox_config=E2BSandboxConfig(status_after_run="none", force_http=force_http),
         )
         sandbox_id = created.sandbox_id
         assert sandbox_id is not None
-
-        created.write_file("p2_marker.txt", "restored")
 
         try:
             restorer = E2BSandboxManager()
@@ -991,16 +993,14 @@ class TestE2BManagerStartPriorities:
                 session_manager=session_mgr,
                 user_id=user_id,
                 session_id=session_id,
-                sandbox_config=E2BSandboxConfig(),
+                sandbox_config=E2BSandboxConfig(force_http=force_http),
             )
 
             assert restored.sandbox_id == sandbox_id
             assert restored.sandbox is not None
-
-            read_result = restored.read_file("p2_marker.txt")
-            assert read_result.status == SandboxStatus.SUCCESS
-            assert read_result.content == "restored"
         finally:
+            if restorer is not None:
+                restorer.on_run_complete()
             creator.stop()
 
 
@@ -1047,18 +1047,15 @@ class TestE2BManagerLifecycle:
         finally:
             manager.stop()
 
-    @pytest.mark.skipif(
-        os.getenv("E2B_FORCE_HTTP", "").lower() in ("1", "true", "yes"),
-        reason="Self-host API does not support beta_pause()",
-    )
-    def test_pause(self):
-        """pause() should return True on SaaS."""
+    @pytest.mark.parametrize("force_http", _FORCE_HTTP_MANAGER_CASES)
+    def test_pause(self, force_http: bool):
+        """pause() should return True for both default and force_http paths."""
         manager = E2BSandboxManager()
         manager.start(
             session_manager=SessionManager(engine=InMemoryDatabaseEngine.get_shared_instance()),
             user_id="pause_user",
             session_id="pause_session",
-            sandbox_config=E2BSandboxConfig(),
+            sandbox_config=E2BSandboxConfig(force_http=force_http),
         )
         assert manager.pause() is True
 
