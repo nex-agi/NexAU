@@ -250,6 +250,53 @@ middlewares:
       window_size: 2
 ```
 
+### LLMFailoverMiddleware (`execution/middleware/llm_failover.py`)
+
+Automatic LLM provider failover via `wrap_model_call`. When the primary provider fails with a matching error, the middleware tries backup providers in order.
+
+**Key Design**:
+
+- Zero invasive: pure middleware, no changes to `LLMCaller`
+- Immutable: creates new `ModelCallParams` per fallback (never mutates original config)
+- Multi-level: supports ordered fallback chain
+- Optional circuit breaker: CLOSED → OPEN → HALF_OPEN state machine
+
+**Configuration**:
+
+```yaml
+middlewares:
+  - import: nexau.archs.main_sub.execution.middleware.llm_failover:LLMFailoverMiddleware
+    params:
+      trigger:
+        status_codes: [500, 502, 503, 529]
+        exception_types: ["RateLimitError"]
+      fallback_providers:
+        - name: "backup-gateway"
+          llm_config:
+            base_url: "https://backup.example.com/v1"
+            api_key: "sk-backup-xxx"
+        - name: "emergency"
+          llm_config:
+            model: "gpt-4o"
+            base_url: "https://emergency.example.com/v1"
+            api_key: "sk-emergency-xxx"
+            api_type: "openai_chat_completion"
+      circuit_breaker:
+        failure_threshold: 3
+        recovery_timeout_seconds: 60
+```
+
+**Trigger matching** (OR logic):
+- `status_codes`: matches `openai.APIStatusError.status_code` or `anthropic.APIStatusError.status_code`
+- `exception_types`: matches exception class name (e.g. `"RateLimitError"`)
+
+**Fallback behavior**:
+- Unspecified `llm_config` fields inherit from the primary config
+- A new SDK client is built per fallback via `LLMConfig.to_client_kwargs()`
+- `tools`, `tool_choice`, `stop`, `max_tokens` are preserved from the original params
+
+See [RFC-0003](../../../rfcs/0003-llm-failover-middleware.md) for full design rationale.
+
 ### Sub-Agent System (`execution/subagent_manager.py`)
 
 Hierarchical delegation: Agents can call sub-agents forming a task tree.

@@ -5,6 +5,7 @@ system_prompt: ./systemprompt.md
 system_prompt_type: jinja
 tool_call_mode: anthropic # xml, openai or anthropic
 max_iterations: 300
+
 llm_config: # Support environment variable replacement in YAML config
   model: ${env.LLM_MODEL}
   base_url: ${env.LLM_BASE_URL}

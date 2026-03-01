@@ -161,5 +161,71 @@ middlewares:
 ### Built-in Middleware
 
 - `LoggingMiddleware`: replaces the old logging hooks and supports both after-model/after-tool logging as well as wrapping model calls to trace custom generators.
+- `ContextCompactionMiddleware`: manages conversation context when token limits are approached. See [Context Compaction](./context_compaction.md) for details.
+- `LLMFailoverMiddleware`: automatically fails over to backup LLM providers when the primary provider returns matching errors (e.g. 500, 502, 503). Supports multi-level fallback chains and an optional circuit breaker. See below for configuration.
 
 You can combine built-in middleware with your own; the manager guarantees the ordering rules described above.
+
+### LLM Failover Middleware
+
+When your primary LLM provider goes down or returns errors, `LLMFailoverMiddleware` intercepts the failure via `wrap_model_call` and retries with backup providers — no changes to `LLMCaller` needed.
+
+**Key features**:
+
+- Trigger on HTTP status codes (e.g. 500, 502, 503, 529) or exception type names (e.g. `RateLimitError`)
+- Multiple fallback providers tried in order
+- Immutable: creates new `ModelCallParams` per fallback, never mutates the original config
+- Optional circuit breaker to skip a failing primary for a cooldown period
+
+**YAML configuration**:
+
+```yaml
+middlewares:
+  - import: nexau.archs.main_sub.execution.middleware.llm_failover:LLMFailoverMiddleware
+    params:
+      trigger:
+        status_codes: [500, 502, 503, 529]
+        exception_types: ["RateLimitError", "InternalServerError"]
+      fallback_providers:
+        - name: "backup-gateway"
+          llm_config:
+            base_url: "https://backup.example.com/v1"
+            api_key: "sk-backup-xxx"
+        - name: "emergency"
+          llm_config:
+            model: "gpt-4o"
+            base_url: "https://emergency.example.com/v1"
+            api_key: "sk-emergency-xxx"
+            api_type: "openai_chat_completion"
+      circuit_breaker:
+        failure_threshold: 3
+        recovery_timeout_seconds: 60
+```
+
+**Python usage**:
+
+```python
+from nexau.archs.main_sub.execution.middleware.llm_failover import LLMFailoverMiddleware
+
+failover = LLMFailoverMiddleware(
+    trigger={"status_codes": [500, 502, 503], "exception_types": ["RateLimitError"]},
+    fallback_providers=[
+        {"name": "backup", "llm_config": {"base_url": "https://backup.example.com/v1", "api_key": "sk-xxx"}},
+    ],
+    circuit_breaker={"failure_threshold": 3, "recovery_timeout_seconds": 60},
+)
+```
+
+**How it works**:
+
+1. Primary call via `call_next(params)` — if it succeeds, return immediately
+2. On failure, check if the exception matches `trigger.status_codes` or `trigger.exception_types`
+3. If matched, iterate through `fallback_providers` in order, creating a new `ModelCallParams` with the fallback's config
+4. If all providers fail, raise the last exception
+5. Circuit breaker (optional): after N consecutive primary failures, skip primary for a cooldown period and go straight to fallbacks
+
+**Notes**:
+
+- Fallback `llm_config` fields are merged on top of the primary config — unspecified fields are inherited
+- The `model` field is inherited from primary unless explicitly overridden in the fallback
+- See [RFC-0003](../../rfcs/0003-llm-failover-middleware.md) for the full design rationale
