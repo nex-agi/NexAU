@@ -17,12 +17,11 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
-from nexau import Agent, AgentConfig
-from nexau.archs.llm.llm_config import LLMConfig
+from nexau import Agent
 
 
 @pytest.fixture
