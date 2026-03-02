@@ -1,8 +1,6 @@
 name: "Project: Auto Backlog → Todo when Iteration set"
 
 on:
-  # Trigger on project item changes (org-level event, requires org webhook config)
-  # Fallback: scheduled polling every 10 minutes
   schedule:
     - cron: '*/10 * * * *'
   workflow_dispatch: {}
@@ -22,13 +20,11 @@ jobs:
 
           PROJECT_ID="PVT_kwDOCmnEdM4BQARn"
           STATUS_FIELD_ID="PVTSSF_lADOCmnEdM4BQARnzg-P8lI"
-          ITERATION_FIELD_ID="PVTIF_lADOCmnEdM4BQARnzg-P9fM"
           BACKLOG_OPTION_ID="c8979f55"
           TODO_OPTION_ID="f75ad846"
 
           echo "Fetching project items with Status=Backlog..."
 
-          # Paginate through all items
           HAS_NEXT=true
           CURSOR=""
           MOVED=0
@@ -51,13 +47,13 @@ jobs:
                     }
                     nodes {
                       id
-                      fieldValueByName(name: \"Status\") {
+                      statusVal: fieldValueByName(name: \"Status\") {
                         ... on ProjectV2ItemFieldSingleSelectValue {
                           optionId
                           name
                         }
                       }
-                      iterationValue: fieldValueByName(name: \"Iteration\") {
+                      iterVal: fieldValueByName(name: \"Iteration\") {
                         ... on ProjectV2ItemFieldIterationValue {
                           iterationId
                           title
@@ -67,9 +63,7 @@ jobs:
                         ... on Issue {
                           title
                           number
-                          repository {
-                            nameWithOwner
-                          }
+                          repository { nameWithOwner }
                         }
                       }
                     }
@@ -81,37 +75,34 @@ jobs:
             HAS_NEXT=$(echo "$RESPONSE" | jq -r '.data.node.items.pageInfo.hasNextPage')
             CURSOR=$(echo "$RESPONSE" | jq -r '.data.node.items.pageInfo.endCursor')
 
-            # Find items where Status=Backlog AND Iteration is set
-            ITEMS_TO_MOVE=$(echo "$RESPONSE" | jq -r '
-              [.data.node.items.nodes[] |
-                select(
-                  (.fieldValueByName.optionId == "'"$BACKLOG_OPTION_ID"'") and
-                  (.iterationValue.iterationId != null and .iterationValue.iterationId != "")
-                )
-              ] | .[] | @base64')
+            ITEMS=$(echo "$RESPONSE" | jq -c '.data.node.items.nodes[]')
 
-            for ITEM_B64 in $ITEMS_TO_MOVE; do
-              ITEM=$(echo "$ITEM_B64" | base64 -d)
+            while IFS= read -r ITEM; do
+              [ -z "$ITEM" ] && continue
+
               ITEM_ID=$(echo "$ITEM" | jq -r '.id')
+              STATUS_OPT=$(echo "$ITEM" | jq -r '.statusVal.optionId // ""')
+              ITER_ID=$(echo "$ITEM" | jq -r '.iterVal.iterationId // ""')
               TITLE=$(echo "$ITEM" | jq -r '.content.title // "Draft"')
-              ITER=$(echo "$ITEM" | jq -r '.iterationValue.title // "unknown"')
+              NUM=$(echo "$ITEM" | jq -r '.content.number // ""')
+              ITER_TITLE=$(echo "$ITEM" | jq -r '.iterVal.title // ""')
 
-              echo "Moving: $TITLE (iteration: $ITER) → Todo"
-
-              gh api graphql -f query="
-              mutation {
-                updateProjectV2ItemFieldValue(input: {
-                  projectId: \"$PROJECT_ID\"
-                  itemId: \"$ITEM_ID\"
-                  fieldId: \"$STATUS_FIELD_ID\"
-                  value: { singleSelectOptionId: \"$TODO_OPTION_ID\" }
-                }) {
-                  projectV2Item { id }
-                }
-              }" > /dev/null
-
-              MOVED=$((MOVED + 1))
-            done
+              if [ "$STATUS_OPT" = "$BACKLOG_OPTION_ID" ] && [ -n "$ITER_ID" ]; then
+                echo "Moving: #$NUM $TITLE (iteration: $ITER_TITLE) → Todo"
+                gh api graphql -f query="
+                mutation {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: \"$PROJECT_ID\"
+                    itemId: \"$ITEM_ID\"
+                    fieldId: \"$STATUS_FIELD_ID\"
+                    value: { singleSelectOptionId: \"$TODO_OPTION_ID\" }
+                  }) {
+                    projectV2Item { id }
+                  }
+                }" > /dev/null
+                MOVED=$((MOVED + 1))
+              fi
+            done <<< "$ITEMS"
           done
 
           echo "Done. Moved $MOVED item(s) from Backlog to Todo."

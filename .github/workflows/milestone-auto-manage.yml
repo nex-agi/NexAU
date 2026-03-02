@@ -1,0 +1,178 @@
+name: "Milestone: Auto-manage on tag release"
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  manage-milestone:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto-create milestone, link issues, and close
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_PAT }}
+        run: |
+          set -euo pipefail
+
+          REPO="${{ github.repository }}"
+          TAG="${{ github.ref_name }}"
+          echo "=== Tag pushed: $TAG on $REPO ==="
+
+          # --- Step 1: Find previous tag ---
+          TAGS=$(gh api "repos/$REPO/tags?per_page=100" --jq '.[].name' | sort -V)
+          PREV_TAG=""
+          FOUND=false
+          while IFS= read -r t; do
+            if [ "$FOUND" = "true" ]; then
+              break
+            fi
+            if [ "$t" = "$TAG" ]; then
+              FOUND=true
+              continue
+            fi
+            PREV_TAG="$t"
+          done <<< "$TAGS"
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous tag found. This is the first release."
+            echo "Skipping PR-based issue linking."
+            PREV_TAG=""
+          else
+            echo "Previous tag: $PREV_TAG"
+          fi
+
+          # --- Step 2: Create milestone if not exists ---
+          MILESTONE_TITLE="$TAG"
+          MILESTONE=$(gh api "repos/$REPO/milestones?state=all&per_page=100" \
+            --jq ".[] | select(.title == \"$MILESTONE_TITLE\") | .number" 2>/dev/null || echo "")
+
+          if [ -z "$MILESTONE" ]; then
+            echo "Creating milestone: $MILESTONE_TITLE"
+            MILESTONE=$(gh api "repos/$REPO/milestones" \
+              -X POST \
+              -f title="$MILESTONE_TITLE" \
+              --jq '.number')
+            echo "Created milestone #$MILESTONE"
+          else
+            echo "Milestone already exists: #$MILESTONE"
+          fi
+
+          # --- Step 3: Find merged PRs between tags and link issues ---
+          if [ -n "$PREV_TAG" ]; then
+            echo "Finding merged PRs between $PREV_TAG and $TAG..."
+
+            # Get merge commits in range
+            COMMITS=$(gh api "repos/$REPO/compare/$PREV_TAG...$TAG" \
+              --jq '.commits[].sha' 2>/dev/null || echo "")
+
+            if [ -n "$COMMITS" ]; then
+              # Find PRs associated with these commits
+              LINKED_ISSUES=0
+
+              # Get recently merged PRs and match by merge_commit_sha
+              PAGE=1
+              while true; do
+                PRS=$(gh api "repos/$REPO/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=100&page=$PAGE" \
+                  --jq '.[] | select(.merged_at != null) | "\(.number)|\(.merge_commit_sha)|\(.body // "")"' 2>/dev/null || echo "")
+
+                if [ -z "$PRS" ]; then
+                  break
+                fi
+
+                while IFS= read -r pr_line; do
+                  PR_NUM=$(echo "$pr_line" | cut -d'|' -f1)
+                  PR_SHA=$(echo "$pr_line" | cut -d'|' -f2)
+                  PR_BODY=$(echo "$pr_line" | cut -d'|' -f3-)
+
+                  # Check if this PR's merge commit is in our range
+                  if echo "$COMMITS" | grep -q "$PR_SHA"; then
+                    echo "PR #$PR_NUM is in this release"
+
+                    # Find linked issues from PR body (closes #N, fixes #N, resolves #N)
+                    ISSUE_NUMS=$(echo "$PR_BODY" | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#[0-9]+' | grep -oE '#[0-9]+' | tr -d '#' || echo "")
+
+                    # Also check PR's linked issues via timeline
+                    TIMELINE_ISSUES=$(gh api "repos/$REPO/issues/$PR_NUM/timeline" \
+                      --jq '.[] | select(.event == "cross-referenced" or .event == "connected") | .source.issue.number // empty' 2>/dev/null || echo "")
+
+                    ALL_ISSUES=$(echo -e "$ISSUE_NUMS\n$TIMELINE_ISSUES" | sort -u | grep -v '^$' || echo "")
+
+                    if [ -n "$ALL_ISSUES" ]; then
+                      while IFS= read -r issue_num; do
+                        if [ -n "$issue_num" ]; then
+                          echo "  Linking issue #$issue_num to milestone $MILESTONE_TITLE"
+                          gh api "repos/$REPO/issues/$issue_num" \
+                            -X PATCH \
+                            -F milestone="$MILESTONE" \
+                            --silent 2>/dev/null || echo "  Warning: failed to update issue #$issue_num"
+                          LINKED_ISSUES=$((LINKED_ISSUES + 1))
+                        fi
+                      done <<< "$ALL_ISSUES"
+                    fi
+                  fi
+                done <<< "$PRS"
+
+                # Stop pagination if we've gone past the previous tag's date
+                OLDEST_MERGED=$(echo "$PRS" | tail -1 | cut -d'|' -f2)
+                PAGE=$((PAGE + 1))
+                if [ $PAGE -gt 5 ]; then
+                  break
+                fi
+              done
+
+              echo "Linked $LINKED_ISSUES issue(s) to milestone $MILESTONE_TITLE"
+            fi
+          fi
+
+          # --- Step 4: Check if all issues are closed ---
+          OPEN_ISSUES=$(gh api "repos/$REPO/issues?milestone=$MILESTONE&state=open&per_page=100" \
+            --jq '[.[] | select(.pull_request == null)] | length' 2>/dev/null || echo "0")
+
+          if [ "$OPEN_ISSUES" = "0" ]; then
+            echo "All issues closed. Closing milestone $MILESTONE_TITLE"
+            gh api "repos/$REPO/milestones/$MILESTONE" \
+              -X PATCH \
+              -f state="closed" \
+              --silent
+            echo "✅ Milestone $MILESTONE_TITLE closed!"
+          else
+            echo "⚠️ $OPEN_ISSUES open issue(s) remain in milestone $MILESTONE_TITLE"
+            # List them
+            OPEN_LIST=$(gh api "repos/$REPO/issues?milestone=$MILESTONE&state=open&per_page=100" \
+              --jq '.[] | select(.pull_request == null) | "#\(.number) \(.title)"' 2>/dev/null || echo "")
+            echo "Open issues:"
+            echo "$OPEN_LIST"
+            echo ""
+            echo "Milestone NOT closed. Manual review needed."
+          fi
+
+          # --- Step 5: Create next milestone (patch +1) ---
+          # Parse version: v0.3.8 -> v0.3.9
+          NEXT_TAG=$(echo "$TAG" | awk -F. '{
+            prefix = $1 "." $2 "."
+            patch = $3 + 1
+            print prefix patch
+          }')
+
+          EXISTING_NEXT=$(gh api "repos/$REPO/milestones?state=all&per_page=100" \
+            --jq ".[] | select(.title == \"$NEXT_TAG\") | .number" 2>/dev/null || echo "")
+
+          if [ -z "$EXISTING_NEXT" ]; then
+            echo "Creating next milestone: $NEXT_TAG"
+            gh api "repos/$REPO/milestones" \
+              -X POST \
+              -f title="$NEXT_TAG" \
+              --silent
+            echo "✅ Next milestone $NEXT_TAG created!"
+          else
+            echo "Next milestone $NEXT_TAG already exists"
+          fi
+
+          echo ""
+          echo "=== Done ==="
