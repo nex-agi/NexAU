@@ -1,0 +1,117 @@
+name: "Project: Auto Backlog → Todo when Iteration set"
+
+on:
+  # Trigger on project item changes (org-level event, requires org webhook config)
+  # Fallback: scheduled polling every 10 minutes
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  auto-status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Move Backlog items with Iteration to Todo
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_PAT }}
+        run: |
+          set -euo pipefail
+
+          PROJECT_ID="PVT_kwDOCmnEdM4BQARn"
+          STATUS_FIELD_ID="PVTSSF_lADOCmnEdM4BQARnzg-P8lI"
+          ITERATION_FIELD_ID="PVTIF_lADOCmnEdM4BQARnzg-P9fM"
+          BACKLOG_OPTION_ID="c8979f55"
+          TODO_OPTION_ID="f75ad846"
+
+          echo "Fetching project items with Status=Backlog..."
+
+          # Paginate through all items
+          HAS_NEXT=true
+          CURSOR=""
+          MOVED=0
+
+          while [ "$HAS_NEXT" = "true" ]; do
+            if [ -z "$CURSOR" ]; then
+              AFTER_ARG=""
+            else
+              AFTER_ARG=", after: \"$CURSOR\""
+            fi
+
+            RESPONSE=$(gh api graphql -f query="
+            {
+              node(id: \"$PROJECT_ID\") {
+                ... on ProjectV2 {
+                  items(first: 100${AFTER_ARG}) {
+                    pageInfo {
+                      hasNextPage
+                      endCursor
+                    }
+                    nodes {
+                      id
+                      fieldValueByName(name: \"Status\") {
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          optionId
+                          name
+                        }
+                      }
+                      iterationValue: fieldValueByName(name: \"Iteration\") {
+                        ... on ProjectV2ItemFieldIterationValue {
+                          iterationId
+                          title
+                        }
+                      }
+                      content {
+                        ... on Issue {
+                          title
+                          number
+                          repository {
+                            nameWithOwner
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }")
+
+            HAS_NEXT=$(echo "$RESPONSE" | jq -r '.data.node.items.pageInfo.hasNextPage')
+            CURSOR=$(echo "$RESPONSE" | jq -r '.data.node.items.pageInfo.endCursor')
+
+            # Find items where Status=Backlog AND Iteration is set
+            ITEMS_TO_MOVE=$(echo "$RESPONSE" | jq -r '
+              [.data.node.items.nodes[] |
+                select(
+                  (.fieldValueByName.optionId == "'"$BACKLOG_OPTION_ID"'") and
+                  (.iterationValue.iterationId != null and .iterationValue.iterationId != "")
+                )
+              ] | .[] | @base64')
+
+            for ITEM_B64 in $ITEMS_TO_MOVE; do
+              ITEM=$(echo "$ITEM_B64" | base64 -d)
+              ITEM_ID=$(echo "$ITEM" | jq -r '.id')
+              TITLE=$(echo "$ITEM" | jq -r '.content.title // "Draft"')
+              ITER=$(echo "$ITEM" | jq -r '.iterationValue.title // "unknown"')
+
+              echo "Moving: $TITLE (iteration: $ITER) → Todo"
+
+              gh api graphql -f query="
+              mutation {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: \"$PROJECT_ID\"
+                  itemId: \"$ITEM_ID\"
+                  fieldId: \"$STATUS_FIELD_ID\"
+                  value: { singleSelectOptionId: \"$TODO_OPTION_ID\" }
+                }) {
+                  projectV2Item { id }
+                }
+              }" > /dev/null
+
+              MOVED=$((MOVED + 1))
+            done
+          done
+
+          echo "Done. Moved $MOVED item(s) from Backlog to Todo."
