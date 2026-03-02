@@ -605,6 +605,7 @@ class Agent:
         parent_agent_state: AgentState | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         variables: ContextValue | None = None,
+        run_id: str | None = None,
     ) -> str | tuple[str, dict[str, Any]]:
         """Run agent asynchronously with a message and return response.
 
@@ -627,6 +628,7 @@ class Agent:
             parent_agent_state: Optional parent agent state (for sub-agents)
             custom_llm_client_provider: Optional custom LLM client provider
             variables: Optional ContextValue with structured runtime parameters
+            run_id: Optional pre-generated run ID; auto-generated if not provided
 
         Returns:
             Agent response string or tuple of (response, state)
@@ -635,9 +637,10 @@ class Agent:
             TimeoutError: If agent is already running
         """
         # Generate run_id before acquiring lock
-        from nexau.archs.session.id_generator import generate_run_id
+        if run_id is None:
+            from nexau.archs.session.id_generator import generate_run_id
 
-        run_id = generate_run_id()
+            run_id = generate_run_id()
 
         async with self._session_manager.agent_lock.acquire(
             session_id=self._session_id,
