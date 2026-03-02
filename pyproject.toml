@@ -39,7 +39,7 @@ description = "A general-purpose agent framework"
 name = "nexau"
 readme = "README.md"
 requires-python = ">=3.12"
-version = "0.3.7"
+version = "0.3.8"
 
 [project.scripts]
 # Public entry point exposed via `pip install nexau`.
