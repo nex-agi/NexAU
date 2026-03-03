@@ -88,6 +88,7 @@ where = ["."]
 nexau = [
   "archs/main_sub/prompts/*.j2",
   "archs/main_sub/execution/middleware/context_compaction/prompts/*.md",
+  "archs/main_sub/team/tools/*.yaml",
   "archs/tool/builtin/description/*.yaml",
   "cli/dist/*.js",
   "cli/dist/*.js.map",
