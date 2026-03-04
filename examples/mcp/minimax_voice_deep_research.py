@@ -22,11 +22,6 @@ from nexau.archs.llm import LLMConfig
 from nexau.archs.main_sub.execution.hooks import create_tool_after_approve_hook
 from nexau.archs.tool import Tool
 from nexau.archs.tool.builtin.shell_tools import run_shell_command
-from nexau.archs.tool.builtin.feishu import (
-    get_feishu_chat_list,
-    send_feishu_message,
-    upload_feishu_file,
-)
 from nexau.archs.tool.builtin.web_tools import google_web_search, web_fetch
 
 # Configure logging for hooks to ensure they appear
@@ -64,27 +59,6 @@ def main():
 
     src_dir = os.path.dirname(os.path.abspath(__file__))
 
-    feishu_upload_file_tool = Tool.from_yaml(
-        os.path.join(
-            src_dir,
-            "tools/feishu_upload_file.yaml",
-        ),
-        binding=upload_feishu_file,
-    )
-    feishu_send_message_tool = Tool.from_yaml(
-        os.path.join(
-            src_dir,
-            "tools/feishu_send_message.yaml",
-        ),
-        binding=send_feishu_message,
-    )
-    get_feishu_chat_list_tool = Tool.from_yaml(
-        os.path.join(
-            src_dir,
-            "tools/get_feishu_chat_list.yaml",
-        ),
-        binding=get_feishu_chat_list,
-    )
     configured_bash_tool = Tool.from_yaml(
         os.path.join(
             src_dir,
@@ -107,9 +81,6 @@ def main():
         binding=web_fetch,
     )
     tools = [
-        feishu_upload_file_tool,
-        feishu_send_message_tool,
-        get_feishu_chat_list_tool,
         configured_bash_tool,
         web_search_tool,
         web_read_tool,
@@ -141,14 +112,9 @@ def main():
         print("🤖 Creating agent with MiniMax MCP server...")
         agent_config = AgentConfig(
             name="minimax_agent",
-            system_prompt="""You are an AI agent with access to MiniMax MCP, feishu tools, bash tool, and web search tool.
-
-You can also use feishu tools to upload files and send messages to feishu.
+            system_prompt="""You are an AI agent with access to MiniMax MCP, bash tool, and web search tool.
 
 You can use the following tools:
-- feishu_upload_file
-- feishu_send_message
-- get_feishu_chat_list
 - web_search
 - web_read
 - bash_tool

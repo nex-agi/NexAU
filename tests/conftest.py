@@ -359,8 +359,6 @@ def mock_env_vars(request):
             {
                 "TESTING": "true",
                 "SERPER_API_KEY": "test-serper-key",
-                "FEISHU_APP_ID": "test-feishu-app-id",
-                "FEISHU_APP_SECRET": "test-feishu-secret",
             },
         ):
             yield
@@ -374,8 +372,6 @@ def mock_env_vars(request):
                 "LLM_BASE_URL": "https://api.openai.com/v1",
                 "LLM_API_KEY": "test-key-not-used",
                 "SERPER_API_KEY": "test-serper-key",
-                "FEISHU_APP_ID": "test-feishu-app-id",
-                "FEISHU_APP_SECRET": "test-feishu-secret",
             },
         ):
             yield

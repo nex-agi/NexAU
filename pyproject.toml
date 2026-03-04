@@ -10,27 +10,19 @@ dependencies = [
   "openai>=2.14.0",
   "httpx>=0.28.1",
   "mcp>=1.12.3",
-  "lark_oapi>=1.4.0",
   "sqlmodel>=0.0.18",
   "pytest>=7.0.0",
   "pytest-cov>=4.0.0",
-  "streamlit>=1.48.0",
-  "plotly>=6.2.0",
   "pandas>=2.3.1",
   "langfuse>=3.2.3",
   "tiktoken>=0.5.0",
-  "fastmcp",
   "anthropic>=0.84.0",
-  "opentelemetry-instrumentation-anthropic>=0.47.5",
-  "jupyter-client>=8.6.3",
-  "ipykernel>=7.1.0",
   "json-repair>=0.55.0",
   "ag-ui-protocol>=0.1.10",
   # HTTP transport requires fastapi
   "fastapi>=0.104.0",
   "uvicorn[standard]>=0.24.0",
   "python-dotenv>=1.0.0",
-  "redis>=7.1.0",
   "asyncer>=0.0.12",
   "python-ulid>=3.1.0",
   "nest_asyncio>=1.6.0",  # Allow nested event loops for sync/async interop
@@ -59,7 +51,7 @@ async-db = [
 dev = [
   "ruff>=0.8.0",
   "mypy>=1.11.0",
-  "lxml>=6.0.2",
+  "lxml>=6.0.2",  # Required by mypy --cobertura-xml-report
   "pyright==1.1.399",
   "pre-commit>=3.8.0",
   "types-pyyaml>=6.0.12.20250915",
@@ -69,7 +61,6 @@ dev = [
   "types-setuptools>=80.9.0.20250822",
   "hypothesis>=6.100.0",
   "aiosqlite>=0.19.0",  # For testing async SQLite
-  "greenlet>=3.0.0",    # Required for SQLAlchemy async operations
   "pytest-timeout>=2.4.0",
   "chardet>=5.0.0",  # Optional: used by read_file for encoding detection
   "e2b>=2.12.0",
@@ -169,8 +160,6 @@ venv = ".venv"
 module = [
     "chardet.*",
     "e2b.*",
-    "jupyter_client.*",
-    "lark_oapi.*",
     "nest_asyncio.*",
     "pandas.*"
 ]

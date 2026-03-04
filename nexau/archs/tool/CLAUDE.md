@@ -192,7 +192,7 @@ Located in `nexau/archs/tool/builtin/`:
 
 - `recall_sub_agent_tool`: Recall sub-agent history
 - `llm_friendly`: Format output for LLM consumption
-- `feishu`: Feishu integration tools
+
 
 ## Key Patterns
 
