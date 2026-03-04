@@ -163,6 +163,7 @@ middlewares:
 - `LoggingMiddleware`: replaces the old logging hooks and supports both after-model/after-tool logging as well as wrapping model calls to trace custom generators.
 - `ContextCompactionMiddleware`: manages conversation context when token limits are approached. See [Context Compaction](./context_compaction.md) for details.
 - `LLMFailoverMiddleware`: automatically fails over to backup LLM providers when the primary provider returns matching errors (e.g. 500, 502, 503). Supports multi-level fallback chains and an optional circuit breaker. See below for configuration.
+- `LongToolOutputMiddleware`: truncates oversized tool outputs and saves the full content to temporary files via the Sandbox API. Useful for tools that may return very large results (e.g. file search, code analysis). See below for configuration.
 
 You can combine built-in middleware with your own; the manager guarantees the ordering rules described above.
 
@@ -229,3 +230,92 @@ failover = LLMFailoverMiddleware(
 - Fallback `llm_config` fields are merged on top of the primary config — unspecified fields are inherited
 - The `model` field is inherited from primary unless explicitly overridden in the fallback
 - See [RFC-0003](../../rfcs/0003-llm-failover-middleware.md) for the full design rationale
+
+### LongToolOutputMiddleware
+
+When a tool returns output whose serialized text exceeds a configurable character threshold, `LongToolOutputMiddleware` automatically:
+
+1. **Truncates** the output, keeping only the first N and last M lines.
+2. **Saves** the full output to a temporary file via the Sandbox API (`sandbox.write_file`), so it works transparently with both local and remote (E2B) sandboxes.
+3. **Replaces** the original tool output with the truncated version plus a hint pointing to the temp file, so the model can `read_file` it if needed.
+
+**YAML configuration:**
+
+```yaml
+middlewares:
+  - import: nexau.archs.main_sub.execution.middleware.long_tool_output:LongToolOutputMiddleware
+    params:
+      max_output_chars: 10000    # Character threshold triggering truncation (default: 10,000)
+      head_lines: 50             # Lines to keep from the start (default: 50)
+      tail_lines: 30             # Lines to keep from the end (default: 30)
+      temp_dir: /tmp/nexau_tool_outputs  # Directory for full outputs (default)
+      bypass_tool_names:         # Tools that already handle their own truncation
+        - execute_bash
+```
+
+**Python configuration:**
+
+```python
+from nexau.archs.main_sub.execution.middleware.long_tool_output import LongToolOutputMiddleware
+
+middleware = LongToolOutputMiddleware(
+    max_output_chars=10000,
+    head_lines=50,
+    tail_lines=30,
+    temp_dir="/tmp/nexau_tool_outputs",
+    bypass_tool_names=["execute_bash"],
+)
+```
+
+**Configuration parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `max_output_chars` | `int` | `10,000` | Character count threshold that triggers truncation |
+| `head_lines` | `int` | `50` | Number of leading lines to retain |
+| `tail_lines` | `int` | `30` | Number of trailing lines to retain |
+| `temp_dir` | `str \| None` | `"/tmp/nexau_tool_outputs"` | Directory for full outputs. Set to `None` to disable file persistence (truncation still applies but no file is saved) |
+| `bypass_tool_names` | `list[str] \| None` | `None` | Tool names whose output should never be truncated. Useful for tools that already handle their own truncation |
+
+**How it handles different output types:**
+
+- **String output**: Directly truncated and appended with a hint.
+- **Dict with `content` key**: Truncates the `content` field; other keys (e.g. `returnDisplay`) are preserved.
+- **Dict with `result` key**: Same as `content`.
+- **Dict without known keys**: Serializes the full dict as JSON, truncates, and wraps in `{"content": ...}`.
+
+**Truncated output example:**
+
+```
+Line 0000: ...
+Line 0001: ...
+...
+Line 0049: ...
+
+... [150 lines omitted] ...
+
+Line 0190: ...
+...
+Line 0199: ...
+
+⚠️ [LongToolOutputMiddleware] The full output (17,000 chars, ~200 lines)
+has been truncated. The complete output has been saved to:
+  /tmp/nexau_tool_outputs/search_files_abc12345_1709568000000.txt
+Use the read file tool to view the full content if needed.
+```
+
+**Setting `temp_dir` to `None`:**
+
+When `temp_dir` is `None`, truncation still applies but no file is written and no file path appears in the hint. This mode does not require a sandbox to be configured.
+
+```yaml
+middlewares:
+  - import: nexau.archs.main_sub.execution.middleware.long_tool_output:LongToolOutputMiddleware
+    params:
+      max_output_chars: 10000
+      temp_dir: null  # Truncate only, no file persistence
+```
+
+**Bypass list:**
+
+Tools like `execute_bash` already perform their own [output truncation](./sandbox.md#bash-output-truncation) at the sandbox level. Adding them to `bypass_tool_names` avoids double truncation.

@@ -177,3 +177,28 @@ def my_search_tool(query: str, agent_state=None) -> dict:
 - `returnDisplay` — a concise summary streamed to the frontend for display, then stripped before the LLM sees it.
 
 This is the same pattern used by all NexAU built-in tools (file tools, web tools, shell tools, etc.). Use it in your custom tools whenever the full output is verbose but you want a clean one-liner in the UI.
+
+## Tool Output Truncation
+
+Tools like file search or code analysis can produce very large outputs that waste LLM context tokens. NexAU provides two complementary truncation mechanisms:
+
+### 1. Sandbox-level truncation (bash commands)
+
+The `execute_bash` command automatically redirects stdout/stderr to temporary files and truncates the output when it exceeds a configurable threshold. This is handled at the sandbox level — see [Sandbox — Bash Output Truncation](../advanced-guides/sandbox.md#bash-output-truncation) for configuration details.
+
+### 2. Middleware-level truncation (all tools)
+
+For tools that don't handle their own truncation, `LongToolOutputMiddleware` can be added to the agent's middleware stack. It truncates any tool output exceeding `max_output_chars`, saves the full content to a temp file, and provides a hint so the model can read the full output if needed.
+
+```yaml
+middlewares:
+  - import: nexau.archs.main_sub.execution.middleware.long_tool_output:LongToolOutputMiddleware
+    params:
+      max_output_chars: 10000
+      head_lines: 50
+      tail_lines: 30
+      bypass_tool_names:
+        - execute_bash  # Already truncated at sandbox level
+```
+
+See [Middleware Hooks — LongToolOutputMiddleware](../advanced-guides/hooks.md#longtooloutputmiddleware) for full configuration reference.

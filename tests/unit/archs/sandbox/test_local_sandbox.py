@@ -569,130 +569,170 @@ class TestBackgroundExecution:
         sandbox.kill_background_task(pid2)
 
 
-class TestSaveOutputToTempFile:
-    def test_foreground_save_output_creates_files(self, sandbox):
-        """Test that save_output_to_temp_file creates command.txt, stdout.log, stderr.log in foreground mode."""
-        result = sandbox.execute_bash("echo 'hello save'", save_output_to_temp_file=True)
+class TestAlwaysOnOutputDir:
+    """Tests that output is always saved to temp files and smart truncation works."""
+
+    def test_foreground_always_creates_output_dir(self, sandbox):
+        """Every foreground command creates output_dir with stdout.txt and stderr.txt."""
+        result = sandbox.execute_bash("echo 'hello'")
         assert result.status == SandboxStatus.SUCCESS
-        assert "[Output saved to:" in result.stdout
+        assert result.output_dir is not None
+        assert Path(f"{result.output_dir}/command.txt").exists()
+        assert Path(f"{result.output_dir}/stdout.txt").exists()
+        assert Path(f"{result.output_dir}/stderr.txt").exists()
+        assert "hello" in Path(f"{result.output_dir}/stdout.txt").read_text()
+        shutil.rmtree(result.output_dir, ignore_errors=True)
 
-        # Extract temp dir path from stdout
-        marker = "[Output saved to: "
-        start = result.stdout.index(marker) + len(marker)
-        end = result.stdout.index("]", start)
-        temp_dir = result.stdout[start:end]
+    def test_foreground_small_output_not_truncated(self, sandbox):
+        """Output below threshold is returned in full, no truncation hint."""
+        result = sandbox.execute_bash("echo 'short'")
+        assert result.truncated is False
+        assert result.original_stdout_length is None
+        assert "characters omitted" not in result.stdout
+        if result.output_dir:
+            shutil.rmtree(result.output_dir, ignore_errors=True)
 
-        # Verify files exist and have correct content
-        assert Path(f"{temp_dir}/command.txt").exists()
-        assert Path(f"{temp_dir}/stdout.log").exists()
-        assert Path(f"{temp_dir}/stderr.log").exists()
-
-        assert Path(f"{temp_dir}/command.txt").read_text() == "echo 'hello save'"
-        assert "hello save" in Path(f"{temp_dir}/stdout.log").read_text()
-
-        # Cleanup
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    def test_foreground_large_output_truncated_with_hint(self, sandbox):
+        """Output above threshold is truncated with first/last 5k chars and file hint."""
+        # Generate > 10k chars of stdout output
+        result = sandbox.execute_bash("python3 -c \"print('x' * 15000)\"")
+        assert result.truncated is True
+        assert result.original_stdout_length is not None
+        assert result.original_stdout_length >= 15000
+        assert "characters omitted" in result.stdout
+        assert "stdout.txt" in result.stdout
+        # Full output is in the file
+        full = Path(f"{result.output_dir}/stdout.txt").read_text()
+        assert len(full) >= 15000
+        shutil.rmtree(result.output_dir, ignore_errors=True)
 
     def test_foreground_save_output_with_stderr(self, sandbox):
-        """Test that stderr is also saved when save_output_to_temp_file is enabled."""
-        result = sandbox.execute_bash("echo 'out' && echo 'err' >&2", save_output_to_temp_file=True)
-        assert "[Output saved to:" in result.stdout
+        """Both stdout and stderr are saved to output_dir."""
+        result = sandbox.execute_bash("echo 'out' && echo 'err' >&2")
+        assert result.output_dir is not None
+        assert "out" in Path(f"{result.output_dir}/stdout.txt").read_text()
+        assert "err" in Path(f"{result.output_dir}/stderr.txt").read_text()
+        shutil.rmtree(result.output_dir, ignore_errors=True)
 
-        marker = "[Output saved to: "
-        start = result.stdout.index(marker) + len(marker)
-        end = result.stdout.index("]", start)
-        temp_dir = result.stdout[start:end]
-
-        assert "out" in Path(f"{temp_dir}/stdout.log").read_text()
-        assert "err" in Path(f"{temp_dir}/stderr.log").read_text()
-
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
-    def test_foreground_no_save_output_by_default(self, sandbox):
-        """Test that output is NOT saved to temp file when save_output_to_temp_file is False (default)."""
-        result = sandbox.execute_bash("echo 'no save'")
-        assert result.status == SandboxStatus.SUCCESS
-        assert "[Output saved to:" not in result.stdout
-
-    def test_foreground_save_output_with_failed_command(self, sandbox):
-        """Test save_output_to_temp_file works even when the command fails."""
-        result = sandbox.execute_bash("echo 'before fail' && exit 1", save_output_to_temp_file=True)
+    def test_foreground_failed_command_has_output_dir(self, sandbox):
+        """Failed commands also get output_dir populated."""
+        result = sandbox.execute_bash("echo 'before fail' && exit 1")
         assert result.status == SandboxStatus.ERROR
-        assert "[Output saved to:" in result.stdout
+        assert result.output_dir is not None
+        assert Path(f"{result.output_dir}/stdout.txt").exists()
+        assert "before fail" in Path(f"{result.output_dir}/stdout.txt").read_text()
+        shutil.rmtree(result.output_dir, ignore_errors=True)
 
-        marker = "[Output saved to: "
-        start = result.stdout.index(marker) + len(marker)
-        end = result.stdout.index("]", start)
-        temp_dir = result.stdout[start:end]
+    def test_foreground_timeout_has_output_dir(self, sandbox):
+        """Timed-out commands also get output_dir populated."""
+        result = sandbox.execute_bash("echo 'timeout_test' && sleep 60", timeout=200)
+        assert result.status == SandboxStatus.TIMEOUT
+        assert result.output_dir is not None
+        shutil.rmtree(result.output_dir, ignore_errors=True)
 
-        assert Path(f"{temp_dir}/stdout.log").exists()
-        assert "before fail" in Path(f"{temp_dir}/stdout.log").read_text()
+    def test_output_dir_under_expected_base_path(self, sandbox):
+        """Output dir is created under BASH_TOOL_RESULTS_BASE_PATH."""
+        result = sandbox.execute_bash("echo 'path test'")
+        assert result.output_dir is not None
+        assert result.output_dir.startswith(f"{BASH_TOOL_RESULTS_BASE_PATH}/")
+        shutil.rmtree(result.output_dir, ignore_errors=True)
 
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
-    def test_background_save_output_creates_files(self, sandbox):
-        """Test that save_output_to_temp_file works in background mode."""
+    def test_background_always_creates_output_dir(self, sandbox):
+        """Background tasks always create output_dir."""
         import time
 
-        result = sandbox.execute_bash("echo 'bg output'", background=True, save_output_to_temp_file=True)
-        assert result.status == SandboxStatus.SUCCESS
+        result = sandbox.execute_bash("echo 'bg output'", background=True)
+        assert result.output_dir is not None
         assert result.background_pid is not None
         assert "Output will be saved to" in result.stdout
 
-        # Wait for background task to finish
         time.sleep(1)
-
         status = sandbox.get_background_task_status(result.background_pid)
-        assert status.status == SandboxStatus.SUCCESS
-        assert "[Output saved to:" in status.stdout
+        assert status.output_dir is not None
+        assert Path(f"{status.output_dir}/stdout.txt").exists()
+        assert "bg output" in Path(f"{status.output_dir}/stdout.txt").read_text()
+        shutil.rmtree(status.output_dir, ignore_errors=True)
 
-        # Extract temp dir from status stdout
-        marker = "[Output saved to: "
-        start = status.stdout.index(marker) + len(marker)
-        end = status.stdout.index("]", start)
-        temp_dir = status.stdout[start:end]
-
-        assert Path(f"{temp_dir}/command.txt").exists()
-        assert Path(f"{temp_dir}/stdout.log").exists()
-        assert Path(f"{temp_dir}/stderr.log").exists()
-        assert "bg output" in Path(f"{temp_dir}/stdout.log").read_text()
-
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
-    def test_background_no_save_output_by_default(self, sandbox):
-        """Test that background mode does NOT save to temp file by default."""
+    def test_background_large_output_truncated(self, sandbox):
+        """Background tasks with large output are smart-truncated."""
         import time
 
-        result = sandbox.execute_bash("echo 'bg no save'", background=True)
-        assert result.status == SandboxStatus.SUCCESS
-        assert "Output will be saved to" not in result.stdout
-
-        time.sleep(0.5)
+        result = sandbox.execute_bash("python3 -c \"print('y' * 15000)\"", background=True)
+        time.sleep(2)
         status = sandbox.get_background_task_status(result.background_pid)
-        assert "[Output saved to:" not in status.stdout
+        assert status.truncated is True
+        assert "characters omitted" in status.stdout
+        if status.output_dir:
+            shutil.rmtree(status.output_dir, ignore_errors=True)
 
-        sandbox.kill_background_task(result.background_pid)
+    def test_no_save_output_param_removed(self, sandbox):
+        """Verify the old save_output_to_temp_file parameter no longer exists."""
+        import inspect
 
-    def test_save_output_temp_dir_under_expected_path(self, sandbox):
-        """Test that temp files are created under the expected base path."""
-        result = sandbox.execute_bash("echo 'path test'", save_output_to_temp_file=True)
-        assert "[Output saved to:" in result.stdout
+        sig = inspect.signature(sandbox.execute_bash)
+        assert "save_output_to_temp_file" not in sig.parameters
 
-        marker = "[Output saved to: "
-        start = result.stdout.index(marker) + len(marker)
-        end = result.stdout.index("]", start)
-        temp_dir = result.stdout[start:end]
 
-        assert temp_dir.startswith(f"{BASH_TOOL_RESULTS_BASE_PATH}/")
+class TestSmartTruncateOutput:
+    """Unit tests for the smart_truncate_output helper."""
 
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    def test_below_threshold_no_truncation(self):
+        from nexau.archs.sandbox.base_sandbox import smart_truncate_output
+
+        stdout, stderr, truncated, o_out, o_err = smart_truncate_output("short", "err", "/tmp/test")
+        assert stdout == "short"
+        assert stderr == "err"
+        assert truncated is False
+        assert o_out is None
+        assert o_err is None
+
+    def test_above_threshold_truncates(self):
+        from nexau.archs.sandbox.base_sandbox import smart_truncate_output
+
+        big_stdout = "A" * 12000
+        stdout, stderr, truncated, o_out, o_err = smart_truncate_output(big_stdout, "", "/tmp/test_dir")
+        assert truncated is True
+        assert o_out == 12000
+        assert "characters omitted" in stdout
+        assert "/tmp/test_dir/stdout.txt" in stdout
+        # First 5k chars should be present
+        assert stdout.startswith("A" * 5000)
+        # Last 5k chars should be present
+        assert stdout.endswith("A" * 5000)
+
+    def test_small_stderr_not_truncated_individually(self):
+        from nexau.archs.sandbox.base_sandbox import smart_truncate_output
+
+        big_stdout = "B" * 11000
+        small_stderr = "err"
+        stdout, stderr, truncated, _, _ = smart_truncate_output(big_stdout, small_stderr, "/tmp/test_dir")
+        assert truncated is True
+        # stderr is short enough to not need individual truncation
+        assert stderr == "err"
+
+    def test_both_streams_truncated(self):
+        from nexau.archs.sandbox.base_sandbox import smart_truncate_output
+
+        big_stdout = "C" * 11000
+        big_stderr = "D" * 11000
+        stdout, stderr, truncated, _, _ = smart_truncate_output(big_stdout, big_stderr, "/tmp/test_dir")
+        assert truncated is True
+        assert "stdout.txt" in stdout
+        assert "stderr.txt" in stderr
+
+    def test_exact_threshold_not_truncated(self):
+        from nexau.archs.sandbox.base_sandbox import smart_truncate_output
+
+        # 9999 total < 10000 threshold
+        stdout, stderr, truncated, _, _ = smart_truncate_output("X" * 9999, "", "/tmp/test_dir")
+        assert truncated is False
 
 
 class TestGracefulKill:
     """Tests for the _graceful_kill static method and process group management."""
 
     def test_graceful_kill_terminates_process(self, sandbox):
-        """_graceful_kill should terminate a running process and return its output."""
+        """_graceful_kill should terminate a running process."""
         import subprocess
 
         process = subprocess.Popen(
@@ -700,13 +740,10 @@ class TestGracefulKill:
             shell=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             start_new_session=True,
         )
-        stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=2.0)
+        LocalSandbox._graceful_kill(process, grace_period=2.0)
         assert process.poll() is not None  # process has exited
-        assert isinstance(stdout, str)
-        assert isinstance(stderr, str)
 
     def test_graceful_kill_already_exited_process(self, sandbox):
         """_graceful_kill should handle an already-exited process gracefully."""
@@ -717,16 +754,14 @@ class TestGracefulKill:
             shell=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             start_new_session=True,
         )
         process.wait()  # ensure it's done
-        stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=1.0)
-        assert isinstance(stdout, str)
-        assert isinstance(stderr, str)
+        LocalSandbox._graceful_kill(process, grace_period=1.0)
+        # Should not raise
 
-    def test_graceful_kill_captures_output(self, sandbox):
-        """_graceful_kill should capture stdout from a process that produces output before being killed."""
+    def test_graceful_kill_does_not_raise(self, sandbox):
+        """_graceful_kill should not raise even if process produces output before being killed."""
         import subprocess
 
         process = subprocess.Popen(
@@ -734,16 +769,13 @@ class TestGracefulKill:
             shell=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             start_new_session=True,
         )
         import time
 
         time.sleep(0.3)  # let echo run
-        stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=2.0)
-        # stdout may or may not contain the output depending on timing,
-        # but the method should not raise
-        assert isinstance(stdout, str)
+        LocalSandbox._graceful_kill(process, grace_period=2.0)
+        assert process.poll() is not None
 
     def test_foreground_timeout_uses_graceful_kill(self, sandbox):
         """Foreground command timeout should use _graceful_kill (SIGTERM before SIGKILL)."""
@@ -815,7 +847,7 @@ class TestGracefulKill:
 
 
 class TestGracefulKillBranches:
-    """Mock-based tests to cover SIGKILL fallback and stuck-pipe branches (lines 111-137)."""
+    """Mock-based tests to cover SIGKILL fallback branches in _graceful_kill."""
 
     def test_sigkill_path_when_sigterm_times_out(self):
         """When SIGTERM doesn't stop the process within grace_period, SIGKILL should be sent."""
@@ -824,15 +856,15 @@ class TestGracefulKillBranches:
         process = MagicMock()
         process.pid = 12345
 
-        # Step 2: first communicate() raises TimeoutExpired (SIGTERM didn't work)
-        # Step 4: second communicate() succeeds (after SIGKILL)
-        process.communicate.side_effect = [
+        # Step 2: wait() raises TimeoutExpired (SIGTERM didn't work)
+        # Step 4: final wait() succeeds (after SIGKILL)
+        process.wait.side_effect = [
             subprocess.TimeoutExpired(cmd="test", timeout=1),  # step 2
-            ("killed_stdout", "killed_stderr"),  # step 4
+            None,  # step 4
         ]
 
         with patch("os.getpgid", return_value=12345) as _, patch("os.killpg") as mock_killpg:
-            stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=1.0)
+            LocalSandbox._graceful_kill(process, grace_period=1.0)
 
         # Verify SIGKILL was sent (second call to killpg)
         import signal
@@ -843,8 +875,6 @@ class TestGracefulKillBranches:
         assert killpg_calls[1].args == (12345, signal.SIGKILL)
         # process.kill() is also called as belt-and-suspenders
         process.kill.assert_called_once()
-        assert stdout == "killed_stdout"
-        assert stderr == "killed_stderr"
 
     def test_sigkill_path_process_already_gone(self):
         """When process exits between SIGTERM and SIGKILL, ProcessLookupError is handled."""
@@ -853,96 +883,31 @@ class TestGracefulKillBranches:
         process = MagicMock()
         process.pid = 99999
 
-        process.communicate.side_effect = [
+        process.wait.side_effect = [
             subprocess.TimeoutExpired(cmd="test", timeout=1),  # step 2
-            ("out", "err"),  # step 4
+            None,  # step 4
         ]
 
         with patch("os.getpgid", side_effect=ProcessLookupError("No such process")):
             # SIGTERM fallback to process.terminate(), then SIGKILL getpgid also fails
-            stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=0.1)
+            LocalSandbox._graceful_kill(process, grace_period=0.1)
+        # Should not raise
 
-        assert stdout == "out"
-        assert stderr == "err"
-
-    def test_pipe_drain_timeout_closes_pipes(self):
-        """When pipe drain (step 4) times out, pipes should be closed."""
-        from unittest.mock import MagicMock, patch
-
-        process = MagicMock()
-        process.pid = 11111
-        mock_stdout_pipe = MagicMock()
-        mock_stderr_pipe = MagicMock()
-        process.stdout = mock_stdout_pipe
-        process.stderr = mock_stderr_pipe
-
-        # Step 2: SIGTERM timeout, Step 4: pipe drain also times out
-        process.communicate.side_effect = [
-            subprocess.TimeoutExpired(cmd="test", timeout=1),  # step 2
-            subprocess.TimeoutExpired(cmd="test", timeout=10),  # step 4
-        ]
-        process.wait.return_value = 0
-
-        with patch("os.getpgid", return_value=11111), patch("os.killpg"):
-            stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=0.1)
-
-        # Verify pipes were closed
-        mock_stdout_pipe.close.assert_called_once()
-        mock_stderr_pipe.close.assert_called_once()
-        # process.wait() called as final cleanup
-        process.wait.assert_called_once_with(timeout=5)
-        # Returns empty strings since communicate never returned data
-        assert stdout == ""
-        assert stderr == ""
-
-    def test_pipe_drain_timeout_and_wait_timeout(self):
-        """When both pipe drain and final wait time out, method still returns gracefully."""
+    def test_final_wait_timeout(self):
+        """When the final wait also times out, method still returns gracefully."""
         from unittest.mock import MagicMock, patch
 
         process = MagicMock()
         process.pid = 22222
-        process.stdout = MagicMock()
-        process.stderr = MagicMock()
 
-        process.communicate.side_effect = [
+        process.wait.side_effect = [
             subprocess.TimeoutExpired(cmd="test", timeout=1),  # step 2
             subprocess.TimeoutExpired(cmd="test", timeout=10),  # step 4
         ]
-        # Final wait also times out
-        process.wait.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=5)
 
         with patch("os.getpgid", return_value=22222), patch("os.killpg"):
-            stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=0.1)
-
+            LocalSandbox._graceful_kill(process, grace_period=0.1)
         # Should still return without raising
-        assert stdout == ""
-        assert stderr == ""
-
-    def test_pipe_close_oserror_handled(self):
-        """OSError when closing pipes should be silently caught."""
-        from unittest.mock import MagicMock, patch
-
-        process = MagicMock()
-        process.pid = 33333
-        mock_stdout_pipe = MagicMock()
-        mock_stdout_pipe.close.side_effect = OSError("broken pipe")
-        mock_stderr_pipe = MagicMock()
-        mock_stderr_pipe.close.side_effect = OSError("broken pipe")
-        process.stdout = mock_stdout_pipe
-        process.stderr = mock_stderr_pipe
-
-        process.communicate.side_effect = [
-            subprocess.TimeoutExpired(cmd="test", timeout=1),
-            subprocess.TimeoutExpired(cmd="test", timeout=10),
-        ]
-        process.wait.return_value = 0
-
-        with patch("os.getpgid", return_value=33333), patch("os.killpg"):
-            # Should not raise despite pipe close failures
-            stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=0.1)
-
-        assert stdout == ""
-        assert stderr == ""
 
     def test_sigkill_oserror_on_process_kill(self):
         """OSError on process.kill() (step 3) should be silently caught."""
@@ -952,38 +917,14 @@ class TestGracefulKillBranches:
         process.pid = 44444
         process.kill.side_effect = OSError("already dead")
 
-        process.communicate.side_effect = [
+        process.wait.side_effect = [
             subprocess.TimeoutExpired(cmd="test", timeout=1),  # step 2
-            ("final_out", "final_err"),  # step 4
+            None,  # step 4
         ]
 
         with patch("os.getpgid", return_value=44444), patch("os.killpg"):
-            stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=0.1)
-
-        assert stdout == "final_out"
-        assert stderr == "final_err"
-
-    def test_none_pipes_skipped_during_close(self):
-        """When stdout/stderr pipes are None, pipe close loop should skip them."""
-        from unittest.mock import MagicMock, patch
-
-        process = MagicMock()
-        process.pid = 55555
-        process.stdout = None
-        process.stderr = None
-
-        process.communicate.side_effect = [
-            subprocess.TimeoutExpired(cmd="test", timeout=1),
-            subprocess.TimeoutExpired(cmd="test", timeout=10),
-        ]
-        process.wait.return_value = 0
-
-        with patch("os.getpgid", return_value=55555), patch("os.killpg"):
-            # Should not raise when pipes are None
-            stdout, stderr = LocalSandbox._graceful_kill(process, grace_period=0.1)
-
-        assert stdout == ""
-        assert stderr == ""
+            LocalSandbox._graceful_kill(process, grace_period=0.1)
+        # Should not raise despite process.kill() failure
 
 
 class TestSandboxDict:

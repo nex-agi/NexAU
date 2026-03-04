@@ -48,6 +48,7 @@ from .base_sandbox import (
     SandboxFileError,
     SandboxStatus,
     extract_dataclass_init_kwargs,
+    smart_truncate_output,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,19 +76,16 @@ class LocalSandbox(BaseSandbox):
         return Path(self.work_dir)
 
     @staticmethod
-    def _graceful_kill(process: subprocess.Popen[str], grace_period: float = 5.0) -> tuple[str, str]:
-        """Gracefully terminate a process: SIGTERM → wait → SIGKILL → drain pipes.
+    def _graceful_kill(process: subprocess.Popen[bytes], grace_period: float = 5.0) -> None:
+        """Gracefully terminate a process: SIGTERM → wait → SIGKILL.
 
         1. Send SIGTERM to the process group (kills child processes too).
         2. Wait *grace_period* seconds for a clean exit.
         3. If still alive, SIGKILL the entire process group.
-        4. Drain remaining pipe output with a 10-second deadline.
 
-        Returns:
-            (stdout, stderr) collected from the process.
+        Since output is redirected to files (not pipes), this method does not
+        drain any pipe output.  The caller reads output from the temp files.
         """
-        stdout = ""
-        stderr = ""
 
         # 1. SIGTERM — give the process group a chance to clean up.
         try:
@@ -102,8 +100,8 @@ class LocalSandbox(BaseSandbox):
 
         # 2. Wait for graceful exit.
         try:
-            stdout, stderr = process.communicate(timeout=grace_period)
-            return stdout or "", stderr or ""
+            process.wait(timeout=grace_period)
+            return
         except subprocess.TimeoutExpired:
             pass
 
@@ -118,65 +116,26 @@ class LocalSandbox(BaseSandbox):
         except OSError:
             pass
 
-        # 4. Drain pipes with a 10-second deadline; close pipes if still stuck.
+        # 4. Final wait.
         try:
-            stdout, stderr = process.communicate(timeout=10)
+            process.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            # Pipes are stuck (large buffered output). Close them to unblock.
-            for pipe in (process.stdout, process.stderr):
-                if pipe is not None:
-                    try:
-                        pipe.close()
-                    except OSError:
-                        pass
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
+            pass
 
-        return stdout or "", stderr or ""
+    def _prepare_output_dir(self, command: str) -> str:
+        """Create an output directory and write command.txt.
 
-    def _save_output_to_temp_file(
-        self,
-        command: str,
-        stdout: str,
-        stderr: str,
-        temp_dir: str | None = None,
-    ) -> str:
-        """
-        Save command output to temporary files in the local filesystem.
-        If temp_dir is provided, overwrites existing files; otherwise creates new directory.
-
-        Args:
-            command: The command that was executed
-            stdout: Standard output content
-            stderr: Standard error content
-            temp_dir: Optional existing temp directory path (for streaming updates)
+        stdout.txt and stderr.txt are created by the OS via file-descriptor
+        redirection (passed to ``subprocess.Popen``), so this method only sets
+        up the directory and the command metadata file.
 
         Returns:
-            The directory path where files were saved
+            The absolute output directory path.
         """
-        # Generate unique ID if temp_dir not provided
-        if temp_dir is None:
-            temp_dir = f"{BASH_TOOL_RESULTS_BASE_PATH}/{uuid.uuid4().hex[:8]}"
-
-        try:
-            # Create the directory if it doesn't exist
-            Path(temp_dir).mkdir(parents=True, exist_ok=True)
-
-            # Write/overwrite command to command.txt
-            Path(f"{temp_dir}/command.txt").write_text(command, encoding="utf-8")
-
-            # Write/overwrite stdout to stdout.log
-            Path(f"{temp_dir}/stdout.log").write_text(stdout, encoding="utf-8")
-
-            # Write/overwrite stderr to stderr.log
-            Path(f"{temp_dir}/stderr.log").write_text(stderr, encoding="utf-8")
-
-            return temp_dir
-        except Exception as e:
-            logger.error(f"Failed to save output to temp file: {e}")
-            raise Exception(f"Failed to save output to temp file: {e}")
+        output_dir = f"{BASH_TOOL_RESULTS_BASE_PATH}/{uuid.uuid4().hex[:8]}"
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        Path(f"{output_dir}/command.txt").write_text(command, encoding="utf-8")
+        return output_dir
 
     def _resolve_path(self, path: str) -> Path:
         """
@@ -224,10 +183,13 @@ class LocalSandbox(BaseSandbox):
         user: str | None = None,
         envs: dict[str, str] | None = None,
         background: bool = False,
-        save_output_to_temp_file: bool = False,
     ) -> CommandResult:
         """
         Execute a bash command in the sandbox.
+
+        Stdout and stderr are always saved to temporary files (stdout.txt, stderr.txt).
+        If the combined output exceeds the threshold, the returned stdout/stderr are
+        smart-truncated with hints to the full files.
 
         Args:
             command: The bash command to execute
@@ -236,7 +198,6 @@ class LocalSandbox(BaseSandbox):
             user: Optional user to run the command as (not available in LocalSandbox)
             envs: Optional environment variables
             background: Optional flag to run the command in the background
-            save_output_to_temp_file: Optional flag to save the output (stdout and stderr) to a temporary file
 
         Returns:
             CommandResult containing execution results
@@ -251,22 +212,23 @@ class LocalSandbox(BaseSandbox):
             timeout = 120000  # Default: 2 minutes
 
         timeout_seconds = timeout / 1000.0
-        max_output_size = 30000  # Default: 30000 characters
 
         try:
             if background:
-                # Generate temp directory for streaming if requested
-                temp_dir = None
-                if save_output_to_temp_file:
-                    temp_dir = f"{BASH_TOOL_RESULTS_BASE_PATH}/{uuid.uuid4().hex[:8]}"
+                # 1. 创建输出目录，stdout/stderr 直接重定向到文件
+                output_dir = self._prepare_output_dir(command)
+                stdout_path = f"{output_dir}/stdout.txt"
+                stderr_path = f"{output_dir}/stderr.txt"
 
-                # Background mode: start process without waiting
+                fout = open(stdout_path, "wb")
+                ferr = open(stderr_path, "wb")
+
+                # Background mode: redirect stdout/stderr to files, no PIPE
                 process = subprocess.Popen(
                     command,
                     shell=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
+                    stdout=fout,
+                    stderr=ferr,
                     cwd=cwd or str(work_dir),
                     env=self._build_local_envs(envs),
                     start_new_session=True,
@@ -279,49 +241,11 @@ class LocalSandbox(BaseSandbox):
                     "start_time": start_time,
                     "finished": False,
                     "exit_code": -1,
-                    "stdout": "",
-                    "stderr": "",
                     "error": None,
-                    "temp_dir": temp_dir,
+                    "std_output_dir": output_dir,
+                    "stdout_file": fout,
+                    "stderr_file": ferr,
                 }
-
-                def _consume_output(proc: subprocess.Popen[str], info: dict[str, Any]) -> None:
-                    try:
-                        if proc.stdout:
-                            for line in proc.stdout:
-                                info["stdout"] += line
-                                # Overwrite log files with complete output if streaming enabled
-                                if save_output_to_temp_file and info.get("temp_dir"):
-                                    try:
-                                        self._save_output_to_temp_file(
-                                            info["command"],
-                                            info["stdout"],
-                                            info["stderr"],
-                                            temp_dir=info["temp_dir"],
-                                        )
-                                    except Exception as e:
-                                        logger.error(f"Failed to update streaming log files: {e}")
-                    except (ValueError, OSError):
-                        pass
-
-                def _consume_stderr(proc: subprocess.Popen[str], info: dict[str, Any]) -> None:
-                    try:
-                        if proc.stderr:
-                            for line in proc.stderr:
-                                info["stderr"] += line
-                                # Overwrite log files with complete output if streaming enabled
-                                if save_output_to_temp_file and info.get("temp_dir"):
-                                    try:
-                                        self._save_output_to_temp_file(
-                                            info["command"],
-                                            info["stdout"],
-                                            info["stderr"],
-                                            temp_dir=info["temp_dir"],
-                                        )
-                                    except Exception as e:
-                                        logger.error(f"Failed to update streaming log files: {e}")
-                    except (ValueError, OSError):
-                        pass
 
                 def _wait_process(proc: subprocess.Popen[str], info: dict[str, Any]) -> None:
                     try:
@@ -332,24 +256,23 @@ class LocalSandbox(BaseSandbox):
                     except Exception as exc:
                         info["error"] = str(exc)
                     finally:
+                        # 进程结束后关闭文件句柄，确保数据刷盘
+                        for f in (info.get("stdout_file"), info.get("stderr_file")):
+                            if f:
+                                try:
+                                    f.close()
+                                except Exception:
+                                    pass
                         info["finished"] = True
 
-                stdout_thread = threading.Thread(target=_consume_output, args=(process, task_info), daemon=True)
-                stderr_thread = threading.Thread(target=_consume_stderr, args=(process, task_info), daemon=True)
                 wait_thread = threading.Thread(target=_wait_process, args=(process, task_info), daemon=True)
-                stdout_thread.start()
-                stderr_thread.start()
                 wait_thread.start()
-                task_info["stdout_thread"] = stdout_thread
-                task_info["stderr_thread"] = stderr_thread
                 task_info["wait_thread"] = wait_thread
 
                 self._background_tasks[bg_pid] = task_info
                 duration_ms = int((time.time() - start_time) * 1000)
 
-                stdout_msg = f"Background task started (pid: {bg_pid})"
-                if save_output_to_temp_file:
-                    stdout_msg += f"\nOutput will be saved to {temp_dir}/ when task completes"
+                stdout_msg = f"Background task started (pid: {bg_pid})\nOutput will be saved to {output_dir}/"
 
                 return CommandResult(
                     status=SandboxStatus.SUCCESS,
@@ -358,67 +281,101 @@ class LocalSandbox(BaseSandbox):
                     exit_code=0,
                     duration_ms=duration_ms,
                     background_pid=bg_pid,
+                    output_dir=output_dir,
+                    stdout_file=f"{output_dir}/stdout.txt" if output_dir else None,
+                    stderr_file=f"{output_dir}/stderr.txt" if output_dir else None,
                 )
 
-            # Foreground mode
-            process = subprocess.Popen(
-                command,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=cwd or str(work_dir),
-                env=self._build_local_envs(envs),
-                start_new_session=True,
-            )
+            # Foreground mode: 直接重定向 stdout/stderr 到文件
+            output_dir = self._prepare_output_dir(command)
+            stdout_path = f"{output_dir}/stdout.txt"
+            stderr_path = f"{output_dir}/stderr.txt"
+
+            fout = open(stdout_path, "wb")
+            ferr = open(stderr_path, "wb")
 
             try:
-                stdout, stderr = process.communicate(timeout=timeout_seconds)
-            except subprocess.TimeoutExpired:
-                stdout, stderr = self._graceful_kill(process)
-                duration_ms = int((time.time() - start_time) * 1000)
-
-                return CommandResult(
-                    status=SandboxStatus.TIMEOUT,
-                    stdout=stdout[:max_output_size] if stdout else "",
-                    stderr=stderr[:max_output_size] if stderr else "",
-                    exit_code=process.returncode or -1,
-                    duration_ms=duration_ms,
-                    error=f"Command timed out after {timeout}ms",
-                    truncated=len(stdout or "") > max_output_size or len(stderr or "") > max_output_size,
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdout=fout,
+                    stderr=ferr,
+                    cwd=cwd or str(work_dir),
+                    env=self._build_local_envs(envs),
+                    start_new_session=True,
                 )
+
+                try:
+                    process.wait(timeout=timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    self._graceful_kill(process)
+                    fout.close()
+                    ferr.close()
+
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    stdout_raw = Path(stdout_path).read_text(encoding="utf-8", errors="replace")
+                    stderr_raw = Path(stderr_path).read_text(encoding="utf-8", errors="replace")
+
+                    # 智能截断
+                    t_stdout, t_stderr, was_truncated, o_out, o_err = smart_truncate_output(
+                        stdout_raw,
+                        stderr_raw,
+                        output_dir,
+                        threshold=self.output_char_threshold,
+                        head_chars=self.truncate_head_chars,
+                        tail_chars=self.truncate_tail_chars,
+                    )
+
+                    return CommandResult(
+                        status=SandboxStatus.TIMEOUT,
+                        stdout=t_stdout,
+                        stderr=t_stderr,
+                        exit_code=process.returncode or -1,
+                        duration_ms=duration_ms,
+                        error=f"Command timed out after {timeout}ms",
+                        truncated=was_truncated,
+                        original_stdout_length=o_out,
+                        original_stderr_length=o_err,
+                        output_dir=output_dir,
+                        stdout_file=f"{output_dir}/stdout.txt" if output_dir else None,
+                        stderr_file=f"{output_dir}/stderr.txt" if output_dir else None,
+                    )
+            finally:
+                # 确保文件句柄关闭（正常退出路径）
+                if not fout.closed:
+                    fout.close()
+                if not ferr.closed:
+                    ferr.close()
 
             duration_ms = int((time.time() - start_time) * 1000)
 
-            # Save output to temp file if requested
-            temp_file_path = None
-            if save_output_to_temp_file:
-                try:
-                    temp_file_path = self._save_output_to_temp_file(command, stdout or "", stderr or "")
-                except Exception as e:
-                    logger.error(f"Failed to save output to temp file: {e}")
+            # 从文件读取完整输出
+            stdout_raw = Path(stdout_path).read_text(encoding="utf-8", errors="replace")
+            stderr_raw = Path(stderr_path).read_text(encoding="utf-8", errors="replace")
 
-            stdout_truncated = len(stdout) > max_output_size if stdout else False
-            stderr_truncated = len(stderr) > max_output_size if stderr else False
-
-            original_stdout_len = len(stdout) if stdout_truncated else None
-            original_stderr_len = len(stderr) if stderr_truncated else None
-
-            # Append temp file path info to stdout if saved
-            stdout_output = stdout[:max_output_size] if stdout else ""
-            if temp_file_path:
-                stdout_output += f"\n\n[Output saved to: {temp_file_path}]"
+            # 智能截断
+            t_stdout, t_stderr, was_truncated, orig_stdout_len, orig_stderr_len = smart_truncate_output(
+                stdout_raw,
+                stderr_raw,
+                output_dir,
+                threshold=self.output_char_threshold,
+                head_chars=self.truncate_head_chars,
+                tail_chars=self.truncate_tail_chars,
+            )
 
             return CommandResult(
                 status=SandboxStatus.SUCCESS if process.returncode == 0 else SandboxStatus.ERROR,
-                stdout=stdout_output,
-                stderr=stderr[:max_output_size] if stderr else "",
+                stdout=t_stdout,
+                stderr=t_stderr,
                 exit_code=process.returncode,
                 duration_ms=duration_ms,
                 error=None if process.returncode == 0 else f"Command failed with exit code {process.returncode}",
-                truncated=stdout_truncated or stderr_truncated,
-                original_stdout_length=original_stdout_len,
-                original_stderr_length=original_stderr_len,
+                truncated=was_truncated,
+                original_stdout_length=orig_stdout_len,
+                original_stderr_length=orig_stderr_len,
+                output_dir=output_dir,
+                stdout_file=f"{output_dir}/stdout.txt" if output_dir else None,
+                stderr_file=f"{output_dir}/stderr.txt" if output_dir else None,
             )
 
         except Exception as e:
@@ -439,6 +396,8 @@ class LocalSandbox(BaseSandbox):
         """
         Get the status and output of a background task.
 
+        读取 output_dir 下的 stdout.txt / stderr.txt 获取输出（文件由 OS 重定向写入）。
+
         Args:
             pid: The process ID of the background task
 
@@ -454,41 +413,67 @@ class LocalSandbox(BaseSandbox):
             )
 
         task_info = self._background_tasks[pid]
-        max_output_size = 30000
         duration_ms = int((time.time() - task_info["start_time"]) * 1000)
+        output_dir: str | None = task_info.get("std_output_dir")
 
-        stdout = task_info.get("stdout", "") or ""
-        stderr = task_info.get("stderr", "") or ""
-        temp_file_path = task_info.get("temp_dir")
+        # 从文件读取输出（进程仍在写入时也可读取已刷盘部分）
+        stdout = ""
+        stderr = ""
+        if output_dir:
+            try:
+                stdout = Path(f"{output_dir}/stdout.txt").read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+            try:
+                stderr = Path(f"{output_dir}/stderr.txt").read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+        # 智能截断
+        if output_dir:
+            t_stdout, t_stderr, was_truncated, o_out, o_err = smart_truncate_output(
+                stdout,
+                stderr,
+                output_dir,
+                threshold=self.output_char_threshold,
+                head_chars=self.truncate_head_chars,
+                tail_chars=self.truncate_tail_chars,
+            )
+        else:
+            t_stdout, t_stderr, was_truncated, o_out, o_err = stdout, stderr, False, None, None
 
         if task_info["finished"]:
             exit_code = task_info["exit_code"]
-
-            # Append temp file path info to stdout if saved
-            stdout_output = stdout[:max_output_size]
-            if temp_file_path:
-                stdout_output += f"\n\n[Output saved to: {temp_file_path}]"
-
             return CommandResult(
                 status=SandboxStatus.SUCCESS if exit_code == 0 else SandboxStatus.ERROR,
-                stdout=stdout_output,
-                stderr=stderr[:max_output_size],
+                stdout=t_stdout,
+                stderr=t_stderr,
                 exit_code=exit_code,
                 duration_ms=duration_ms,
                 error=task_info.get("error"),
-                truncated=len(stdout) > max_output_size or len(stderr) > max_output_size,
+                truncated=was_truncated,
+                original_stdout_length=o_out,
+                original_stderr_length=o_err,
                 background_pid=pid,
+                output_dir=output_dir,
+                stdout_file=f"{output_dir}/stdout.txt" if output_dir else None,
+                stderr_file=f"{output_dir}/stderr.txt" if output_dir else None,
             )
 
         # Task is still running, return accumulated output so far
         return CommandResult(
             status=SandboxStatus.RUNNING,
-            stdout=stdout[:max_output_size],
-            stderr=stderr[:max_output_size],
+            stdout=t_stdout,
+            stderr=t_stderr,
             exit_code=-1,
             duration_ms=duration_ms,
-            truncated=len(stdout) > max_output_size or len(stderr) > max_output_size,
+            truncated=was_truncated,
+            original_stdout_length=o_out,
+            original_stderr_length=o_err,
             background_pid=pid,
+            output_dir=output_dir,
+            stdout_file=f"{output_dir}/stdout.txt" if output_dir else None,
+            stderr_file=f"{output_dir}/stderr.txt" if output_dir else None,
         )
 
     @override
@@ -511,15 +496,21 @@ class LocalSandbox(BaseSandbox):
             )
 
         task_info = self._background_tasks[pid]
-        process: subprocess.Popen[str] = task_info["process"]
+        process: subprocess.Popen[bytes] = task_info["process"]
 
         try:
             self._graceful_kill(process)
-            # Wait for consumer threads to finish flushing output
-            for thread_key in ("stdout_thread", "stderr_thread", "wait_thread"):
-                t = task_info.get(thread_key)
-                if t is not None:
-                    t.join(timeout=2)
+            # 关闭文件句柄（如果还没被 _wait_process 关闭）
+            for f in (task_info.get("stdout_file"), task_info.get("stderr_file")):
+                if f and not f.closed:
+                    try:
+                        f.close()
+                    except Exception:
+                        pass
+            # 等待 wait_thread 结束
+            t = task_info.get("wait_thread")
+            if t is not None:
+                t.join(timeout=2)
             duration_ms = int((time.time() - task_info["start_time"]) * 1000)
             del self._background_tasks[pid]
             return CommandResult(
@@ -1335,7 +1326,13 @@ class LocalSandboxManager(BaseSandboxManager[LocalSandbox]):
         # Create new sandbox
         logger.info(f"Creating new local sandbox with ID: {session_id}")
 
-        sandbox = LocalSandbox(_work_dir=sandbox_config.work_dir, envs=sandbox_config.envs)
+        sandbox = LocalSandbox(
+            _work_dir=sandbox_config.work_dir,
+            envs=sandbox_config.envs,
+            output_char_threshold=sandbox_config.output_char_threshold,
+            truncate_head_chars=sandbox_config.truncate_head_chars,
+            truncate_tail_chars=sandbox_config.truncate_tail_chars,
+        )
 
         logger.info(f"Local sandbox created with ID: {sandbox.sandbox_id}, work_dir: {sandbox.work_dir}")
 

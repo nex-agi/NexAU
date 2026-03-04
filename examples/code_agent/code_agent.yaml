@@ -76,7 +76,14 @@ skills: # Skills are used to hint the agent to solve specific tasks
   - ./skills/skill-creator
   - ./skills/template-skill
 stop_tools: [complete_task]
-middlewares: []
+middlewares:
+  - import: nexau.archs.main_sub.execution.middleware.long_tool_output:LongToolOutputMiddleware
+    params:
+      max_output_chars: 10000
+      head_lines: 50
+      tail_lines: 30
+      bypass_tool_names:
+        - run_shell_command  # Already truncated at sandbox level
 tracers:
   - import: nexau.archs.tracer.adapters.in_memory:InMemoryTracer
   - import: nexau.archs.tracer.adapters.langfuse:LangfuseTracer

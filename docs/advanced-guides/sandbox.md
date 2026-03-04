@@ -15,6 +15,79 @@ The sandbox system consists of three main components:
 - **LocalSandbox**: Executes commands directly on the local system (development/testing only)
 - **E2BSandbox**: Cloud-based sandboxes using [E2B](https://e2b.dev) (production-ready)
 
+## Bash Output Truncation
+
+When executing bash commands, the sandbox automatically redirects stdout and stderr to temporary files on disk and applies smart truncation to prevent oversized outputs from consuming excessive LLM context tokens.
+
+### How It Works
+
+1. **Output redirection**: Every `execute_bash` call creates a unique output directory under `/tmp/nexau_bash_tool_results/{uuid}/`, containing `command.txt`, `stdout.txt`, and `stderr.txt`.
+2. **Smart truncation**: After command execution, `smart_truncate_output()` checks whether the combined stdout + stderr exceeds a character threshold. If so, each stream is independently truncated — keeping the first N and last M characters — with an omitted marker and a hint pointing to the full file.
+3. **Full output preserved**: The untruncated content is always available in the temp files, so the agent can use `read_file` to access the complete output when needed.
+
+**Truncated output example:**
+
+```
+[first 5,000 chars of stdout]
+
+... [15,000 characters omitted] ...
+(Full output: /tmp/nexau_bash_tool_results/a1b2c3d4/stdout.txt)
+
+[last 5,000 chars of stdout]
+```
+
+### CommandResult Fields
+
+The `CommandResult` dataclass returned by `execute_bash` includes truncation metadata:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `stdout` | `str` | Truncated stdout (if truncation applied) |
+| `stderr` | `str` | Truncated stderr (if truncation applied) |
+| `truncated` | `bool` | Whether the output was truncated |
+| `original_stdout_length` | `int \| None` | Full stdout length before truncation |
+| `original_stderr_length` | `int \| None` | Full stderr length before truncation |
+| `output_dir` | `str \| None` | Directory containing full output files |
+| `stdout_file` | `str \| None` | Full path to `stdout.txt` |
+| `stderr_file` | `str \| None` | Full path to `stderr.txt` |
+
+### Configuring Truncation Parameters
+
+Truncation thresholds are configurable via `sandbox_config`:
+
+```yaml
+sandbox_config:
+  type: local  # or e2b
+  output_char_threshold: 10000   # Total char threshold for truncation (default: 10,000)
+  truncate_head_chars: 5000      # Characters to keep from the start (default: 5,000)
+  truncate_tail_chars: 5000      # Characters to keep from the end (default: 5,000)
+```
+
+Programmatic configuration:
+
+```python
+config = AgentConfig(
+    name="my_agent",
+    sandbox_config={
+        "type": "local",
+        "output_char_threshold": 20000,
+        "truncate_head_chars": 8000,
+        "truncate_tail_chars": 8000,
+    }
+)
+```
+
+### Implementation Differences
+
+| Aspect | LocalSandbox | E2BSandbox |
+|--------|-------------|------------|
+| Redirection | Python-level (`Popen(stdout=fout)`) | Shell-level (`{ cmd; } > stdout.txt 2> stderr.txt`) |
+| File location | Local filesystem | Remote sandbox filesystem |
+| Reading output | `Path.read_text()` | `sandbox._filesystem.read()` |
+| Truncation | Same `smart_truncate_output()` logic | Same `smart_truncate_output()` logic |
+
+> **Tip**: Because `execute_bash` already handles its own truncation, you should add `execute_bash` to the `bypass_tool_names` list when using `LongToolOutputMiddleware` to avoid double truncation. See [Middleware Hooks — LongToolOutputMiddleware](./hooks.md#longtooloutputmiddleware) for details.
+
 ## How to Configure Sandbox
 
 Sandboxes are configured through the agent's YAML configuration file or programmatically via `AgentConfig`.

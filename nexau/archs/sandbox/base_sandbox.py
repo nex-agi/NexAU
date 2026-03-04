@@ -41,6 +41,15 @@ logger = logging.getLogger(__name__)
 
 BASH_TOOL_RESULTS_BASE_PATH = "/tmp/nexau_bash_tool_results"
 
+DEFAULT_OUTPUT_CHAR_THRESHOLD = 10_000
+"""Combined stdout+stderr character count above which smart truncation activates."""
+
+TRUNCATE_HEAD_CHARS = 5_000
+"""Number of characters to keep from the beginning of each stream when truncating."""
+
+TRUNCATE_TAIL_CHARS = 5_000
+"""Number of characters to keep from the end of each stream when truncating."""
+
 
 # =============================================================================
 # Typed Sandbox Configuration
@@ -58,6 +67,10 @@ class BaseSandboxConfig(BaseModel):
     work_dir: str = E2B_DEFAULT_WORK_DIR
     envs: dict[str, str] = Field(default_factory=dict)
     status_after_run: Literal["pause", "stop", "none"] = "stop"
+    # Smart truncation settings for execute_bash output
+    output_char_threshold: int = DEFAULT_OUTPUT_CHAR_THRESHOLD
+    truncate_head_chars: int = TRUNCATE_HEAD_CHARS
+    truncate_tail_chars: int = TRUNCATE_TAIL_CHARS
 
 
 class LocalSandboxConfig(BaseSandboxConfig):
@@ -148,6 +161,10 @@ class CommandResult:
         truncated: Whether output was truncated due to size limits
         original_stdout_length: Original length of stdout before truncation (if truncated)
         original_stderr_length: Original length of stderr before truncation (if truncated)
+        background_pid: Process ID if background execution
+        output_dir: Directory containing full stdout.txt and stderr.txt files
+        stdout_file: Full path to the stdout.txt file (if output_dir is set)
+        stderr_file: Full path to the stderr.txt file (if output_dir is set)
     """
 
     status: SandboxStatus
@@ -160,6 +177,53 @@ class CommandResult:
     original_stdout_length: int | None = None
     original_stderr_length: int | None = None
     background_pid: int | None = None
+    output_dir: str | None = None
+    stdout_file: str | None = None
+    stderr_file: str | None = None
+
+
+def smart_truncate_output(
+    stdout: str,
+    stderr: str,
+    output_dir: str,
+    threshold: int = DEFAULT_OUTPUT_CHAR_THRESHOLD,
+    head_chars: int = TRUNCATE_HEAD_CHARS,
+    tail_chars: int = TRUNCATE_TAIL_CHARS,
+) -> tuple[str, str, bool, int | None, int | None]:
+    """Apply smart truncation to command output streams.
+
+    如果 stdout + stderr 总字符数低于阈值，则原样返回。
+    否则对每个流分别截断为前 head_chars + 后 tail_chars 字符，并附带完整输出文件路径的提示。
+
+    Returns:
+        (truncated_stdout, truncated_stderr, was_truncated,
+         original_stdout_len_or_None, original_stderr_len_or_None)
+    """
+    total = len(stdout) + len(stderr)
+    if total < threshold:
+        return stdout, stderr, False, None, None
+
+    original_stdout_len = len(stdout)
+    original_stderr_len = len(stderr)
+
+    def _truncate_stream(text: str, stream_name: str) -> str:
+        if len(text) <= head_chars + tail_chars:
+            return text
+        head = text[:head_chars]
+        tail = text[-tail_chars:]
+        omitted = len(text) - head_chars - tail_chars
+        return f"{head}\n\n... [{omitted:,} characters omitted] ...\n(Full output: {output_dir}/{stream_name}.txt)\n\n{tail}"
+
+    truncated_stdout = _truncate_stream(stdout, "stdout")
+    truncated_stderr = _truncate_stream(stderr, "stderr")
+
+    return (
+        truncated_stdout,
+        truncated_stderr,
+        True,
+        original_stdout_len,
+        original_stderr_len,
+    )
 
 
 @dataclass
@@ -259,6 +323,10 @@ class BaseSandbox(ABC):
     sandbox_id: str | None = field(default=None)
     envs: dict[str, str] = field(default_factory=lambda: {})
     _work_dir: str = field(default_factory=os.getcwd)
+    # Smart truncation settings (propagated from SandboxConfig)
+    output_char_threshold: int = field(default=DEFAULT_OUTPUT_CHAR_THRESHOLD)
+    truncate_head_chars: int = field(default=TRUNCATE_HEAD_CHARS)
+    truncate_tail_chars: int = field(default=TRUNCATE_TAIL_CHARS)
     _background_tasks: dict[int, Any] = field(
         default_factory=lambda: {},  # noqa: C408
         repr=False,
@@ -298,10 +366,13 @@ class BaseSandbox(ABC):
         user: str | None = None,
         envs: dict[str, str] | None = None,
         background: bool = False,
-        save_output_to_temp_file: bool = False,
     ) -> CommandResult:
         """
         Execute a bash command in the sandbox.
+
+        Stdout and stderr are always saved to temporary files (stdout.txt, stderr.txt)
+        under a unique directory. If the combined output exceeds the threshold, the
+        returned stdout/stderr are smart-truncated with hints to the full files.
 
         Args:
             command: The bash command to execute
@@ -310,13 +381,9 @@ class BaseSandbox(ABC):
             user: Optional user to run the command as (not available in LocalSandbox)
             envs: Optional environment variables
             background: Optional flag to run the command in the background
-            save_output_to_temp_file: Optional flag to save the output (stdout and stderr) to a temporary file
 
         Returns:
             CommandResult containing execution results
-
-        Raises:
-            SandboxError: If command execution fails
         """
         pass
 

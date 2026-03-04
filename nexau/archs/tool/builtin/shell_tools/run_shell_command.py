@@ -138,24 +138,29 @@ def run_shell_command(
                     f"Background task started (pid: {bg_pid}). "
                     f"Use BackgroundTaskManage with action='status' and pid={bg_pid} to check output."
                 )
-                return {
+                bg_result: dict[str, Any] = {
                     "content": llm_content,
                     "returnDisplay": f"Background task started (pid: {bg_pid})",
                     "duration_ms": duration_ms,
                     "backgroundPids": [bg_pid],
                 }
+                if cmd_result.output_dir:
+                    bg_result["output_dir"] = cmd_result.output_dir
+                    bg_result["stdout_file"] = cmd_result.stdout_file
+                    bg_result["stderr_file"] = cmd_result.stderr_file
+                return bg_result
             # Fallback if sandbox didn't return pid
-            result: dict[str, Any] = {
+            fallback_result: dict[str, Any] = {
                 "content": cmd_result.stdout or "Background task started.",
                 "returnDisplay": cmd_result.stdout or "Background task started.",
                 "duration_ms": duration_ms,
             }
             if cmd_result.error:
-                result["error"] = {
+                fallback_result["error"] = {
                     "message": cmd_result.error,
                     "type": "SHELL_EXECUTE_ERROR",
                 }
-            return result
+            return fallback_result
 
         # Foreground mode
         # Build description for display
@@ -218,11 +223,22 @@ def run_shell_command(
         else:
             return_display = "(empty)"
 
-        result = {
+        result: dict[str, Any] = {
             "content": llm_content,
             "returnDisplay": return_display,
             "duration_ms": duration_ms,
+            "exit_code": exit_code,
         }
+
+        # Include CommandResult truncation metadata and file paths
+        if cmd_result.output_dir:
+            result["output_dir"] = cmd_result.output_dir
+            result["stdout_file"] = cmd_result.stdout_file
+            result["stderr_file"] = cmd_result.stderr_file
+        if cmd_result.truncated:
+            result["truncated"] = True
+            result["original_stdout_length"] = cmd_result.original_stdout_length
+            result["original_stderr_length"] = cmd_result.original_stderr_length
 
         if error_message or cmd_result.status in (
             SandboxStatus.ERROR,

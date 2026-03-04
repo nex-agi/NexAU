@@ -290,8 +290,9 @@ class TestExecuteBashDefensive:
     def test_reconnects_on_event_loop_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         commands = _FakeCommands(
             behavior=[
+                _FakeCommandResult(stdout="", stderr="", exit_code=0),  # _prepare_output_dir mkdir
                 RuntimeError("Event loop is closed"),
-                _FakeCommandResult(stdout="ok", stderr="", exit_code=0),
+                _FakeCommandResult(stdout="", stderr="", exit_code=0),  # retry after reconnect
             ]
         )
         backend = _FakeSandbox(commands=commands)
@@ -308,11 +309,14 @@ class TestExecuteBashDefensive:
         """Transient 'Server disconnected' should trigger reconnect + retry."""
         commands = _FakeCommands(
             behavior=[
+                _FakeCommandResult(stdout="", stderr="", exit_code=0),  # _prepare_output_dir mkdir
                 RuntimeError("Server disconnected without sending a response."),
-                _FakeCommandResult(stdout="recovered", stderr="", exit_code=0),
+                _FakeCommandResult(stdout="", stderr="", exit_code=0),  # retry after reconnect
             ]
         )
-        backend = _FakeSandbox(commands=commands)
+        # stdout is now read from files; configure fake filesystem to return expected content
+        filesystem = _FakeFilesystem(read_content=b"recovered")
+        backend = _FakeSandbox(commands=commands, filesystem=filesystem)
         cls = _enable_fake_e2b(monkeypatch, backend)
         sandbox = E2BSandbox(sandbox_id="sbx")
         _attach_backend(sandbox, backend)
@@ -323,7 +327,12 @@ class TestExecuteBashDefensive:
         assert cls.connect_called
 
     def test_command_exit_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        commands = _FakeCommands(behavior=[_FakeCommandExitError("out", "err", 2)])
+        commands = _FakeCommands(
+            behavior=[
+                _FakeCommandResult(stdout="", stderr="", exit_code=0),  # _prepare_output_dir mkdir
+                _FakeCommandExitError("out", "err", 2),
+            ]
+        )
         backend = _FakeSandbox(commands=commands)
         _enable_fake_e2b(monkeypatch, backend)
         sandbox = E2BSandbox(sandbox_id="sbx")
@@ -333,7 +342,12 @@ class TestExecuteBashDefensive:
         assert result.exit_code == 2
 
     def test_timeout_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        commands = _FakeCommands(behavior=[_FakeTimeoutError()])
+        commands = _FakeCommands(
+            behavior=[
+                _FakeCommandResult(stdout="", stderr="", exit_code=0),  # _prepare_output_dir mkdir
+                _FakeTimeoutError(),
+            ]
+        )
         backend = _FakeSandbox(commands=commands)
         _enable_fake_e2b(monkeypatch, backend)
         sandbox = E2BSandbox(sandbox_id="sbx")
@@ -342,7 +356,12 @@ class TestExecuteBashDefensive:
         assert result.status == SandboxStatus.TIMEOUT
 
     def test_generic_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        commands = _FakeCommands(behavior=[ValueError("unexpected")])
+        commands = _FakeCommands(
+            behavior=[
+                _FakeCommandResult(stdout="", stderr="", exit_code=0),  # _prepare_output_dir mkdir
+                ValueError("unexpected"),
+            ]
+        )
         backend = _FakeSandbox(commands=commands)
         _enable_fake_e2b(monkeypatch, backend)
         sandbox = E2BSandbox(sandbox_id="sbx")

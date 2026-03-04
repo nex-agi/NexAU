@@ -286,7 +286,6 @@ class DummySandbox(BaseSandbox):
         user: str | None = None,
         envs: dict[str, str] | None = None,
         background: bool = False,
-        save_output_to_temp_file: bool = False,
     ) -> CommandResult:
         return CommandResult(status=SandboxStatus.SUCCESS)
 
