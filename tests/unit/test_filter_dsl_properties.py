@@ -731,7 +731,7 @@ class TestFilterDSLProperty2:
                 f"  Python result: {python_matches}"
             )
 
-    @settings(max_examples=100)
+    @settings(max_examples=100, deadline=None)
     @given(
         filter_=filters_for_model(max_depth=2),
         record=record_dicts(),

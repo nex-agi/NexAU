@@ -19,70 +19,19 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Final, cast
 
-from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
-from nexau.core.messages import Message
+from nexau.core.messages import ImageBlock, Message, ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
 
 logger = logging.getLogger(__name__)
 
-type LegacyOpenAIChatMessage = dict[str, Any]
-type TokenCountableMessage = Message | LegacyOpenAIChatMessage
+TokenCounterFn = Callable[[Sequence[Message], list[dict[str, Any]] | None], int]
 
-
-def _coerce_legacy_content_to_text(content: Any) -> str:
-    """Coerce legacy OpenAI-style message ``content`` into a plain string for token counting.
-
-    NexAU's legacy adapter may emit multi-part content (e.g. text + image_url dict parts)
-    for multimodal messages. Token counters must never pass non-strings to tiktoken.
-
-    Notes:
-    - We intentionally do NOT include image URLs / base64 payloads; they are not a useful
-      proxy for model-context token usage and can be extremely large.
-    - This is a best-effort approximation suitable for budgeting/compaction heuristics.
-    """
-
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in cast(list[Any], content):
-            if item is None:
-                continue
-            if isinstance(item, str):
-                if item:
-                    parts.append(item)
-                continue
-            if isinstance(item, Mapping):
-                item_dict = cast(Mapping[str, Any], item)
-                part_type = str(item_dict.get("type") or "")
-
-                # Common OpenAI/Anthropic-ish multi-part schemas.
-                if part_type in {"text", "input_text", "output_text"}:
-                    text = item_dict.get("text") or item_dict.get("content") or ""
-                    if isinstance(text, str) and text:
-                        parts.append(text)
-                    elif text is not None:
-                        parts.append(str(text))
-                    continue
-                if part_type in {"image", "image_url", "input_image"}:
-                    parts.append("<image>")
-                    continue
-
-                # Unknown part: try to preserve any visible text-ish payload, otherwise ignore.
-                text = item_dict.get("text") or item_dict.get("content")
-                if text is None:
-                    continue
-                parts.append(text if isinstance(text, str) else str(text))
-                continue
-
-            # Last resort: stringify.
-            parts.append(str(item))
-        return "".join(parts)
-
-    # Some callers might pass a dict-like shape; do a conservative stringify.
-    return str(content)
-
+_IMAGE_TOKEN_ESTIMATE: Final[int] = 85
+_MESSAGE_OVERHEAD_TOKENS: Final[int] = 3
+_BLOCK_OVERHEAD_TOKENS: Final[int] = 1
+_TOOL_USE_OVERHEAD_TOKENS: Final[int] = 8
+_TOOL_RESULT_OVERHEAD_TOKENS: Final[int] = 6
+_TOOL_DEFINITION_OVERHEAD_TOKENS: Final[int] = 4
+_TIKTOKEN_SAFE_CHUNK_SIZE: Final[int] = 8192
 
 _tiktoken: Any
 try:
@@ -95,213 +44,254 @@ TIKTOKEN_AVAILABLE: Final[bool] = _tiktoken is not None
 
 
 class TokenCounter:
-    """Handles token counting for LLM messages using various strategies."""
+    """Handles token counting for UMP messages."""
 
     def __init__(self, strategy: str = "tiktoken", model: str = "gpt-4o"):
         """Initialize token counter with specified strategy.
 
         Args:
             strategy: "tiktoken" or "fallback"
-            model: Model name for tiktoken encoding
+            model: Model name for tiktoken encoding resolution
         """
         self.strategy = strategy
         self.model = model
         self._counter = self._create_counter()
 
-    def _create_counter(
-        self,
-    ) -> Callable[[Sequence[TokenCountableMessage], list[dict[str, Any]] | None], int]:
+    def set_counter(self, counter: TokenCounterFn) -> None:
+        """Override token counting function for custom integration points."""
+        self._counter = counter
+
+    def _create_counter(self) -> TokenCounterFn:
         """Create the appropriate token counter based on strategy."""
-        if self.strategy == "tiktoken" and TIKTOKEN_AVAILABLE:
-            return self._create_tiktoken_counter()
-        else:
-            if self.strategy == "tiktoken":
-                logger.warning(
-                    "tiktoken not available, using fallback counter",
-                )
+        if self.strategy == "tiktoken":
+            if not TIKTOKEN_AVAILABLE:
+                logger.warning("tiktoken not available, using fallback counter")
+                return self._create_fallback_counter()
+
+            encoding = self._resolve_tiktoken_encoding()
+            if encoding is not None:
+                return self._create_tiktoken_counter(encoding)
+
+            logger.warning("Failed to resolve tiktoken encoding, using fallback counter")
             return self._create_fallback_counter()
 
-    def _create_tiktoken_counter(
-        self,
-    ) -> Callable[[Sequence[TokenCountableMessage], list[dict[str, Any]] | None], int]:
-        """Create tiktoken-based counter."""
+        if self.strategy != "fallback":
+            logger.warning("Unknown token counter strategy '%s', using fallback", self.strategy)
+        return self._create_fallback_counter()
+
+    def _resolve_tiktoken_encoding(self) -> Any | None:
+        """Resolve tiktoken encoding with model-aware fallback order."""
         if tiktoken is None:
-            raise RuntimeError("tiktoken is not available")
-        try:
-            encoding = tiktoken.encoding_for_model(self.model)
+            return None
 
-            def tiktoken_message_counter(
-                messages: Sequence[TokenCountableMessage],
-                tools: list[dict[str, Any]] | None = None,
-            ) -> int:
-                """Count tokens in messages using tiktoken."""
-                legacy_messages: list[LegacyOpenAIChatMessage]
-                if messages and isinstance(messages[0], Message):
-                    legacy_messages = messages_to_legacy_openai_chat(cast(list[Message], list(messages)))
-                else:
-                    legacy_messages = cast(list[LegacyOpenAIChatMessage], list(messages))
-                total_tokens = 0
-                for message in legacy_messages:
-                    # Add tokens for role and content
-                    total_tokens += len(
-                        encoding.encode(
-                            _coerce_legacy_content_to_text(message.get("content", "")),
-                            allowed_special=set(),
-                        ),
-                    )
-                    reasoning = _coerce_legacy_content_to_text(message.get("reasoning_content", ""))
-                    if reasoning:
-                        total_tokens += len(
-                            encoding.encode(
-                                reasoning,
-                                allowed_special=set(),
-                            ),
-                        )
-                    if tool_calls := message.get("tool_calls"):
-                        total_tokens += self._count_tiktoken_tool_calls(
-                            tool_calls,
-                            encoding,
-                        )
-                if tools:
-                    total_tokens += self._count_tiktoken_tools(tools, encoding)
-                return total_tokens
+        attempts: list[tuple[str, Callable[[], Any]]] = []
 
-            return tiktoken_message_counter
-        except Exception as e:
-            logger.warning(
-                f"Failed to create tiktoken encoder: {e}, using fallback",
-            )
-            return self._create_fallback_counter()
+        encoding_for_model = getattr(tiktoken, "encoding_for_model", None)
+        if callable(encoding_for_model):
+            attempts.append((f"encoding_for_model({self.model})", lambda: encoding_for_model(self.model)))
 
-    def _create_fallback_counter(
-        self,
-    ) -> Callable[[Sequence[TokenCountableMessage], list[dict[str, Any]] | None], int]:
+        get_encoding = getattr(tiktoken, "get_encoding", None)
+        if callable(get_encoding):
+            attempts.append(("get_encoding(o200k_base)", lambda: get_encoding("o200k_base")))
+            attempts.append(("get_encoding(cl100k_base)", lambda: get_encoding("cl100k_base")))
+
+        errors: list[str] = []
+        for label, resolver in attempts:
+            try:
+                encoding = resolver()
+                if label != f"encoding_for_model({self.model})":
+                    logger.info("Using tiktoken fallback encoder via %s", label)
+                return encoding
+            except Exception as exc:  # pragma: no cover - defensive against tiktoken internals
+                errors.append(f"{label}: {exc}")
+
+        if errors:
+            logger.warning("tiktoken encoder resolution failed for model '%s': %s", self.model, "; ".join(errors))
+        return None
+
+    def _create_tiktoken_counter(self, encoding: Any) -> TokenCounterFn:
+        """Create tiktoken-based counter."""
+
+        def encode_text(text: str) -> int:
+            return self._encode_with_tiktoken(text, encoding)
+
+        def tiktoken_message_counter(messages: Sequence[Message], tools: list[dict[str, Any]] | None = None) -> int:
+            return self._count_tokens_with_text_encoder(messages, tools, encode_text)
+
+        return tiktoken_message_counter
+
+    def _create_fallback_counter(self) -> TokenCounterFn:
         """Create fallback counter using character approximation."""
 
-        def fallback_message_counter(
-            messages: Sequence[TokenCountableMessage],
-            tools: list[dict[str, Any]] | None = None,
-        ) -> int:
-            """Fallback token counter using character approximation."""
-            legacy_messages: list[LegacyOpenAIChatMessage]
-            if messages and isinstance(messages[0], Message):
-                legacy_messages = messages_to_legacy_openai_chat(cast(list[Message], list(messages)))
-            else:
-                legacy_messages = cast(list[LegacyOpenAIChatMessage], list(messages))
-            total_tokens = 0
-            for message in legacy_messages:
-                # Add tokens for role and content using chars/4 approximation
-                total_tokens += len(message.get("role", "")) // 4
-                total_tokens += len(_coerce_legacy_content_to_text(message.get("content", ""))) // 4
-                total_tokens += len(_coerce_legacy_content_to_text(message.get("reasoning_content", ""))) // 4
-                # Add overhead tokens for message formatting
-                total_tokens += 4
-                tool_calls = message.get("tool_calls")
-                if tool_calls:
-                    total_tokens += self._count_fallback_tool_calls(tool_calls)
-            if tools:
-                total_tokens += self._count_fallback_tools(tools)
-            return max(total_tokens, 1)  # Ensure at least 1 token
+        def fallback_message_counter(messages: Sequence[Message], tools: list[dict[str, Any]] | None = None) -> int:
+            total = self._count_tokens_with_text_encoder(messages, tools, self._approximate_text_tokens)
+            return max(total, 1)
 
         return fallback_message_counter
 
-    def _count_tiktoken_tool_calls(
-        self,
-        tool_calls: list[dict[str, Any]],
-        encoding: Any,
-    ) -> int:
-        """Count tokens contributed by tool calls using tiktoken."""
+    @staticmethod
+    def _approximate_text_tokens(text: str) -> int:
+        if not text:
+            return 0
+        # Character approximation: roughly one token per four characters.
+        return max((len(text) + 3) // 4, 1)
+
+    @staticmethod
+    def _is_regex_tokenization_error(exc: Exception) -> bool:
+        return "Regex error while tokenizing" in str(exc)
+
+    def _encode_with_tiktoken(self, text: str, encoding: Any) -> int:
+        if not text:
+            return 0
+
+        try:
+            return len(encoding.encode(text, allowed_special=set()))
+        except ValueError as exc:
+            if not self._is_regex_tokenization_error(exc):
+                raise
+
+            logger.warning(
+                "tiktoken regex backtracking hit while counting %d chars; falling back to chunked token counting",
+                len(text),
+            )
+            return self._encode_with_chunked_tiktoken(text, encoding)
+
+    def _encode_with_chunked_tiktoken(self, text: str, encoding: Any) -> int:
         total_tokens = 0
-        for call in tool_calls:
-            # Base overhead per tool call based on OpenAI cookbook guidance
-            total_tokens += 3
 
-            function_data = call.get("function")
-            if not isinstance(function_data, dict):
-                continue
+        for start in range(0, len(text), _TIKTOKEN_SAFE_CHUNK_SIZE):
+            chunk = text[start : start + _TIKTOKEN_SAFE_CHUNK_SIZE]
+            try:
+                total_tokens += len(encoding.encode(chunk, allowed_special=set()))
+            except ValueError as exc:
+                if not self._is_regex_tokenization_error(exc):
+                    raise
+                total_tokens += self._approximate_text_tokens(chunk)
 
-            function_data = cast(dict[str, Any], function_data)
+        return total_tokens
 
-            total_tokens += len(
-                encoding.encode(
-                    str(function_data.get("name", "")),
-                    allowed_special=set(),
-                ),
+    def _count_tokens_with_text_encoder(
+        self,
+        messages: Sequence[Message],
+        tools: list[dict[str, Any]] | None,
+        text_encoder: Callable[[str], int],
+    ) -> int:
+        total_tokens = 0
+
+        for index, raw_message in enumerate(cast(Sequence[Any], messages)):
+            if not isinstance(raw_message, Message):
+                self._raise_invalid_message_type(index, raw_message)
+            message = raw_message
+
+            total_tokens += _MESSAGE_OVERHEAD_TOKENS
+            total_tokens += text_encoder(message.role.value)
+
+            for block in message.content:
+                total_tokens += self._count_block_tokens(block, text_encoder)
+
+        if tools:
+            for tool in tools:
+                total_tokens += _TOOL_DEFINITION_OVERHEAD_TOKENS
+                total_tokens += text_encoder(self._serialize_payload(tool))
+
+        return total_tokens
+
+    @staticmethod
+    def _raise_invalid_message_type(index: int, value: Any) -> None:
+        if isinstance(value, Mapping):
+            raise TypeError(
+                "TokenCounter.count_tokens now only accepts Sequence[Message]. "
+                "Legacy dict messages are no longer supported. "
+                "Please migrate callers to pass nexau.core.messages.Message objects "
+                f"(got dict-like value at index {index})."
             )
 
-            args_value = function_data.get("arguments", "")
-            args_value = cast(dict[str, Any], args_value)
+        raise TypeError(f"TokenCounter.count_tokens now only accepts Sequence[Message]. Got {type(value).__name__} at index {index}.")
+
+    def _count_block_tokens(self, block: Any, text_encoder: Callable[[str], int]) -> int:
+        if isinstance(block, TextBlock):
+            return _BLOCK_OVERHEAD_TOKENS + text_encoder(block.text)
+
+        if isinstance(block, ReasoningBlock):
+            total = _BLOCK_OVERHEAD_TOKENS + text_encoder(block.text)
+            if block.signature:
+                total += text_encoder(block.signature)
+            if block.redacted_data:
+                total += text_encoder(block.redacted_data)
+            return total
+
+        if isinstance(block, ImageBlock):
+            return _BLOCK_OVERHEAD_TOKENS + _IMAGE_TOKEN_ESTIMATE
+
+        if isinstance(block, ToolUseBlock):
+            total = _TOOL_USE_OVERHEAD_TOKENS
+            total += text_encoder(block.id)
+            total += text_encoder(block.name)
+
+            raw_arguments = block.raw_input if block.raw_input is not None else self._serialize_payload(block.input)
+            total += text_encoder(raw_arguments)
+            return total
+
+        if isinstance(block, ToolResultBlock):
+            total = _TOOL_RESULT_OVERHEAD_TOKENS + text_encoder(block.tool_use_id)
+            total += self._count_tool_result_content_tokens(block.content, text_encoder)
+            if block.is_error:
+                total += _BLOCK_OVERHEAD_TOKENS
+            return total
+
+        # Best-effort fallback for future/unknown block types.
+        model_dump_json = getattr(block, "model_dump_json", None)
+        if callable(model_dump_json):
             try:
-                args_str = json.dumps(args_value)
-            except TypeError:
-                args_str = str(args_value)
-            total_tokens += len(
-                encoding.encode(args_str, allowed_special=set()),
-            )
+                dumped = model_dump_json(exclude_none=True)
+                return _BLOCK_OVERHEAD_TOKENS + text_encoder(str(dumped))
+            except Exception:  # pragma: no cover - defensive
+                pass
 
-        return total_tokens
+        return _BLOCK_OVERHEAD_TOKENS + text_encoder(str(block))
 
-    def _count_tiktoken_tools(
+    def _count_tool_result_content_tokens(
         self,
-        tools: list[dict[str, Any]],
-        encoding: Any,
+        content: str | list[TextBlock | ImageBlock],
+        text_encoder: Callable[[str], int],
     ) -> int:
-        """Count tokens contributed by tool definitions using tiktoken."""
-        total_tokens = 0
-        for tool in tools:
+        if isinstance(content, str):
+            return text_encoder(content)
+
+        total = 0
+        for block in content:
+            if isinstance(block, TextBlock):
+                total += _BLOCK_OVERHEAD_TOKENS + text_encoder(block.text)
+            else:
+                total += _BLOCK_OVERHEAD_TOKENS + _IMAGE_TOKEN_ESTIMATE
+        return total
+
+    @staticmethod
+    def _serialize_payload(payload: Any) -> str:
+        payload_value: Any = payload
+
+        if not isinstance(payload_value, Mapping):
+            model_dump = getattr(payload_value, "model_dump", None)
+            if callable(model_dump):
+                try:
+                    dumped = model_dump(mode="python", exclude_none=True)
+                    if isinstance(dumped, Mapping):
+                        payload_value = cast(Mapping[str, Any], dumped)
+                except Exception:  # pragma: no cover - defensive
+                    pass
+
+        if isinstance(payload_value, Mapping):
             try:
-                tool_str = json.dumps(tool, ensure_ascii=False)
+                return json.dumps(payload_value, ensure_ascii=False, sort_keys=True)
             except TypeError:
-                tool_str = str(tool)
-            total_tokens += len(encoding.encode(tool_str, allowed_special=set()))
-        return total_tokens
+                return str(cast(object, payload_value))
 
-    def _count_fallback_tool_calls(self, tool_calls: list[dict[str, Any]]) -> int:
-        """Approximate tokens contributed by tool calls without tiktoken."""
-        total_tokens = 0
-        for call in tool_calls:
-            total_tokens += 3
-
-            function_data = call.get("function")
-            if not isinstance(function_data, dict):
-                continue
-
-            function_data = cast(dict[str, Any], function_data)
-
-            total_tokens += len(str(function_data.get("name", ""))) // 4
-            args_value = function_data.get("arguments", "")
-            args_value = cast(dict[str, Any], args_value)
-            try:
-                args_str = json.dumps(args_value)
-            except TypeError:
-                args_str = str(args_value)
-            total_tokens += len(args_str) // 4
-
-        return total_tokens
-
-    def _count_fallback_tools(self, tools: list[dict[str, Any]]) -> int:
-        """Approximate tokens contributed by tool definitions without tiktoken."""
-        total_tokens = 0
-        for tool in tools:
-            try:
-                tool_str = json.dumps(tool)
-            except TypeError:
-                tool_str = str(tool)
-            total_tokens += len(tool_str) // 4
-        return total_tokens
+        return str(payload_value)
 
     def count_tokens(
         self,
-        messages: Sequence[TokenCountableMessage],
+        messages: Sequence[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> int:
-        """Count total tokens in a list of messages.
-
-        Args:
-            messages: UMP `Message` objects (or legacy OpenAI-style dict messages for backward compatibility).
-            tools: Optional list of tool definitions to include in token count
-
-        Returns:
-            Total token count
-        """
+        """Count total tokens in a list of UMP messages."""
         return self._counter(messages, tools)

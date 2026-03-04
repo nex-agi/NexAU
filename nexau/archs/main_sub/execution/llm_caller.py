@@ -45,6 +45,62 @@ logger = logging.getLogger(__name__)
 _MISSING_TOOL_RESULT_CONTENT = "no tool result (canceled, compacted or failed)"
 
 
+def _compact_scalar(value: Any, *, max_chars: int = 256) -> str:
+    text = str(value)
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}...(truncated {len(text) - max_chars} chars)"
+
+
+def _raw_message_metadata(payload: Any) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"raw_type": type(payload).__name__}
+    if payload is None:
+        return metadata
+
+    safe_fields = ("id", "model", "object", "role", "finish_reason", "stop_reason", "status")
+
+    if isinstance(payload, Mapping):
+        payload_mapping = cast(Mapping[str, Any], payload)
+        for field in safe_fields:
+            value = payload_mapping.get(field)
+            if value is None:
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                metadata[field] = _compact_scalar(value)
+        choices_raw = payload_mapping.get("choices")
+        if isinstance(choices_raw, list):
+            choices_list = cast(list[Any], choices_raw)
+            metadata["choices_count"] = len(choices_list)
+            if choices_list and isinstance(choices_list[0], Mapping):
+                first_choice_mapping = cast(Mapping[str, Any], choices_list[0])
+                choice_finish_reason = first_choice_mapping.get("finish_reason")
+                if choice_finish_reason is not None:
+                    metadata["choice_finish_reason"] = _compact_scalar(choice_finish_reason)
+        return metadata
+
+    for field in safe_fields:
+        value = getattr(payload, field, None)
+        if value is None:
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            metadata[field] = _compact_scalar(value)
+
+    choices_raw = getattr(payload, "choices", None)
+    if isinstance(choices_raw, list):
+        choices_list = cast(list[Any], choices_raw)
+        metadata["choices_count"] = len(choices_list)
+        if choices_list:
+            first_choice = choices_list[0]
+            if isinstance(first_choice, Mapping):
+                choice_finish_reason = cast(Mapping[str, Any], first_choice).get("finish_reason")
+            else:
+                choice_finish_reason = getattr(first_choice, "finish_reason", None)
+            if choice_finish_reason is not None:
+                metadata["choice_finish_reason"] = _compact_scalar(choice_finish_reason)
+
+    return metadata
+
+
 def _ensure_tool_results(messages: list[Message]) -> list[Message]:
     """Ensure every ToolUseBlock has a matching ToolResultBlock.
 
@@ -335,6 +391,19 @@ class LLMCaller:
                 if response_content.has_content() or response_content.has_tool_calls():
                     return response_content
                 else:
+                    finish_reason = None
+                    if isinstance(response_content.usage, dict):
+                        finish_reason = response_content.usage.get("finish_reason")
+                    raw_message_meta = _raw_message_metadata(response_content.raw_message)
+                    logger.error(
+                        "❌ Empty model response received: finish_reason=%s, role=%s, content_len=%d, tool_calls=%d, usage=%s",
+                        finish_reason if finish_reason is not None else "unknown",
+                        response_content.role,
+                        len(response_content.content or ""),
+                        len(response_content.tool_calls),
+                        response_content.usage or {},
+                    )
+                    logger.error("❌ Empty model raw_message_meta=%s", raw_message_meta)
                     raise Exception("No response content or tool calls")
 
             except Exception as e:
@@ -666,6 +735,15 @@ def call_llm_with_openai_chat_completion(
     usage = None
     if hasattr(response_payload, "usage") and response_payload.usage is not None:
         usage = _to_serializable_dict(response_payload.usage)
+
+    finish_reason = None
+    try:
+        finish_reason = response_payload.choices[0].finish_reason
+    except Exception:
+        finish_reason = None
+    if finish_reason is not None:
+        usage = dict(usage or {})
+        usage["finish_reason"] = str(finish_reason)
 
     return ModelResponse.from_openai_message(response_message, usage=usage)
 

@@ -891,6 +891,44 @@ class TestLLMCallerRetryLogic:
         assert response.content == "Valid response"
         assert mock_openai_client.chat.completions.create.call_count == 2
 
+    def test_empty_response_logs_only_sanitized_raw_message_metadata(self, mock_openai_client, mock_llm_config, agent_state, caplog):
+        """Empty response logs should avoid leaking raw response content."""
+        unsafe_raw_message = {
+            "model": "gpt-4o-mini",
+            "choices": [{"finish_reason": "length", "message": {"content": "TOP_SECRET_PAYLOAD"}}],
+            "content": "TOP_SECRET_PAYLOAD",
+        }
+        empty_model_response = ModelResponse(
+            content="",
+            role="assistant",
+            usage={"finish_reason": "length"},
+            raw_message=unsafe_raw_message,
+        )
+
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=mock_llm_config,
+            retry_attempts=1,
+        )
+
+        with patch(
+            "nexau.archs.main_sub.execution.llm_caller.call_llm_with_different_client",
+            return_value=empty_model_response,
+        ):
+            with caplog.at_level(logging.ERROR):
+                with pytest.raises(Exception, match="No response content or tool calls"):
+                    caller.call_llm(
+                        [Message.user("Hello")],
+                        max_tokens=100,
+                        force_stop_reason=AgentStopReason.SUCCESS,
+                        agent_state=agent_state,
+                    )
+
+        all_logs = "\n".join(record.message for record in caplog.records)
+        assert "raw_message_meta" in all_logs
+        assert "gpt-4o-mini" in all_logs
+        assert "TOP_SECRET_PAYLOAD" not in all_logs
+
 
 class TestLLMCallerForceStopReason:
     """Test cases for force stop reason handling."""

@@ -14,7 +14,12 @@
 
 """Context compaction middleware with customizable trigger and compaction strategies."""
 
-from .compact_stratigies import CompactionStrategy, SlidingWindowCompaction, ToolResultCompaction
+from .compact_stratigies import (
+    CompactionStrategy,
+    SlidingWindowCompaction,
+    ToolResultCompaction,
+    UserModelFullTraceAdaptiveCompaction,
+)
 from .config import CompactionConfig
 from .middleware import ContextCompactionMiddleware
 from .trigger_strategies import TokenThresholdTrigger, TriggerStrategy
@@ -27,4 +32,5 @@ __all__ = [
     "TokenThresholdTrigger",
     "SlidingWindowCompaction",
     "ToolResultCompaction",
+    "UserModelFullTraceAdaptiveCompaction",
 ]

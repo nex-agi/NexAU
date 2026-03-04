@@ -14,187 +14,172 @@
 
 """Unit tests for token counting utilities."""
 
+from __future__ import annotations
+
 import json
-from collections.abc import Iterable
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from pytest import MonkeyPatch
 
 from nexau.archs.main_sub.utils import token_counter
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
-from nexau.core.messages import ImageBlock, Message, Role, TextBlock
+from nexau.core.messages import ImageBlock, Message, ReasoningBlock, Role, TextBlock, ToolResultBlock, ToolUseBlock
 
 
-def test_fallback_counter_counts_content_and_tools():
-    """Ensure fallback strategy counts message text and tool call overhead."""
+def _approximate(text: str) -> int:
+    if not text:
+        return 0
+    return max((len(text) + 3) // 4, 1)
+
+
+def test_count_tokens_rejects_legacy_dict_messages() -> None:
     counter = TokenCounter(strategy="fallback")
-    messages = [
-        {
-            "role": "user",
-            "content": "hello world",
-            "reasoning_content": "abcde",
-            "tool_calls": [
-                {
-                    "function": {
-                        "name": "search",
-                        "arguments": {"query": "hi"},
-                    },
-                },
-            ],
-        },
-    ]
+    legacy_messages: Any = [{"role": "user", "content": "hello"}]
 
-    result = counter.count_tokens(messages)
-
-    # role=4 ->1 token, content=11 ->2, reasoning=5 ->1, overhead=4
-    # tool call: base 3 + name(6)->1 + args('{"query": "hi"}'=15)->3
-    assert result == 15
+    with pytest.raises(TypeError, match=r"only accepts Sequence\[Message\]"):
+        counter.count_tokens(legacy_messages)
 
 
-def test_fallback_counter_enforces_minimum_token():
-    """Fallback counter should never return zero tokens."""
+def test_fallback_counter_counts_ump_blocks_and_tools() -> None:
     counter = TokenCounter(strategy="fallback")
 
-    assert counter.count_tokens([]) == 1
-
-
-def test_tiktoken_strategy_uses_stub_encoding(monkeypatch: MonkeyPatch):
-    """Verify tiktoken strategy counts tokens via provided encoding."""
-
-    class DummyEncoding:
-        def encode(
-            self,
-            text: str,
-            allowed_special: Iterable[str] | None = None,
-        ) -> list[int]:
-            return [0] * len(text)
-
-    def dummy_encoding_for_model(model: str):
-        return DummyEncoding()
-
-    monkeypatch.setattr(token_counter, "TIKTOKEN_AVAILABLE", True)
-    monkeypatch.setattr(
-        token_counter,
-        "tiktoken",
-        SimpleNamespace(encoding_for_model=dummy_encoding_for_model),
-    )
-
-    counter = TokenCounter(strategy="tiktoken", model="dummy-model")
-    messages: list[dict[str, Any]] = [
-        {
-            "role": "user",
-            "content": "hi",
-            "reasoning_content": "why",
-            "tool_calls": [
-                {
-                    "function": {
-                        "name": "do",
-                        "arguments": {"x": 1},
-                    },
-                },
-            ],
-        },
-        {"role": "assistant", "content": "ok"},
-    ]
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "do",
-                "description": "test",
-            },
-        },
-    ]
-
-    result = counter.count_tokens(messages, tools=tools)
-
-    tool_args_str = json.dumps({"x": 1})
-    tool_def_str = json.dumps(tools[0])
-    expected = (
-        len("hi")  # message content
-        + len("why")  # reasoning content
-        + 3  # tool call overhead
-        + len("do")  # tool name
-        + len(tool_args_str)  # tool arguments
-        + len("ok")  # second message content
-        + len(tool_def_str)  # tool definition
-    )
-
-    assert result == expected
-
-
-def test_tiktoken_strategy_supports_multimodal_message_content(monkeypatch: MonkeyPatch):
-    """tiktoken strategy should not crash when legacy content is a list (e.g. image + text)."""
-
-    class DummyEncoding:
-        def encode(
-            self,
-            text: str,
-            allowed_special: Iterable[str] | None = None,
-        ) -> list[int]:
-            return [0] * len(text)
-
-    def dummy_encoding_for_model(model: str):
-        return DummyEncoding()
-
-    monkeypatch.setattr(token_counter, "TIKTOKEN_AVAILABLE", True)
-    monkeypatch.setattr(
-        token_counter,
-        "tiktoken",
-        SimpleNamespace(encoding_for_model=dummy_encoding_for_model),
-    )
-
-    counter = TokenCounter(strategy="tiktoken", model="dummy-model")
     messages = [
         Message(
             role=Role.USER,
             content=[
                 TextBlock(text="hello"),
+                ReasoningBlock(text="think"),
                 ImageBlock(base64="AAAA", mime_type="image/png"),
             ],
         ),
+        Message(
+            role=Role.ASSISTANT,
+            content=[
+                ToolUseBlock(
+                    id="call_1",
+                    name="search",
+                    input={"q": "weather"},
+                )
+            ],
+        ),
+        Message(
+            role=Role.TOOL,
+            content=[
+                ToolResultBlock(
+                    tool_use_id="call_1",
+                    content="sunny",
+                )
+            ],
+        ),
+    ]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "search",
+                "parameters": {"type": "object"},
+            },
+        }
     ]
 
-    # Adapter emits [{"type":"text","text":"hello"},{"type":"image_url",...}]; token counter should coerce to "hello<image>".
-    assert counter.count_tokens(messages) == len("hello<image>")
+    tool_use_args = json.dumps({"q": "weather"}, ensure_ascii=False, sort_keys=True)
+    tool_schema = json.dumps(tools[0], ensure_ascii=False, sort_keys=True)
+
+    expected = 0
+    expected += 3 + _approximate("user")
+    expected += 1 + _approximate("hello")
+    expected += 1 + _approximate("think")
+    expected += 1 + 85
+
+    expected += 3 + _approximate("assistant")
+    expected += 8 + _approximate("call_1") + _approximate("search") + _approximate(tool_use_args)
+
+    expected += 3 + _approximate("tool")
+    expected += 6 + _approximate("call_1") + _approximate("sunny")
+
+    expected += 4 + _approximate(tool_schema)
+
+    assert counter.count_tokens(messages, tools=tools) == expected
 
 
-def test_tiktoken_strategy_falls_back_on_encoder_error(monkeypatch: MonkeyPatch):
-    """When tiktoken encoder fails to initialize, fallback counter is used."""
+def test_fallback_counter_enforces_minimum_token() -> None:
+    counter = TokenCounter(strategy="fallback")
 
-    def broken_encoding_for_model(model: str):
-        raise RuntimeError("boom")
+    assert counter.count_tokens([]) == 1
+
+
+def test_tiktoken_uses_model_fallback_order(monkeypatch: MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    class DummyEncoding:
+        def encode(self, text: str, allowed_special: set[str] | None = None) -> list[int]:
+            return [0] * len(text)
+
+    def encoding_for_model(model: str) -> DummyEncoding:
+        calls.append(f"encoding_for_model:{model}")
+        raise KeyError("unknown model")
+
+    def get_encoding(name: str) -> DummyEncoding:
+        calls.append(f"get_encoding:{name}")
+        if name == "o200k_base":
+            return DummyEncoding()
+        raise KeyError(name)
 
     monkeypatch.setattr(token_counter, "TIKTOKEN_AVAILABLE", True)
     monkeypatch.setattr(
         token_counter,
         "tiktoken",
-        SimpleNamespace(encoding_for_model=broken_encoding_for_model),
+        SimpleNamespace(encoding_for_model=encoding_for_model, get_encoding=get_encoding),
     )
 
-    counter = TokenCounter(strategy="tiktoken", model="broken")
-    messages = [{"role": "user", "content": "abcd"}]
+    counter = TokenCounter(strategy="tiktoken", model="custom-model")
+    result = counter.count_tokens([Message.user("hello")])
 
-    # Fallback uses len(role)//4 + len(content)//4 + overhead 4 -> 1 + 1 + 4
-    assert counter.count_tokens(messages) == 6
-
-
-def test_fallback_counter_skips_invalid_tool_function():
-    """Invalid tool function payload still counts only base overhead."""
-    counter = TokenCounter(strategy="fallback")
-    messages = [
-        {"role": "assistant", "content": "", "tool_calls": [{"function": "bad"}]},
+    assert result > 0
+    assert calls == [
+        "encoding_for_model:custom-model",
+        "get_encoding:o200k_base",
     ]
 
-    # role len=9 ->2 tokens, overhead 4, tool call base 3 => total 9
-    assert counter.count_tokens(messages) == 9
+
+def test_tiktoken_falls_back_to_character_estimator_when_no_encoder(monkeypatch: MonkeyPatch) -> None:
+    def encoding_for_model(model: str) -> Any:
+        raise KeyError(model)
+
+    def get_encoding(name: str) -> Any:
+        raise KeyError(name)
+
+    monkeypatch.setattr(token_counter, "TIKTOKEN_AVAILABLE", True)
+    monkeypatch.setattr(
+        token_counter,
+        "tiktoken",
+        SimpleNamespace(encoding_for_model=encoding_for_model, get_encoding=get_encoding),
+    )
+
+    counter = TokenCounter(strategy="tiktoken", model="unknown-model")
+
+    assert counter.count_tokens([Message.user("abcd")]) == 6
 
 
-def test_fallback_counter_counts_tool_definitions():
-    """Fallback should include tools parameter in token count."""
-    counter = TokenCounter(strategy="fallback")
-    tools = [{"name": "tool", "description": "abcd"}]
-    expected_tools_tokens = len(json.dumps(tools[0])) // 4
+def test_tiktoken_regex_backtracking_uses_chunk_fallback(monkeypatch: MonkeyPatch) -> None:
+    class RegexFailEncoding:
+        def encode(self, text: str, allowed_special: set[str] | None = None) -> list[int]:
+            raise ValueError("Regex error while tokenizing")
 
-    assert counter.count_tokens([], tools=tools) == max(expected_tools_tokens, 1)
+    monkeypatch.setattr(token_counter, "TIKTOKEN_AVAILABLE", True)
+    monkeypatch.setattr(
+        token_counter,
+        "tiktoken",
+        SimpleNamespace(
+            encoding_for_model=lambda _model: RegexFailEncoding(),
+            get_encoding=lambda _name: RegexFailEncoding(),
+        ),
+    )
+
+    counter = TokenCounter(strategy="tiktoken", model="regex-model")
+    long_text = "x" * 9000
+
+    expected = 3 + _approximate("user") + 1 + _approximate(long_text)
+    assert counter.count_tokens([Message.user(long_text)]) == expected

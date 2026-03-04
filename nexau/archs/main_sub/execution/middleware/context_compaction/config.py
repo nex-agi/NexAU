@@ -26,6 +26,7 @@ class CompactionConfig(BaseModel):
     # General Settings
     max_context_tokens: int = 128000
     auto_compact: bool = True
+    emergency_compact_enabled: bool = True
     threshold: float = 0.75
 
     # Strategy Selection

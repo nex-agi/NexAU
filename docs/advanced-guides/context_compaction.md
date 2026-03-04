@@ -118,6 +118,26 @@ ContextCompactionMiddleware(
 )
 ```
 
+### Emergency Overflow Fallback (wrap_model_call)
+
+When a provider returns context-overflow errors and `emergency_compact_enabled: true`,
+the middleware applies a dedicated emergency fallback flow in `wrap_model_call`:
+
+1. Keep a minimum safety region unchanged:
+   - system message (if present)
+   - last 1 iteration
+   - unresolved tool-use chain
+   - last user message
+2. Split the remaining trace into two fixed segments (50/50 by token accumulation).
+3. Summarize both segments with the emergency prompt.
+4. Merge the two summaries with the same emergency prompt into one compact context.
+5. Rebuild messages as: `system + merged summary + safety region`.
+6. Run a token gate check; if still over limit, fail fast instead of retrying.
+
+Emergency prompt path:
+
+`nexau/archs/main_sub/execution/middleware/context_compaction/prompts/emergency_compact_prompt.md`
+
 ### Trigger Strategy
 
 The middleware automatically monitors token usage after each model call. When usage exceeds the configured threshold percentage, compaction is triggered automatically.
@@ -137,3 +157,58 @@ ContextCompactionMiddleware(
 
 **Safety checks:**
 - Compaction is automatically skipped if the last assistant message has no tool calls
+
+### Testing Guide
+
+Use this checklist to verify `before_model` / `after_model` compaction and wrap emergency fallback.
+
+#### 1) Unit tests (fast, deterministic)
+
+```bash
+uv run pytest tests/unit/test_context_compaction.py -q
+uv run pytest tests/unit/test_executor.py tests/unit/test_sse_client.py -q
+```
+
+What these tests cover:
+- regular compaction trigger paths (`before_model`, `after_model`)
+- wrap fallback retry on provider overflow
+- failure path when emergency compaction still exceeds context limit
+- token gate counting with tools schema (`tools=...` included)
+- event emission and parsing:
+  - `COMPACTION_STARTED`
+  - `COMPACTION_FINISHED`
+
+#### 2) Integration test (agent-level flow)
+
+```bash
+uv run pytest tests/integration/test_wrap_emergency_compaction_integration.py -q
+```
+
+Scenario in this integration test:
+- agent has a large-output tool (`big_blob_writer`)
+- multiple large user messages are sent across rounds
+- provider overflow is simulated
+- emergency wrap compaction is expected to trigger
+
+Key assertions:
+- at least one overflow happened
+- wrap fallback emitted `COMPACTION_STARTED` (`phase=wrap_model_call`, `mode=emergency`)
+- wrap fallback emitted `COMPACTION_FINISHED` with `success=True`
+
+#### 3) Manual smoke test (real model/provider)
+
+Recommended config:
+- `auto_compact: true`
+- `emergency_compact_enabled: true`
+- `overflow_max_tokens_stop_enabled: false` (so precheck does not hard-stop before wrap fallback)
+- relatively small `max_context_tokens` for easier reproduction
+
+Run several rounds where each round:
+1. sends a large user message
+2. triggers one large tool result
+
+Expected behavior:
+- first provider overflow is caught in `wrap_model_call`
+- emergency compaction runs
+- one retry is attempted with compacted messages
+- event stream/log contains paired compaction events (`STARTED` then `FINISHED`)

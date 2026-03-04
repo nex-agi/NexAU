@@ -17,9 +17,11 @@
 from .base import CompactionStrategy
 from .compact_tool_result import ToolResultCompaction
 from .sliding_window import SlidingWindowCompaction
+from .user_model_full_trace_adaptive import UserModelFullTraceAdaptiveCompaction
 
 __all__ = [
     "CompactionStrategy",
     "SlidingWindowCompaction",
     "ToolResultCompaction",
+    "UserModelFullTraceAdaptiveCompaction",
 ]

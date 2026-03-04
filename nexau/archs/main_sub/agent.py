@@ -15,12 +15,13 @@
 """Refactored Agent implementation for the NexAU framework."""
 
 import asyncio
+import inspect
 import logging
 import os
 import traceback
 import uuid
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -499,6 +500,7 @@ class Agent:
             llm_config=self.config.llm_config or LLMConfig(),
             max_iterations=self.exec_config.max_iterations,
             max_context_tokens=self.exec_config.max_context_tokens,
+            overflow_max_tokens_stop_enabled=self.exec_config.overflow_max_tokens_stop_enabled,
             max_running_subagents=self.exec_config.max_running_subagents,
             retry_attempts=self.exec_config.retry_attempts,
             token_counter=token_counter,
@@ -584,15 +586,41 @@ class Agent:
     def _resolve_token_counter(self) -> TokenCounter:
         """Cast configured token counter to TokenCounter instance."""
         configured_counter = self.config.token_counter
+        model_name = self.config.llm_config.model if self.config.llm_config else "gpt-4o"
+
         if isinstance(configured_counter, TokenCounter):
             return configured_counter
 
+        token_counter = TokenCounter(model=model_name)
         if callable(configured_counter):
-            custom_counter = TokenCounter()
-            custom_counter._counter = configured_counter  # type: ignore[attr-defined]
-            return custom_counter
+            try:
+                signature = inspect.signature(configured_counter)
+            except (TypeError, ValueError):
+                signature = None
 
-        return TokenCounter()
+            has_var_args = False
+            has_var_kwargs = False
+            has_tools_param = False
+            if signature is not None:
+                has_tools_param = "tools" in signature.parameters
+                has_var_args = any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in signature.parameters.values())
+                has_var_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
+
+            def wrapped_counter(
+                messages: Sequence[Message],
+                tools: list[dict[str, Any]] | None = None,
+            ) -> int:
+                if tools is not None:
+                    if has_tools_param or has_var_kwargs:
+                        return int(configured_counter(messages, tools=tools))
+                    if has_var_args:
+                        return int(configured_counter(messages, tools))
+                return int(configured_counter(messages))
+
+            token_counter.set_counter(wrapped_counter)
+            return token_counter
+
+        return token_counter
 
     async def run_async(
         self,

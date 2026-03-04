@@ -237,6 +237,36 @@ class RunErrorEvent(AgUiRunErrorEvent):
     run_id: str
 
 
+class CompactionStartedEvent(BaseEvent):
+    """Event emitted when context compaction starts."""
+
+    type: Literal["COMPACTION_STARTED"] = "COMPACTION_STARTED"  # type: ignore[assignment]
+    run_id: str
+    phase: Literal["before_model", "after_model", "wrap_model_call"]
+    mode: Literal["regular", "emergency"]
+    trigger_reason: str | None = None
+    original_message_count: int
+    original_token_count: int | None = None
+    max_context_tokens: int | None = None
+
+
+class CompactionFinishedEvent(BaseEvent):
+    """Event emitted when context compaction finishes (success or failure)."""
+
+    type: Literal["COMPACTION_FINISHED"] = "COMPACTION_FINISHED"  # type: ignore[assignment]
+    run_id: str
+    phase: Literal["before_model", "after_model", "wrap_model_call"]
+    mode: Literal["regular", "emergency"]
+    success: bool
+    trigger_reason: str | None = None
+    original_message_count: int
+    compacted_message_count: int | None = None
+    original_token_count: int | None = None
+    compacted_token_count: int | None = None
+    max_context_tokens: int | None = None
+    error: str | None = None
+
+
 class TransportErrorEvent(BaseEvent):
     """Event indicating a transport-level error (e.g. streaming failure).
 
@@ -307,6 +337,8 @@ Event = (
     | RunStartedEvent
     | RunFinishedEvent
     | RunErrorEvent
+    | CompactionStartedEvent
+    | CompactionFinishedEvent
     | TransportErrorEvent
     # Image events (StartEvent has run_id, others link via message_id)
     | ImageMessageStartEvent
@@ -324,6 +356,8 @@ __all__ = [
     "RunStartedEvent",
     "RunFinishedEvent",
     "RunErrorEvent",
+    "CompactionStartedEvent",
+    "CompactionFinishedEvent",
     "TransportErrorEvent",
     # Text message events
     "TextMessageStartEvent",

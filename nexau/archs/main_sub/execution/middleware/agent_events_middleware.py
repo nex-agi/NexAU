@@ -189,7 +189,10 @@ class AgentEventsMiddleware(Middleware):
         """
         agent_state = hook_input.agent_state
 
-        if hook_input.stop_reason == AgentStopReason.ERROR_OCCURRED:
+        if hook_input.stop_reason in {
+            AgentStopReason.ERROR_OCCURRED,
+            AgentStopReason.CONTEXT_TOKEN_LIMIT,
+        }:
             self.on_event(
                 RunErrorEvent(
                     timestamp=int(datetime.now().timestamp() * 1000),

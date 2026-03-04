@@ -279,6 +279,7 @@ class ExecutionConfig:
 
     max_iterations: int = 100
     max_context_tokens: int = 128000
+    overflow_max_tokens_stop_enabled: bool = True
     max_running_subagents: int = 5
     retry_attempts: int = 5
     timeout: int = 300
@@ -295,6 +296,7 @@ class ExecutionConfig:
         return cls(
             max_iterations=agent_config.max_iterations,
             max_context_tokens=agent_config.max_context_tokens,
+            overflow_max_tokens_stop_enabled=agent_config.overflow_max_tokens_stop_enabled,
             max_running_subagents=agent_config.max_running_subagents,
             retry_attempts=agent_config.retry_attempts,
             timeout=agent_config.timeout,
@@ -408,6 +410,10 @@ class AgentConfigBuilder:
             "max_context_tokens",
             128000,
         )
+        self.agent_params["overflow_max_tokens_stop_enabled"] = self.config.get(
+            "overflow_max_tokens_stop_enabled",
+            True,
+        )
         self.agent_params["max_running_subagents"] = self.config.get(
             "max_running_subagents",
             5,
@@ -423,6 +429,8 @@ class AgentConfigBuilder:
         self.agent_params["stop_tools"] = set(self.config.get("stop_tools", []))
         self.agent_params["max_iterations"] = self.config.get("max_iterations", 100)
         self.agent_params["tool_call_mode"] = self.config.get("tool_call_mode", "openai")
+        self.agent_params["retry_attempts"] = self.config.get("retry_attempts", 5)
+        self.agent_params["timeout"] = self.config.get("timeout", 300)
 
         return self
 
@@ -783,18 +791,26 @@ class AgentConfigBuilder:
                     raise ConfigError("Token counter params must be a mapping when provided")
                 params_dict = params_raw
                 if params_dict:
-                    # Create a wrapper function with the parameters
-                    def configured_token_counter(messages: Sequence[Message] | Sequence[dict[str, Any]]) -> int:
-                        # Internally NexAU uses UMP Messages; preserve backward compatibility
-                        # for custom token counters that were written against legacy dict messages.
-                        from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
-                        from nexau.core.messages import Message
+                    try:
+                        signature = inspect.signature(token_counter_func)
+                    except (TypeError, ValueError):
+                        signature = None
 
-                        if messages and isinstance(messages[0], Message):
-                            legacy_messages = messages_to_legacy_openai_chat(list(cast(Sequence[Message], messages)))
-                        else:
-                            legacy_messages = list(cast(Sequence[dict[str, Any]], messages))
-                        return int(token_counter_func(legacy_messages, **params_dict))
+                    supports_tools_param = False
+                    if signature is not None:
+                        supports_tools_param = "tools" in signature.parameters or any(
+                            parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
+                        )
+
+                    # Create a wrapper function with the parameters
+                    def configured_token_counter(
+                        messages: Sequence[Message],
+                        tools: list[dict[str, Any]] | None = None,
+                    ) -> int:
+                        call_params = dict(params_dict)
+                        if tools is not None and supports_tools_param:
+                            call_params["tools"] = tools
+                        return int(token_counter_func(messages, **call_params))
 
                     token_counter = configured_token_counter
                 else:

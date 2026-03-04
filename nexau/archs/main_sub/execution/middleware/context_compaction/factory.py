@@ -14,9 +14,12 @@
 
 """Factory functions for creating compaction and trigger strategies."""
 
+from typing import Any
+
 from .compact_stratigies.base import CompactionStrategy
 from .compact_stratigies.compact_tool_result import ToolResultCompaction
 from .compact_stratigies.sliding_window import SlidingWindowCompaction
+from .compact_stratigies.user_model_full_trace_adaptive import UserModelFullTraceAdaptiveCompaction
 from .config import CompactionConfig
 from .trigger_strategies.base import TriggerStrategy
 from .trigger_strategies.token_threshold import TokenThresholdTrigger
@@ -63,3 +66,15 @@ def create_trigger_strategy(config: CompactionConfig) -> TriggerStrategy:
         Initialized trigger strategy instance
     """
     return TokenThresholdTrigger(threshold=config.threshold)
+
+
+def create_emergency_compaction_strategy(
+    *,
+    token_counter: Any,
+    max_context_tokens: int,
+) -> UserModelFullTraceAdaptiveCompaction:
+    """Build emergency overflow compaction strategy for wrap fallback."""
+    return UserModelFullTraceAdaptiveCompaction(
+        token_counter=token_counter,
+        max_context_tokens=max_context_tokens,
+    )

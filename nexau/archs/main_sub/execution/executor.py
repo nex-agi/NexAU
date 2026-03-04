@@ -87,6 +87,7 @@ class Executor:
         llm_config: LLMConfig,
         max_iterations: int = 100,
         max_context_tokens: int = 128000,
+        overflow_max_tokens_stop_enabled: bool | None = None,
         max_running_subagents: int = 5,
         retry_attempts: int = 5,
         token_counter: TokenCounter | None = None,
@@ -117,6 +118,7 @@ class Executor:
             llm_config: LLM configuration
             max_iterations: Maximum iterations per execution
             max_context_tokens: Maximum context token limit
+            overflow_max_tokens_stop_enabled: Whether to hard-stop when local precheck exceeds context budget
             max_running_subagents: Maximum concurrent sub-agents
             retry_attempts: int of API retry attempts
             token_counter: Optional token counter instance
@@ -145,6 +147,11 @@ class Executor:
             after_tool_hooks or [],
             before_tool_hooks or [],
         )
+        self._overflow_max_tokens_stop_explicit = overflow_max_tokens_stop_enabled is not None
+        self.overflow_max_tokens_stop_enabled: bool = True if overflow_max_tokens_stop_enabled is None else overflow_max_tokens_stop_enabled
+        self.emergency_compact_enabled: bool = False
+        self._sync_context_overflow_policies()
+        self._wire_middleware_event_emitters()
         self.tool_executor = ToolExecutor(
             tool_registry=tool_registry,
             stop_tools=stop_tools,
@@ -179,7 +186,7 @@ class Executor:
         self.global_storage = global_storage
 
         # Token counting
-        self.token_counter = token_counter or TokenCounter()
+        self.token_counter = token_counter or TokenCounter(model=llm_config.model)
 
         # Tool call behavior
         self.serial_tool_name = serial_tool_name or []
@@ -209,6 +216,74 @@ class Executor:
         self.team_mode = team_mode
         self._message_available = threading.Event()
         self._is_idle = False  # True when waiting for messages in team_mode
+
+    def _sync_context_overflow_policies(self) -> None:
+        """Read overflow-control switches from middleware configuration when available."""
+        # Preserve the constructor-level hard-stop toggle; default is True.
+        configured_overflow_stop_enabled: bool = bool(self.overflow_max_tokens_stop_enabled)
+        self.emergency_compact_enabled = False
+
+        if not self.middleware_manager:
+            self.overflow_max_tokens_stop_enabled = configured_overflow_stop_enabled
+            return
+
+        for middleware in self.middleware_manager.middlewares:
+            has_emergency_switch = hasattr(middleware, "emergency_compact_enabled")
+            has_overflow_switch = hasattr(middleware, "overflow_max_tokens_stop_enabled")
+            if not has_emergency_switch and not has_overflow_switch:
+                continue
+
+            if has_emergency_switch:
+                self.emergency_compact_enabled = bool(getattr(middleware, "emergency_compact_enabled"))
+            if has_overflow_switch:
+                middleware_overflow_stop_enabled = bool(getattr(middleware, "overflow_max_tokens_stop_enabled"))
+                if self._overflow_max_tokens_stop_explicit:
+                    if middleware_overflow_stop_enabled != configured_overflow_stop_enabled:
+                        logger.warning(
+                            "⚠️ overflow_max_tokens_stop_enabled is now an agent/executor-level setting. "
+                            "Ignoring middleware value (%s) and using configured value (%s).",
+                            middleware_overflow_stop_enabled,
+                            configured_overflow_stop_enabled,
+                        )
+                else:
+                    configured_overflow_stop_enabled = middleware_overflow_stop_enabled
+            break
+
+        self.overflow_max_tokens_stop_enabled = configured_overflow_stop_enabled
+
+        logger.info(
+            "🔧 Overflow policy: overflow_max_tokens_stop_enabled=%s, emergency_compact_enabled=%s",
+            self.overflow_max_tokens_stop_enabled,
+            self.emergency_compact_enabled,
+        )
+
+    def _wire_middleware_event_emitters(self) -> None:
+        """Wire internal middleware emitters to the unified event callback when available."""
+        if not self.middleware_manager:
+            return
+
+        event_emitter: Callable[[Any], None] | None = None
+        for middleware in self.middleware_manager.middlewares:
+            maybe_emitter = getattr(middleware, "on_event", None)
+            if callable(maybe_emitter):
+                event_emitter = cast(Callable[[Any], None], maybe_emitter)
+                break
+
+        if event_emitter is None:
+            return
+
+        for middleware in self.middleware_manager.middlewares:
+            setter = getattr(middleware, "set_event_emitter", None)
+            if not callable(setter):
+                continue
+            try:
+                setter(event_emitter)
+            except Exception as exc:
+                logger.warning(
+                    "⚠️ Failed to wire event emitter for middleware %s: %s",
+                    middleware.__class__.__name__,
+                    exc,
+                )
 
     @property
     def shutdown_event(self) -> threading.Event:
@@ -430,13 +505,23 @@ class Executor:
                 force_stop_reason = AgentStopReason.SUCCESS
                 # Check if prompt exceeds max context tokens - force stop if so
                 if current_prompt_tokens > self.max_context_tokens:
-                    logger.error(
-                        f"❌ Prompt tokens ({current_prompt_tokens}) exceed max_context_tokens \
-                            ({self.max_context_tokens}). Stopping execution.",
-                    )
-                    final_response += f"\\n\\n[Error: Prompt too long ({current_prompt_tokens} tokens) exceeds maximum context \
-                        ({self.max_context_tokens} tokens). Execution stopped.]"
-                    force_stop_reason = AgentStopReason.CONTEXT_TOKEN_LIMIT
+                    if self.overflow_max_tokens_stop_enabled:
+                        logger.error(
+                            f"❌ Prompt tokens ({current_prompt_tokens}) exceed max_context_tokens \
+                                ({self.max_context_tokens}). Stopping execution.",
+                        )
+                        final_response += (
+                            f"\\n\\n[Error: Prompt too long ({current_prompt_tokens} tokens) exceeds maximum context "
+                            f"({self.max_context_tokens} tokens). Execution stopped.]"
+                        )
+                        force_stop_reason = AgentStopReason.CONTEXT_TOKEN_LIMIT
+                    else:
+                        logger.warning(
+                            "⚠️ Prompt tokens (%d) exceed max_context_tokens (%d), but overflow_max_tokens_stop_enabled is disabled. "
+                            "Continuing model call.",
+                            current_prompt_tokens,
+                            self.max_context_tokens,
+                        )
 
                 # Calculate max_tokens dynamically based on available budget
                 available_tokens = self.max_context_tokens - current_prompt_tokens
@@ -450,11 +535,20 @@ class Executor:
 
                 # Ensure we have at least some tokens for response
                 if calculated_max_tokens < 50:
-                    logger.error(
-                        f"❌ Insufficient tokens for response ({calculated_max_tokens}). Stopping execution.",
-                    )
-                    final_response += f"\\n\\n[Error: Insufficient tokens for response ({calculated_max_tokens} tokens). Context too full.]"
-                    force_stop_reason = AgentStopReason.CONTEXT_TOKEN_LIMIT
+                    if self.overflow_max_tokens_stop_enabled:
+                        logger.error(
+                            f"❌ Insufficient tokens for response ({calculated_max_tokens}). Stopping execution.",
+                        )
+                        final_response += (
+                            f"\\n\\n[Error: Insufficient tokens for response ({calculated_max_tokens} tokens). Context too full.]"
+                        )
+                        force_stop_reason = AgentStopReason.CONTEXT_TOKEN_LIMIT
+                    else:
+                        logger.warning(
+                            "⚠️ Available response budget is %d (<50), but overflow_max_tokens_stop_enabled is disabled. "
+                            "Continuing model call.",
+                            calculated_max_tokens,
+                        )
 
                 if iteration == self.max_iterations - 1:
                     logger.error(
