@@ -97,11 +97,11 @@ def _load_nexau_dependencies():
 
 # Test configuration
 @pytest.fixture
-def test_config():
+def test_config(tmp_path):
     """Global test configuration."""
     return {
         "test_data_dir": Path(__file__).parent / "test_data",
-        "temp_dir": Path(__file__).parent / "temp",
+        "temp_dir": tmp_path / "temp",
         "mock_llm_responses": True,
         "enable_external_apis": False,
     }
@@ -122,10 +122,6 @@ def setup_test_environment(test_config, request):
         os.environ.setdefault("LLM_API_KEY", "test-key-not-used")
 
     yield
-
-    # Cleanup after all tests
-    if test_config["temp_dir"].exists():
-        shutil.rmtree(test_config["temp_dir"])
 
 
 # LLM Configuration Fixtures

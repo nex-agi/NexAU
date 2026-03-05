@@ -12,6 +12,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from nexau.archs.tracer.adapters import InMemoryTracer, LangfuseTracer
+from nexau.archs.tracer.adapters.langfuse import _TTFT_ATTRIBUTE_KEY, _sanitize_usage
 from nexau.archs.tracer.composite import CompositeTracer
 from nexau.archs.tracer.context import (
     TraceContext,
@@ -158,6 +159,21 @@ class DummyLangfuseObject:
 
     def end(self) -> None:
         self.ended = True
+
+
+class DummyLangfuseObjectGenerationFallback(DummyLangfuseObject):
+    """Dummy object that fails generation creation once, then allows span fallback."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempted_observation_types: list[str] = []
+
+    def start_observation(self, **kwargs: Any) -> DummyLangfuseObject:
+        as_type = str(kwargs.get("as_type", ""))
+        self.attempted_observation_types.append(as_type)
+        if as_type == "generation":
+            raise RuntimeError("generation-not-supported")
+        return super().start_observation(**kwargs)
 
 
 class DummyLangfuseObjectWithTrace(DummyLangfuseObject):
@@ -340,10 +356,73 @@ def test_langfuse_tracer_creates_trace_and_generation():
     assert client.start_span_calls[0]["input"] == {"payload": [1, "two"]}
     assert isinstance(root_span.vendor_obj, DummyLangfuseObject)
 
-    llm_span = tracer.start_span("llm", SpanType.LLM, parent_span=root_span, attributes={"foo": "bar"})
-    assert root_span.vendor_obj.start_observation_calls[0]["as_type"] == "span"
+    llm_span = tracer.start_span(
+        "llm",
+        SpanType.LLM,
+        parent_span=root_span,
+        attributes={"foo": "bar"},
+    )
+    assert root_span.vendor_obj.start_observation_calls[0]["as_type"] == "generation"
     llm_vendor_obj = cast(DummyLangfuseObject, llm_span.vendor_obj)
     assert llm_vendor_obj.metadata["span_type"] == SpanType.LLM.value
+
+
+def test_langfuse_tracer_llm_generation_falls_back_to_span():
+    tracer = LangfuseTracer(debug=True)
+    root_span = tracer.start_span("root", SpanType.AGENT)
+    fallback_parent = DummyLangfuseObjectGenerationFallback()
+    root_span.vendor_obj = fallback_parent
+
+    llm_span = tracer.start_span("llm", SpanType.LLM, parent_span=root_span)
+
+    assert llm_span.vendor_obj is not None
+    assert fallback_parent.attempted_observation_types == ["generation", "span"]
+    assert fallback_parent.start_observation_calls[0]["as_type"] == "span"
+
+
+def test_sanitize_usage_filters_non_int_values():
+    """_sanitize_usage should only keep int values, dropping non-int (str, None, dict, etc.)."""
+    # VertexAI 风格: modality 是 str
+    assert _sanitize_usage({"prompt_tokens": 10, "completion_tokens": 20, "modality": "text"}) == {
+        "prompt_tokens": 10,
+        "completion_tokens": 20,
+    }
+    # 嵌套 dict（如 completion_tokens_details: {}）
+    assert _sanitize_usage({"total_tokens": 30, "completion_tokens_details": {}}) == {
+        "total_tokens": 30,
+    }
+    # None 值
+    assert _sanitize_usage({"input_tokens": 5, "audio_tokens": None}) == {"input_tokens": 5}
+    # 全是 int: 不丢弃
+    assert _sanitize_usage({"a": 1, "b": 2}) == {"a": 1, "b": 2}
+    # 空 dict
+    assert _sanitize_usage({}) == {}
+
+
+def test_langfuse_tracer_end_span_sanitizes_usage():
+    """usage_details passed to Langfuse should be sanitized (non-int values removed)."""
+    tracer = LangfuseTracer(debug=True)
+    span = tracer.start_span("llm", SpanType.LLM)
+    # 模拟 VertexAI 风格的脏 usage
+    outputs = {
+        "model": "gemini-2.0-flash",
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "total_tokens": 30,
+            "prompt_tokens_details": {"modality": "text"},  # 嵌套 dict, 非 int
+            "service_tier": "default",  # str, 非 int
+        },
+    }
+    tracer.end_span(span, outputs=outputs)
+
+    vendor_obj = cast(DummyLangfuseObject, span.vendor_obj)
+    usage_call = next(call for call in vendor_obj.update_calls if "usage_details" in call)
+    assert usage_call["usage_details"] == {
+        "prompt_tokens": 10,
+        "completion_tokens": 20,
+        "total_tokens": 30,
+    }
 
 
 def test_langfuse_tracer_end_span_updates_and_flushes():
@@ -362,6 +441,34 @@ def test_langfuse_tracer_end_span_updates_and_flushes():
     assert tracer.client is not None
     client = cast(DummyLangfuseClient, tracer.client)
     assert client.flush_count == 1
+
+
+def test_langfuse_tracer_ttft_maps_to_completion_start_time():
+    tracer = LangfuseTracer(debug=True)
+    root_span = tracer.start_span("root", SpanType.AGENT)
+    llm_span = tracer.start_span("llm", SpanType.LLM, parent_span=root_span)
+
+    ttft_ms = 250.0
+    tracer.end_span(
+        llm_span,
+        outputs={
+            "model": "gpt",
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 2,
+                "total_tokens": 3,
+            },
+        },
+        attributes={_TTFT_ATTRIBUTE_KEY: ttft_ms},
+    )
+
+    vendor_obj = cast(DummyLangfuseObject, llm_span.vendor_obj)
+    completion_call = next(call for call in vendor_obj.update_calls if "completion_start_time" in call)
+    completion_start_time = completion_call["completion_start_time"]
+    assert completion_start_time is not None
+    completion_start_ts = float(completion_start_time.timestamp())
+    expected_ts = llm_span.start_time + (ttft_ms / 1000.0)
+    assert abs(completion_start_ts - expected_ts) < 0.01
 
 
 def test_langfuse_tracer_end_span_updates_trace_fields_when_supported() -> None:

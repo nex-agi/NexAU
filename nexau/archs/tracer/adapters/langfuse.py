@@ -19,15 +19,31 @@ import logging
 import os
 import uuid
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, cast
 
-from langfuse import Langfuse, LangfuseSpan  # type: ignore
+from langfuse import Langfuse, LangfuseGeneration, LangfuseSpan  # type: ignore
 from opentelemetry import trace as otel_trace_api
 
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
 
 logger = logging.getLogger(__name__)
+
+_TTFT_ATTRIBUTE_KEY = "time_to_first_token_ms"
+
+
+def _sanitize_usage(usage: Mapping[str, object]) -> dict[str, int]:
+    """Sanitize usage data for Langfuse SDK compatibility.
+
+    Langfuse SDK 的 UsageDetails 类型为 Union[Dict[str, int], OpenAiCompletionUsageSchema, ...]，
+    其中 prompt_tokens_details / completion_tokens_details 声明为 Dict[str, Optional[int]]。
+    某些模型（VertexAI、Azure OpenAI o1 等）返回的 usage 包含非 int 值（如 "modality": "text"）
+    或嵌套 dict，会导致 pydantic 校验失败，整个 generation update 静默丢失。
+    参见: https://github.com/langfuse/langfuse/issues/4961
+
+    此函数只保留值为 int 的顶层字段，丢弃非 int 值。
+    """
+    return {k: v for k, v in usage.items() if isinstance(v, int)}
 
 
 class LangfuseTracer(BaseTracer):
@@ -262,9 +278,19 @@ class LangfuseTracer(BaseTracer):
             elif span_type == SpanType.LLM:
                 # LLM call: Create a Generation
                 parent_obj = cast(LangfuseSpan, parent_span.vendor_obj)
-                # Workaround for Langfuse, as_type="generation" may lead to LLM event lost when using new api.
-                generation = parent_obj.start_observation(**langfuse_params, as_type="span")
-                span.vendor_obj = generation
+                # Preferred path: record LLM observations as Langfuse generations so
+                # usage_details/model/completion_start_time are indexed correctly.
+                vendor_obj: LangfuseSpan | LangfuseGeneration
+                try:
+                    vendor_obj = parent_obj.start_observation(**langfuse_params, as_type="generation")
+                except Exception as generation_error:
+                    logger.warning(
+                        "Failed to create Langfuse generation for '%s': %s; falling back to span",
+                        name,
+                        generation_error,
+                    )
+                    vendor_obj = parent_obj.start_observation(**langfuse_params, as_type="span")
+                span.vendor_obj = vendor_obj
                 if self.debug:
                     logger.debug(f"Created Langfuse generation: {name}")
             elif span_type == SpanType.TOOL:
@@ -351,8 +377,31 @@ class LangfuseTracer(BaseTracer):
 
             if outputs is not None:
                 update_params["output"] = self._serialize_for_langfuse(outputs)
-                if "model" in outputs and "usage" in outputs:
-                    langfuse_span.update(model=outputs["model"], usage_details=outputs["usage"])  # type: ignore
+                if isinstance(outputs, Mapping):
+                    outputs_map: Mapping[str, object] = cast(Mapping[str, object], outputs)
+                    if "model" in outputs_map:
+                        update_params["model"] = outputs_map["model"]
+                    usage = outputs_map.get("usage")
+                    if isinstance(usage, Mapping):
+                        update_params["usage_details"] = _sanitize_usage(cast(Mapping[str, object], usage))
+
+            ttft_ms: float | None = None
+            for source in (attributes, span.attributes):
+                if not isinstance(source, Mapping):
+                    continue
+                raw_ttft = source.get(_TTFT_ATTRIBUTE_KEY)
+                if raw_ttft is None:
+                    continue
+                try:
+                    parsed_ttft = float(raw_ttft)
+                except (TypeError, ValueError):
+                    continue
+                if parsed_ttft >= 0:
+                    ttft_ms = parsed_ttft
+                    break
+            if ttft_ms is not None:
+                completion_start_ts = span.start_time + (ttft_ms / 1000.0)
+                update_params["completion_start_time"] = datetime.fromtimestamp(completion_start_ts, tz=UTC)
 
             if error is not None:
                 update_params["level"] = "ERROR"

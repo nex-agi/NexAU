@@ -30,7 +30,7 @@ pyright:
 	$(UV) run pyright
 
 test:
-	$(UV) run pytest --cov=$(PACKAGE) --cov-report=xml --cov-report=html --cov-report=term --timeout=120
+	$(UV) run pytest -n auto --dist loadfile --cov=$(PACKAGE) --cov-report=xml --cov-report=html --cov-report=term --timeout=120
 
 gen-llm-logging-data:
 	$(UV) run python -m tests.scripts.generate_llm_aggregator_logging_data

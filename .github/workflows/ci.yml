@@ -104,6 +104,9 @@ jobs:
         LLM_MODEL: ${{ vars.LLM_MODEL }}
         LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
         E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+        LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+        LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+        LANGFUSE_HOST: ${{ vars.LANGFUSE_HOST }}
       run: |
         make test
 

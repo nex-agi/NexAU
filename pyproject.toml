@@ -64,6 +64,7 @@ dev = [
   "pytest-timeout>=2.4.0",
   "chardet>=5.0.0",  # Optional: used by read_file for encoding detection
   "e2b>=2.12.0",
+  "pytest-xdist>=3.8.0",
 ]
 
 [build-system]
