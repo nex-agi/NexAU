@@ -7,7 +7,9 @@ Tools are the functions that an agent can execute to interact with the outside w
 NexAU comes with a variety of pre-built tools for common tasks.
 
 #### File Tools (`nexau.archs.tool.builtin.file_tools`)
-- **read_file**, **write_file**, **replace**: Read, write, edit files.
+- **read_file**: Read text files (with pagination). For images/videos, use `read_visual_file`.
+- **read_visual_file**: Read image and video files for multimodal LLMs. Requires a model with vision support.
+- **write_file**, **replace**: Write and edit files.
 - **glob**, **list_directory**, **read_many_files**, **search_file_content**: Find and search files.
 
 #### Web Tools (`nexau.archs.tool.builtin.web_tools`)
