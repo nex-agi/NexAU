@@ -10,6 +10,11 @@ description: >-
 input_schema:
   type: object
   properties:
+    task_id:
+      type: string
+      description: >-
+        Optional custom task ID. If omitted, an ID is auto-generated
+        (e.g. T-001). When provided, the given ID is used as-is.
     title:
       type: string
       description: Short title describing the task

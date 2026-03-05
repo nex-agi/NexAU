@@ -41,6 +41,26 @@ from nexau.archs.main_sub.execution.executor import Executor  # noqa: E402
 # Provide a lightweight anthropic stub for environments without the package
 
 
+def pytest_sessionfinish(session, exitstatus):
+    """Ensure clean exit after tests complete.
+
+    Orphaned non-daemon threads (e.g. aiosqlite worker threads) can block
+    normal process shutdown indefinitely.  Schedule a forced exit on a
+    daemon thread so the process terminates with the correct exit code
+    after a short grace period.
+
+    Individual test hangs are already caught by pytest-timeout (--timeout).
+    """
+    import threading
+    import time
+
+    def _force_exit():
+        time.sleep(5)
+        os._exit(exitstatus)
+
+    threading.Thread(target=_force_exit, daemon=True).start()
+
+
 def _load_nexau_dependencies():
     from nexau.archs.llm.llm_config import LLMConfig as _LLMConfig
     from nexau.archs.main_sub.agent import Agent as _Agent
@@ -334,6 +354,12 @@ def event_loop():
     """Create an event loop for async tests."""
     loop = asyncio.new_event_loop()
     yield loop
+    # 清理所有未完成的 tasks，防止进程挂起
+    pending = asyncio.all_tasks(loop)
+    for task in pending:
+        task.cancel()
+    if pending:
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
     loop.close()
 
 

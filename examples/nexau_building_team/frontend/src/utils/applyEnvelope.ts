@@ -12,15 +12,22 @@ export function applyEnvelope(
 ): Record<string, AgentState> {
   const { agent_id, role_name, event } = envelope;
 
+  // role_name="user" is a message-source indicator, not the agent's actual role.
+  // Filter it out to avoid misidentifying the leader as "user".
+  const effectiveRole = (role_name && role_name !== "user") ? role_name : null;
+
   const existing = prev[agent_id] ?? {
     agentId: agent_id,
-    roleName: role_name ?? agent_id,
+    roleName: effectiveRole ?? agent_id,
     blocks: [],
     isActive: true,
   };
   const blocks = [...existing.blocks];
   const updated: AgentState = {
     ...existing,
+    // Update roleName when a meaningful role arrives (fixes race where
+    // the first event was a USER_MESSAGE with role_name="user")
+    roleName: effectiveRole ?? existing.roleName,
     blocks,
     isActive: true,
   };
@@ -132,7 +139,7 @@ export function applyEnvelope(
     blocks.push({ kind: "error", message: event.message });
     updated.isActive = false;
   } else if (event.type === "USER_MESSAGE" && event.content) {
-    blocks.push({ kind: "user_message", content: event.content });
+    blocks.push({ kind: "user_message", from: event.from_agent_id ?? undefined, content: event.content });
   } else if (event.type === "TEAM_MESSAGE" && event.content) {
     blocks.push({
       kind: "team_message",

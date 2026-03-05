@@ -792,7 +792,7 @@ class TestE2BEdgeCases:
         """Test sandbox dict representation."""
         result = e2b_sandbox.dict()
         assert "sandbox_id" in result
-        assert "_work_dir" in result
+        assert "work_dir" in result
 
     def test_read_binary_file_as_text_returns_error(self, e2b_sandbox):
         """Reading a binary file without binary=True should return error (UnicodeDecodeError)."""

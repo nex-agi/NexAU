@@ -351,6 +351,40 @@ class AgentLockService:
             logger.debug(f"is_locked check: no valid lock for session={session_id}, agent={agent_id}")
             return False
 
+    async def force_release(
+        self,
+        session_id: str,
+        agent_id: str,
+    ) -> bool:
+        """Force-release a lock regardless of holder.
+
+        用于 stop_all() 等场景，强制释放锁以允许下一次 run 获取。
+
+        Args:
+            session_id: Session identifier
+            agent_id: Agent identifier
+
+        Returns:
+            True if a lock was deleted, False if no lock existed
+        """
+        await self._ensure_initialized()
+
+        deleted_count = await self._engine.delete(
+            AgentLockModel,
+            filters=AndFilter(
+                filters=[
+                    ComparisonFilter.eq("session_id", session_id),
+                    ComparisonFilter.eq("agent_id", agent_id),
+                ]
+            ),
+        )
+        if deleted_count > 0:
+            logger.info(f"Force-released lock for session={session_id}, agent={agent_id}")
+            return True
+        else:
+            logger.debug(f"No lock to force-release for session={session_id}, agent={agent_id}")
+            return False
+
     async def stop(self):
         """Stop the lock service.
 

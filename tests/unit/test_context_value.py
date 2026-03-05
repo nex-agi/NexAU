@@ -153,22 +153,22 @@ class TestBaseSandboxMergeEnvs:
         shutil.rmtree(d, ignore_errors=True)
 
     def test_both_empty_returns_none(self, temp_dir):
-        sb = LocalSandbox(sandbox_id="t", _work_dir=temp_dir)
+        sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir)
         assert sb._merge_envs(None) is None
         assert sb._merge_envs({}) is None
 
     def test_instance_envs_only(self, temp_dir):
-        sb = LocalSandbox(sandbox_id="t", _work_dir=temp_dir, envs={"A": "1"})
+        sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir, envs={"A": "1"})
         result = sb._merge_envs(None)
         assert result == {"A": "1"}
 
     def test_per_call_envs_only(self, temp_dir):
-        sb = LocalSandbox(sandbox_id="t", _work_dir=temp_dir)
+        sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir)
         result = sb._merge_envs({"B": "2"})
         assert result == {"B": "2"}
 
     def test_per_call_overrides_instance(self, temp_dir):
-        sb = LocalSandbox(sandbox_id="t", _work_dir=temp_dir, envs={"K": "old", "A": "1"})
+        sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir, envs={"K": "old", "A": "1"})
         result = sb._merge_envs({"K": "new", "B": "2"})
         assert result == {"K": "new", "A": "1", "B": "2"}
 
@@ -186,11 +186,11 @@ class TestLocalSandboxEnvs:
         shutil.rmtree(d, ignore_errors=True)
 
     def test_build_local_envs_none_when_no_envs(self, temp_dir):
-        sb = LocalSandbox(sandbox_id="t", _work_dir=temp_dir)
+        sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir)
         assert sb._build_local_envs(None) is None
 
     def test_build_local_envs_includes_os_environ(self, temp_dir):
-        sb = LocalSandbox(sandbox_id="t", _work_dir=temp_dir, envs={"MY_VAR": "hello"})
+        sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir, envs={"MY_VAR": "hello"})
         result = sb._build_local_envs(None)
         assert result is not None
         assert result["MY_VAR"] == "hello"
@@ -198,35 +198,35 @@ class TestLocalSandboxEnvs:
         assert "PATH" in result
 
     def test_build_local_envs_per_call_overrides(self, temp_dir):
-        sb = LocalSandbox(sandbox_id="t", _work_dir=temp_dir, envs={"K": "instance"})
+        sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir, envs={"K": "instance"})
         result = sb._build_local_envs({"K": "per_call"})
         assert result is not None
         assert result["K"] == "per_call"
 
     def test_execute_bash_with_instance_envs(self, temp_dir):
         """Instance envs are available inside executed commands."""
-        sb = LocalSandbox(sandbox_id="t", _work_dir=temp_dir, envs={"MY_TEST_VAR": "hello_nexau"})
+        sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir, envs={"MY_TEST_VAR": "hello_nexau"})
         result = sb.execute_bash("echo $MY_TEST_VAR")
         assert result.status == SandboxStatus.SUCCESS
         assert "hello_nexau" in result.stdout
 
     def test_execute_bash_preserves_path(self, temp_dir):
         """Instance envs don't clobber PATH."""
-        sb = LocalSandbox(sandbox_id="t", _work_dir=temp_dir, envs={"MY_VAR": "val"})
+        sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir, envs={"MY_VAR": "val"})
         result = sb.execute_bash("echo $PATH")
         assert result.status == SandboxStatus.SUCCESS
         assert "/" in result.stdout  # PATH should contain at least one slash
 
     def test_execute_bash_per_call_overrides_instance(self, temp_dir):
         """Per-call envs override instance envs."""
-        sb = LocalSandbox(sandbox_id="t", _work_dir=temp_dir, envs={"K": "instance_val"})
+        sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir, envs={"K": "instance_val"})
         result = sb.execute_bash("echo $K", envs={"K": "per_call_val"})
         assert result.status == SandboxStatus.SUCCESS
         assert "per_call_val" in result.stdout
 
     def test_execute_bash_no_envs_inherits_parent(self, temp_dir):
         """Without any envs, subprocess inherits parent environment normally."""
-        sb = LocalSandbox(sandbox_id="t", _work_dir=temp_dir)
+        sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir)
         result = sb.execute_bash("echo $PATH")
         assert result.status == SandboxStatus.SUCCESS
         assert "/" in result.stdout

@@ -47,6 +47,8 @@ interface FileTreeProps {
   selectedPath: string | null;
   onSelectFile: (path: string) => void;
   isStreaming: boolean;
+  /** Mock 模式：直接提供文件树，跳过 API 请求 */
+  mockNodes?: FileNode[];
 }
 
 async function fetchTree(path: string): Promise<FileNode[]> {
@@ -121,9 +123,11 @@ export function FileTree({
   selectedPath,
   onSelectFile,
   isStreaming,
+  mockNodes,
 }: FileTreeProps) {
   const [roots, setRoots] = useState<FileNode[]>([]);
   const nodesRef = useRef<Map<string, FileNode>>(new Map());
+  const isMock = !!mockNodes;
 
   const loadDir = useCallback(
     async (dirPath: string): Promise<FileNode[]> => {
@@ -158,25 +162,35 @@ export function FileTree({
     setRoots(await refreshExpanded(newRoots));
   }, [loadDir]);
 
+  // Mock 模式：直接使用 mockNodes
   useEffect(() => {
+    if (isMock && mockNodes) {
+      setRoots(mockNodes);
+    }
+  }, [isMock, mockNodes]);
+
+  // Real 模式：从 API 加载
+  useEffect(() => {
+    if (isMock) return;
     refresh();
-  }, [refresh]);
+  }, [refresh, isMock]);
 
   useEffect(() => {
+    if (isMock) return;
     if (!isStreaming) return;
     const id = setInterval(refresh, 3000);
     return () => clearInterval(id);
-  }, [isStreaming, refresh]);
+  }, [isStreaming, refresh, isMock]);
 
   const handleToggle = useCallback(
     async (node: FileNode) => {
       node.expanded = !node.expanded;
-      if (node.expanded && !node.children) {
+      if (!isMock && node.expanded && !node.children) {
         node.children = await loadDir(node.path);
       }
       setRoots((prev) => [...prev]);
     },
-    [loadDir],
+    [loadDir, isMock],
   );
 
   return (

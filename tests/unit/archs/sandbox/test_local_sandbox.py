@@ -23,13 +23,13 @@ def temp_dir():
 
 @pytest.fixture
 def sandbox(temp_dir):
-    sb = LocalSandbox(sandbox_id="test_sandbox", _work_dir=temp_dir)
+    sb = LocalSandbox(sandbox_id="test_sandbox", work_dir=temp_dir)
     yield sb
 
 
 class TestLocalSandboxLifecycle:
     def test_sandbox_initialization(self, temp_dir):
-        sandbox = LocalSandbox(sandbox_id="lifecycle_test", _work_dir=temp_dir)
+        sandbox = LocalSandbox(sandbox_id="lifecycle_test", work_dir=temp_dir)
         assert sandbox.sandbox_id == "lifecycle_test"
         assert sandbox.work_dir == Path(temp_dir)
 
@@ -933,4 +933,4 @@ class TestSandboxDict:
 
         result = asdict(sandbox)
         assert "sandbox_id" in result
-        assert "_work_dir" in result
+        assert "work_dir" in result

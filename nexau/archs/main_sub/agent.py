@@ -353,6 +353,8 @@ class Agent:
                 "version. Please use AgentConfig.from_yaml() to load the configuration, "
                 "modify attributes directly (e.g., agent_config.key = value), and then "
                 "initialize the Agent using Agent(config=agent_config).",
+                DeprecationWarning,
+                stacklevel=2,
             )
         try:
             dotenv.load_dotenv()
@@ -549,10 +551,10 @@ class Agent:
         else:
             # 独立模式：创建独立 sandbox_manager（原有逻辑）
             if isinstance(sandbox_config, LocalSandboxConfig):
-                self.sandbox_manager = LocalSandboxManager(_work_dir=sandbox_config.work_dir)
+                self.sandbox_manager = LocalSandboxManager(work_dir=sandbox_config.work_dir)
             else:
                 self.sandbox_manager = E2BSandboxManager(
-                    _work_dir=sandbox_config.work_dir,
+                    work_dir=sandbox_config.work_dir,
                     template=sandbox_config.template,
                     timeout=sandbox_config.timeout,
                     api_key=sandbox_config.api_key,

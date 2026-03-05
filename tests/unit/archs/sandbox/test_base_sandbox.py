@@ -271,8 +271,8 @@ class TestExtractDataclassInitKwargs:
 class DummySandbox(BaseSandbox):
     uploaded: list[tuple[str, str]]
 
-    def __init__(self, sandbox_id: str | None = None, _work_dir: str = "/tmp") -> None:
-        super().__init__(sandbox_id=sandbox_id, _work_dir=_work_dir)
+    def __init__(self, sandbox_id: str | None = None, work_dir: str = "/tmp") -> None:
+        super().__init__(sandbox_id=sandbox_id, work_dir=work_dir)
         self.uploaded = []
 
     def detect_encoding(self, data: bytes) -> str:
@@ -358,17 +358,17 @@ class TestBaseSandboxInterface:
     def test_base_sandboxwork_dir_property(self):
         from nexau.archs.sandbox.local_sandbox import LocalSandbox
 
-        sandbox = LocalSandbox(_work_dir="/tmp/test")
+        sandbox = LocalSandbox(work_dir="/tmp/test")
         assert isinstance(sandbox.work_dir, Path)
         assert str(sandbox.work_dir) == "/tmp/test"
 
     def test_base_sandbox_dict_method(self):
         from nexau.archs.sandbox.local_sandbox import LocalSandbox
 
-        sandbox = LocalSandbox(sandbox_id="test123", _work_dir="/tmp/test")
+        sandbox = LocalSandbox(sandbox_id="test123", work_dir="/tmp/test")
         result = asdict(sandbox)
         assert result["sandbox_id"] == "test123"
-        assert "_work_dir" in result
+        assert "work_dir" in result
 
     def test_base_sandbox_str_repr(self):
         from nexau.archs.sandbox.local_sandbox import LocalSandbox
@@ -398,7 +398,7 @@ class TestBaseSandboxInterface:
 
     def test_upload_skill_calls_create_directory_and_upload(self) -> None:
         """upload_skill should create .skills subdir and upload skill folder."""
-        sandbox = DummySandbox(_work_dir="/tmp/sandbox")
+        sandbox = DummySandbox(work_dir="/tmp/sandbox")
         skill = type("Skill", (), {"folder": "/local/skill_name"})()
         result = sandbox.upload_skill(skill)
         assert result == "/tmp/sandbox/.skills/skill_name"
@@ -406,12 +406,12 @@ class TestBaseSandboxInterface:
 
     def test_dict_returns_init_fields_only(self) -> None:
         """dict() should return only dataclass init fields."""
-        sandbox = DummySandbox(sandbox_id="sid", _work_dir="/tmp")
+        sandbox = DummySandbox(sandbox_id="sid", work_dir="/tmp")
         d = sandbox.dict()
         assert "sandbox_id" in d
-        assert "_work_dir" in d
+        assert "work_dir" in d
         assert d["sandbox_id"] == "sid"
-        assert d["_work_dir"] == "/tmp"
+        assert d["work_dir"] == Path("/tmp")
 
     def test_detect_file_encoding_chardet_high_confidence(self) -> None:
         """When chardet returns high confidence, use detected encoding."""
@@ -634,7 +634,7 @@ class TestBaseSandboxManager:
 
         sm = cast(SessionManager, SessionManagerWithUpdate())
         manager = DummyManager()
-        manager._instance = DummySandbox(sandbox_id="x", _work_dir="/tmp")
+        manager._instance = DummySandbox(sandbox_id="x", work_dir="/tmp")
         manager.persist_sandbox_state(sm, "u", "s", manager._instance)
         assert len(updated) == 1
         assert updated[0][0] == "u"

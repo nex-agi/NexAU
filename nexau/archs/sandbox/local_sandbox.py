@@ -45,6 +45,7 @@ from .base_sandbox import (
     FileInfo,
     FileOperationResult,
     SandboxConfig,
+    SandboxError,
     SandboxFileError,
     SandboxStatus,
     extract_dataclass_init_kwargs,
@@ -72,6 +73,8 @@ class LocalSandbox(BaseSandbox):
         Returns:
             Path to the working directory
         """
+        if self.work_dir is None:
+            raise SandboxError("work_dir is not set")
         Path(self.work_dir).mkdir(parents=True, exist_ok=True)
         return Path(self.work_dir)
 
@@ -154,6 +157,8 @@ class LocalSandbox(BaseSandbox):
         if p.is_absolute():
             return p
         else:
+            if self.work_dir is None:
+                raise SandboxError("work_dir is not set")
             return self.work_dir / p
 
     def _build_local_envs(self, per_call_envs: dict[str, str] | None = None) -> dict[str, str] | None:
@@ -1080,6 +1085,8 @@ class LocalSandbox(BaseSandbox):
             # If pattern is absolute, use it directly
             # Otherwise, resolve it against working directory
             pattern_path = Path(pattern)
+            if self.work_dir is None:
+                raise SandboxError("work_dir is not set")
             if pattern_path.is_absolute():
                 search_pattern = str(pattern_path)
             else:
@@ -1327,7 +1334,7 @@ class LocalSandboxManager(BaseSandboxManager[LocalSandbox]):
         logger.info(f"Creating new local sandbox with ID: {session_id}")
 
         sandbox = LocalSandbox(
-            _work_dir=sandbox_config.work_dir,
+            work_dir=sandbox_config.work_dir,
             envs=sandbox_config.envs,
             output_char_threshold=sandbox_config.output_char_threshold,
             truncate_head_chars=sandbox_config.truncate_head_chars,

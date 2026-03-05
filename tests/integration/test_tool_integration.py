@@ -32,7 +32,7 @@ from nexau.archs.tool.builtin.shell_tools import run_shell_command
 def agent_state():
     with tempfile.TemporaryDirectory() as work_dir:
         agent_state = Mock()
-        agent_state.get_sandbox = lambda: LocalSandbox(_work_dir=work_dir)
+        agent_state.get_sandbox = lambda: LocalSandbox(work_dir=work_dir)
         yield agent_state
 
 

@@ -37,8 +37,8 @@ from nexau.archs.transports.http import HTTPConfig, SSETransportServer
 
 from event_store import EventStore
 
-logging.basicConfig(level=logging.DEBUG)
-logging.getLogger("nexau.archs.main_sub.execution.llm_caller").setLevel(logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("nexau.archs.main_sub.execution.llm_caller").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 SCRIPT_DIR = Path(__file__).parent

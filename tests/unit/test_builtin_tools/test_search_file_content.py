@@ -50,7 +50,7 @@ class TestSearchFileContent:
         with open(os.path.join(subdir, "fileC.txt"), "w") as f:
             f.write("another world in sub dir\n")
 
-        sandbox = LocalSandbox(sandbox_id="test", _work_dir=self.temp_dir)
+        sandbox = LocalSandbox(sandbox_id="test", work_dir=self.temp_dir)
         self.agent_state = _make_agent_state(sandbox)
         yield
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -116,7 +116,7 @@ class TestSearchFileContentValidation:
     def setup_temp_dir(self):
         """Create a temporary directory for testing."""
         self.temp_dir = tempfile.mkdtemp(prefix="grep-tool-test-")
-        sandbox = LocalSandbox(sandbox_id="test", _work_dir=self.temp_dir)
+        sandbox = LocalSandbox(sandbox_id="test", work_dir=self.temp_dir)
         self.agent_state = _make_agent_state(sandbox)
         yield
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -160,7 +160,7 @@ class TestSearchFileContentOutputFormat:
         self.temp_dir = tempfile.mkdtemp(prefix="grep-tool-test-")
         with open(os.path.join(self.temp_dir, "test.txt"), "w") as f:
             f.write("line one\nline two\nline three\n")
-        sandbox = LocalSandbox(sandbox_id="test", _work_dir=self.temp_dir)
+        sandbox = LocalSandbox(sandbox_id="test", work_dir=self.temp_dir)
         self.agent_state = _make_agent_state(sandbox)
         yield
         shutil.rmtree(self.temp_dir, ignore_errors=True)

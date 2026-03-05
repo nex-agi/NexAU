@@ -85,6 +85,8 @@ Before marking a task as completed, write a deliverable to `deliverable_path` th
 # Important Requirements
 1. 用中文回复、用中文写文档
 2. NexAU 自带的read_file读文件的工具就支持读图片、视频给模型，不需要再实现额外的工具解析视频、图片。
+3. 在对任务有基础了解后一定要用 `write_todos` 写 Todo list 并在做的过程中更新 TODO list 状态
+4. 不要自己去读图片或视频，太消耗上下文了
 
 
 Date: {{ date }}

@@ -33,6 +33,7 @@ async def create_task(
     description: str = "",
     priority: int = 0,
     dependencies: list[str] | None = None,
+    task_id: str | None = None,
 ) -> CreateTaskResult | ToolError:
     """Create a new task on the shared task board.
 
@@ -51,6 +52,7 @@ async def create_task(
         priority=priority,
         dependencies=dependencies or [],
         created_by=agent_state.agent_id,
+        task_id=task_id,
     )
     return CreateTaskResult(
         task_id=task.task_id,

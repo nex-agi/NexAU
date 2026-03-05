@@ -32,6 +32,7 @@ from uuid import uuid4
 
 from nexau.archs.llm.llm_aggregators.events import RunErrorEvent, TeamMessageEvent, UserMessageEvent
 from nexau.archs.main_sub.agent import Agent
+from nexau.archs.main_sub.context_value import ContextValue
 from nexau.archs.main_sub.execution.middleware.agent_events_middleware import AgentEventsMiddleware
 from nexau.archs.main_sub.team.message_bus import TeamMessageBus
 from nexau.archs.main_sub.team.sse.multiplexer import TeamSSEMultiplexer
@@ -161,6 +162,9 @@ class AgentTeam:
         # Run lifecycle tracking (for SSE reconnection support)
         self._is_running: bool = False
         self._on_run_complete: Callable[[], None] | None = None
+
+        # Context variables for template rendering, runtime vars, and sandbox env
+        self._variables: ContextValue | None = None
 
     @property
     def team_id(self) -> str:
@@ -368,9 +372,9 @@ class AgentTeam:
         if self._multiplexer is not None:
             handler = self._multiplexer.create_event_handler(agent_id=agent_id, role_name=role_name)
             mw = AgentEventsMiddleware(session_id=agent_session_id, on_event=handler)
-            if config.middlewares is None:
-                config.middlewares = []
-            config.middlewares.append(mw)
+            # 必须创建新列表，避免污染原始 candidate config 的 middlewares
+            # （_safe_deepcopy_config 对不可 pickle 字段使用同一引用）
+            config.middlewares = [*(config.middlewares or []), mw]
             if config.llm_config:
                 config.llm_config.stream = True
 
@@ -390,6 +394,7 @@ class AgentTeam:
             is_root=False,
             team_state=teammate_team_state,
             sandbox_manager=self._shared_sandbox_manager,
+            variables=self._variables,
         )
         self._teammate_agents[agent_id] = agent
 
@@ -540,6 +545,10 @@ class AgentTeam:
         enqueue_text = f"[Team Message from {from_agent_id}]: {content}"
         msg = {"role": "user", "content": enqueue_text}
 
+        # 0. 非 watchdog 消息重置空闲通知标记，允许下次全员空闲时再次唤醒 leader
+        if from_agent_id != "watchdog" and self._watchdog is not None:
+            self._watchdog.reset_idle_notification()
+
         # 1. 通过 SSE 通知前端
         if self._multiplexer is not None:
             self._multiplexer.emit(
@@ -596,10 +605,16 @@ class AgentTeam:
 
         Returns True when leader and all teammates are in the executor's
         team_mode wait loop. Used by watchdog for deadlock detection.
+
+        Note: agents waiting for user response (ask_user) are excluded —
+        they are idle but not "stuck", so we should not wake the leader.
         """
         # 1. 检查 leader
         if self._leader_agent is not None:
             if not self._leader_agent.executor.is_idle:
+                return False
+            # leader 等待用户回复时也不算全员空闲
+            if self._leader_agent.executor.is_waiting_for_user:
                 return False
         else:
             return False  # leader 未启动，不算 all-idle
@@ -607,6 +622,9 @@ class AgentTeam:
         # 2. 检查所有 teammate
         for agent in self._teammate_agents.values():
             if not agent.executor.is_idle:
+                return False
+            # ask_user 导致的 idle 不算真正空闲，agent 在等待用户回复
+            if agent.executor.is_waiting_for_user:
                 return False
 
         return True
@@ -633,7 +651,7 @@ class AgentTeam:
 
         try:
             # RFC-0002: 不发送激活消息，teammate 启动后直接进入 idle 等待
-            await agent.run_async(message=[])
+            await agent.run_async(message=[], variables=self._variables)
             logger.info(f"Teammate {agent_id} exited normally")
             await self._update_member_status(agent_id, "idle")
         except Exception as e:
@@ -678,9 +696,14 @@ class AgentTeam:
                 except (TimeoutError, asyncio.CancelledError, Exception):
                     future.cancel()
 
-        # 3. 确保 DB 状态为 idle（finally 块可能因 CancelledError 未执行）
+        # 3. 确保 DB 状态为 idle，并强制释放 agent lock
         for agent_id in stopped_ids:
             await self._update_member_status(agent_id, "idle")
+            teammate_session_id = f"{self._team_session_id}:{agent_id}"
+            await self._session_manager.agent_lock.force_release(
+                session_id=teammate_session_id,
+                agent_id=agent_id,
+            )
 
         # 4. 清理内存引用（DB 记录保留，下次 run 恢复）
         self._teammate_agents.clear()
@@ -741,9 +764,8 @@ class AgentTeam:
             if self._multiplexer is not None:
                 handler = self._multiplexer.create_event_handler(agent_id=agent_id, role_name=role_name)
                 mw = AgentEventsMiddleware(session_id=agent_session_id, on_event=handler)
-                if config.middlewares is None:
-                    config.middlewares = []
-                config.middlewares.append(mw)
+                # 必须创建新列表，避免污染原始 candidate config 的 middlewares
+                config.middlewares = [*(config.middlewares or []), mw]
                 if config.llm_config:
                     config.llm_config.stream = True
 
@@ -763,6 +785,7 @@ class AgentTeam:
                 is_root=False,
                 team_state=teammate_team_state,
                 sandbox_manager=self._shared_sandbox_manager,
+                variables=self._variables,
             )
             self._teammate_agents[agent_id] = agent
 
@@ -783,6 +806,7 @@ class AgentTeam:
         RFC-0002: 外部强制停止整个 Team
 
         前端 Stop 按钮调用此方法，立即中断 leader 和所有 teammate 的执行循环。
+        同时强制释放 leader 的 agent lock，避免下次 run 时因锁未释放而报错。
         """
         # 1. 停止 leader
         if self._leader_agent is not None:
@@ -791,7 +815,14 @@ class AgentTeam:
         # 2. 停止所有 teammates
         await self._stop_all_teammates()
 
-        # 3. 停止 watchdog
+        # 3. 强制释放 leader lock（防止 run_async 尚未退出导致锁残留）
+        leader_session_id = f"{self._team_session_id}:leader"
+        await self._session_manager.agent_lock.force_release(
+            session_id=leader_session_id,
+            agent_id=self._leader_agent_id,
+        )
+
+        # 4. 停止 watchdog
         if self._watchdog is not None:
             self._watchdog.stop()
 
@@ -821,6 +852,7 @@ class AgentTeam:
     async def run(
         self,
         message: str,
+        variables: ContextValue | None = None,
     ) -> str:
         """Run the team with the leader agent in forever-run mode.
 
@@ -837,6 +869,9 @@ class AgentTeam:
 
         Args:
             message: User message to send to the leader.
+            variables: Optional ContextValue with structured runtime parameters
+                (template vars for Jinja2 rendering, runtime_vars, sandbox_env).
+                Applied to leader and all teammates.
 
         Returns:
             Leader agent response string.
@@ -846,6 +881,10 @@ class AgentTeam:
         # 保存主事件循环引用，供 spawn_teammate 跨线程调度使用
         self._loop = asyncio.get_running_loop()
         self._is_running = True
+
+        # 存储 variables，供 leader 和后续 spawn 的 teammate 使用
+        if variables is not None:
+            self._variables = variables
 
         # 1. 启动 watchdog
         watchdog_task: asyncio.Task[None] | None = None
@@ -882,9 +921,8 @@ class AgentTeam:
             if self._multiplexer is not None:
                 leader_handler = self._multiplexer.create_event_handler(agent_id=self._leader_agent_id, role_name="leader")
                 leader_mw = AgentEventsMiddleware(session_id=leader_session_id, on_event=leader_handler)
-                if leader_config.middlewares is None:
-                    leader_config.middlewares = []
-                leader_config.middlewares.append(leader_mw)
+                # 必须创建新列表，避免污染原始 leader config 的 middlewares
+                leader_config.middlewares = [*(leader_config.middlewares or []), leader_mw]
                 if leader_config.llm_config:
                     leader_config.llm_config.stream = True
 
@@ -895,7 +933,7 @@ class AgentTeam:
                     leader_sandbox_config = LocalSandboxConfig()
                 if isinstance(leader_sandbox_config, E2BSandboxConfig):
                     self._shared_sandbox_manager = E2BSandboxManager(
-                        _work_dir=leader_sandbox_config.work_dir,
+                        work_dir=leader_sandbox_config.work_dir,
                         template=leader_sandbox_config.template,
                         timeout=leader_sandbox_config.timeout,
                         api_key=leader_sandbox_config.api_key,
@@ -905,7 +943,7 @@ class AgentTeam:
                     )
                 else:
                     self._shared_sandbox_manager = LocalSandboxManager(
-                        _work_dir=leader_sandbox_config.work_dir,
+                        work_dir=leader_sandbox_config.work_dir,
                     )
                 self._shared_sandbox_manager.prepare_session_context(
                     session_manager=self._session_manager,
@@ -944,15 +982,23 @@ class AgentTeam:
                 )
 
             # 7. Leader 在 team_mode 下运行，直到 finish_team 被调用
-            raw = await leader.run_async(message=message)
+            raw = await leader.run_async(message=message, variables=self._variables)
             result = raw[0] if isinstance(raw, tuple) else raw
 
             return result
         finally:
-            # 8. Leader 结束后，强制停止所有 teammate
+            # 8. 立即停止 watchdog，避免在 teammate 清理期间发送无效消息
+            if watchdog_task is not None:
+                watchdog_task.cancel()
+                try:
+                    await watchdog_task
+                except asyncio.CancelledError:
+                    pass
+
+            # 9. Leader 结束后，强制停止所有 teammate
             await self._stop_all_teammates()
 
-            # 8a. 管理共享 sandbox 生命周期
+            # 9a. 管理共享 sandbox 生命周期
             if self._shared_sandbox_manager is not None:
                 self._shared_sandbox_manager.on_run_complete()
                 leader_sandbox_cfg = self._leader_config.sandbox_config
@@ -961,14 +1007,6 @@ class AgentTeam:
                     self._shared_sandbox_manager.pause_no_wait()
                 elif status_after_run == "stop":
                     self._shared_sandbox_manager.stop()
-
-            # 9. 清理 watchdog
-            if watchdog_task is not None:
-                watchdog_task.cancel()
-                try:
-                    await watchdog_task
-                except asyncio.CancelledError:
-                    pass
 
             # 10. 关闭 SSE multiplexer（发送流结束信号）
             if self._multiplexer is not None:
@@ -987,6 +1025,7 @@ class AgentTeam:
         self,
         message: str,
         on_envelope: Callable[[TeamStreamEnvelope], None] | None = None,
+        variables: ContextValue | None = None,
     ) -> AsyncGenerator[TeamStreamEnvelope, None]:
         """Run team with SSE streaming output.
 
@@ -998,6 +1037,9 @@ class AgentTeam:
         Args:
             message: User message to send to the leader.
             on_envelope: Optional callback invoked for each envelope (e.g. for persistence).
+            variables: Optional ContextValue with structured runtime parameters
+                (template vars for Jinja2 rendering, runtime_vars, sandbox_env).
+                Applied to leader and all teammates.
 
         Yields:
             TeamStreamEnvelope events from all agents.
@@ -1010,7 +1052,7 @@ class AgentTeam:
         self._multiplexer = multiplexer
 
         # 3. 后台运行 team（run() 检测 self._multiplexer 自动注入中间件）
-        run_task: asyncio.Task[str] = asyncio.create_task(self.run(message))
+        run_task: asyncio.Task[str] = asyncio.create_task(self.run(message, variables=variables))
 
         try:
             # 4. 流式输出 envelope 事件

@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from nexau.archs.main_sub.context_value import ContextValue
 from nexau.archs.main_sub.team.agent_team import AgentTeam
 from nexau.archs.main_sub.team.types import MaxTeammatesError
 from nexau.archs.session.models.team import TeamModel
@@ -62,7 +63,7 @@ def make_team(
         engine = InMemoryDatabaseEngine()
     leader_config = make_agent_config(name="leader")
     candidate_config = make_agent_config(name="worker")
-    session_manager = MagicMock()
+    session_manager = AsyncMock()
     return AgentTeam(
         leader_config=leader_config,
         candidates={"worker": candidate_config},
@@ -78,6 +79,7 @@ def make_mock_agent(name: str = "worker", is_idle: bool = True) -> MagicMock:
     agent = MagicMock()
     agent.config.name = name
     agent.executor.is_idle = is_idle
+    agent.executor.is_waiting_for_user = False
     agent.executor.force_stop = MagicMock()
     agent.enqueue_message = MagicMock()
     return agent
@@ -90,6 +92,20 @@ ALL_TEAM_MODELS = [
     TeamTaskLockModel,
     TeamMessageModel,
 ]
+
+
+def _rctf_side_effect(return_future: Future[None] | None = None):
+    """Side-effect for mocked ``asyncio.run_coroutine_threadsafe``.
+
+    Closes the coroutine argument to prevent
+    ``RuntimeWarning: coroutine ... was never awaited``.
+    """
+
+    def _inner(coro, loop):  # noqa: ANN001
+        coro.close()
+        return return_future if return_future is not None else Future()
+
+    return _inner
 
 
 # --- TestAgentTeamProperties ---
@@ -407,7 +423,7 @@ class TestAgentTeamSendMessageToAgent:
         loop.call_soon_threadsafe = MagicMock()
         team._loop = loop
 
-        with patch("asyncio.run_coroutine_threadsafe", return_value=new_future) as mock_rctf:
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect(new_future)) as mock_rctf:
             team.send_message_to_agent(to_agent_id="worker-1", content="wake up", from_agent_id="leader")
             mock_rctf.assert_called_once()
 
@@ -462,7 +478,7 @@ class TestAgentTeamEnqueueUserMessage:
         team._loop = MagicMock()
 
         new_future: Future[None] = Future()
-        with patch("asyncio.run_coroutine_threadsafe", return_value=new_future) as mock_rctf:
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect(new_future)) as mock_rctf:
             team.enqueue_user_message(to_agent_id="worker-1", content="resume")
             mock_rctf.assert_called_once()
 
@@ -626,14 +642,14 @@ class TestAgentTeamSpawnTeammate:
 
             new_future: Future[None] = Future()
             with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()):
-                with patch("asyncio.run_coroutine_threadsafe", return_value=new_future):
+                with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect(new_future)):
                     agent_id = await team.spawn_teammate("worker")
 
             assert agent_id == "worker-1"
             assert team._role_counters["worker"] == 1
 
             with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()):
-                with patch("asyncio.run_coroutine_threadsafe", return_value=Future()):
+                with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect()):
                     agent_id2 = await team.spawn_teammate("worker")
 
             assert agent_id2 == "worker-2"
@@ -650,7 +666,7 @@ class TestAgentTeamSpawnTeammate:
             team._loop = MagicMock()
 
             with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()):
-                with patch("asyncio.run_coroutine_threadsafe", return_value=Future()):
+                with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect()):
                     await team.spawn_teammate("worker")
 
             from nexau.archs.session.orm import AndFilter, ComparisonFilter
@@ -800,7 +816,7 @@ class TestAgentTeamRestoreTeammates:
             mock_agent = make_mock_agent()
             new_future: Future[None] = Future()
             with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=mock_agent):
-                with patch("asyncio.run_coroutine_threadsafe", return_value=new_future):
+                with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect(new_future)):
                     await team._restore_teammates()
 
             assert "worker-1" in team._teammate_agents
@@ -829,7 +845,7 @@ class TestAgentTeamRestoreTeammates:
                 await engine.create(member)
 
             with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()):
-                with patch("asyncio.run_coroutine_threadsafe", return_value=Future()):
+                with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect()):
                     await team._restore_teammates()
 
             assert len(team._teammate_agents) == 3
@@ -855,8 +871,6 @@ class TestAgentTeamRunTeammateForever:
 
     def test_normal_exit_sets_status_idle(self):
         async def run():
-            from unittest.mock import AsyncMock
-
             engine = InMemoryDatabaseEngine()
             await engine.setup_models(ALL_TEAM_MODELS)
             team = make_team(engine=engine)
@@ -892,8 +906,6 @@ class TestAgentTeamRunTeammateForever:
 
     def test_normal_exit_clears_errored_agents(self):
         async def run():
-            from unittest.mock import AsyncMock
-
             engine = InMemoryDatabaseEngine()
             await engine.setup_models(ALL_TEAM_MODELS)
             team = make_team(engine=engine)
@@ -923,8 +935,6 @@ class TestAgentTeamRunTeammateForever:
 
     def test_error_exit_adds_to_errored_agents(self):
         async def run():
-            from unittest.mock import AsyncMock
-
             engine = InMemoryDatabaseEngine()
             await engine.setup_models(ALL_TEAM_MODELS)
             team = make_team(engine=engine)
@@ -953,8 +963,6 @@ class TestAgentTeamRunTeammateForever:
 
     def test_error_exit_sets_status_error(self):
         async def run():
-            from unittest.mock import AsyncMock
-
             engine = InMemoryDatabaseEngine()
             await engine.setup_models(ALL_TEAM_MODELS)
             team = make_team(engine=engine)
@@ -990,8 +998,6 @@ class TestAgentTeamRunTeammateForever:
 
     def test_error_exit_emits_sse_event(self):
         async def run():
-            from unittest.mock import AsyncMock
-
             engine = InMemoryDatabaseEngine()
             await engine.setup_models(ALL_TEAM_MODELS)
             team = make_team(engine=engine)
@@ -1025,8 +1031,6 @@ class TestAgentTeamRunTeammateForever:
 
     def test_registers_and_unregisters_watchdog(self):
         async def run():
-            from unittest.mock import AsyncMock
-
             engine = InMemoryDatabaseEngine()
             await engine.setup_models(ALL_TEAM_MODELS)
             team = make_team(engine=engine)
@@ -1059,8 +1063,6 @@ class TestAgentTeamRunTeammateForever:
 
     def test_unregisters_watchdog_on_error(self):
         async def run():
-            from unittest.mock import AsyncMock
-
             engine = InMemoryDatabaseEngine()
             await engine.setup_models(ALL_TEAM_MODELS)
             team = make_team(engine=engine)
@@ -1100,8 +1102,7 @@ class TestAgentTeamRunStreaming:
 
             from nexau.archs.llm.llm_aggregators.events import TextMessageContentEvent
 
-            async def fake_run(message: str) -> str:
-                # Emit one event via the multiplexer, then close it
+            async def fake_run(message: str, variables: ContextValue | None = None) -> str:
                 assert team._multiplexer is not None
                 team._multiplexer.emit(
                     agent_id="leader",
@@ -1129,7 +1130,7 @@ class TestAgentTeamRunStreaming:
             await engine.setup_models(ALL_TEAM_MODELS)
             team = make_team(engine=engine)
 
-            async def fake_run(message: str) -> str:
+            async def fake_run(message: str, variables: ContextValue | None = None) -> str:
                 assert team._multiplexer is not None
                 team._multiplexer.close()
                 team._multiplexer = None
@@ -1152,7 +1153,7 @@ class TestAgentTeamRunStreaming:
 
             captured_multiplexer: list[object] = []
 
-            async def fake_run(message: str) -> str:
+            async def fake_run(message: str, variables: ContextValue | None = None) -> str:
                 captured_multiplexer.append(team._multiplexer)
                 assert team._multiplexer is not None
                 team._multiplexer.close()
@@ -1178,7 +1179,7 @@ class TestAgentTeamRunStreaming:
 
             received: list[object] = []
 
-            async def fake_run(message: str) -> str:
+            async def fake_run(message: str, variables: ContextValue | None = None) -> str:
                 assert team._multiplexer is not None
                 team._multiplexer.emit(
                     agent_id="leader",
@@ -1251,3 +1252,197 @@ class TestAgentTeamStopAll:
             await team.stop_all()
 
         asyncio.run(run())
+
+
+# --- TestAgentTeamVariables ---
+
+
+class TestAgentTeamVariables:
+    def test_variables_defaults_to_none(self):
+        team = make_team()
+        assert team._variables is None
+
+    def test_run_stores_variables(self):
+        async def _run():
+            engine = InMemoryDatabaseEngine()
+            await engine.setup_models(ALL_TEAM_MODELS)
+            team = make_team(engine=engine)
+            team._shared_sandbox_manager = MagicMock()
+
+            variables = ContextValue(
+                template={"date": "2026-03-04"},
+                runtime_vars={"api_key": "sk-test"},
+            )
+
+            mock_leader = MagicMock()
+            mock_leader.run_async = AsyncMock(return_value="done")
+            mock_leader.executor.force_stop = MagicMock()
+
+            with patch("nexau.archs.main_sub.team.agent_team._safe_deepcopy_config", side_effect=lambda c: c):
+                with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=mock_leader):
+                    await team.run("hello", variables=variables)
+
+            assert team._variables is variables
+
+        asyncio.run(_run())
+
+    def test_run_passes_variables_to_leader_run_async(self):
+        async def _run():
+            engine = InMemoryDatabaseEngine()
+            await engine.setup_models(ALL_TEAM_MODELS)
+            team = make_team(engine=engine)
+            team._shared_sandbox_manager = MagicMock()
+
+            variables = ContextValue(
+                template={"date": "2026-03-04"},
+            )
+
+            mock_leader = MagicMock()
+            mock_leader.run_async = AsyncMock(return_value="done")
+            mock_leader.executor.force_stop = MagicMock()
+
+            with patch("nexau.archs.main_sub.team.agent_team._safe_deepcopy_config", side_effect=lambda c: c):
+                with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=mock_leader):
+                    await team.run("hello", variables=variables)
+
+            mock_leader.run_async.assert_called_once()
+            call_kwargs = mock_leader.run_async.call_args[1]
+            assert call_kwargs["variables"] is variables
+
+        asyncio.run(_run())
+
+    def test_run_without_variables_passes_none(self):
+        async def _run():
+            engine = InMemoryDatabaseEngine()
+            await engine.setup_models(ALL_TEAM_MODELS)
+            team = make_team(engine=engine)
+            team._shared_sandbox_manager = MagicMock()
+
+            mock_leader = MagicMock()
+            mock_leader.run_async = AsyncMock(return_value="done")
+            mock_leader.executor.force_stop = MagicMock()
+
+            with patch("nexau.archs.main_sub.team.agent_team._safe_deepcopy_config", side_effect=lambda c: c):
+                with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=mock_leader):
+                    await team.run("hello")
+
+            call_kwargs = mock_leader.run_async.call_args[1]
+            assert call_kwargs["variables"] is None
+
+        asyncio.run(_run())
+
+    def test_spawn_teammate_passes_variables_to_agent_constructor(self):
+        async def _run():
+            engine = InMemoryDatabaseEngine()
+            await engine.setup_models(ALL_TEAM_MODELS)
+            team = make_team(engine=engine)
+            await team.initialize()
+            team._loop = MagicMock()
+
+            variables = ContextValue(
+                template={"user": "alice"},
+                sandbox_env={"WORKSPACE": "/tmp"},
+            )
+            team._variables = variables
+
+            new_future: Future[None] = Future()
+            with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()) as mock_agent_cls:
+                with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect(new_future)):
+                    await team.spawn_teammate("worker")
+
+            mock_agent_cls.assert_called_once()
+            call_kwargs = mock_agent_cls.call_args[1]
+            assert call_kwargs["variables"] is variables
+
+        asyncio.run(_run())
+
+    def test_run_teammate_forever_passes_variables_to_run_async(self):
+        async def _run():
+            engine = InMemoryDatabaseEngine()
+            await engine.setup_models(ALL_TEAM_MODELS)
+            team = make_team(engine=engine)
+            await team.initialize()
+
+            variables = ContextValue(template={"key": "value"})
+            team._variables = variables
+
+            member = TeamMemberModel(
+                user_id="u1",
+                session_id="s1",
+                team_id=team.team_id,
+                agent_id="worker-1",
+                member_session_id="s1:worker-1",
+                role_name="worker",
+                status="idle",
+            )
+            await engine.create(member)
+
+            agent = make_mock_agent(name="worker")
+            agent.run_async = AsyncMock(return_value="done")
+            team._teammate_agents["worker-1"] = agent
+
+            await team._run_teammate_forever("worker-1")
+
+            agent.run_async.assert_called_once()
+            call_kwargs = agent.run_async.call_args[1]
+            assert call_kwargs["variables"] is variables
+
+        asyncio.run(_run())
+
+    def test_restore_teammates_passes_variables_to_agent_constructor(self):
+        async def _run():
+            engine = InMemoryDatabaseEngine()
+            await engine.setup_models(ALL_TEAM_MODELS)
+            team = make_team(engine=engine)
+            await team.initialize()
+            team._loop = MagicMock()
+
+            variables = ContextValue(template={"env": "prod"})
+            team._variables = variables
+
+            member = TeamMemberModel(
+                user_id="u1",
+                session_id="s1",
+                team_id=team.team_id,
+                agent_id="worker-1",
+                member_session_id="s1:worker-1",
+                role_name="worker",
+                status="idle",
+            )
+            await engine.create(member)
+
+            new_future: Future[None] = Future()
+            with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()) as mock_agent_cls:
+                with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect(new_future)):
+                    await team._restore_teammates()
+
+            mock_agent_cls.assert_called_once()
+            call_kwargs = mock_agent_cls.call_args[1]
+            assert call_kwargs["variables"] is variables
+
+        asyncio.run(_run())
+
+    def test_run_streaming_passes_variables_through(self):
+        async def _run():
+            engine = InMemoryDatabaseEngine()
+            await engine.setup_models(ALL_TEAM_MODELS)
+            team = make_team(engine=engine)
+
+            variables = ContextValue(template={"mode": "stream"})
+            captured_variables: list[ContextValue | None] = []
+
+            async def fake_run(message: str, variables: ContextValue | None = None) -> str:
+                captured_variables.append(variables)
+                assert team._multiplexer is not None
+                team._multiplexer.close()
+                team._multiplexer = None
+                return "done"
+
+            with patch.object(team, "run", side_effect=fake_run):
+                async for _ in team.run_streaming("hello", variables=variables):
+                    pass
+
+            assert len(captured_variables) == 1
+            assert captured_variables[0] is variables
+
+        asyncio.run(_run())

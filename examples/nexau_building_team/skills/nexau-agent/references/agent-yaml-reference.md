@@ -49,7 +49,7 @@ llm_config:
 # Sandbox configuration
 sandbox_config:
   type: local                        # Sandbox type
-  _work_dir: ${env.SANDBOX_WORK_DIR} # Working directory for file/shell tools
+  work_dir: ${env.SANDBOX_WORK_DIR} # Working directory for file/shell tools
 
 # Tools
 tools:

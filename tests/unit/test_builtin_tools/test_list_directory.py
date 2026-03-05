@@ -39,7 +39,7 @@ class TestListDirectory:
     def setup_temp_dir(self):
         """Create a temporary directory structure for testing."""
         self.temp_dir = tempfile.mkdtemp(prefix="ls-tool-test-")
-        sandbox = LocalSandbox(sandbox_id="test", _work_dir=self.temp_dir)
+        sandbox = LocalSandbox(sandbox_id="test", work_dir=self.temp_dir)
         self.agent_state = _make_agent_state(sandbox)
         yield
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -167,7 +167,7 @@ class TestListDirectoryOutputFormat:
         with open(os.path.join(self.temp_dir, "test.txt"), "w") as f:
             f.write("test")
         os.makedirs(os.path.join(self.temp_dir, "subdir"))
-        sandbox = LocalSandbox(sandbox_id="test", _work_dir=self.temp_dir)
+        sandbox = LocalSandbox(sandbox_id="test", work_dir=self.temp_dir)
         self.agent_state = _make_agent_state(sandbox)
         yield
         shutil.rmtree(self.temp_dir, ignore_errors=True)

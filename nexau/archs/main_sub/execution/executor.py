@@ -216,6 +216,8 @@ class Executor:
         self.team_mode = team_mode
         self._message_available = threading.Event()
         self._is_idle = False  # True when waiting for messages in team_mode
+        self._is_waiting_for_user = False  # True when idle due to ask_user stop tool
+        self._last_stop_tool_name: str | None = None  # 最近触发 stop 的工具名
 
     def _sync_context_overflow_policies(self) -> None:
         """Read overflow-control switches from middleware configuration when available."""
@@ -312,6 +314,20 @@ class Executor:
         return self._is_idle
 
     @property
+    def is_waiting_for_user(self) -> bool:
+        """Check if executor is idle because it's waiting for user response (ask_user).
+
+        RFC-0002: 区分 ask_user 导致的 idle 与普通 idle，
+        避免 watchdog 误报全员空闲。
+        """
+        return self._is_waiting_for_user
+
+    def _mark_waiting_for_user(self) -> None:
+        """Set waiting-for-user flag if the last stop tool was ask_user."""
+        if self._last_stop_tool_name == "ask_user":
+            self._is_waiting_for_user = True
+
+    @property
     def execution_done_event(self) -> threading.Event:
         """Public accessor for the _execution_done event.
 
@@ -333,6 +349,7 @@ class Executor:
             self._message_available.clear()
             self._message_available.wait(timeout=30)
         self._is_idle = False
+        self._is_waiting_for_user = False
         return not self.stop_signal
 
     def enqueue_message(self, message: dict[str, str]) -> None:
@@ -672,13 +689,22 @@ class Executor:
 
                 # Check if a stop tool was executed
                 if should_stop and len(self.queued_messages) == 0:
-                    # RFC-0002: team_mode 下，任何 should_stop（包括 stop_tool）都不退出，
-                    # 而是持续等待新消息到达后再继续循环。
-                    # 必须在循环中等待，避免超时后以 assistant 消息结尾调用 LLM。
+                    # RFC-0002: team_mode 下，仅「无更多 tool call」时继续等待，
+                    # stop_tool（如 finish_team）显式调用时必须退出。
                     if self.team_mode:
+                        # stop_tool 显式触发时，即使在 team_mode 下也必须退出
+                        if stop_tool_result is not None:
+                            logger.info(
+                                "🛑 Stop tool detected in team_mode, exiting executor loop",
+                            )
+                            force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
+                            final_response = stop_tool_result
+                            break
                         # RFC-0002: team_mode 下无限等待新消息，不设超时。
                         # Leader 需要等待 teammate 完成工作（可能远超 120s），
                         # watchdog 负责检测全员空闲并唤醒 leader。
+                        # 标记 ask_user 导致的 idle，避免 watchdog 误报全员空闲
+                        self._mark_waiting_for_user()
                         # Sync messages back to HistoryList before blocking wait
                         if isinstance(_origin_history, HistoryList):
                             _origin_history.replace_all(messages)
@@ -1132,6 +1158,7 @@ class Executor:
                                     parsed_result_dict = cast(dict[str, Any], parsed_result)
                                     if parsed_result_dict.get("_is_stop_tool"):
                                         stop_tool_detected = True
+                                        self._last_stop_tool_name = tool_name
                                         actual_result: dict[str, Any] = {
                                             key: value for key, value in parsed_result_dict.items() if key != "_is_stop_tool"
                                         }

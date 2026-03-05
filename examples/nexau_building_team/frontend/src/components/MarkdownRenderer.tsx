@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import mermaid from "mermaid";
 import "highlight.js/styles/github.css";
@@ -265,19 +266,22 @@ function InlineCode({ children }: { children?: React.ReactNode }) {
 }
 
 // 4. 主组件
-export function MarkdownRenderer({ content }: { content: string }) {
+export function MarkdownRenderer({ content, inline }: { content: string; inline?: boolean }) {
   return (
     <div style={mdStyles.root}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        remarkPlugins={inline ? [remarkBreaks] : [remarkGfm, remarkBreaks]}
+        rehypePlugins={inline ? [] : [rehypeHighlight]}
         components={{
+          ...(inline
+            ? { p({ children }) { return <span>{children}</span>; } }
+            : {}),
           pre({ children }) {
             return <>{children}</>;
           },
           code({ className, children }) {
             const isInline = !className && !extractText(children).includes("\n");
-            if (isInline) {
+            if (isInline || inline) {
               return <InlineCode>{children}</InlineCode>;
             }
             return (

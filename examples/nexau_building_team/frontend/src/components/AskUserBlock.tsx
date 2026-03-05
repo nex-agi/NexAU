@@ -8,7 +8,7 @@ function normalizeNewlines(text: string | undefined): string {
   return text.replace(/\\n/g, "\n");
 }
 
-interface AskUserQuestion {
+export interface AskUserQuestion {
   question: string;
   header: string;
   type?: "choice" | "text" | "yesno";
@@ -55,7 +55,10 @@ export function AskUserBlock({
         parts.push(`${label}: ${ans}`);
       }
     }
-    if (parts.length === 0) return;
+    if (parts.length === 0) {
+      // 允许未回答任何问题时提交，发送 "(no answer)" 占位
+      parts.push("(no answer)");
+    }
     submittingRef.current = true;
     const message =
       questions.length === 1 ? parts[0] : parts.join("\n");
@@ -73,7 +76,7 @@ export function AskUserBlock({
         </div>
 
         {questions.map((q, i) => {
-          const qType = q.type || "choice";
+          const qType = q.type || (q.options && q.options.length > 0 ? "choice" : "text");
           return (
             <div key={i} style={styles.questionBlock}>
               <div style={styles.qHeader}>{q.header}</div>
@@ -132,7 +135,7 @@ export function AskUserBlock({
       </div>
 
       {questions.map((q, i) => {
-        const qType = q.type || "choice";
+        const qType = q.type || (q.options && q.options.length > 0 ? "choice" : "text");
         return (
           <div key={i} style={styles.questionBlock}>
             <div style={styles.qHeader}>{q.header}</div>
@@ -142,6 +145,7 @@ export function AskUserBlock({
             )}
             {qType === "choice" && q.options && (
               <ChoiceInput
+                key={i}
                 options={q.options}
                 multiSelect={q.multiSelect ?? false}
                 value={answers[i]}
@@ -287,9 +291,9 @@ function ChoiceInput({
               ...(disabled ? { cursor: "default" } : {}),
             }}
           >
-            <span style={styles.optLabel}>{opt.label}</span>
+            <span style={styles.optLabel}><MarkdownRenderer content={normalizeNewlines(opt.label)} inline /></span>
             {opt.description && (
-              <span style={styles.optDesc}>{opt.description}</span>
+              <span style={styles.optDesc}><MarkdownRenderer content={normalizeNewlines(opt.description)} inline /></span>
             )}
           </button>
         );

@@ -109,6 +109,27 @@ curl -X POST http://localhost:8000/team/stream \
   -d '{"user_id": "u1", "session_id": "s1", "message": "Build a TODO app"}'
 ```
 
+You can also pass runtime context variables via the `variables` field. These are applied to the leader and all spawned teammates:
+
+```bash
+curl -X POST http://localhost:8000/team/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "u1",
+    "session_id": "s1",
+    "message": "Build a TODO app",
+    "variables": {
+      "template": {"date": "2026-03-04", "username": "alice"},
+      "runtime_vars": {"api_key": "sk-..."},
+      "sandbox_env": {"WORKSPACE": "/tmp/project"}
+    }
+  }'
+```
+
+- **`template`**: Jinja2 variables injected into system prompts (e.g. `{{ date }}`). Accessible via `agent_state.get_context_value()`.
+- **`runtime_vars`**: Runtime variables NOT injected into prompts. Accessible via `agent_state.get_variable()`.
+- **`sandbox_env`**: Environment variables injected into the shared sandbox.
+
 The response is an SSE stream where each event is a `TeamStreamEnvelope`:
 
 ```
@@ -156,6 +177,26 @@ print(result)
 
 `run()` calls `initialize()` internally, so you don't need to call it yourself. The method blocks until the leader calls `finish_team`, then returns the leader's final response as a string.
 
+#### Passing Context Variables
+
+You can pass a `ContextValue` to inject runtime variables into the leader and all teammates:
+
+```python
+from nexau.archs.main_sub.context_value import ContextValue
+
+variables = ContextValue(
+    template={"date": "2026-03-04", "username": "alice"},
+    runtime_vars={"api_key": "sk-..."},
+    sandbox_env={"WORKSPACE": "/tmp/project"},
+)
+
+result = asyncio.run(team.run(message="Build a TODO app", variables=variables))
+```
+
+- **`template`** values are rendered in system prompt Jinja2 templates (e.g. `{{ date }}`).
+- **`runtime_vars`** are accessible in tools via `agent_state.get_variable("api_key")` but NOT injected into prompts.
+- **`sandbox_env`** are injected as environment variables in the shared sandbox.
+
 ### Streaming
 
 `run_streaming()` returns an async generator of `TeamStreamEnvelope` objects — the same envelope format used by the HTTP SSE endpoint:
@@ -168,6 +209,16 @@ async def main() -> None:
         print(f"[{envelope.role_name}:{envelope.agent_id}] {envelope.event}")
 
 asyncio.run(main())
+```
+
+`run_streaming()` also accepts `variables`:
+
+```python
+async for envelope in team.run_streaming(
+    message="Build a TODO app",
+    variables=ContextValue(template={"date": "2026-03-04"}),
+):
+    print(f"[{envelope.role_name}:{envelope.agent_id}] {envelope.event}")
 ```
 
 You can also pass an `on_envelope` callback for side-effects like persistence:

@@ -30,6 +30,7 @@ A high-quality RFC is a tool for alignment and architectural decision-making. Yo
 1. 用中文回复、用中文写文档
 2. 当你画 mermaid 的时候，尽量用""把文字内容包起来，防止特殊转义冲突
 3. NexAU 自带的read_file读文件的工具就支持读图片、视频给模型，不需要再实现额外的工具解析视频、图片。
+4. 不要自己去读图片或视频，太消耗上下文了
 
 Date: {{ date }}
 Username: {{ username }}

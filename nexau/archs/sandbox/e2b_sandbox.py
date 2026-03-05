@@ -108,7 +108,7 @@ class E2BSandbox(BaseSandbox):
     """
 
     default_user: str = field(default="user")
-    _work_dir: str = field(default=E2B_DEFAULT_WORK_DIR)
+    work_dir: str | Path | None = field(default=E2B_DEFAULT_WORK_DIR)
     envd_version: str | None = field(default=None)
     _api_key: str | None = field(default=None, repr=False)
     _api_url: str | None = field(default=None, repr=False)
@@ -1238,10 +1238,15 @@ class E2BSandbox(BaseSandbox):
                         root_dir = ("/" if search_dir.startswith("/") else "") + "/".join(root_parts) or "."
                         # Reconstruct the full path pattern (strip trailing slash)
                         full_pattern = pattern.rstrip("/")
+                        # Limit search depth to avoid full filesystem traversal
+                        # when root_dir is "/" (e.g. pattern "//foo*/bar.py"
+                        # after normalization becomes "/foo*/bar.py" with root "/").
+                        depth = len(full_pattern.strip("/").split("/"))
+                        maxdepth = f" -maxdepth {depth}" if root_dir == "/" else ""
                         if file_pattern:
-                            cmd = f'find "{root_dir}" -path "{full_pattern}" 2>/dev/null'
+                            cmd = f'find "{root_dir}"{maxdepth} -path "{full_pattern}" 2>/dev/null'
                         else:
-                            cmd = f'find "{root_dir}" -type d -path "{full_pattern}" -print 2>/dev/null'
+                            cmd = f'find "{root_dir}"{maxdepth} -type d -path "{full_pattern}" -print 2>/dev/null'
                     else:
                         cmd = f'find "{search_dir}" -name "{file_pattern}" 2>/dev/null || true'
                 else:
@@ -1536,7 +1541,7 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
     """
 
     # E2B configuration fields
-    _work_dir: str = field(default=E2B_DEFAULT_WORK_DIR)
+    work_dir: str | Path = field(default=E2B_DEFAULT_WORK_DIR)
     template: str = field(default_factory=lambda: os.getenv("E2B_TEMPLATE", "base"))
     timeout: int = field(default_factory=lambda: int(os.getenv("E2B_TIMEOUT", "300")))
     api_key: str | None = field(default_factory=lambda: os.getenv("E2B_API_KEY"))
@@ -1685,7 +1690,7 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
                 envd_ver = e2b_sandbox_raw._envd_version
 
                 sandbox = E2BSandbox(
-                    _work_dir=sandbox_config.work_dir,
+                    work_dir=sandbox_config.work_dir,
                     output_char_threshold=sandbox_config.output_char_threshold,
                     truncate_head_chars=sandbox_config.truncate_head_chars,
                     truncate_tail_chars=sandbox_config.truncate_tail_chars,
@@ -1766,7 +1771,7 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
 
         # Create our wrapper instance
         sandbox = E2BSandbox(
-            _work_dir=sandbox_config.work_dir,
+            work_dir=sandbox_config.work_dir,
             output_char_threshold=sandbox_config.output_char_threshold,
             truncate_head_chars=sandbox_config.truncate_head_chars,
             truncate_tail_chars=sandbox_config.truncate_tail_chars,

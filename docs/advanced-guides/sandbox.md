@@ -103,7 +103,7 @@ llm_config:
 
 sandbox_config:
   type: local
-  _work_dir: /path/to/working/directory # Optional, default to current directory
+  work_dir: /path/to/working/directory # Optional, default to current directory
   persist_sandbox: true  # Optional, default to true. If false, sandbox is destroyed after agent.run
 ```
 
@@ -114,7 +114,7 @@ For production use with E2B sandboxes:
 ```yaml
 sandbox_config:
   type: e2b
-  _work_dir: /home/user # Optional, default to `/home/user` in E2B
+  work_dir: /home/user # Optional, default to `/home/user` in E2B
   template: base  # E2B template name, default to "base"
   timeout: 300    # Timeout in seconds, default to 300
   api_key: ${env.E2B_API_KEY}  # Use environment variable
@@ -223,7 +223,7 @@ When `start()` is called after a pause:
    ```python
    session = await session_manager.get_session(user_id, session_id)
    if session and session.sandbox_state:
-       return session.sandbox_state  # Contains sandbox_id, _work_dir, etc.
+       return session.sandbox_state  # Contains sandbox_id, work_dir, etc.
    ```
 
 2. **Attempt Restoration**: If state exists, try to restore the sandbox:
@@ -833,7 +833,7 @@ Configure your agent to use the custom sandbox:
 sandbox_config:
   type: custom
   custom_param: my_value
-  _work_dir: /path/to/workdir
+  work_dir: /path/to/workdir
 ```
 
 Or programmatically:
@@ -902,8 +902,8 @@ The `BaseSandbox` abstract class defines the core interface that all sandbox imp
 #### Attributes
 
 - **`sandbox_id`** (`str | None`): Unique identifier for the sandbox instance
-- **`_work_dir`** (`str`): Working directory path in the sandbox (default: current directory)
-- **`work_dir`** (`Path`): Property that returns `_work_dir` as a `Path` object
+- **`work_dir`** (`str`): Working directory path in the sandbox (default: current directory)
+- **`work_dir`** (`Path`): Property that returns `work_dir` as a `Path` object
 
 #### Command Execution Methods
 

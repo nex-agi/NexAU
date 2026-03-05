@@ -31,6 +31,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from nexau.archs.main_sub.context_value import ContextValue
 from nexau.archs.main_sub.team.sse.envelope import TeamStreamEnvelope
 from nexau.archs.transports.http.team_registry import TeamRegistry
 
@@ -46,6 +47,7 @@ class TeamRunRequest(BaseModel):
     user_id: str
     session_id: str
     message: str
+    variables: ContextValue | None = None
 
 
 class TeamStreamEnvelopeResponse(BaseModel):
@@ -159,7 +161,7 @@ def create_team_router(
 
         async def event_generator() -> AsyncGenerator[str, None]:
             try:
-                async for envelope in team.run_streaming(request.message, on_envelope=envelope_cb):
+                async for envelope in team.run_streaming(request.message, on_envelope=envelope_cb, variables=request.variables):
                     response = TeamStreamEnvelopeResponse(
                         type="team_event",
                         envelope=envelope.model_dump(),
@@ -203,7 +205,7 @@ def create_team_router(
         """
         team = registry.get_or_create(request.user_id, request.session_id)
         try:
-            result = await team.run(request.message)
+            result = await team.run(request.message, variables=request.variables)
             return {"session_id": request.session_id, "result": result}
         finally:
             registry.remove(request.user_id, request.session_id)

@@ -8,27 +8,33 @@ max_context_tokens: 200000
 system_prompt: ./systemprompt_rfc_writer.md
 system_prompt_type: jinja
 tool_call_mode: openai
-max_iterations: 80
+# tool_call_mode: anthropic
+max_iterations: 10000
 
 llm_config:
   model: ${env.LLM_MODEL}
   base_url: ${env.LLM_BASE_URL}
   api_key: ${env.LLM_API_KEY}
   max_tokens: 16000
-  # temperature: 0.3
   stream: true
+
+  # temperature: 1
+  # api_type: anthropic_chat_completion
+  # thinking:
+  #   type: "enabled"
+  #   budget_tokens: 1024
+
+  # api_type: openai_chat_completion
+
   api_type: openai_responses
   reasoning:
     effort: "medium"
     summary: "detailed"
+
   # api_type: gemini_rest
   # thinking_budget: -1
   # include_thoughts: true
 
-
-sandbox_config:
-  type: local
-  _work_dir: ${env.SANDBOX_WORK_DIR}
 
 # RFC Writer needs read/write/search tools + teammate tools (injected).
 tools:

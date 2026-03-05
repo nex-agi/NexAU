@@ -1199,6 +1199,7 @@ class TeamRunRequest(BaseModel):
     user_id: str
     session_id: str
     message: str
+    variables: ContextValue | None = None  # 运行时上下文变量（模板、运行时变量、沙箱环境变量）
 
 
 class TeamStreamEnvelopeResponse(BaseModel):
@@ -1265,7 +1266,7 @@ async def team_stream(request: TeamRunRequest) -> StreamingResponse:
 
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
-            async for envelope in team.run_streaming(request.message):
+            async for envelope in team.run_streaming(request.message, variables=request.variables):
                 response = TeamStreamEnvelopeResponse(
                     type="team_event",
                     envelope=envelope.model_dump(),
@@ -1298,7 +1299,8 @@ async def team_stream(request: TeamRunRequest) -> StreamingResponse:
 ```python
 # 1. 用户发起 team 请求
 # POST /team/stream
-# { "user_id": "u1", "session_id": "s1", "message": "实现一个 TODO 应用" }
+# { "user_id": "u1", "session_id": "s1", "message": "实现一个 TODO 应用",
+#   "variables": {"template": {"date": "2026-03-04"}} }
 
 # 2. Leader 分析任务，按需 spawn teammates（此时 team 内无任何 teammate）
 spawn_teammate(role_name="coder")

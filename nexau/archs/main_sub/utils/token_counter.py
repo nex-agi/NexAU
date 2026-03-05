@@ -46,7 +46,7 @@ TIKTOKEN_AVAILABLE: Final[bool] = _tiktoken is not None
 class TokenCounter:
     """Handles token counting for UMP messages."""
 
-    def __init__(self, strategy: str = "tiktoken", model: str = "gpt-4o"):
+    def __init__(self, strategy: str = "fallback", model: str = "gpt-4o"):
         """Initialize token counter with specified strategy.
 
         Args:

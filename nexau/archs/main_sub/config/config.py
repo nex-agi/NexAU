@@ -154,6 +154,8 @@ class AgentConfig(
                 "Overrides will be removed in the v0.4.0, instead use agent_config = "
                 "AgentConfig.from_yaml(...) then agent_config.key = value for "
                 "overrides.",
+                DeprecationWarning,
+                stacklevel=2,
             )
 
         agent_config_schema = AgentConfigSchema.from_yaml(str(config_path), overrides)

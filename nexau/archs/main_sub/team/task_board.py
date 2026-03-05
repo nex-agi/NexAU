@@ -164,12 +164,14 @@ class TaskBoard:
         priority: int = 0,
         dependencies: list[str] | None = None,
         created_by: str = "",
+        task_id: str | None = None,
     ) -> TaskInfo:
         """Create a new task on the board.
 
         RFC-0002: 创建任务（含交付物路径生成）
         """
-        task_id = await self._next_task_id()
+        if task_id is None:
+            task_id = await self._next_task_id()
         # 生成交付物文件路径
         slug = _slugify(title)
         deliverable_path = f".nexau/tasks/{task_id}-{slug}.md"

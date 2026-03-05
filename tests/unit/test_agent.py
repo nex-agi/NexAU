@@ -22,6 +22,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from nexau import Agent, AgentConfig
+from nexau.archs.main_sub.context_value import ContextValue
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
@@ -567,7 +568,7 @@ class TestAgent:
 
                 response = agent.run(
                     message="Message",
-                    context={"runtime_ctx": "value"},
+                    variables=ContextValue(template={"runtime_ctx": "value"}),
                     state={"runtime_state": "value"},
                     config={"runtime_config": "value"},
                 )

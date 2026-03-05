@@ -77,6 +77,7 @@ class LocalSandboxConfig(BaseSandboxConfig):
     """Configuration for local sandbox (no isolation, runs on host)."""
 
     type: Literal["local"] = "local"
+    work_dir: str = Field(default_factory=lambda: os.environ.get("SANDBOX_WORK_DIR", os.getcwd()))
 
 
 class E2BSandboxConfig(BaseSandboxConfig):
@@ -87,6 +88,7 @@ class E2BSandboxConfig(BaseSandboxConfig):
     """
 
     type: Literal["e2b"] = "e2b"
+    work_dir: str = E2B_DEFAULT_WORK_DIR
     # API credentials
     api_url: str | None = None
     api_key: str | None = None
@@ -122,11 +124,6 @@ def parse_sandbox_config(
     raw = dict(raw)  # shallow copy to avoid mutating caller's dict
     if "type" not in raw:
         raw["type"] = "local"
-    # _work_dir → work_dir compatibility mapping
-    if "_work_dir" in raw and "work_dir" not in raw:
-        raw["work_dir"] = raw.pop("_work_dir")
-    elif "_work_dir" in raw:
-        raw.pop("_work_dir")
     return _sandbox_config_adapter.validate_python(raw)
 
 
@@ -322,7 +319,7 @@ class BaseSandbox(ABC):
 
     sandbox_id: str | None = field(default=None)
     envs: dict[str, str] = field(default_factory=lambda: {})
-    _work_dir: str = field(default_factory=os.getcwd)
+    work_dir: str | Path | None = field(default=None)
     # Smart truncation settings (propagated from SandboxConfig)
     output_char_threshold: int = field(default=DEFAULT_OUTPUT_CHAR_THRESHOLD)
     truncate_head_chars: int = field(default=TRUNCATE_HEAD_CHARS)
@@ -333,9 +330,9 @@ class BaseSandbox(ABC):
         init=False,
     )
 
-    @property
-    def work_dir(self):
-        return Path(self._work_dir)
+    def __post_init__(self):
+        if self.work_dir is not None and not isinstance(self.work_dir, Path):
+            self.work_dir = Path(self.work_dir)
 
     def _merge_envs(self, per_call_envs: dict[str, str] | None = None) -> dict[str, str] | None:
         """Merge instance-level envs with per-call envs.
@@ -737,7 +734,9 @@ class BaseSandbox(ABC):
 
     def upload_skill(self, skill: Skill):
         local_folder = skill.folder
-        sandbox_folder = self.work_dir / ".skills" / os.path.basename(local_folder)
+        if self.work_dir is None:
+            raise SandboxError("work_dir is not set")
+        sandbox_folder = Path(self.work_dir) / ".skills" / os.path.basename(local_folder)
         self.create_directory(str(sandbox_folder))
         self.upload_directory(str(local_folder), str(sandbox_folder))
         return str(sandbox_folder)
@@ -789,7 +788,7 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
     Abstract base class for sandbox manager.
     """
 
-    _work_dir: str = field(default_factory=os.getcwd)
+    work_dir: str | Path = field(default_factory=os.getcwd)
     start_future: Future[None] | None = field(default=None, init=False)
     pause_future: Future[None] | None = field(default=None, init=False)
     _session_context: dict[str, Any] = field(default_factory=dict, init=False)  # type: ignore
@@ -800,9 +799,9 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
     )
     _start_lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
-    @property
-    def work_dir(self):
-        return Path(self._work_dir)
+    def __post_init__(self):
+        if not isinstance(self.work_dir, Path):
+            self.work_dir = Path(self.work_dir)
 
     @property
     def session_context(self) -> dict[str, Any]:

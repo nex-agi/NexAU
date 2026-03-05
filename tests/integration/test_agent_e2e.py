@@ -63,32 +63,44 @@ class TestAgentMultiTurnConversation:
 
     @pytest.mark.llm
     def test_multi_turn_conversation_remembers_context(self, session_manager, agent_config):
-        """Test that agent remembers context across multiple turns."""
+        """Test that agent remembers context across multiple turns.
+
+        Uses run_async within a single event loop so that fire-and-forget
+        persistence tasks from turn 1 complete before turn 2 loads history.
+        """
         user_id = "test_user"
         session_id = "test_session"
 
-        # Turn 1: Tell the agent something
-        agent1 = Agent(
-            config=agent_config,
-            session_manager=session_manager,
-            user_id=user_id,
-            session_id=session_id,
-        )
-        response1 = agent1.run(message="My name is Alice.")
-        assert isinstance(response1, str)
-        assert len(response1) > 0
+        async def _run() -> str:
+            # Turn 1: Tell the agent something
+            agent1 = Agent(
+                config=agent_config,
+                session_manager=session_manager,
+                user_id=user_id,
+                session_id=session_id,
+            )
+            response1 = await agent1.run_async(message="My name is Alice.")
+            response1_str = response1 if isinstance(response1, str) else response1[0]
+            assert isinstance(response1_str, str)
+            assert len(response1_str) > 0
 
-        # Turn 2: Ask the agent to recall (new Agent instance, same session)
-        agent2 = Agent(
-            config=agent_config,
-            session_manager=session_manager,
-            user_id=user_id,
-            session_id=session_id,
-        )
-        response2 = agent2.run(message="What is my name?")
-        assert isinstance(response2, str)
+            # Yield control to let fire-and-forget persistence tasks complete
+            await asyncio.sleep(0.1)
+
+            # Turn 2: Ask the agent to recall (new Agent instance, same session)
+            agent2 = Agent(
+                config=agent_config,
+                session_manager=session_manager,
+                user_id=user_id,
+                session_id=session_id,
+            )
+            response2 = await agent2.run_async(message="What is my name?")
+            return response2 if isinstance(response2, str) else response2[0]
+
+        result = asyncio.run(_run())
+        assert isinstance(result, str)
         # Agent should remember the name from previous turn
-        assert "Alice" in response2 or "alice" in response2.lower()
+        assert "Alice" in result or "alice" in result.lower()
 
     @pytest.mark.llm
     def test_different_sessions_are_isolated(self, session_manager, agent_config):

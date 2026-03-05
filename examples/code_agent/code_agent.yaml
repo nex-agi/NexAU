@@ -19,11 +19,7 @@ llm_config: # Support environment variable replacement in YAML config
   output_config:
     effort: medium
   # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
-# Sandbox for file/shell tools.
-# Set SANDBOX_WORK_DIR env before running, e.g. export SANDBOX_WORK_DIR=/tmp/code_agent_work
-sandbox_config:
-  type: local
-  _work_dir: ${env.SANDBOX_WORK_DIR}
+
 tools: # Builtin tools (nexau.archs.tool.builtin)
   # File operations
   - name: read_file

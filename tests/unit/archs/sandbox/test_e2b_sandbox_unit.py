@@ -215,13 +215,13 @@ class TestResolvePath:
 
     def _make_sandbox(self, monkeypatch: pytest.MonkeyPatch, work_dir: str = "/home/user") -> E2BSandbox:
         _enable_fake_e2b(monkeypatch)
-        return E2BSandbox(sandbox_id="sbx", _work_dir=work_dir)
+        return E2BSandbox(sandbox_id="sbx", work_dir=work_dir)
 
     def test_absolute_path_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
         sandbox = self._make_sandbox(monkeypatch)
         assert sandbox._resolve_path("/etc/hosts") == "/etc/hosts"
 
-    def test_relative_path_resolved_against_work_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_relative_path_resolved_againstwork_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
         sandbox = self._make_sandbox(monkeypatch)
         assert sandbox._resolve_path("project/main.py") == "/home/user/project/main.py"
 
@@ -237,7 +237,7 @@ class TestResolvePath:
         sandbox = self._make_sandbox(monkeypatch)
         assert sandbox._resolve_path("./file.txt") == "/home/user/./file.txt"
 
-    def test_custom_work_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_customwork_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
         sandbox = self._make_sandbox(monkeypatch, work_dir="/workspace")
         assert sandbox._resolve_path("src/app.py") == "/workspace/src/app.py"
 

@@ -39,7 +39,7 @@ class TestReplace:
     def setup_temp_dir(self):
         """Create a temporary directory with test files."""
         self.temp_dir = tempfile.mkdtemp(prefix="replace-tool-test-")
-        self.sandbox = LocalSandbox(sandbox_id="test", _work_dir=self.temp_dir)
+        self.sandbox = LocalSandbox(sandbox_id="test", work_dir=self.temp_dir)
         self.agent_state = _make_agent_state(self.sandbox)
         yield
         shutil.rmtree(self.temp_dir, ignore_errors=True)

@@ -21,7 +21,7 @@ llm_config:
 
 sandbox_config:
   type: local
-  _work_dir: ${env.SANDBOX_WORK_DIR}
+  work_dir: ${env.SANDBOX_WORK_DIR}
 
 tools:
   # File operations

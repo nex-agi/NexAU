@@ -77,7 +77,7 @@ def _section(title: str) -> None:
 
 
 def _create_sandbox(work_dir: str) -> LocalSandbox:
-    return LocalSandbox(_work_dir=work_dir)
+    return LocalSandbox(work_dir=work_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +304,7 @@ def test_custom_threshold(work_dir: str) -> None:
 
     # 小阈值 (100) — 一定触发截断
     small_sandbox = LocalSandbox(
-        _work_dir=work_dir,
+        work_dir=work_dir,
         output_char_threshold=100,
         truncate_head_chars=30,
         truncate_tail_chars=30,
@@ -315,7 +315,7 @@ def test_custom_threshold(work_dir: str) -> None:
 
     # 大阈值 (100000) — 不会触发截断
     big_sandbox = LocalSandbox(
-        _work_dir=work_dir,
+        work_dir=work_dir,
         output_char_threshold=100000,
         truncate_head_chars=50000,
         truncate_tail_chars=50000,

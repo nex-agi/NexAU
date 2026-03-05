@@ -50,7 +50,7 @@ export type ContentBlock =
   | { kind: "text"; content: string }
   | { kind: "thinking"; content: string }
   | ToolCallBlock
-  | { kind: "user_message"; content: string }
+  | { kind: "user_message"; from?: string; content: string }
   | { kind: "team_message"; from: string; content: string }
   | { kind: "error"; message: string };
 
@@ -72,6 +72,9 @@ export interface TaskInfo {
   dependencies: string[];
   assignee_agent_id: string | null;
   result_summary: string | null;
+  deliverable_path: string | null;
   created_by: string;
   is_blocked: boolean;
+  created_at: string | null;
+  updated_at: string | null;
 }

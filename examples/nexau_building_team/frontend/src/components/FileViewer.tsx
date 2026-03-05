@@ -172,9 +172,11 @@ interface FileContent {
 
 interface FileViewerProps {
   filePath: string | null;
+  /** Mock 模式：直接提供文件内容映射，跳过 API 请求 */
+  mockFiles?: Record<string, FileContent>;
 }
 
-export function FileViewer({ filePath }: FileViewerProps) {
+export function FileViewer({ filePath, mockFiles }: FileViewerProps) {
   const [file, setFile] = useState<FileContent | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -189,6 +191,18 @@ export function FileViewer({ filePath }: FileViewerProps) {
     let cancelled = false;
     setLoading(true);
     setError(null);
+
+    // Mock 模式：直接从 mockFiles 查找
+    if (mockFiles) {
+      const mockFile = mockFiles[filePath];
+      if (mockFile) {
+        setFile(mockFile);
+      } else {
+        setError("File not found in mock data");
+      }
+      setLoading(false);
+      return;
+    }
 
     fetch(`/files/content?path=${encodeURIComponent(filePath)}`)
       .then((res) => {
@@ -206,7 +220,7 @@ export function FileViewer({ filePath }: FileViewerProps) {
       });
 
     return () => { cancelled = true; };
-  }, [filePath]);
+  }, [filePath, mockFiles]);
 
   // 语法高亮
   useEffect(() => {
