@@ -4,7 +4,7 @@
 read_file tool - Reads and returns the content of a specified text file.
 
 Based on gemini-cli's read-file.ts implementation.
-Handles text and PDF files only. For images and videos, use read_visual_file.
+Handles text files only. For images and videos, use read_visual_file.
 """
 
 import logging
