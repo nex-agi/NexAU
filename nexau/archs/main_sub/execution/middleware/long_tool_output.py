@@ -134,7 +134,14 @@ class LongToolOutputMiddleware(Middleware):
         # so line-based truncation operates on the actual text content rather
         # than the JSON serialization of the whole dict.
         content_key, content_text = self._extract_content_text(output)
-        output_text = self._serialize(output)
+
+        # Exclude returnDisplay from length measurement — it is a display-only
+        # field stripped by the tool executor before being sent to the LLM, so
+        # it should not inflate the size check or trigger unnecessary truncation.
+        output_for_measurement: object = output
+        if isinstance(output_for_measurement, dict) and "returnDisplay" in output_for_measurement:
+            output_for_measurement = {k: v for k, v in cast("dict[str, object]", output_for_measurement).items() if k != "returnDisplay"}
+        output_text = self._serialize(cast("object", output_for_measurement))
 
         if len(output_text) <= self.max_output_chars:
             return HookResult.no_changes()

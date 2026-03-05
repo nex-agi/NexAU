@@ -122,6 +122,24 @@ class TestShortOutput:
         assert not result.has_modifications()
         mock_sandbox.write_file.assert_not_called()
 
+    def test_large_return_display_excluded_from_length_measurement(self, agent_state: AgentState, mock_sandbox):
+        """returnDisplay is a display-only field stripped before sending to the LLM.
+
+        A large returnDisplay should not inflate the size check and trigger
+        unnecessary truncation when the actual content is small.
+        """
+        small_content = "small result"
+        huge_display = "x" * 50_000  # way over any reasonable threshold
+        output = {"content": small_content, "returnDisplay": huge_display}
+        mw = LongToolOutputMiddleware(max_output_chars=1000)
+        hook_input = _make_hook_input(agent_state, output, sandbox=mock_sandbox)
+
+        result = mw.after_tool(hook_input)
+
+        # Should NOT truncate — content itself is tiny
+        assert not result.has_modifications()
+        mock_sandbox.write_file.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Long output – truncation
@@ -176,6 +194,32 @@ class TestLongOutput:
         assert isinstance(new_output, dict)
         # returnDisplay should be preserved
         assert new_output["returnDisplay"] == "display text"
+        # content should be truncated
+        assert "lines omitted" in new_output["content"]
+        assert "LongToolOutputMiddleware" in new_output["content"]
+
+    def test_dict_with_large_return_display_does_not_distort_measurement(self, agent_state: AgentState, mock_sandbox):
+        """When both content and returnDisplay are large, the truncation
+        threshold and stats should be based on content alone, not on the
+        combined serialization that includes returnDisplay.
+        """
+        long_content = _long_text(200)
+        huge_display = "D" * 100_000
+        output = {"content": long_content, "returnDisplay": huge_display}
+        mw = LongToolOutputMiddleware(
+            max_output_chars=100,
+            head_lines=5,
+            tail_lines=5,
+        )
+        hook_input = _make_hook_input(agent_state, output, sandbox=mock_sandbox)
+
+        result = mw.after_tool(hook_input)
+
+        assert result.has_modifications()
+        new_output = result.tool_output
+        assert isinstance(new_output, dict)
+        # returnDisplay must be preserved unchanged
+        assert new_output["returnDisplay"] == huge_display
         # content should be truncated
         assert "lines omitted" in new_output["content"]
         assert "LongToolOutputMiddleware" in new_output["content"]

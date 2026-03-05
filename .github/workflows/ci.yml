@@ -97,6 +97,17 @@ jobs:
           exit 1
         fi
 
+    - name: Debug environment
+      run: |
+        echo "=== Python version ==="
+        python --version
+        echo "=== greenlet check ==="
+        uv run python -c "import greenlet; print(f'greenlet {greenlet.__version__} OK')" || echo "GREENLET NOT AVAILABLE"
+        echo "=== aiosqlite check ==="
+        uv run python -c "import aiosqlite; print('aiosqlite OK')" || echo "AIOSQLITE NOT AVAILABLE"
+        echo "=== uv pip list (relevant) ==="
+        uv run pip list 2>/dev/null | grep -iE "greenlet|sqlalchemy|aiosqlite|sqlmodel" || true
+
     - name: Run tests with coverage (E2B SaaS)
       timeout-minutes: 20
       env:

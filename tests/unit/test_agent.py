@@ -22,11 +22,11 @@ from unittest.mock import Mock, patch
 import pytest
 
 from nexau import Agent, AgentConfig
-from nexau.archs.main_sub.context_value import ContextValue
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import ExecutionConfig
+from nexau.archs.main_sub.context_value import ContextValue
 from nexau.archs.main_sub.execution.llm_caller import openai_to_anthropic_message
 from nexau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
 from nexau.archs.tool import Tool
