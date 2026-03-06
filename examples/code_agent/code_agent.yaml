@@ -3,7 +3,7 @@ name: nexau_code_agent
 max_context_tokens: 200000
 system_prompt: ./systemprompt.md
 system_prompt_type: jinja
-tool_call_mode: anthropic # xml, openai or anthropic
+tool_call_mode: openai # xml, openai or anthropic
 max_iterations: 300
 
 llm_config: # Support environment variable replacement in YAML config
@@ -13,11 +13,10 @@ llm_config: # Support environment variable replacement in YAML config
   max_tokens: 32000
   temperature: 1
   stream: True
-  api_type: anthropic_chat_completion
-  thinking:
-    type: adaptive
-  output_config:
-    effort: medium
+  api_type: openai_responses
+  reasoning:
+    effort: "medium"
+    summary: "detailed"
   # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
 
 tools: # Builtin tools (nexau.archs.tool.builtin)

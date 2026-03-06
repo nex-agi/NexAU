@@ -89,6 +89,18 @@ class TestConstructorValidation:
         with pytest.raises(ValueError, match="tail_lines"):
             LongToolOutputMiddleware(tail_lines=-1)
 
+    def test_invalid_head_chars(self):
+        with pytest.raises(ValueError, match="head_chars"):
+            LongToolOutputMiddleware(head_chars=-1)
+
+    def test_invalid_tail_chars(self):
+        with pytest.raises(ValueError, match="tail_chars"):
+            LongToolOutputMiddleware(tail_chars=-1)
+
+    def test_invalid_char_budget(self):
+        with pytest.raises(ValueError, match="head_chars \\+ tail_chars"):
+            LongToolOutputMiddleware(max_output_chars=100, head_chars=50, tail_chars=50)
+
     def test_default_temp_dir(self):
         mw = LongToolOutputMiddleware()
         assert mw.temp_dir == "/tmp/nexau_tool_outputs"
@@ -430,6 +442,61 @@ class TestTruncationLogic:
         truncated = result.tool_output
         assert isinstance(truncated, str)
         assert "[85 lines omitted]" in truncated
+
+    def test_char_based_truncation(self, agent_state: AgentState, mock_sandbox):
+        long = "BEGIN-" + ("x" * 500) + "-END"
+        mw = LongToolOutputMiddleware(
+            max_output_chars=100,
+            head_lines=0,
+            tail_lines=0,
+            head_chars=10,
+            tail_chars=8,
+        )
+        hook_input = _make_hook_input(agent_state, long, sandbox=mock_sandbox)
+
+        result = mw.after_tool(hook_input)
+        truncated = result.tool_output
+        assert isinstance(truncated, str)
+
+        assert "BEGIN-" in truncated
+        assert "-END" in truncated
+        assert "chars omitted" in truncated
+
+    def test_uses_longer_char_based_truncation_when_both_configured(self, agent_state: AgentState, mock_sandbox):
+        long = "A" * 400
+        mw = LongToolOutputMiddleware(
+            max_output_chars=100,
+            head_lines=1,
+            tail_lines=1,
+            head_chars=30,
+            tail_chars=20,
+        )
+        hook_input = _make_hook_input(agent_state, long, sandbox=mock_sandbox)
+
+        result = mw.after_tool(hook_input)
+        truncated = result.tool_output
+        assert isinstance(truncated, str)
+
+        assert "chars omitted" in truncated
+        assert "lines omitted" not in truncated
+
+    def test_uses_longer_line_based_truncation_when_both_configured(self, agent_state: AgentState, mock_sandbox):
+        long = _long_text(100, line_length=20)
+        mw = LongToolOutputMiddleware(
+            max_output_chars=400,
+            head_lines=5,
+            tail_lines=5,
+            head_chars=10,
+            tail_chars=10,
+        )
+        hook_input = _make_hook_input(agent_state, long, sandbox=mock_sandbox)
+
+        result = mw.after_tool(hook_input)
+        truncated = result.tool_output
+        assert isinstance(truncated, str)
+
+        assert "lines omitted" in truncated
+        assert "chars omitted" not in truncated
 
 
 # ---------------------------------------------------------------------------

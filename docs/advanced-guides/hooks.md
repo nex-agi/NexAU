@@ -248,6 +248,8 @@ middlewares:
       max_output_chars: 10000    # Character threshold triggering truncation (default: 10,000)
       head_lines: 50             # Lines to keep from the start (default: 50)
       tail_lines: 30             # Lines to keep from the end (default: 30)
+      head_chars: 5000
+      tail_chars: 5000
       temp_dir: /tmp/nexau_tool_outputs  # Directory for full outputs (default)
       bypass_tool_names:         # Tools that already handle their own truncation
         - execute_bash

@@ -17,8 +17,9 @@
 When a tool returns output whose serialized text exceeds a configurable character
 threshold, this middleware:
 
-1. Truncates the output, keeping only the first ``head_lines`` and last
-   ``tail_lines`` lines.
+1. Truncates the output, keeping the longer of:
+   - the first ``head_lines`` and last ``tail_lines`` lines
+   - the first ``head_chars`` and last ``tail_chars`` characters
 2. Writes the **full** output to a temporary file under ``temp_dir`` via the
    Sandbox API (``sandbox.write_file``).  This ensures the file is written to
    the correct environment regardless of whether the agent runs locally or
@@ -66,6 +67,12 @@ _DEFAULT_HEAD_LINES = 50
 _DEFAULT_TAIL_LINES = 30
 """Number of lines to keep from the end of the output."""
 
+_DEFAULT_HEAD_CHARS = 0
+"""Number of characters to keep from the beginning of the output."""
+
+_DEFAULT_TAIL_CHARS = 0
+"""Number of characters to keep from the end of the output."""
+
 _DEFAULT_TEMP_DIR = "/tmp/nexau_tool_outputs"
 """Default directory for persisted full outputs."""
 
@@ -85,6 +92,10 @@ class LongToolOutputMiddleware(Middleware):
         max_output_chars: Character count threshold that triggers truncation.
         head_lines: Number of leading lines to retain in the truncated view.
         tail_lines: Number of trailing lines to retain in the truncated view.
+        head_chars: Number of leading characters to retain in the truncated
+            view.
+        tail_chars: Number of trailing characters to retain in the truncated
+            view.
         temp_dir: Absolute directory path where full outputs are written.
             Defaults to ``/tmp/nexau_tool_outputs``.  Set to ``None`` to
             disable file persistence (truncation still applies, but no file
@@ -100,6 +111,8 @@ class LongToolOutputMiddleware(Middleware):
         max_output_chars: int = _DEFAULT_MAX_OUTPUT_CHARS,
         head_lines: int = _DEFAULT_HEAD_LINES,
         tail_lines: int = _DEFAULT_TAIL_LINES,
+        head_chars: int = _DEFAULT_HEAD_CHARS,
+        tail_chars: int = _DEFAULT_TAIL_CHARS,
         temp_dir: str | None = _DEFAULT_TEMP_DIR,
         bypass_tool_names: Sequence[str] | None = None,
     ) -> None:
@@ -109,10 +122,18 @@ class LongToolOutputMiddleware(Middleware):
             raise ValueError("head_lines must be >= 0")
         if tail_lines < 0:
             raise ValueError("tail_lines must be >= 0")
+        if head_chars < 0:
+            raise ValueError("head_chars must be >= 0")
+        if tail_chars < 0:
+            raise ValueError("tail_chars must be >= 0")
+        if head_chars + tail_chars >= max_output_chars:
+            raise ValueError("head_chars + tail_chars must be < max_output_chars")
 
         self.max_output_chars = max_output_chars
         self.head_lines = head_lines
         self.tail_lines = tail_lines
+        self.head_chars = head_chars
+        self.tail_chars = tail_chars
         self.temp_dir = temp_dir
         self._bypass_tool_names: frozenset[str] = frozenset(bypass_tool_names or ())
 
@@ -226,7 +247,39 @@ class LongToolOutputMiddleware(Middleware):
             return str(output)
 
     def _truncate(self, text: str) -> str:
+        """Keep the longer of the configured line- or char-based truncations."""
+
+        candidates: list[str] = []
+
+        line_candidate = self._truncate_by_lines(text)
+        if line_candidate is not None:
+            candidates.append(line_candidate)
+
+        char_candidate = self._truncate_by_chars(text)
+        if char_candidate is not None:
+            candidates.append(char_candidate)
+
+        if not candidates:
+            return text
+
+        truncated_candidates = [candidate for candidate in candidates if len(candidate) < len(text)]
+        if truncated_candidates:
+            candidates = truncated_candidates
+
+        valid_candidates = [candidate for candidate in candidates if len(candidate) < self.max_output_chars]
+        if valid_candidates:
+            return max(valid_candidates, key=len)
+
+        if len(candidates) == 1:
+            return candidates[0]
+
+        return min(candidates, key=len)
+
+    def _truncate_by_lines(self, text: str) -> str | None:
         """Keep the first *head_lines* and last *tail_lines* lines."""
+
+        if self.head_lines == 0 and self.tail_lines == 0:
+            return None
 
         lines = text.splitlines(keepends=True)
         total = len(lines)
@@ -242,6 +295,22 @@ class LongToolOutputMiddleware(Middleware):
         separator = f"\n... [{omitted} lines omitted] ...\n"
 
         return "".join(head) + separator + "".join(tail)
+
+    def _truncate_by_chars(self, text: str) -> str | None:
+        """Keep the first *head_chars* and last *tail_chars* characters."""
+
+        if self.head_chars == 0 and self.tail_chars == 0:
+            return None
+
+        if len(text) <= self.head_chars + self.tail_chars:
+            return text
+
+        head = text[: self.head_chars]
+        tail = text[len(text) - self.tail_chars :] if self.tail_chars > 0 else ""
+        omitted = len(text) - self.head_chars - self.tail_chars
+        separator = f"\n... [{omitted} chars omitted] ...\n"
+
+        return head + separator + tail
 
     def _save_to_temp_file(
         self,
