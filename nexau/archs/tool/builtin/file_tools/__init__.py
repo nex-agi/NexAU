@@ -1,5 +1,6 @@
 # Copyright (c) Nex-AGI. All rights reserved.
 
+from .apply_patch import apply_patch
 from .glob_tool import glob
 from .list_directory import list_directory
 from .read_file import read_file
@@ -14,6 +15,7 @@ __all__ = [
     "read_visual_file",
     "write_file",
     "replace",
+    "apply_patch",
     "glob",
     "list_directory",
     "read_many_files",

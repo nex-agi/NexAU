@@ -14,6 +14,7 @@
 
 from .background_task_manage_tool import background_task_manage_tool
 from .file_tools import (
+    apply_patch,
     glob,
     list_directory,
     read_file,
@@ -42,6 +43,7 @@ __all__ = [
     "read_file",
     "write_file",
     "replace",
+    "apply_patch",
     "glob",
     "list_directory",
     "read_many_files",
