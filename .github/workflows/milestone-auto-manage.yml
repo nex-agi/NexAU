@@ -16,7 +16,7 @@ jobs:
     steps:
       - name: Auto-create milestone, link issues, and close
         env:
-          GH_TOKEN: ${{ secrets.PROJECT_PAT }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
