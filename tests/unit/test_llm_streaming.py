@@ -227,7 +227,7 @@ def test_openai_responses_stream_aggregator_reconstructs_items():
     aggregator.consume(
         {
             "type": "response.output_item.added",
-            "item": {"type": "message", "id": "msg_1", "role": "assistant", "content": []},
+            "item": {"type": "message", "id": "msg_1", "role": "assistant", "phase": "commentary", "content": []},
         },
     )
     aggregator.consume(
@@ -289,6 +289,7 @@ def test_openai_responses_stream_aggregator_reconstructs_items():
     response_payload = aggregator.finalize()
 
     assert response_payload["model"] == "gpt-4.1"
+    assert response_payload["output"][0]["phase"] == "commentary"
     assert response_payload["output"][0]["content"][0]["text"] == "Answer: 42"
     assert response_payload["output"][1]["arguments"] == '{"value": 42}'
     assert response_payload["output"][2]["type"] == "reasoning"

@@ -958,6 +958,9 @@ def _prepare_responses_api_input(messages: list[dict[str, Any]]) -> tuple[list[d
             "role": role,
             "content": content_parts,
         }
+        phase = message.get("phase")
+        if role == "assistant" and isinstance(phase, str) and phase:
+            message_item["phase"] = phase
 
         prepared.append(message_item)
 
@@ -1071,6 +1074,9 @@ def _sanitize_response_items_for_input(items: list[Any], *, drop_ephemeral_ids: 
             item_type = item_copy.get("type")
             if item_type == "message":
                 item_copy.pop("status", None)
+                phase = item_copy.get("phase")
+                if not isinstance(phase, str) or not phase:
+                    item_copy.pop("phase", None)
             elif item_type == "function_call_output":
                 output_value = item_copy.get("output")
                 # Preserve multimodal tool outputs as arrays; otherwise coerce to string for legacy compatibility.
@@ -1524,13 +1530,22 @@ class AnthropicStreamAggregator:
 class ResponseMessageBuilder:
     """Helper for assembling streamed Responses API assistant messages."""
 
-    def __init__(self, item_id: str, role: str = "assistant") -> None:
+    def __init__(self, item_id: str, role: str = "assistant", phase: str | None = None) -> None:
         self.item_id = item_id
         self.role = role
+        self.phase = phase
         self._parts: dict[int, dict[str, Any]] = {}
 
     def add_part(self, index: int, part: dict[str, Any]) -> None:
         self._parts[index] = part
+
+    def update_from_item(self, item: Mapping[str, Any]) -> None:
+        role = item.get("role")
+        if isinstance(role, str) and role:
+            self.role = role
+        phase = item.get("phase")
+        if isinstance(phase, str) and phase:
+            self.phase = phase
 
     def append_text(self, index: int, delta_text: str) -> None:
         part = self._parts.setdefault(index, {"type": "output_text", "text": ""})
@@ -1542,12 +1557,15 @@ class ResponseMessageBuilder:
         for index in sorted(self._parts):
             part = self._parts[index]
             content.append(part)
-        return {
+        item: dict[str, Any] = {
             "type": "message",
             "role": self.role or "assistant",
             "id": self.item_id,
             "content": content,
         }
+        if self.phase is not None:
+            item["phase"] = self.phase
+        return item
 
 
 class ResponseToolCallBuilder:
@@ -1743,7 +1761,11 @@ class OpenAIResponsesStreamAggregator:
 
         item_type = item.get("type")
         if item_type == "message":
-            message_builder = self._message_builders.setdefault(item_id, ResponseMessageBuilder(item_id, item.get("role", "assistant")))
+            message_builder = self._message_builders.setdefault(
+                item_id,
+                ResponseMessageBuilder(item_id, item.get("role", "assistant"), item.get("phase")),
+            )
+            message_builder.update_from_item(item)
             content_list: list[Any] = item.get("content") or []
             for idx, part in enumerate(content_list):
                 message_builder.add_part(idx, _to_serializable_dict(part))
@@ -1769,7 +1791,11 @@ class OpenAIResponsesStreamAggregator:
         if not item_id:
             return
         item_type = item.get("type")
-        if item_type == "reasoning":
+        if item_type == "message":
+            message_builder = self._message_builders.get(item_id)
+            if message_builder is not None:
+                message_builder.update_from_item(item)
+        elif item_type == "reasoning":
             reasoning_builder = self._reasoning_builders.get(item_id)
             if reasoning_builder is not None:
                 reasoning_builder.update_from_item(item)

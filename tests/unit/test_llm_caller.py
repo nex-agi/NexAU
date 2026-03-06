@@ -236,6 +236,23 @@ class TestLLMCallerBasicCalls:
         }
         assert expected_reasoning in followup_input
 
+    def test_prepare_responses_api_input_preserves_assistant_phase(self):
+        """Assistant message phase should be forwarded to Responses API input."""
+        from nexau.archs.main_sub.execution.llm_caller import _prepare_responses_api_input
+
+        prepared, instructions = _prepare_responses_api_input(
+            [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Working...", "phase": "commentary"},
+                {"role": "assistant", "content": "Done", "phase": "final_answer"},
+            ]
+        )
+
+        assert instructions is None
+        assistant_messages = [item for item in prepared if item.get("type") == "message" and item.get("role") == "assistant"]
+        assert assistant_messages[0]["phase"] == "commentary"
+        assert assistant_messages[1]["phase"] == "final_answer"
+
     def test_call_llm_responses_api_normalizes_tools(self, mock_openai_client, responses_llm_config, agent_state):
         """Ensure tool payloads satisfy Responses API expectations."""
 

@@ -684,6 +684,30 @@ class TestSanitizeResponseItemsEncryptedContent:
         reasoning = [i for i in result if i.get("type") == "reasoning"]
         assert reasoning[0]["summary"] == [{"type": "summary_text", "text": "existing"}]
 
+    def test_message_phase_is_preserved(self):
+        from nexau.archs.main_sub.execution.llm_caller import _sanitize_response_items_for_input
+
+        items = [
+            {
+                "type": "message",
+                "id": "msg_1",
+                "role": "assistant",
+                "phase": "commentary",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "Thinking"}],
+            }
+        ]
+        result = _sanitize_response_items_for_input(items, drop_ephemeral_ids=True)
+
+        assert result == [
+            {
+                "type": "message",
+                "role": "assistant",
+                "phase": "commentary",
+                "content": [{"type": "output_text", "text": "Thinking"}],
+            }
+        ]
+
 
 # ===========================================================================
 # 7. Web tool 64KB truncation
