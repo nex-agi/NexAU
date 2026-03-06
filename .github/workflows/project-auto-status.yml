@@ -1,4 +1,4 @@
-name: "Project: Auto Backlog → Todo when Iteration set"
+name: "Project: Auto Backlog ↔ Todo based on Iteration"
 
 on:
   schedule:
@@ -20,8 +20,8 @@ jobs:
 
           PROJECT_ID="PVT_kwDOCmnEdM4BQARn"
           STATUS_FIELD_ID="PVTSSF_lADOCmnEdM4BQARnzg-P8lI"
-          BACKLOG_OPTION_ID="c8979f55"
-          TODO_OPTION_ID="f75ad846"
+          BACKLOG_OPTION_ID="676b1ff9"
+          TODO_OPTION_ID="0bfee3fe"
 
           echo "Fetching project items with Status=Backlog..."
 
@@ -87,6 +87,7 @@ jobs:
               NUM=$(echo "$ITEM" | jq -r '.content.number // ""')
               ITER_TITLE=$(echo "$ITEM" | jq -r '.iterVal.title // ""')
 
+              # Backlog + has Iteration → Todo
               if [ "$STATUS_OPT" = "$BACKLOG_OPTION_ID" ] && [ -n "$ITER_ID" ]; then
                 echo "Moving: #$NUM $TITLE (iteration: $ITER_TITLE) → Todo"
                 gh api graphql -f query="
@@ -96,6 +97,23 @@ jobs:
                     itemId: \"$ITEM_ID\"
                     fieldId: \"$STATUS_FIELD_ID\"
                     value: { singleSelectOptionId: \"$TODO_OPTION_ID\" }
+                  }) {
+                    projectV2Item { id }
+                  }
+                }" > /dev/null
+                MOVED=$((MOVED + 1))
+              fi
+
+              # Todo + no Iteration → Backlog
+              if [ "$STATUS_OPT" = "$TODO_OPTION_ID" ] && [ -z "$ITER_ID" ]; then
+                echo "Moving back: #$NUM $TITLE → Backlog (Iteration cleared)"
+                gh api graphql -f query="
+                mutation {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: \"$PROJECT_ID\"
+                    itemId: \"$ITEM_ID\"
+                    fieldId: \"$STATUS_FIELD_ID\"
+                    value: { singleSelectOptionId: \"$BACKLOG_OPTION_ID\" }
                   }) {
                     projectV2Item { id }
                   }

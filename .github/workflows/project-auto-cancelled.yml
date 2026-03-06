@@ -1,0 +1,66 @@
+name: "Project: Auto set Cancelled on issue close (not planned / duplicate)"
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  auto-cancelled:
+    if: github.event.issue.state_reason == 'not_planned'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set project status to Cancelled
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_PAT }}
+        run: |
+          set -euo pipefail
+
+          PROJECT_ID="PVT_kwDOCmnEdM4BQARn"
+          STATUS_FIELD_ID="PVTSSF_lADOCmnEdM4BQARnzg-P8lI"
+          CANCELLED_OPTION_ID="e25879b3"
+
+          ISSUE_NODE_ID="${{ github.event.issue.node_id }}"
+          ISSUE_NUM="${{ github.event.issue.number }}"
+          ISSUE_TITLE="${{ github.event.issue.title }}"
+          REASON="${{ github.event.issue.state_reason }}"
+
+          echo "Issue #$ISSUE_NUM closed as '$REASON': $ISSUE_TITLE"
+
+          # Find the project item for this issue
+          ITEM_ID=$(gh api graphql -f query="
+          {
+            node(id: \"$ISSUE_NODE_ID\") {
+              ... on Issue {
+                projectItems(first: 10) {
+                  nodes {
+                    id
+                    project { id }
+                  }
+                }
+              }
+            }
+          }" | jq -r ".data.node.projectItems.nodes[] | select(.project.id == \"$PROJECT_ID\") | .id")
+
+          if [ -z "$ITEM_ID" ]; then
+            echo "Issue not found in project, skipping."
+            exit 0
+          fi
+
+          echo "Found project item: $ITEM_ID — setting Status to Cancelled"
+
+          gh api graphql -f query="
+          mutation {
+            updateProjectV2ItemFieldValue(input: {
+              projectId: \"$PROJECT_ID\"
+              itemId: \"$ITEM_ID\"
+              fieldId: \"$STATUS_FIELD_ID\"
+              value: { singleSelectOptionId: \"$CANCELLED_OPTION_ID\" }
+            }) {
+              projectV2Item { id }
+            }
+          }" > /dev/null
+
+          echo "Done. Issue #$ISSUE_NUM status set to Cancelled."
