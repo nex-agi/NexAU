@@ -92,27 +92,14 @@ def list_directory(
 
         # Parse file_filtering_options
         respect_git_ignore = True
-        respect_gemini_ignore = True
         if file_filtering_options:
             respect_git_ignore = file_filtering_options.get("respect_git_ignore", True)
-            respect_gemini_ignore = file_filtering_options.get("respect_gemini_ignore", True)
 
         # Read .gitignore if requested
         if respect_git_ignore:
             gitignore_path = str(Path(resolved_path) / ".gitignore")
             if sandbox.file_exists(gitignore_path):
                 res = sandbox.read_file(gitignore_path, encoding="utf-8", binary=False)
-                if res.status == SandboxStatus.SUCCESS and isinstance(res.content, str):
-                    for line in res.content.splitlines():
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            ignore_patterns.append(line.rstrip("/"))
-
-        # Read .geminiignore if requested
-        if respect_gemini_ignore:
-            geminiignore_path = str(Path(resolved_path) / ".geminiignore")
-            if sandbox.file_exists(geminiignore_path):
-                res = sandbox.read_file(geminiignore_path, encoding="utf-8", binary=False)
                 if res.status == SandboxStatus.SUCCESS and isinstance(res.content, str):
                     for line in res.content.splitlines():
                         line = line.strip()

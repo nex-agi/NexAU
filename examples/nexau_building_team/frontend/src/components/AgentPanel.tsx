@@ -300,7 +300,6 @@ function buildInputRows(toolNameRaw: string, argsObj: Record<string, unknown> | 
     add("dir_path", argsObj.dir_path);
     add("case_sensitive", argsObj.case_sensitive);
     add("respect_git_ignore", argsObj.respect_git_ignore);
-    add("respect_gemini_ignore", argsObj.respect_gemini_ignore);
     return rows;
   }
 

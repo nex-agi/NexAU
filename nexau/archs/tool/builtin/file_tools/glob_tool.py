@@ -53,7 +53,6 @@ def glob(
     dir_path: str | None = None,
     case_sensitive: bool = False,
     respect_git_ignore: bool = True,
-    respect_gemini_ignore: bool = True,
     agent_state: AgentState | None = None,
 ) -> dict[str, Any]:
     """
@@ -67,7 +66,6 @@ def glob(
         dir_path: Directory to search in (optional, defaults to cwd)
         case_sensitive: Whether matching should be case-sensitive
         respect_git_ignore: Whether to respect .gitignore patterns
-        respect_gemini_ignore: Whether to respect .geminiignore patterns
 
     Returns:
         Dict with content and returnDisplay matching gemini-cli format
@@ -119,17 +117,6 @@ def glob(
             gitignore_path = str(Path(search_dir) / ".gitignore")
             if sandbox.file_exists(gitignore_path):
                 res = sandbox.read_file(gitignore_path, encoding="utf-8", binary=False)
-                if res.status == SandboxStatus.SUCCESS and isinstance(res.content, str):
-                    for line in res.content.splitlines():
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            excludes.append(line.rstrip("/"))
-
-        # Try to read .geminiignore if requested
-        if respect_gemini_ignore:
-            geminiignore_path = str(Path(search_dir) / ".geminiignore")
-            if sandbox.file_exists(geminiignore_path):
-                res = sandbox.read_file(geminiignore_path, encoding="utf-8", binary=False)
                 if res.status == SandboxStatus.SUCCESS and isinstance(res.content, str):
                     for line in res.content.splitlines():
                         line = line.strip()
