@@ -44,6 +44,9 @@ def create_compaction_strategy(config: CompactionConfig) -> CompactionStrategy:
             summary_model=config.summary_model,
             summary_base_url=config.summary_base_url,
             summary_api_key=config.summary_api_key,
+            summary_api_type=config.summary_api_type,
+            retry_attempts=config.retry_attempts,
+            max_context_tokens=config.max_context_tokens,
             compact_prompt_path=config.compact_prompt_path,  # Already resolved by config
         )
 

@@ -65,12 +65,22 @@ def sample_messages():
     return messages_from_legacy_openai_chat(legacy)
 
 
+def _make_mock_token_counter(factor: int):
+    counter = Mock()
+    counter.count_tokens.side_effect = lambda msgs: len(msgs) * factor
+    return counter
+
+
 @pytest.fixture
 def mock_token_counter():
-    """Mock token counter for testing."""
-    counter = Mock()
-    counter.count_tokens.side_effect = lambda msgs: len(msgs) * 100  # Simple mock: 100 tokens per message
-    return counter
+    """Mock token counter for testing (normal)."""
+    return _make_mock_token_counter(100)
+
+
+@pytest.fixture
+def mock_token_counter_extreme():
+    """Mock token counter for testing (extreme)."""
+    return _make_mock_token_counter(100000)
 
 
 @pytest.fixture
@@ -79,6 +89,7 @@ def mock_openai_client():
     mock_client = Mock()
     mock_response = Mock()
     mock_response.choices = [Mock()]
+    mock_response.choices[0].message.tool_calls = []
     mock_response.choices[0].message.content = "This is a comprehensive summary of the conversation."
     mock_client.chat.completions.create.return_value = mock_response
     return mock_client
@@ -552,8 +563,10 @@ class TestSlidingWindowCompactionAdvanced:
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
     def test_compact_llm_failure_returns_original(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
-        """Test that LLM failure returns original messages."""
+        """Test that LLM failure falls back to hard truncation summary."""
         mock_openai_class.return_value = mock_openai_client
+        # Also make the direct client fallback fail
+        mock_openai_client.chat.completions.create.side_effect = Exception("Direct client also failed")
 
         compaction = SlidingWindowCompaction(
             keep_iterations=1,
@@ -575,8 +588,14 @@ class TestSlidingWindowCompactionAdvanced:
 
         result = compaction.compact(messages)
 
-        # Should return original messages on error
-        assert result == messages
+        # When all LLM calls fail, compaction still proceeds with hard truncation fallback.
+        # The result should contain the kept iteration (Q2/A2) with a summary injected.
+        assert len(result) > 0
+        # The kept iteration's user message should have the summary injected
+        user_msgs = [m for m in result if m.role == Role.USER]
+        assert len(user_msgs) > 0
+        assert "This session is being continued" in user_msgs[0].get_text_content()
+        assert user_msgs[0].metadata.get("isSummary") is True
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
     def test_group_into_iterations_complex(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
@@ -732,6 +751,123 @@ class TestSlidingWindowCompactionAdvanced:
 
         # Should handle structured content
         assert len(result) >= 2
+
+    @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
+    def test_compact_with_normal_compact(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
+        """Test normal LLM summarization compaction."""
+        mock_openai_class.return_value = mock_openai_client
+
+        compaction = SlidingWindowCompaction(
+            keep_iterations=1,
+            summary_model="gpt-4o-mini",
+            summary_base_url="https://api.openai.com/v1",
+            summary_api_key="test-key",
+            compact_prompt_path=temp_compact_prompt,
+        )
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "system", "content": "System", "tool_calls": []},
+                {"role": "user", "content": "Q1", "tool_calls": []},
+                {"role": "assistant", "content": "A1", "tool_calls": []},
+                {"role": "tool", "tool_call_id": "call_1", "content": "T1", "tool_calls": []},
+                {"role": "tool", "tool_call_id": "call_2", "content": "T2", "tool_calls": []},
+                {"role": "user", "content": "Q2", "tool_calls": []},
+                {"role": "assistant", "content": "A2", "tool_calls": []},
+                {"role": "user", "content": "Q3", "tool_calls": []},
+                {"role": "assistant", "content": "A3", "tool_calls": []},
+            ],
+        )
+        summary_text = "summary"
+        result = compaction.compact(messages)
+        assert result[0].role == Role.SYSTEM
+        assert len(result) < len(messages)
+        found = any(
+            isinstance(msg.content, list) and any(isinstance(block, TextBlock) and summary_text in block.text for block in msg.content)
+            for msg in result
+        )
+        assert found, "normal summary result not found in compacted messages"
+
+    @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
+    def test_chunk_summary_compact(self, mock_openai_class, mock_token_counter_extreme, mock_openai_client, temp_compact_prompt):
+        """Test chunked compaction when context is very large."""
+        mock_openai_class.return_value = mock_openai_client
+        compaction = SlidingWindowCompaction(
+            keep_iterations=1,
+            summary_model="gpt-4o-mini",
+            summary_base_url="https://api.openai.com/v1",
+            summary_api_key="test-key",
+            compact_prompt_path=temp_compact_prompt,
+            token_counter=mock_token_counter_extreme,
+        )
+
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "system", "content": "System", "tool_calls": []},
+                {"role": "user", "content": "Q1", "tool_calls": []},
+                {"role": "assistant", "content": "A1", "tool_calls": []},
+                {"role": "tool", "tool_call_id": "call_1", "content": "T1", "tool_calls": []},
+                {"role": "tool", "tool_call_id": "call_2", "content": "T2", "tool_calls": []},
+                {"role": "user", "content": "Q2", "tool_calls": []},
+                {"role": "assistant", "content": "A2", "tool_calls": []},
+                {"role": "user", "content": "Q3", "tool_calls": []},
+                {"role": "assistant", "content": "A3", "tool_calls": []},
+            ],
+        )
+
+        chunked_summary_text = "chunked_summary_result"
+        with patch.object(compaction, "_chunked_summary", return_value=chunked_summary_text):
+            result = compaction.compact(messages)
+
+        assert result[0].role == Role.SYSTEM
+        assert len(result) < len(messages)
+        found = any(
+            isinstance(msg.content, list)
+            and any(isinstance(block, TextBlock) and chunked_summary_text in block.text for block in msg.content)
+            for msg in result
+        )
+        assert found, "chunked summary result not found in compacted messages"
+
+    @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
+    def test_hard_truncation_fallback(self, mock_openai_class, mock_token_counter_extreme, temp_compact_prompt):
+        """Test hard truncation fallback when messages exceed max token limit."""
+        mock_openai_class.return_value = mock_openai_client
+        mock_token_counter_extreme.return_value = mock_token_counter_extreme
+        compaction = SlidingWindowCompaction(
+            keep_iterations=1,
+            summary_model="gpt-4o-mini",
+            summary_base_url="https://api.openai.com/v1",
+            summary_api_key="test-key",
+            compact_prompt_path=temp_compact_prompt,
+            token_counter=mock_token_counter_extreme,
+            retry_attempts=1,
+        )
+
+        result_text = "_hard_truncation_fallback_result"
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "system", "content": "System", "tool_calls": []},
+                {"role": "user", "content": "Q1", "tool_calls": []},
+                {"role": "assistant", "content": "A1", "tool_calls": []},
+                {"role": "tool", "tool_call_id": "call_1", "content": "T1", "tool_calls": []},
+                {"role": "tool", "tool_call_id": "call_2", "content": "T2", "tool_calls": []},
+                {"role": "user", "content": "Q2", "tool_calls": []},
+                {"role": "assistant", "content": "A2", "tool_calls": []},
+                {"role": "user", "content": "Q3", "tool_calls": []},
+                {"role": "assistant", "content": "A3", "tool_calls": []},
+            ],
+        )
+
+        with patch.object(compaction, "_generate_summary", side_effect=ValueError("LLM call failed")):
+            with patch.object(compaction, "_hard_truncation_fallback", return_value=result_text):
+                result = compaction.compact(messages)
+
+        assert result[0].role == Role.SYSTEM
+        assert len(result) < len(messages)
+        found = any(
+            isinstance(msg.content, list) and any(isinstance(block, TextBlock) and result_text in block.text for block in msg.content)
+            for msg in result
+        )
+        assert found, "hard truncation fallback result not found"
 
 
 class TestToolResultCompactionKeepUserRounds:

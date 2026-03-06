@@ -40,7 +40,9 @@ class CompactionConfig(BaseModel):
     summary_model: str | None = None
     summary_base_url: str | None = None
     summary_api_key: str | None = None
+    summary_api_type: str = "openai_chat_completion"
     compact_prompt_path: str | None = None
+    retry_attempts: int = 3
 
     @model_validator(mode="after")
     def validate_and_resolve_paths(self) -> "CompactionConfig":
@@ -54,7 +56,8 @@ class CompactionConfig(BaseModel):
                 missing.append("summary_base_url")
             if not self.summary_api_key:
                 missing.append("summary_api_key")
-
+            if not self.summary_api_type:
+                missing.append("summary_api_type")
             if missing:
                 raise ValueError(f"Strategy 'sliding_window' requires the following params: {', '.join(missing)}")
 
