@@ -67,10 +67,10 @@ _DEFAULT_HEAD_LINES = 50
 _DEFAULT_TAIL_LINES = 30
 """Number of lines to keep from the end of the output."""
 
-_DEFAULT_HEAD_CHARS = 0
+_DEFAULT_HEAD_CHARS = 5000
 """Number of characters to keep from the beginning of the output."""
 
-_DEFAULT_TAIL_CHARS = 0
+_DEFAULT_TAIL_CHARS = 5000
 """Number of characters to keep from the end of the output."""
 
 _DEFAULT_TEMP_DIR = "/tmp/nexau_tool_outputs"
@@ -126,8 +126,8 @@ class LongToolOutputMiddleware(Middleware):
             raise ValueError("head_chars must be >= 0")
         if tail_chars < 0:
             raise ValueError("tail_chars must be >= 0")
-        if head_chars + tail_chars >= max_output_chars:
-            raise ValueError("head_chars + tail_chars must be < max_output_chars")
+        if head_chars + tail_chars > max_output_chars:
+            raise ValueError("head_chars + tail_chars must be <= max_output_chars")
 
         self.max_output_chars = max_output_chars
         self.head_lines = head_lines

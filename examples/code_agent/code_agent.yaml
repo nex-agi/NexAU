@@ -77,6 +77,8 @@ middlewares:
       max_output_chars: 10000
       head_lines: 50
       tail_lines: 30
+      head_chars: 5000
+      tail_chars: 5000
       bypass_tool_names:
         - run_shell_command  # Already truncated at sandbox level
 tracers:
