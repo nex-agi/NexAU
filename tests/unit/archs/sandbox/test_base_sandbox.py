@@ -411,7 +411,7 @@ class TestBaseSandboxInterface:
         assert "sandbox_id" in d
         assert "work_dir" in d
         assert d["sandbox_id"] == "sid"
-        assert d["work_dir"] == Path("/tmp")
+        assert d["work_dir"] == "/tmp"
 
     def test_detect_file_encoding_chardet_high_confidence(self) -> None:
         """When chardet returns high confidence, use detected encoding."""

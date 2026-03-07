@@ -749,9 +749,15 @@ class BaseSandbox(ABC):
     def __repr__(self):
         return self.__str__()
 
-    def dict(self):
+    def dict(self) -> dict[str, Any]:
         no_init_names = {f.name for f in fields(self) if f.init}
-        return {k: getattr(self, k) for k in no_init_names}
+        result: dict[str, Any] = {}
+        for k in no_init_names:
+            v = getattr(self, k)
+            if isinstance(v, Path):
+                v = str(v)
+            result[k] = v
+        return result
 
     @staticmethod
     def _detect_file_encoding(raw_data: bytes) -> str:
