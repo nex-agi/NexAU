@@ -31,7 +31,15 @@ class TestExampleCodeAgentApplyPatch:
         project_root = Path(__file__).resolve().parents[2]
         config_path = project_root / "examples" / "code_agent" / "code_agent_codex.yaml"
 
-        with patch.dict("os.environ", {"SANDBOX_WORK_DIR": str(tmp_path)}, clear=False):
+        with patch.dict(
+            "os.environ",
+            {
+                "SANDBOX_WORK_DIR": str(tmp_path),
+                "LANGFUSE_PUBLIC_KEY": "test-public-key",
+                "LANGFUSE_SECRET_KEY": "test-secret-key",
+            },
+            clear=False,
+        ):
             config = AgentConfig.from_yaml(config_path)
             tool_names = [tool.name for tool in config.tools]
             assert "apply_patch" in tool_names
