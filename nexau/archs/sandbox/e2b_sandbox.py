@@ -686,8 +686,6 @@ class E2BSandbox(BaseSandbox):
         try:
             resolved_path = self._resolve_path(file_path)
 
-            max_output_size = 30000  # Default: 30000 characters
-
             raw_content = self._retry_on_transient(
                 lambda: self._sandbox._filesystem.read(resolved_path, format="bytes")  # type: ignore[union-attr]
             )
@@ -701,18 +699,11 @@ class E2BSandbox(BaseSandbox):
             file_info = self.get_file_info(resolved_path)
             file_size = file_info.size
 
-            # 二进制文件不截断，调用方（read_file tool）已有 MAX_FILE_SIZE_BYTES 限制
-            truncated = False
-            if not binary and isinstance(content, str) and len(content) > max_output_size:
-                truncated = True
-                content = content[:max_output_size]
-
             return FileOperationResult(
                 status=SandboxStatus.SUCCESS,
                 file_path=file_path,
                 content=content,
                 size=file_size,
-                truncated=truncated,
             )
 
         except Exception as e:

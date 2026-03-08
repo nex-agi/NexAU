@@ -664,7 +664,6 @@ class LocalSandbox(BaseSandbox):
                 )
 
             file_size = full_path.stat().st_size
-            max_output_size = 30000  # Default: 30000 characters
 
             content: str | bytes
             if binary:
@@ -674,18 +673,11 @@ class LocalSandbox(BaseSandbox):
                 with open(full_path, encoding=encoding) as f:
                     content = f.read()
 
-            # 二进制文件不截断，调用方（read_file tool）已有 MAX_FILE_SIZE_BYTES 限制
-            truncated = False
-            if not binary and isinstance(content, str) and len(content) > max_output_size:
-                truncated = True
-                content = content[:max_output_size]
-
             return FileOperationResult(
                 status=SandboxStatus.SUCCESS,
                 file_path=file_path,
                 content=content,
                 size=file_size,
-                truncated=truncated,
             )
 
         except Exception as e:

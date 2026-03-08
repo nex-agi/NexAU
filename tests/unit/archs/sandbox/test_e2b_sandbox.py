@@ -800,14 +800,14 @@ class TestE2BEdgeCases:
         result = e2b_sandbox.read_file("binary.dat")
         assert result.status == SandboxStatus.ERROR
 
-    def test_read_file_truncates_large_content(self, e2b_sandbox):
-        """Large file content should be truncated at 30000 chars."""
+    def test_read_file_large_content_not_truncated(self, e2b_sandbox):
+        """Large file content should not be truncated by sandbox."""
         big_content = "x" * 31000
         e2b_sandbox.write_file("big.txt", big_content)
         result = e2b_sandbox.read_file("big.txt")
         assert result.status == SandboxStatus.SUCCESS
-        assert result.truncated is True
-        assert len(result.content) == 30000
+        assert not result.truncated
+        assert result.content == big_content
 
     def test_list_files_with_pattern(self, e2b_sandbox):
         """list_files with pattern should filter results."""

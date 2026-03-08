@@ -436,7 +436,8 @@ class TestEdgeCases:
 
         read_result = sandbox.read_file("large.txt")
         assert read_result.status == SandboxStatus.SUCCESS
-        assert read_result.truncated
+        assert not read_result.truncated
+        assert read_result.content == large_content
 
     def test_special_characters_in_filename(self, sandbox):
         sandbox.write_file("file with spaces.txt", "content")
