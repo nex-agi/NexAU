@@ -28,8 +28,7 @@ import dotenv
 from pydantic import ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from nexau.archs.llm.llm_config import LLMConfig
-from nexau.archs.main_sub.prompt_builder import PromptBuilder
-from nexau.archs.main_sub.skill import Skill, build_load_skill_tool
+from nexau.archs.main_sub.skill import Skill, build_load_skill_tool, build_tool_skill
 from nexau.archs.main_sub.tool_call_modes import normalize_tool_call_mode
 from nexau.archs.main_sub.utils import import_from_string
 from nexau.archs.sandbox.base_sandbox import (
@@ -684,14 +683,14 @@ class AgentConfigBuilder:
                     f"Error loading skill '{skill_folder}': {e}",
                 )
 
-        # add skill tool to tools
-        prompt_builder = PromptBuilder()
-        skill_detail_template = prompt_builder.load_prompt_template("tools_template_for_skill_detail")
-        jinja_template = prompt_builder.jinja_env.from_string(skill_detail_template)
+        # add tool-based skills
+        tool_call_mode = self.agent_params.get(
+            "tool_call_mode",
+            self.config.get("tool_call_mode", "openai"),
+        )
         for tool in self.agent_params.get("tools", []):
             if tool.as_skill:
-                skill_detail = jinja_template.render({"tool": tool})
-                skills.append(Skill(name=tool.name, description=tool.skill_description, detail=skill_detail, folder=""))
+                skills.append(build_tool_skill(tool, tool_call_mode=tool_call_mode))
 
         self.agent_params["skills"] = skills
         return self

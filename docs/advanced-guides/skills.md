@@ -208,6 +208,21 @@ as_skill: true
 skill_description: Code generation skill for multiple programming languages
 ```
 
+### Tool-Based Skills by `tool_call_mode`
+
+Tool-based skills behave slightly differently depending on the active tool calling strategy:
+
+| `tool_call_mode` | What the model sees initially | When `LoadSkill` is needed |
+| --- | --- | --- |
+| `xml` | Only the tool's `skill_description` in the prompt skill registry | When the model needs the full tool instructions |
+| `openai` | The tool's `skill_description` plus the full JSON Schema in the structured tool definition | When the model needs the full workflow-level `description` |
+| `anthropic` | The tool's `skill_description` plus the full JSON Schema in the structured tool definition | When the model needs the full workflow-level `description` |
+
+This means `description` and `skill_description` now serve different purposes for tool-based skills:
+
+- `skill_description`: short discovery text shown up front
+- `description`: detailed operational guidance returned through `LoadSkill`
+
 ---
 
 ## Combining Both Types
@@ -283,7 +298,9 @@ When you create an agent with skills or tool-based skills:
 
 ### Using Skills at Runtime
 
-The agent can load detailed skill information using the `LoadSkill` tool:
+The agent can load detailed skill information using the `LoadSkill` tool.
+
+- In `xml` mode, this appears as an XML tool call such as:
 
 ```xml
 <tool_use>
@@ -293,6 +310,8 @@ The agent can load detailed skill information using the `LoadSkill` tool:
   </parameter>
 </tool_use>
 ```
+
+- In `openai` / `anthropic` modes, the model invokes `LoadSkill` through the provider's native structured tool-calling interface using the same `skill_name` argument.
 
 **Response:**
 
@@ -313,11 +332,13 @@ This skill provides comprehensive data analysis capabilities...
 </SkillDetails>
 ```
 
+For tool-based skills in `openai` / `anthropic` modes, the `SkillDetail` body contains the tool's full `description` and guidance for native structured tool calling rather than XML-only usage examples.
+
 ### System Prompt Integration
 
-Skills appear in the agent's system prompt like this:
+Skills appear in the agent's prompt/runtime metadata like this:
 
-```
+```text
 ## Available Skills
 
 <Skills>
@@ -328,7 +349,7 @@ Skill Brief Description: Advanced data analysis and visualization capabilities
 
 </SkillBrief>
 <SkillBrief>
-Skill: web_search
+Skill Name: web_search
 Skill Brief Description: Web search capability with advanced filtering
 
 </SkillBrief>
@@ -336,6 +357,11 @@ Skill Brief Description: Web search capability with advanced filtering
 
 You can use the LoadSkill tool to get detailed information about any skill.
 ```
+
+Notes:
+
+- In `xml` mode, this brief registry is injected into the system prompt.
+- In `openai` / `anthropic` modes, folder-based skills still appear through the skill registry, while tool-based skills expose the same brief text through their structured tool definitions (`skill_description`) and use `LoadSkill` for the full detail.
 
 ---
 
@@ -361,12 +387,14 @@ You can use the LoadSkill tool to get detailed information about any skill.
 - Always provide a meaningful `skill_description`
 - Use tool-based skills for capabilities that don't need extensive documentation
 - Make the skill description concise but informative
-- Keep the regular `description` field for tool usage details
+- Keep the regular `description` field for the full operational guidance loaded through `LoadSkill`
+- Treat `skill_description` as discovery text and `description` as detailed instructions, especially in `openai` / `anthropic` modes
 
 ❌ **Don't:**
 - Don't set `as_skill=True` without providing `skill_description`
 - Don't use empty strings for `skill_description`
-- Don't duplicate information between `description` and `skill_description`
+- Don't duplicate all of `description` into `skill_description`
+- Don't assume structured tool calling models need the full tool description up front
 
 ### 3. Choosing Between Types
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -527,8 +527,7 @@ class TestAgentConfigBuilderCore:
             with pytest.raises(ConfigConfigError, match="Error loading tool 'alias_tool'"):
                 builder.build_tools()
 
-    @patch("nexau.archs.main_sub.config.config.PromptBuilder", return_value=StubPromptBuilder())
-    def test_build_skills_from_folders_and_tools(self, mock_prompt_builder: Mock, temp_dir):
+    def test_build_skills_from_folders_and_tools(self, temp_dir):
         skill_folder = Path(temp_dir) / "skill"
         skill_folder.mkdir()
         skill_folder.joinpath("SKILL.md").write_text(
@@ -543,7 +542,7 @@ class TestAgentConfigBuilderCore:
             as_skill=True,
             skill_description="Use me as a skill",
         )
-        builder = AgentConfigBuilder({"skills": [str(skill_folder)]}, Path(temp_dir))
+        builder = AgentConfigBuilder({"skills": [str(skill_folder)], "tool_call_mode": "openai"}, Path(temp_dir))
         builder.agent_params["tools"] = [tool]
 
         builder.build_skills()
@@ -551,8 +550,7 @@ class TestAgentConfigBuilderCore:
         skills = builder.agent_params["skills"]
         assert {s.name for s in skills} == {"folder-skill", "skill_tool"}
         tool_skill = next(s for s in skills if s.name == "skill_tool")
-        assert tool_skill.detail.startswith("skill-detail")
-        mock_prompt_builder.assert_called_once()
+        assert "## Detailed Description" in (tool_skill.detail or "")
 
     def test_build_skills_invalid_folder_raises(self, temp_dir):
         builder = AgentConfigBuilder({"skills": [str(Path(temp_dir) / "missing")]}, Path(temp_dir))
@@ -626,8 +624,7 @@ class TestSkillToolIngestion:
             ).lstrip(),
         )
 
-        with patch("nexau.archs.main_sub.config.config.PromptBuilder", return_value=StubPromptBuilder()):
-            cfg = AgentConfig.from_yaml(config_path)
+        cfg = AgentConfig.from_yaml(config_path)
 
         assert [s.name for s in cfg.skills] == ["my-skill"]
         assert any(t.name == "LoadSkill" for t in cfg.tools)

@@ -204,3 +204,12 @@ middlewares:
 ```
 
 See [Middleware Hooks — LongToolOutputMiddleware](../advanced-guides/hooks.md#longtooloutputmiddleware) for full configuration reference.
+
+
+## Lazy loading long tool descriptions via Skills
+
+When a tool is marked with `as_skill: true`, NexAU exposes it progressively:
+- In `xml` mode, the prompt only includes the brief `skill_description`, and the agent uses `LoadSkill` to fetch the full detail.
+- In `openai` and `anthropic` modes, the model gets the brief `skill_description` plus the JSON Schema up front, then calls `LoadSkill` only if it needs the full description.
+
+Refer to [Skills](../advanced-guides/skills.md) for details about the Skill mechanism.

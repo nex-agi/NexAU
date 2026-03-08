@@ -46,6 +46,7 @@ from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.main_sub.execution.stop_result import StopResult
 from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.prompt_builder import PromptBuilder
+from nexau.archs.main_sub.skill import build_tool_skill
 from nexau.archs.main_sub.sub_agent_naming import build_sub_agent_tool_name
 from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
@@ -63,7 +64,6 @@ from nexau.archs.sandbox import (
 from nexau.archs.session import AgentRunActionKey, SessionManager
 from nexau.archs.session.orm import InMemoryDatabaseEngine
 from nexau.archs.tool import Tool
-from nexau.archs.tool.builtin.skill_tool import generate_skill_tool_description, load_skill
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
@@ -167,26 +167,21 @@ class Agent:
         # Initialize sandbox
         self._initialize_sandbox()
 
-        # Add skill tool for skill using
         tools = self.config.tools
-        skills = self.config.skills
-        nexau_package_path = Path(__file__).parent.parent.parent
-        has_skilled_tools = any(tool.as_skill for tool in tools)
-        if has_skilled_tools or skills:
-            skill_tool = Tool.from_yaml(
-                str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "skill_tool.yaml"),
-                binding=load_skill,
-                as_skill=False,
-            )
-            skill_tool.description += generate_skill_tool_description(skills, tools)
-            tools.append(skill_tool)
+
+        runtime_skills = list(self.config.skills)
+        existing_skill_names = {skill.name for skill in runtime_skills}
+        for tool in tools:
+            if getattr(tool, "as_skill", False) is True and tool.name not in existing_skill_names:
+                runtime_skills.append(build_tool_skill(tool, tool_call_mode=self.tool_call_mode))
+                existing_skill_names.add(tool.name)
 
         # Build tool registry for quick lookup
         self.tool_registry = {tool.name: tool for tool in tools}
         self.serial_tool_name = [tool.name for tool in tools if tool.disable_parallel]
 
         # Build skill registry for quick lookup
-        self.skill_registry = {skill.name: skill for skill in skills}
+        self.skill_registry = {skill.name: skill for skill in runtime_skills}
         self.global_storage.set("skill_registry", self.skill_registry)
 
         # Initialize prompt builder
@@ -422,9 +417,28 @@ class Agent:
         except Exception as e:
             logger.error(f"Failed to initialize MCP tools: {e}")
 
+    def _structured_tool_description(self, tool: Tool) -> str:
+        """Return the description exposed to structured tool-calling models."""
+        if tool.as_skill:
+            if not tool.skill_description:
+                raise ValueError(
+                    f"Tool {tool.name} is marked as a skill but has no skill_description",
+                )
+            return tool.skill_description
+        return tool.description or ""
+
     def _build_openai_tool_specs(self) -> list[ChatCompletionToolParam]:
         """Convert configured tools and sub-agents into OpenAI tool definitions."""
-        tools_spec: list[ChatCompletionToolParam] = [tool.to_openai() for tool in self.config.tools]
+        tools_spec: list[ChatCompletionToolParam] = []
+        for tool in self.config.tools:
+            tool_spec = tool.to_openai()
+            try:
+                function_block = cast(Any, tool_spec).get("function")
+                if isinstance(function_block, dict):
+                    function_block["description"] = self._structured_tool_description(tool)
+            except (AttributeError, KeyError, TypeError):
+                pass
+            tools_spec.append(tool_spec)
 
         if not self.config.sub_agents:
             return tools_spec
@@ -455,7 +469,14 @@ class Agent:
 
     def _build_anthropic_tool_specs(self) -> list[ToolParam]:
         """Convert tools and sub-agents into anthropic tool definitions."""
-        tools_spec: list[ToolParam] = [tool.to_anthropic() for tool in self.config.tools]
+        tools_spec: list[ToolParam] = []
+        for tool in self.config.tools:
+            tool_spec = tool.to_anthropic()
+            try:
+                tool_spec["description"] = self._structured_tool_description(tool)
+            except (KeyError, TypeError):
+                pass
+            tools_spec.append(tool_spec)
 
         if not self.config.sub_agents:
             return tools_spec

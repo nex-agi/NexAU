@@ -150,6 +150,71 @@ class TestAgent:
             assert sample_tool.name in tool_names
             assert "sub-agent-child" in tool_names
 
+    def test_tool_call_payload_uses_skill_description_for_as_skill_openai(self):
+        """OpenAI structured payload should expose only the brief skill description for as_skill tools."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            skill_tool = Tool(
+                name="web_search",
+                description="FULL DESCRIPTION: search the web with examples and workflow guidance.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+                implementation=lambda query: {"query": query},
+                as_skill=True,
+                skill_description="BRIEF SKILL DESCRIPTION",
+            )
+            agent_config = AgentConfig(
+                name="parent",
+                llm_config=LLMConfig(model="gpt-4o-mini"),
+                tools=[skill_tool],
+                tool_call_mode="openai",
+            )
+
+            agent = Agent(config=agent_config)
+
+            payload_by_name = {spec["function"]["name"]: spec for spec in agent.tool_call_payload}
+            assert payload_by_name["web_search"]["function"]["description"] == "BRIEF SKILL DESCRIPTION"
+            assert payload_by_name["web_search"]["function"]["parameters"]["properties"]["query"]["type"] == "string"
+            assert agent.skill_registry["web_search"].detail is not None
+            assert "FULL DESCRIPTION" in (agent.skill_registry["web_search"].detail or "")
+            assert [tool.name for tool in agent.config.tools].count("LoadSkill") == 1
+
+    def test_tool_call_payload_uses_skill_description_for_as_skill_anthropic(self):
+        """Anthropic structured payload should expose only the brief skill description for as_skill tools."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            skill_tool = Tool(
+                name="web_search",
+                description="FULL DESCRIPTION: search the web with examples and workflow guidance.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+                implementation=lambda query: {"query": query},
+                as_skill=True,
+                skill_description="BRIEF SKILL DESCRIPTION",
+            )
+            agent_config = AgentConfig(
+                name="parent",
+                llm_config=LLMConfig(model="gpt-4o-mini"),
+                tools=[skill_tool],
+                tool_call_mode="anthropic",
+            )
+
+            agent = Agent(config=agent_config)
+
+            payload_by_name = {spec["name"]: spec for spec in agent.tool_call_payload}
+            assert payload_by_name["web_search"]["description"] == "BRIEF SKILL DESCRIPTION"
+            assert payload_by_name["web_search"]["input_schema"]["properties"]["query"]["type"] == "string"
+            assert agent.skill_registry["web_search"].detail is not None
+            assert "FULL DESCRIPTION" in (agent.skill_registry["web_search"].detail or "")
+
     def test_tool_call_payload_anthropic_mode(self, sample_tool):
         """Anthropic mode should build anthropic tool schema with sub-agent."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:

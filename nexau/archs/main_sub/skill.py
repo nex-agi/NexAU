@@ -1,4 +1,3 @@
-# Copyright (c) Nex-AGI. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,24 +11,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
 from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.main_sub.tool_call_modes import STRUCTURED_TOOL_CALL_MODES, normalize_tool_call_mode
 from nexau.archs.tool import Tool
 
 
 class Skill:
-    def __init__(self, name: str, description: str, detail: str, folder: str):
+    def __init__(self, name: str, description: str | None, detail: str | None, folder: str):
         self.name: str = name
         self.description: str | None = description
         self.detail: str | None = detail
         self.folder: str = folder
 
     @classmethod
-    def from_folder(cls, folder: Path) -> "Skill":
+    def from_folder(cls, folder: Path) -> Skill:
         """Load a skill from a YAML file."""
         folder = Path(folder).absolute()
         # Try to find SKILL.md or SKILL.yaml
@@ -93,7 +95,92 @@ class Skill:
             raise ValueError(f"Failed to parse YAML frontmatter in {skill_path}: {e}")
 
 
-def load_skill(skill_name: str, agent_state: "AgentState") -> str:
+def _render_xml_parameter_lines(tool: Tool) -> list[str]:
+    schema = tool.input_schema or {}
+    properties = schema.get("properties", {})
+    required_params = set(cast(list[str], schema.get("required", [])))
+    if not isinstance(properties, dict):
+        return []
+
+    typed_properties = cast(dict[str, Any], properties)
+    parameter_lines: list[str] = []
+    for param_name, param_info in typed_properties.items():
+        param_info_dict = cast(dict[str, Any], param_info) if isinstance(param_info, dict) else {}
+        description = str(param_info_dict.get("description", "")).strip() or "Parameter value"
+        param_type = str(param_info_dict.get("type", "string")).strip() or "string"
+        label = "required" if param_name in required_params else "optional"
+        default = param_info_dict.get("default")
+        default_text = f", default: {default}" if default is not None else ""
+        parameter_lines.append(f"    <{param_name}>{description} ({label}, type: {param_type}{default_text})</{param_name}>")
+    return parameter_lines
+
+
+def build_tool_skill_detail(tool: Tool, tool_call_mode: str = "xml") -> str:
+    """Build the detailed content returned by LoadSkill for a tool-based skill."""
+    normalized_mode = normalize_tool_call_mode(tool_call_mode)
+    description = tool.description or "No description available."
+
+    if normalized_mode in STRUCTURED_TOOL_CALL_MODES:
+        detail_sections = [
+            f"# Tool Skill: {tool.name}",
+            "",
+            "## Detailed Description",
+            description,
+        ]
+        if tool.template_override:
+            detail_sections.extend(
+                [
+                    "",
+                    "## Additional Usage Guidance",
+                    tool.template_override,
+                ],
+            )
+        return "\n".join(detail_sections)
+
+    parameter_lines = _render_xml_parameter_lines(tool)
+    detail_sections = [
+        f"# Tool Skill: {tool.name}",
+        "",
+        description,
+    ]
+    if tool.template_override:
+        detail_sections.extend(
+            [
+                "",
+                "## Additional Usage Guidance",
+                tool.template_override,
+            ],
+        )
+    detail_sections.extend(
+        [
+            "",
+            "## XML Usage",
+            "<tool_use>",
+            f"  <tool_name>{tool.name}</tool_name>",
+            "  <parameter>",
+        ],
+    )
+    detail_sections.extend(parameter_lines)
+    detail_sections.extend(
+        [
+            "  </parameter>",
+            "</tool_use>",
+        ],
+    )
+    return "\n".join(detail_sections)
+
+
+def build_tool_skill(tool: Tool, tool_call_mode: str = "xml") -> Skill:
+    """Materialize a tool-based skill for runtime skill registry usage."""
+    return Skill(
+        name=tool.name,
+        description=tool.skill_description,
+        detail=build_tool_skill_detail(tool, tool_call_mode=tool_call_mode),
+        folder="",
+    )
+
+
+def load_skill(skill_name: str, agent_state: AgentState) -> str:
     """Load a skill from skill folders."""
     skills: dict[str, Skill] = agent_state.get_global_value("skill_registry", {})
     if skill_name not in skills:
@@ -113,27 +200,34 @@ def load_skill(skill_name: str, agent_state: "AgentState") -> str:
 def generate_skill_tool_description(skills: list[Skill], tools: list[Tool]) -> str:
     """Generate skill description."""
     skill_description = "<Skills>\n"
+    seen_skill_names: set[str] = set()
+
     for skill in skills:
         skill_description += "<SkillBrief>\n"
         skill_description += f"Skill Name: {skill.name}\n"
         skill_description += f"Skill Folder: {skill.folder}\n"
         skill_description += f"Skill Brief Description: {skill.description}\n\n"
         skill_description += "</SkillBrief>\n"
+        seen_skill_names.add(skill.name)
 
     for tool in tools:
-        if tool.as_skill:
+        if tool.as_skill and tool.name not in seen_skill_names:
             skill_description += "<SkillBrief>\n"
-            skill_description += f"Skill: {tool.name}\n"
+            skill_description += f"Skill Name: {tool.name}\n"
             if not tool.skill_description:
                 raise ValueError(f"Tool {tool.name} has no skill description but is marked as a skill")
             skill_description += f"Skill Brief Description: {tool.skill_description}\n\n"
             skill_description += "</SkillBrief>\n"
+            seen_skill_names.add(tool.name)
 
     skill_description += "</Skills>\n"
     return skill_description
 
 
 def build_load_skill_tool(tools: list[Tool], skills: list[Skill]) -> Tool | None:
+    if any(tool.name == "LoadSkill" for tool in tools):
+        return None
+
     nexau_package_path = Path(__file__).parent.parent.parent
     has_skilled_tools = any(tool.as_skill for tool in tools)
     if has_skilled_tools or skills:
