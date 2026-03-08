@@ -990,7 +990,7 @@ wheels = [
 
 [[package]]
 name = "nexau"
-version = "0.3.9"
+version = "0.3.9-hotfix"
 source = { editable = "." }
 dependencies = [
     { name = "ag-ui-protocol" },
