@@ -72,9 +72,9 @@ ContextCompactionMiddleware(
 )
 ```
 
-#### 2. Sliding Window Compaction
+#### 2. LLM Summary Compaction (`llm_summary`)
 
-Summarizes old conversation rounds using an LLM while keeping recent iterations unchanged.
+Summarizes old conversation rounds using an LLM while keeping recent iterations unchanged. Legacy alias `sliding_window` remains supported.
 
 **How it works:**
 - Groups messages into iterations (see Key Concepts above)
@@ -91,7 +91,7 @@ middlewares:
       max_context_tokens: 100000
       auto_compact: true
       threshold: 0.75
-      compaction_strategy: "sliding_window"
+      compaction_strategy: "llm_summary"
       keep_iterations: 2  # Keep last 2 iterations uncompacted
 
       # Required: LLM for summarization
@@ -110,7 +110,7 @@ ContextCompactionMiddleware(
     max_context_tokens=100000,
     auto_compact=True,
     threshold=0.75,
-    compaction_strategy="sliding_window",
+    compaction_strategy="llm_summary",
     keep_iterations=2,
     summary_model="nex-n1",
     summary_base_url="base_url",

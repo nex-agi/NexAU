@@ -18,9 +18,10 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
-from nexau.archs.main_sub.execution.hooks import AfterModelHookInput
+from nexau.archs.main_sub.execution.hooks import AfterModelHookInput, ModelCallParams
 from nexau.archs.main_sub.execution.middleware.context_compaction import (
     ContextCompactionMiddleware,
     SlidingWindowCompaction,
@@ -28,6 +29,7 @@ from nexau.archs.main_sub.execution.middleware.context_compaction import (
     ToolResultCompaction,
     UserModelFullTraceAdaptiveCompaction,
 )
+from nexau.archs.main_sub.execution.middleware.context_compaction.config import CompactionConfig
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.parse_structures import ParsedResponse
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
@@ -168,15 +170,15 @@ class TestTokenThresholdTrigger:
 class TestSlidingWindowCompaction:
     """Tests for SlidingWindowCompaction strategy."""
 
-    def test_initialization_requires_llm_config(self):
-        """Test that initialization requires LLM configuration."""
+    def test_llm_runtime_is_required_without_explicit_summary_config(self, temp_compact_prompt):
+        """Test that summary caller needs inherited runtime config or a full explicit override."""
+        compaction = SlidingWindowCompaction(
+            keep_iterations=2,
+            compact_prompt_path=temp_compact_prompt,
+        )
+
         with pytest.raises(ValueError, match="LLM configuration is required"):
-            SlidingWindowCompaction(
-                keep_iterations=3,
-                summary_model=None,
-                summary_base_url=None,
-                summary_api_key=None,
-            )
+            compaction._ensure_llm_caller()
 
     def test_initialization_with_llm_config(self, mock_openai_client, temp_compact_prompt):
         """Test initialization with valid LLM configuration."""
@@ -191,6 +193,171 @@ class TestSlidingWindowCompaction:
             )
             assert compaction.summary_model == "gpt-4o-mini"
             assert compaction.keep_iterations == 3
+            assert compaction.summary_llm_config is not None
+
+    @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
+    def test_runtime_llm_config_is_inherited(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
+        """Test summary LLM inherits the agent LLM config when no override is provided."""
+        base_llm_config = LLMConfig(
+            model="gpt-4o-mini",
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            temperature=0.3,
+            max_tokens=2048,
+            top_p=0.9,
+            frequency_penalty=0.1,
+            presence_penalty=0.2,
+            timeout=45,
+            max_retries=7,
+            debug=True,
+            stream=True,
+        )
+        compaction = SlidingWindowCompaction(
+            keep_iterations=2,
+            compact_prompt_path=temp_compact_prompt,
+        )
+
+        compaction.configure_llm_runtime(base_llm_config, mock_openai_client)
+
+        assert compaction.summary_llm_config is not None
+        assert compaction.summary_llm_config.model == base_llm_config.model
+        assert compaction.summary_llm_config.base_url == base_llm_config.base_url
+        assert compaction.summary_llm_config.api_key == base_llm_config.api_key
+        assert compaction.summary_llm_config.temperature == base_llm_config.temperature
+        assert compaction.summary_llm_config.max_tokens == base_llm_config.max_tokens
+        assert compaction.summary_llm_config.top_p == base_llm_config.top_p
+        assert compaction.summary_llm_config.timeout == base_llm_config.timeout
+        assert compaction.summary_llm_config.max_retries == base_llm_config.max_retries
+        assert compaction.summary_llm_config.stream == base_llm_config.stream
+        assert compaction._llm_caller is not None
+        assert compaction._llm_caller.openai_client is mock_openai_client
+        mock_openai_class.assert_not_called()
+
+    def test_compaction_config_merges_summary_api_type_into_nested_config(self):
+        """Test legacy flat summary_api_type is normalized into summary_llm_config."""
+        config = CompactionConfig(
+            summary_model="summary-model",
+            summary_base_url="https://summary.example.com/v1",
+            summary_api_key="summary-key",
+            summary_api_type="openai_chat_completion",
+        )
+
+        assert config.summary_llm_config == {
+            "model": "summary-model",
+            "base_url": "https://summary.example.com/v1",
+            "api_key": "summary-key",
+            "api_type": "openai_chat_completion",
+        }
+
+    def test_runtime_llm_config_requires_complete_summary_llm_config(self, temp_compact_prompt):
+        """Test standalone summary_llm_config must include the required connection fields."""
+        compaction = SlidingWindowCompaction(
+            keep_iterations=2,
+            summary_llm_config={
+                "model": "gpt-5-mini",
+                "api_type": "openai_chat_completion",
+            },
+            compact_prompt_path=temp_compact_prompt,
+        )
+        base_llm_config = LLMConfig(
+            model="gpt-4o-mini",
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+        )
+
+        with pytest.raises(ValueError, match="summary_llm_config must be a complete standalone LLM config"):
+            compaction.configure_llm_runtime(base_llm_config, Mock())
+
+    @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
+    def test_runtime_llm_config_uses_summary_llm_config_as_standalone_runtime(self, mock_openai_class, temp_compact_prompt):
+        """Test nested summary_llm_config is used as a standalone runtime without inheriting base fields."""
+        replacement_client = Mock()
+        mock_openai_class.return_value = replacement_client
+        base_llm_config = LLMConfig(
+            model="claude-3-7-sonnet",
+            base_url="https://api.anthropic.com",
+            api_key="anthropic-key",
+            api_type="anthropic_chat_completion",
+            temperature=0.4,
+            max_tokens=1024,
+            top_p=0.95,
+            timeout=60,
+            max_retries=9,
+            stream=True,
+        )
+        base_client = Mock()
+        compaction = SlidingWindowCompaction(
+            keep_iterations=2,
+            summary_llm_config={
+                "model": "gpt-5-mini",
+                "base_url": "https://summary.example.com/v1",
+                "api_key": "summary-key",
+                "api_type": "openai_chat_completion",
+            },
+            compact_prompt_path=temp_compact_prompt,
+        )
+
+        compaction.configure_llm_runtime(base_llm_config, base_client)
+
+        assert compaction.summary_llm_config is not None
+        assert compaction.summary_llm_config.model == "gpt-5-mini"
+        assert compaction.summary_llm_config.base_url == "https://summary.example.com/v1"
+        assert compaction.summary_llm_config.api_key == "summary-key"
+        assert compaction.summary_llm_config.api_type == "openai_chat_completion"
+        assert compaction.summary_llm_config.temperature is None
+        assert compaction.summary_llm_config.max_tokens is None
+        assert compaction.summary_llm_config.timeout is None
+        assert compaction.summary_llm_config.max_retries == 3
+        assert compaction._llm_caller is not None
+        assert compaction._llm_caller.openai_client is replacement_client
+        assert mock_openai_class.call_args_list[-1].kwargs == {
+            "api_key": "summary-key",
+            "base_url": "https://summary.example.com/v1",
+            "max_retries": 3,
+        }
+
+    @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
+    def test_runtime_llm_config_legacy_summary_fields_are_standalone(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
+        """Test legacy flat summary fields build a standalone summary runtime without inheritance."""
+        replacement_client = Mock()
+        mock_openai_class.return_value = replacement_client
+        base_llm_config = LLMConfig(
+            model="gpt-4o-mini",
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            temperature=0.4,
+            max_tokens=1024,
+            top_p=0.95,
+            timeout=60,
+            max_retries=9,
+            stream=True,
+        )
+        compaction = SlidingWindowCompaction(
+            keep_iterations=2,
+            summary_model="gpt-5-mini",
+            summary_base_url="https://summary.example.com/v1",
+            summary_api_key="summary-key",
+            compact_prompt_path=temp_compact_prompt,
+        )
+
+        compaction.configure_llm_runtime(base_llm_config, mock_openai_client)
+
+        assert compaction.summary_llm_config is not None
+        assert compaction.summary_llm_config.model == "gpt-5-mini"
+        assert compaction.summary_llm_config.base_url == "https://summary.example.com/v1"
+        assert compaction.summary_llm_config.api_key == "summary-key"
+        assert compaction.summary_llm_config.temperature is None
+        assert compaction.summary_llm_config.max_tokens is None
+        assert compaction.summary_llm_config.top_p is None
+        assert compaction.summary_llm_config.timeout is None
+        assert compaction.summary_llm_config.max_retries == 3
+        assert compaction._llm_caller is not None
+        assert compaction._llm_caller.openai_client is replacement_client
+        assert mock_openai_class.call_args_list[-1].kwargs == {
+            "api_key": "summary-key",
+            "base_url": "https://summary.example.com/v1",
+            "max_retries": 3,
+        }
 
     def test_keep_iterations_validation(self, temp_compact_prompt):
         """Test that keep_iterations must be >= 1."""
@@ -221,6 +388,235 @@ class TestSlidingWindowCompaction:
 
         assert result[0].role == Role.SYSTEM
         assert result[0].get_text_content() == "You are a helpful assistant."
+
+
+class TestEmergencySummaryRuntime:
+    """Tests for emergency wrap-summary runtime resolution."""
+
+    def test_emergency_summary_inherits_base_llm_config(
+        self,
+        agent_state,
+        mock_openai_client,
+        mock_token_counter,
+    ):
+        """Test emergency summarization uses the active model config when no override is set."""
+        captured: dict[str, object] = {}
+
+        class StubLLMCaller:
+            def __init__(
+                self,
+                openai_client,
+                llm_config,
+                retry_attempts=5,
+                middleware_manager=None,
+            ):
+                captured["client"] = openai_client
+                captured["llm_config"] = llm_config
+
+            def call_llm(self, *args, **kwargs):
+                return ModelResponse(content="summary")
+
+        middleware = ContextCompactionMiddleware(
+            compaction_strategy="tool_result_compaction",
+            token_counter=mock_token_counter,
+        )
+        base_llm_config = LLMConfig(
+            model="gpt-4o-mini",
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            temperature=0.25,
+            max_tokens=2048,
+            top_p=0.8,
+            timeout=30,
+            max_retries=4,
+            stream=True,
+        )
+        params = ModelCallParams(
+            messages=[Message.user("hello")],
+            max_tokens=512,
+            force_stop_reason=None,
+            agent_state=agent_state,
+            tool_call_mode="openai",
+            tools=None,
+            api_params={},
+            openai_client=mock_openai_client,
+            llm_config=base_llm_config,
+        )
+
+        with patch("nexau.archs.main_sub.execution.middleware.context_compaction.middleware.LLMCaller", StubLLMCaller):
+            middleware._build_emergency_summarize_fn(params)
+
+        resolved = captured["llm_config"]
+        assert isinstance(resolved, LLMConfig)
+        assert resolved.model == base_llm_config.model
+        assert resolved.base_url == base_llm_config.base_url
+        assert resolved.api_key == base_llm_config.api_key
+        assert resolved.temperature == base_llm_config.temperature
+        assert resolved.max_tokens == base_llm_config.max_tokens
+        assert resolved.top_p == base_llm_config.top_p
+        assert resolved.timeout == base_llm_config.timeout
+        assert resolved.max_retries == base_llm_config.max_retries
+        assert captured["client"] is mock_openai_client
+
+    def test_emergency_summary_applies_nested_summary_llm_config(
+        self,
+        agent_state,
+        mock_openai_client,
+        mock_token_counter,
+    ):
+        """Test emergency summarization supports nested summary_llm_config including api_type."""
+        captured: dict[str, object] = {}
+
+        class StubLLMCaller:
+            def __init__(
+                self,
+                openai_client,
+                llm_config,
+                retry_attempts=5,
+                middleware_manager=None,
+            ):
+                captured["client"] = openai_client
+                captured["llm_config"] = llm_config
+
+            def call_llm(self, *args, **kwargs):
+                return ModelResponse(content="summary")
+
+        replacement_client = Mock()
+        base_llm_config = LLMConfig(
+            model="claude-3-7-sonnet",
+            base_url="https://api.anthropic.com",
+            api_key="anthropic-key",
+            api_type="anthropic_chat_completion",
+            temperature=0.25,
+            max_tokens=2048,
+            top_p=0.8,
+            timeout=30,
+            max_retries=4,
+            stream=True,
+        )
+        params = ModelCallParams(
+            messages=[Message.user("hello")],
+            max_tokens=512,
+            force_stop_reason=None,
+            agent_state=agent_state,
+            tool_call_mode="anthropic",
+            tools=None,
+            api_params={},
+            openai_client=mock_openai_client,
+            llm_config=base_llm_config,
+        )
+        middleware = ContextCompactionMiddleware(
+            compaction_strategy="tool_result_compaction",
+            token_counter=mock_token_counter,
+            summary_llm_config={
+                "model": "gpt-5-mini",
+                "base_url": "https://summary.example.com/v1",
+                "api_key": "summary-key",
+                "api_type": "openai_chat_completion",
+            },
+        )
+
+        with patch(
+            "nexau.archs.main_sub.execution.middleware.context_compaction.middleware.OpenAI",
+            return_value=replacement_client,
+        ) as mock_openai:
+            with patch("nexau.archs.main_sub.execution.middleware.context_compaction.middleware.LLMCaller", StubLLMCaller):
+                middleware._build_emergency_summarize_fn(params)
+
+        resolved = captured["llm_config"]
+        assert isinstance(resolved, LLMConfig)
+        assert resolved.model == "gpt-5-mini"
+        assert resolved.base_url == "https://summary.example.com/v1"
+        assert resolved.api_key == "summary-key"
+        assert resolved.api_type == "openai_chat_completion"
+        assert resolved.temperature is None
+        assert resolved.max_tokens is None
+        assert resolved.timeout is None
+        assert resolved.max_retries == 3
+        assert captured["client"] is replacement_client
+        assert mock_openai.call_args_list[-1].kwargs == {
+            "api_key": "summary-key",
+            "base_url": "https://summary.example.com/v1",
+            "max_retries": 3,
+        }
+
+    def test_emergency_summary_legacy_summary_fields_are_standalone(
+        self,
+        agent_state,
+        mock_openai_client,
+        mock_token_counter,
+    ):
+        """Test emergency summarization uses legacy summary fields as standalone runtime."""
+        captured: dict[str, object] = {}
+
+        class StubLLMCaller:
+            def __init__(
+                self,
+                openai_client,
+                llm_config,
+                retry_attempts=5,
+                middleware_manager=None,
+            ):
+                captured["client"] = openai_client
+                captured["llm_config"] = llm_config
+
+            def call_llm(self, *args, **kwargs):
+                return ModelResponse(content="summary")
+
+        replacement_client = Mock()
+        base_llm_config = LLMConfig(
+            model="gpt-4o-mini",
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            temperature=0.25,
+            max_tokens=2048,
+            top_p=0.8,
+            timeout=30,
+            max_retries=4,
+            stream=True,
+        )
+        params = ModelCallParams(
+            messages=[Message.user("hello")],
+            max_tokens=512,
+            force_stop_reason=None,
+            agent_state=agent_state,
+            tool_call_mode="openai",
+            tools=None,
+            api_params={},
+            openai_client=mock_openai_client,
+            llm_config=base_llm_config,
+        )
+        middleware = ContextCompactionMiddleware(
+            compaction_strategy="tool_result_compaction",
+            token_counter=mock_token_counter,
+            summary_model="gpt-5-mini",
+            summary_base_url="https://summary.example.com/v1",
+            summary_api_key="summary-key",
+        )
+
+        with patch(
+            "nexau.archs.main_sub.execution.middleware.context_compaction.middleware.OpenAI",
+            return_value=replacement_client,
+        ) as mock_openai:
+            with patch("nexau.archs.main_sub.execution.middleware.context_compaction.middleware.LLMCaller", StubLLMCaller):
+                middleware._build_emergency_summarize_fn(params)
+
+        resolved = captured["llm_config"]
+        assert isinstance(resolved, LLMConfig)
+        assert resolved.model == "gpt-5-mini"
+        assert resolved.base_url == "https://summary.example.com/v1"
+        assert resolved.api_key == "summary-key"
+        assert resolved.temperature is None
+        assert resolved.max_tokens is None
+        assert resolved.top_p is None
+        assert resolved.timeout is None
+        assert resolved.max_retries == 3
+        assert captured["client"] is replacement_client
+        mock_openai.assert_called_once_with(
+            api_key="summary-key",
+            base_url="https://summary.example.com/v1",
+            max_retries=3,
+        )
 
 
 class TestToolResultCompaction:
@@ -397,11 +793,11 @@ class TestContextCompactionMiddleware:
         assert isinstance(middleware.compaction_strategy, ToolResultCompaction)
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
-    def test_string_enum_strategy(self, mock_openai_class, mock_openai_client, mock_token_counter, temp_compact_prompt):
-        """Test initialization with string enum strategy."""
+    def test_llm_summary_strategy(self, mock_openai_class, mock_openai_client, mock_token_counter, temp_compact_prompt):
+        """Test initialization with llm_summary strategy."""
         mock_openai_class.return_value = mock_openai_client
         middleware = ContextCompactionMiddleware(
-            compaction_strategy="sliding_window",
+            compaction_strategy="llm_summary",
             keep_iterations=5,
             token_counter=mock_token_counter,
             summary_model="gpt-4o-mini",
@@ -412,6 +808,24 @@ class TestContextCompactionMiddleware:
 
         assert isinstance(middleware.compaction_strategy, SlidingWindowCompaction)
         assert middleware.compaction_strategy.keep_iterations == 5
+
+    @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
+    def test_sliding_window_alias_still_supported(self, mock_openai_class, mock_openai_client, mock_token_counter, temp_compact_prompt):
+        """Test legacy sliding_window alias still maps to LLM summary compaction with a deprecation warning."""
+        mock_openai_class.return_value = mock_openai_client
+        with pytest.warns(FutureWarning, match="sliding_window"):
+            middleware = ContextCompactionMiddleware(
+                compaction_strategy="sliding_window",
+                keep_iterations=4,
+                token_counter=mock_token_counter,
+                summary_model="gpt-4o-mini",
+                summary_base_url="https://api.openai.com/v1",
+                summary_api_key="test-key",
+                compact_prompt_path=temp_compact_prompt,
+            )
+
+        assert isinstance(middleware.compaction_strategy, SlidingWindowCompaction)
+        assert middleware.compaction_strategy.keep_iterations == 4
 
 
 class TestSlidingWindowCompactionKeepUserRounds:
@@ -1071,7 +1485,7 @@ class TestContextCompactionMiddlewareKeepUserRounds:
         mock_openai_class.return_value = mock_openai_client
 
         middleware = ContextCompactionMiddleware(
-            compaction_strategy="sliding_window",
+            compaction_strategy="llm_summary",
             keep_user_rounds=2,
             token_counter=mock_token_counter,
             summary_model="gpt-4o-mini",
@@ -1094,7 +1508,7 @@ class TestContextCompactionMiddlewareAdvanced:
 
         with pytest.raises(ValueError, match="keep_iterations must be >= 1"):
             ContextCompactionMiddleware(
-                compaction_strategy="sliding_window",
+                compaction_strategy="llm_summary",
                 keep_iterations=0,
                 token_counter=mock_token_counter,
                 summary_model="gpt-4o-mini",
@@ -1107,11 +1521,16 @@ class TestContextCompactionMiddlewareAdvanced:
         """Test that invalid strategy name raises error."""
         from pydantic_core import ValidationError
 
-        with pytest.raises(ValidationError, match="Input should be 'sliding_window' or 'tool_result_compaction'"):
+        with pytest.raises(ValidationError) as exc_info:
             ContextCompactionMiddleware(
                 compaction_strategy="invalid_strategy",
                 token_counter=mock_token_counter,
             )
+
+        message = str(exc_info.value)
+        assert "llm_summary" in message
+        assert "sliding_window" in message
+        assert "tool_result_compaction" in message
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
     def test_after_model_with_tool_calls_openai_format(

@@ -5,14 +5,14 @@
 - **标签**: `architecture`, `runtime`, `dx`, `observability`, `breaking-change`
 - **影响服务**: `nexau/archs/main_sub/execution/`, `nexau/archs/main_sub/utils/`, `nexau/archs/main_sub/config/`, `nexau/archs/main_sub/`
 - **创建日期**: 2026-02-26
-- **更新日期**: 2026-03-04
+- **更新日期**: 2026-03-06
 
 ## 摘要
 
 本 RFC 统一记录以下改造：
 
 1. Token 计数从 legacy dict 口径迁移到 UMP block 原生口径（breaking）。
-2. 上下文超限控制拆分为两个显式开关：是否硬停、是否启用 emergency fallback。
+2. 取消本地硬停：预检查仅用于计算 `max_tokens`，真正的超限失败由模型侧 overflow / 压缩失败收敛。
 3. `wrap_model_call` 在 provider 明确上下文超限时报错时，触发固定“两段式 emergency 压缩”并重试一次。
 4. 新增 compaction 生命周期事件（开始/结束），并打通到 SSE 解析层。
 5. 将 `CONTEXT_TOKEN_LIMIT` 统一归类为 `RunErrorEvent` 终态语义。
@@ -30,7 +30,7 @@
 
 ### 2) 超限治理路径不透明
 
-- 需要明确“本地预检查是否硬停”与“provider overflow 时是否 fallback”是两件事；
+- 需要明确：本地预检查仅用于预算估算，真正超限由 provider overflow / 压缩失败决定；
 - 需要可观测事件来确认压缩是否触发、成功与失败原因。
 
 ### 3) 线上排障信息不足
@@ -56,17 +56,17 @@
   3. `get_encoding("cl100k_base")`
   4. 本地字符估算 fallback。
 
-### B. 配置与执行层超限开关
+### B. 配置与执行层超限行为
 
-当前实现拆分为两个公共开关：
+当前实现仅保留 emergency fallback 开关，并移除本地硬停：
 
-1. `overflow_max_tokens_stop_enabled`（Agent/Executor 层）  
-   - `true`：本地预检查超限硬停；  
-   - `false`：即使本地预算不足也继续发起模型请求。
-
-2. `emergency_compact_enabled`（ContextCompactionMiddleware 层）  
+1. `emergency_compact_enabled`（ContextCompactionMiddleware 层）  
    - 控制 `wrap_model_call` 的 emergency fallback 是否可触发；  
    - 不控制常规 `before_model` / `after_model` 压缩。
+
+2. 本地预检查不再硬停  
+   - `current_prompt_tokens > max_context_tokens` 仅记录 warning；  
+   - `available_tokens` 仍用于 `max_tokens` 预算，并保证最小为 `1`。
 
 ### C. 常规压缩与 emergency fallback 边界
 
@@ -160,8 +160,12 @@ def counter(messages: list[Message], tools: list[dict[str, Any]] | None = None) 
 
 ### 3) 新增/明确开关
 
-- `overflow_max_tokens_stop_enabled: bool = True`（Agent/Executor 配置域）
 - `emergency_compact_enabled: bool = True`（ContextCompactionMiddleware 配置域）
+
+### 4) 删除硬停开关（Breaking）
+
+- `overflow_max_tokens_stop_enabled` 已移除；
+- 本地不再因预检查超限而直接停止，是否失败由模型侧 overflow / 压缩失败决定。
 
 ---
 

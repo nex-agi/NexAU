@@ -28,11 +28,13 @@ from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock, ToolUseBlock
 
 from .....utils.token_counter import TokenCounter
+from ..llm_config_utils import normalize_summary_llm_overrides, resolve_summary_llm_config
 
 logger = logging.getLogger(__name__)
 
 # Backward-compatibility: older tests patch `sliding_window.OpenAI`.
 OpenAI = openai.OpenAI
+Anthropic = anthropic.Anthropic
 
 
 def _load_compact_prompt(prompt_path: str) -> str:
@@ -86,10 +88,11 @@ class SlidingWindowCompaction:
         keep_system: bool = True,
         keep_iterations: int = 3,
         keep_user_rounds: int = 0,
+        summary_llm_config: dict[str, Any] | None = None,
         summary_model: str | None = None,
         summary_base_url: str | None = None,
         summary_api_key: str | None = None,
-        summary_api_type: str = "openai_chat_completion",
+        summary_api_type: str | None = None,
         max_context_tokens: int = 128000,
         compact_prompt_path: str | None = None,
         token_counter: TokenCounter | None = None,
@@ -102,19 +105,20 @@ class SlidingWindowCompaction:
             keep_iterations: Number of recent iterations to keep. Default: 3.
             keep_user_rounds: Number of recent user rounds to keep. Default: 0 (disabled).
                 When > 0, uses user rounds mode instead of iterations mode.
-            summary_model: LLM model for summarization. Required.
-            summary_base_url: LLM API base URL for summarization. Required.
-            summary_api_key: LLM API key for summarization. Required.
-            summary_api_type: LLM API type for summarization. Required.
-            retry_attempts: Number of retry attempts for LLM calls. Default: 3.
+            summary_llm_config: Optional nested LLMConfig-style overrides for summarization.
+            summary_model: Optional legacy model override for summarization.
+            summary_base_url: Optional legacy base URL override for summarization.
+            summary_api_key: Optional legacy API key override for summarization.
+            summary_api_type: Optional legacy API type override for summarization.
             token_counter: Token counter instance for counting tokens. If None, a default TokenCounter is used.
             max_context_tokens: Context window size of the summary LLM. Default: 128000.
+            retry_attempts: Number of retry attempts for summary LLM calls. Default: 3.
             compact_prompt_path: Path to compact prompt file (already resolved by config). Required.
 
         Raises:
             ValueError: If both keep_iterations != 3 and keep_user_rounds > 0 are set.
             ValueError: If keep_iterations < 1 or keep_user_rounds < 0.
-            ValueError: If LLM configuration is missing.
+            ValueError: If runtime LLM configuration is missing when needed.
         """
         if keep_iterations != 3 and keep_user_rounds > 0:
             raise ValueError("Cannot set both keep_iterations and keep_user_rounds")
@@ -124,13 +128,6 @@ class SlidingWindowCompaction:
         if keep_user_rounds < 0:
             raise ValueError(f"keep_user_rounds must be >= 0, got {keep_user_rounds}")
 
-        # Validate LLM configuration
-        if not summary_model or not summary_base_url or not summary_api_key:
-            raise ValueError(
-                "LLM configuration is required for SlidingWindowCompaction. "
-                "Please provide summary_model, summary_base_url, and summary_api_key."
-            )
-
         # Validate compact prompt path
         if not compact_prompt_path:
             raise ValueError("compact_prompt_path is required for SlidingWindowCompaction.")
@@ -139,31 +136,39 @@ class SlidingWindowCompaction:
         self.keep_iterations = keep_iterations
         self.keep_user_rounds = keep_user_rounds
         self.max_context_tokens = max_context_tokens
-
-        # Initialize LLM caller for summarization (route API calls through LLMCaller).
-        self.summary_model = summary_model
-        self.summary_base_url = summary_base_url
-        self.summary_api_key = summary_api_key
-        self.summary_api_type = summary_api_type
         self.token_counter = token_counter or TokenCounter()
-        # Load compact prompt using the resolved path
-        self.compact_prompt = _load_compact_prompt(compact_prompt_path)
-        logger.info(f"[SlidingWindowCompaction] summary_api_type {summary_api_type}")
-        summary_llm_config = LLMConfig(
-            model=self.summary_model,
-            base_url=self.summary_base_url,
-            api_key=self.summary_api_key,
-            api_type=summary_api_type,
-        )
+        self.retry_attempts = retry_attempts
 
-        summary_client = self._initialize_openai_client(summary_llm_config)
-        self._summary_client = summary_client
-        logger.info(f"summary_client {summary_client}")
-        self._llm_caller = LLMCaller(summary_client, summary_llm_config, retry_attempts=retry_attempts)
+        # Initialize summary runtime configuration.
+        self.summary_llm_config_overrides = normalize_summary_llm_overrides(
+            summary_llm_config,
+            summary_model=summary_model,
+            summary_base_url=summary_base_url,
+            summary_api_key=summary_api_key,
+            summary_api_type=summary_api_type,
+        )
+        self.summary_model = self.summary_llm_config_overrides.get("model")
+        self.summary_base_url = self.summary_llm_config_overrides.get("base_url")
+        self.summary_api_key = self.summary_llm_config_overrides.get("api_key")
+        self.summary_api_type = self.summary_llm_config_overrides.get("api_type")
+        self.summary_llm_config: LLMConfig | None = None
+        self._base_llm_config: LLMConfig | None = None
+        self._base_openai_client: Any | None = None
+        self._llm_caller: LLMCaller | None = None
+        self._summary_client: Any | None = None
+
+        # Load compact prompt using the resolved path.
+        self.compact_prompt = _load_compact_prompt(compact_prompt_path)
+
+        if all(self.summary_llm_config_overrides.get(key) for key in ("model", "base_url", "api_key")):
+            self._refresh_llm_runtime()
+
         logger.info(
-            f"[SlidingWindowCompaction] Initialized: model={self.summary_model}, "
-            f"keep_iterations={self.keep_iterations}, keep_user_rounds={self.keep_user_rounds}, "
-            f"max_context_tokens={self.max_context_tokens}"
+            "[SlidingWindowCompaction] Initialized: summary_overrides=%s, keep_iterations=%s, keep_user_rounds=%s, max_context_tokens=%s",
+            sorted(self.summary_llm_config_overrides.keys()),
+            self.keep_iterations,
+            self.keep_user_rounds,
+            self.max_context_tokens,
         )
 
     @property
@@ -171,23 +176,59 @@ class SlidingWindowCompaction:
         """Max input tokens allowed when calling the summary LLM."""
         return self.max_context_tokens - self._SUMMARY_RESERVED_TOKENS
 
-    def _initialize_openai_client(self, llm_config: LLMConfig) -> Any:
-        """Initialize OpenAI client from LLM config."""
-        # Guard clause
+    def configure_llm_runtime(
+        self,
+        llm_config: LLMConfig,
+        openai_client: Any | None = None,
+    ) -> None:
+        """Inject the agent/runtime LLM config used as the default summary model."""
+        self._base_llm_config = llm_config.copy()
+        self._base_openai_client = openai_client
+        self._refresh_llm_runtime()
 
+    def _resolve_summary_llm_config(self) -> LLMConfig:
         try:
-            if self.summary_api_type == "gemini_rest":
-                return None
-            if self.summary_api_type == "anthropic_chat_completion":
-                client_kwargs = llm_config.to_client_kwargs()
-                return anthropic.Anthropic(**client_kwargs)
-            if llm_config.api_type in ["openai_responses", "openai_chat_completion"]:
-                client_kwargs = llm_config.to_client_kwargs()
-                return OpenAI(**client_kwargs)
-            raise ValueError(f"Invalid API type: {llm_config.api_type}")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize OpenAI client: {e}")
+            return resolve_summary_llm_config(
+                base_llm_config=self._base_llm_config,
+                summary_overrides=self.summary_llm_config_overrides,
+            )
+        except ValueError as exc:
+            if self.summary_llm_config_overrides:
+                raise
+            raise ValueError(
+                "LLM configuration is required for SlidingWindowCompaction. Provide agent llm_config or set summary_llm_config."
+            ) from exc
+
+    def _build_client(self, llm_config: LLMConfig) -> Any | None:
+        if llm_config.api_type == "gemini_rest":
             return None
+        client_kwargs = llm_config.to_client_kwargs()
+        if llm_config.api_type == "anthropic_chat_completion":
+            return Anthropic(**client_kwargs)
+        if llm_config.api_type in ["openai_responses", "openai_chat_completion"]:
+            return OpenAI(**client_kwargs)
+        raise ValueError(f"Invalid API type: {llm_config.api_type}")
+
+    def _refresh_llm_runtime(self) -> None:
+        summary_llm_config = self._resolve_summary_llm_config()
+        reuse_base_client = (
+            self._base_llm_config is not None
+            and self._base_openai_client is not None
+            and self._base_llm_config.api_type == summary_llm_config.api_type
+            and self._base_llm_config.to_client_kwargs() == summary_llm_config.to_client_kwargs()
+        )
+        summary_client = self._base_openai_client if reuse_base_client else self._build_client(summary_llm_config)
+
+        self.summary_llm_config = summary_llm_config
+        self._summary_client = summary_client
+        self._llm_caller = LLMCaller(summary_client, summary_llm_config, retry_attempts=self.retry_attempts)
+
+    def _ensure_llm_caller(self) -> LLMCaller:
+        if self._llm_caller is None:
+            self._refresh_llm_runtime()
+        if self._llm_caller is None:
+            raise RuntimeError("SlidingWindowCompaction LLM caller initialization failed")
+        return self._llm_caller
 
     def compact(
         self,
@@ -493,20 +534,26 @@ class SlidingWindowCompaction:
 
         return user_rounds
 
-    def _generate_summary_direct_fallback(self, llm_messages: list[Message], *, max_tokens: int) -> str:
+    def _generate_summary_direct_fallback(self, llm_messages: list[Message]) -> str:
         """Fallback summary path for simple OpenAI-compatible mocked clients."""
-        if self.summary_api_type != "openai_chat_completion":
+        summary_api_type = (
+            self.summary_llm_config.api_type if self.summary_llm_config is not None else (self.summary_api_type or "openai_chat_completion")
+        )
+        if summary_api_type != "openai_chat_completion":
             raise RuntimeError("Direct summary fallback only supports openai_chat_completion")
         if self._summary_client is None:
             raise RuntimeError("Summary client is not initialized")
 
+        create_kwargs: dict[str, Any] = {
+            "model": self.summary_llm_config.model if self.summary_llm_config is not None else self.summary_model,
+            "messages": messages_to_legacy_openai_chat(llm_messages),
+        }
+        if self.summary_llm_config is not None and self.summary_llm_config.max_tokens is not None:
+            create_kwargs["max_tokens"] = self.summary_llm_config.max_tokens
+
         response = cast(
             ChatCompletion,
-            self._summary_client.chat.completions.create(
-                model=self.summary_model,
-                messages=messages_to_legacy_openai_chat(llm_messages),
-                max_tokens=max_tokens,
-            ),
+            self._summary_client.chat.completions.create(**create_kwargs),
         )
         if not response.choices:
             return ""
@@ -522,31 +569,35 @@ class SlidingWindowCompaction:
         Raises:
             Exception: If LLM call fails.
         """
-        logger.info(f"[SlidingWindowCompaction] Calling LLM to generate summary (model: {self.summary_model})")
+        llm_caller = self._ensure_llm_caller()
+        summary_model_name = self.summary_llm_config.model if self.summary_llm_config is not None else self.summary_model
+        logger.info(f"[SlidingWindowCompaction] Calling LLM to generate summary (model: {summary_model_name})")
 
-        # Prepare messages for LLM
+        # Prepare messages for LLM.
         llm_messages = messages.copy()
         llm_messages.append(Message(role=Role.USER, content=[TextBlock(text=self.compact_prompt)]))
 
-        tool_call_mode = "anthropic" if self.summary_api_type == "anthropic_chat_completion" else "openai"
+        summary_api_type = (
+            self.summary_llm_config.api_type if self.summary_llm_config is not None else (self.summary_api_type or "openai_chat_completion")
+        )
+        tool_call_mode = "anthropic" if summary_api_type == "anthropic_chat_completion" else "openai"
 
         try:
-            model_response = self._llm_caller.call_llm(
+            model_response = llm_caller.call_llm(
                 llm_messages,
-                max_tokens=2048,
                 tool_call_mode=tool_call_mode,
             )
             summary = (model_response.content or "").strip() if model_response else ""
             logger.info("[SlidingWindowCompaction] LLM summary generated successfully")
             return summary
         except Exception as exc:
-            if self.summary_api_type != "openai_chat_completion":
+            if summary_api_type != "openai_chat_completion":
                 raise
 
             logger.warning(
                 "[SlidingWindowCompaction] LLMCaller summary generation failed; falling back to direct OpenAI-compatible client call: %s",
                 exc,
             )
-            summary = self._generate_summary_direct_fallback(llm_messages, max_tokens=2048)
+            summary = self._generate_summary_direct_fallback(llm_messages)
             logger.info("[SlidingWindowCompaction] LLM summary generated successfully via direct client fallback")
             return summary

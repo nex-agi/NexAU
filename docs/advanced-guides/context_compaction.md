@@ -72,9 +72,9 @@ ContextCompactionMiddleware(
 )
 ```
 
-#### 2. Sliding Window Compaction
+#### 2. LLM Summary Compaction (`llm_summary`)
 
-Summarizes old conversation rounds using an LLM while keeping recent iterations unchanged.
+Summarizes old conversation rounds using an LLM while keeping recent iterations unchanged. Deprecated legacy alias `sliding_window` remains supported and emits a warning.
 
 **How it works:**
 - Groups messages into iterations (see Key Concepts above)
@@ -91,13 +91,18 @@ middlewares:
       max_context_tokens: 100000
       auto_compact: true
       threshold: 0.75
-      compaction_strategy: "sliding_window"
+      compaction_strategy: "llm_summary"
       keep_iterations: 2  # Keep last 2 iterations uncompacted
 
-      # Required: LLM for summarization
-      summary_model: ${env.SUMMARY_MODEL}
-      summary_base_url: ${env.SUMMARY_BASE_URL}
-      summary_api_key: ${env.SUMMARY_API_KEY}
+      # Optional: summary LLM overrides.
+      # If omitted, the middleware reuses the agent's llm_config.
+      # If provided, this must be a standalone summary LLM config and is used
+      # as-is for both regular summary compaction and wrap emergency summarization.
+      summary_llm_config:
+        model: ${env.SUMMARY_MODEL}
+        base_url: ${env.SUMMARY_BASE_URL}
+        api_key: ${env.SUMMARY_API_KEY}
+        api_type: ${env.SUMMARY_API_TYPE}
 
       # Optional: Custom summary prompt
       compact_prompt_path: "./prompts/custom_compact_prompt.md"
@@ -110,13 +115,18 @@ ContextCompactionMiddleware(
     max_context_tokens=100000,
     auto_compact=True,
     threshold=0.75,
-    compaction_strategy="sliding_window",
+    compaction_strategy="llm_summary",
     keep_iterations=2,
-    summary_model="nex-n1",
-    summary_base_url="base_url",
-    summary_api_key="sk-...",
+    summary_llm_config={
+        "model": "nex-n1",
+        "base_url": "https://summary.example.com/v1",
+        "api_key": "sk-...",
+        "api_type": "openai_chat_completion",
+    },
 )
 ```
+
+`wrap_model_call` emergency summarization follows the same rule: by default it reuses the active model runtime configuration, and if `summary_llm_config` is set, that standalone config is used as-is. Legacy flat fields (`summary_model`, `summary_base_url`, `summary_api_key`, `summary_api_type`) remain supported for compatibility.
 
 ### Emergency Overflow Fallback (wrap_model_call)
 
@@ -200,7 +210,6 @@ Key assertions:
 Recommended config:
 - `auto_compact: true`
 - `emergency_compact_enabled: true`
-- `overflow_max_tokens_stop_enabled: false` (so precheck does not hard-stop before wrap fallback)
 - relatively small `max_context_tokens` for easier reproduction
 
 Run several rounds where each round:

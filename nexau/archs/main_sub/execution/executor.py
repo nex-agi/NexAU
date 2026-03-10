@@ -87,7 +87,6 @@ class Executor:
         llm_config: LLMConfig,
         max_iterations: int = 100,
         max_context_tokens: int = 128000,
-        overflow_max_tokens_stop_enabled: bool | None = None,
         max_running_subagents: int = 5,
         retry_attempts: int = 5,
         token_counter: TokenCounter | None = None,
@@ -118,7 +117,6 @@ class Executor:
             llm_config: LLM configuration
             max_iterations: Maximum iterations per execution
             max_context_tokens: Maximum context token limit
-            overflow_max_tokens_stop_enabled: Whether to hard-stop when local precheck exceeds context budget
             max_running_subagents: Maximum concurrent sub-agents
             retry_attempts: int of API retry attempts
             token_counter: Optional token counter instance
@@ -147,10 +145,7 @@ class Executor:
             after_tool_hooks or [],
             before_tool_hooks or [],
         )
-        self._overflow_max_tokens_stop_explicit = overflow_max_tokens_stop_enabled is not None
-        self.overflow_max_tokens_stop_enabled: bool = True if overflow_max_tokens_stop_enabled is None else overflow_max_tokens_stop_enabled
-        self.emergency_compact_enabled: bool = False
-        self._sync_context_overflow_policies()
+        self._wire_middleware_llm_runtime(llm_config, openai_client)
         self._wire_middleware_event_emitters()
         self.tool_executor = ToolExecutor(
             tool_registry=tool_registry,
@@ -219,46 +214,6 @@ class Executor:
         self._is_waiting_for_user = False  # True when idle due to ask_user stop tool
         self._last_stop_tool_name: str | None = None  # 最近触发 stop 的工具名
 
-    def _sync_context_overflow_policies(self) -> None:
-        """Read overflow-control switches from middleware configuration when available."""
-        # Preserve the constructor-level hard-stop toggle; default is True.
-        configured_overflow_stop_enabled: bool = bool(self.overflow_max_tokens_stop_enabled)
-        self.emergency_compact_enabled = False
-
-        if not self.middleware_manager:
-            self.overflow_max_tokens_stop_enabled = configured_overflow_stop_enabled
-            return
-
-        for middleware in self.middleware_manager.middlewares:
-            has_emergency_switch = hasattr(middleware, "emergency_compact_enabled")
-            has_overflow_switch = hasattr(middleware, "overflow_max_tokens_stop_enabled")
-            if not has_emergency_switch and not has_overflow_switch:
-                continue
-
-            if has_emergency_switch:
-                self.emergency_compact_enabled = bool(getattr(middleware, "emergency_compact_enabled"))
-            if has_overflow_switch:
-                middleware_overflow_stop_enabled = bool(getattr(middleware, "overflow_max_tokens_stop_enabled"))
-                if self._overflow_max_tokens_stop_explicit:
-                    if middleware_overflow_stop_enabled != configured_overflow_stop_enabled:
-                        logger.warning(
-                            "⚠️ overflow_max_tokens_stop_enabled is now an agent/executor-level setting. "
-                            "Ignoring middleware value (%s) and using configured value (%s).",
-                            middleware_overflow_stop_enabled,
-                            configured_overflow_stop_enabled,
-                        )
-                else:
-                    configured_overflow_stop_enabled = middleware_overflow_stop_enabled
-            break
-
-        self.overflow_max_tokens_stop_enabled = configured_overflow_stop_enabled
-
-        logger.info(
-            "🔧 Overflow policy: overflow_max_tokens_stop_enabled=%s, emergency_compact_enabled=%s",
-            self.overflow_max_tokens_stop_enabled,
-            self.emergency_compact_enabled,
-        )
-
     def _wire_middleware_event_emitters(self) -> None:
         """Wire internal middleware emitters to the unified event callback when available."""
         if not self.middleware_manager:
@@ -283,6 +238,28 @@ class Executor:
             except Exception as exc:
                 logger.warning(
                     "⚠️ Failed to wire event emitter for middleware %s: %s",
+                    middleware.__class__.__name__,
+                    exc,
+                )
+
+    def _wire_middleware_llm_runtime(
+        self,
+        llm_config: LLMConfig,
+        openai_client: Any,
+    ) -> None:
+        """Inject base LLM runtime into middleware that needs inherited model settings."""
+        if not self.middleware_manager:
+            return
+
+        for middleware in self.middleware_manager.middlewares:
+            setter = getattr(middleware, "set_llm_runtime", None)
+            if not callable(setter):
+                continue
+            try:
+                setter(llm_config, openai_client)
+            except Exception as exc:
+                logger.warning(
+                    "⚠️ Failed to wire LLM runtime for middleware %s: %s",
                     middleware.__class__.__name__,
                     exc,
                 )
@@ -520,25 +497,12 @@ class Executor:
                 )
 
                 force_stop_reason = AgentStopReason.SUCCESS
-                # Check if prompt exceeds max context tokens - force stop if so
                 if current_prompt_tokens > self.max_context_tokens:
-                    if self.overflow_max_tokens_stop_enabled:
-                        logger.error(
-                            f"❌ Prompt tokens ({current_prompt_tokens}) exceed max_context_tokens \
-                                ({self.max_context_tokens}). Stopping execution.",
-                        )
-                        final_response += (
-                            f"\\n\\n[Error: Prompt too long ({current_prompt_tokens} tokens) exceeds maximum context "
-                            f"({self.max_context_tokens} tokens). Execution stopped.]"
-                        )
-                        force_stop_reason = AgentStopReason.CONTEXT_TOKEN_LIMIT
-                    else:
-                        logger.warning(
-                            "⚠️ Prompt tokens (%d) exceed max_context_tokens (%d), but overflow_max_tokens_stop_enabled is disabled. "
-                            "Continuing model call.",
-                            current_prompt_tokens,
-                            self.max_context_tokens,
-                        )
+                    logger.warning(
+                        "⚠️ Prompt tokens (%d) exceed max_context_tokens (%d). Continuing model call.",
+                        current_prompt_tokens,
+                        self.max_context_tokens,
+                    )
 
                 # Calculate max_tokens dynamically based on available budget
                 available_tokens = self.max_context_tokens - current_prompt_tokens
@@ -549,23 +513,14 @@ class Executor:
                     desired_max_tokens,
                     available_tokens,
                 )
+                calculated_max_tokens = max(1, calculated_max_tokens)
 
                 # Ensure we have at least some tokens for response
-                if calculated_max_tokens < 50:
-                    if self.overflow_max_tokens_stop_enabled:
-                        logger.error(
-                            f"❌ Insufficient tokens for response ({calculated_max_tokens}). Stopping execution.",
-                        )
-                        final_response += (
-                            f"\\n\\n[Error: Insufficient tokens for response ({calculated_max_tokens} tokens). Context too full.]"
-                        )
-                        force_stop_reason = AgentStopReason.CONTEXT_TOKEN_LIMIT
-                    else:
-                        logger.warning(
-                            "⚠️ Available response budget is %d (<50), but overflow_max_tokens_stop_enabled is disabled. "
-                            "Continuing model call.",
-                            calculated_max_tokens,
-                        )
+                if available_tokens < 50:
+                    logger.warning(
+                        "⚠️ Available response budget is %d (<50). Continuing model call.",
+                        available_tokens,
+                    )
 
                 if iteration == self.max_iterations - 1:
                     logger.error(

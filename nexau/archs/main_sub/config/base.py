@@ -63,7 +63,6 @@ class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
     token_counter: HookDefinition | None = None
     global_storage: dict[str, Any] = Field(default_factory=dict)
     max_context_tokens: int = Field(default=128000, ge=1)
-    overflow_max_tokens_stop_enabled: bool = True
     max_running_subagents: int = Field(default=5, ge=0)
     max_iterations: int = Field(default=100, ge=1)
     tool_call_mode: str = "openai"

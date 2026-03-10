@@ -280,7 +280,6 @@ class ExecutionConfig:
 
     max_iterations: int = 100
     max_context_tokens: int = 128000
-    overflow_max_tokens_stop_enabled: bool = True
     max_running_subagents: int = 5
     retry_attempts: int = 5
     timeout: int = 300
@@ -297,7 +296,6 @@ class ExecutionConfig:
         return cls(
             max_iterations=agent_config.max_iterations,
             max_context_tokens=agent_config.max_context_tokens,
-            overflow_max_tokens_stop_enabled=agent_config.overflow_max_tokens_stop_enabled,
             max_running_subagents=agent_config.max_running_subagents,
             retry_attempts=agent_config.retry_attempts,
             timeout=agent_config.timeout,
@@ -410,10 +408,6 @@ class AgentConfigBuilder:
         self.agent_params["max_context_tokens"] = self.config.get(
             "max_context_tokens",
             128000,
-        )
-        self.agent_params["overflow_max_tokens_stop_enabled"] = self.config.get(
-            "overflow_max_tokens_stop_enabled",
-            True,
         )
         self.agent_params["max_running_subagents"] = self.config.get(
             "max_running_subagents",

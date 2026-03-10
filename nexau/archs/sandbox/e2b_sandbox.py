@@ -143,7 +143,10 @@ class E2BSandbox(BaseSandbox):
             raise SandboxError("Sandbox not started. Call start() first.")
 
         output_dir = f"{BASH_TOOL_RESULTS_BASE_PATH}/{uuid.uuid4().hex[:8]}"
-        self._sandbox.commands.run(f"mkdir -p {output_dir}", user=user)
+        self._sandbox.commands.run(
+            f"mkdir -p {output_dir} && : > {output_dir}/stdout.txt && : > {output_dir}/stderr.txt",
+            user=user,
+        )
         self._sandbox._filesystem.write(f"{output_dir}/command.txt", command)
         return output_dir
 

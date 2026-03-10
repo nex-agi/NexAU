@@ -22,12 +22,17 @@ from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+import anthropic
+import openai
+
 from nexau.archs.llm.llm_aggregators.events import CompactionFinishedEvent, CompactionStartedEvent
+from nexau.archs.llm.llm_config import LLMConfig
 
 from ...hooks import AfterModelHookInput, BeforeModelHookInput, HookResult, Middleware, ModelCallFn, ModelCallParams
 from ...llm_caller import LLMCaller
 from .config import CompactionConfig
 from .factory import create_compaction_strategy, create_emergency_compaction_strategy, create_trigger_strategy
+from .llm_config_utils import normalize_summary_llm_overrides, resolve_summary_llm_config
 
 if TYPE_CHECKING:
     from ....utils.token_counter import TokenCounter
@@ -35,6 +40,9 @@ if TYPE_CHECKING:
 from nexau.core.messages import Message, Role, ToolResultBlock, ToolUseBlock
 
 logger = logging.getLogger(__name__)
+
+OpenAI = openai.OpenAI
+Anthropic = anthropic.Anthropic
 
 _FULL_TRACE_MESSAGES_KEY = "__nexau_full_trace_messages__"
 _FULL_TRACE_SEEN_IDS_KEY = "__nexau_full_trace_seen_ids__"
@@ -101,16 +109,22 @@ class ContextCompactionMiddleware(Middleware):
             )
 
         # Pydantic validates the flat YAML/dict here
-        if "overflow_max_tokens_stop_enabled" in kwargs:
-            logger.warning(
-                "[ContextCompactionMiddleware] 'overflow_max_tokens_stop_enabled' is deprecated in middleware params "
-                "and ignored. Configure it at agent/executor level instead."
-            )
         config = CompactionConfig(**kwargs)
 
         self.max_context_tokens = config.max_context_tokens
         self.auto_compact = config.auto_compact
         self.emergency_compact_enabled = config.emergency_compact_enabled
+        self.summary_llm_config_overrides = normalize_summary_llm_overrides(
+            config.summary_llm_config,
+            summary_model=config.summary_model,
+            summary_base_url=config.summary_base_url,
+            summary_api_key=config.summary_api_key,
+            summary_api_type=config.summary_api_type,
+        )
+        self.summary_model = self.summary_llm_config_overrides.get("model")
+        self.summary_base_url = self.summary_llm_config_overrides.get("base_url")
+        self.summary_api_key = self.summary_llm_config_overrides.get("api_key")
+        self.summary_api_type = self.summary_llm_config_overrides.get("api_type")
 
         # Create strategies from config
         self.trigger_strategy = create_trigger_strategy(config)
@@ -129,6 +143,44 @@ class ContextCompactionMiddleware(Middleware):
             f"compaction={self.compaction_strategy.__class__.__name__}, "
             f"emergency_compaction={self.emergency_compaction_strategy.__class__.__name__}"
         )
+
+    def set_llm_runtime(
+        self,
+        llm_config: LLMConfig,
+        openai_client: Any | None = None,
+    ) -> None:
+        """Inject the agent LLM runtime used when no standalone summary config is set."""
+        configure_runtime = getattr(self.compaction_strategy, "configure_llm_runtime", None)
+        if callable(configure_runtime):
+            configure_runtime(llm_config, openai_client)
+
+    def _build_client(self, llm_config: LLMConfig) -> Any | None:
+        if llm_config.api_type == "gemini_rest":
+            return None
+        client_kwargs = llm_config.to_client_kwargs()
+        if llm_config.api_type == "anthropic_chat_completion":
+            return Anthropic(**client_kwargs)
+        if llm_config.api_type in ["openai_responses", "openai_chat_completion"]:
+            return OpenAI(**client_kwargs)
+        raise ValueError(f"Invalid API type: {llm_config.api_type}")
+
+    def _resolve_summary_runtime(
+        self,
+        llm_config: LLMConfig,
+        openai_client: Any | None,
+    ) -> tuple[LLMConfig, Any | None]:
+        summary_llm_config = resolve_summary_llm_config(
+            base_llm_config=llm_config,
+            summary_overrides=self.summary_llm_config_overrides,
+        )
+
+        reuse_base_client = (
+            openai_client is not None
+            and llm_config.api_type == summary_llm_config.api_type
+            and llm_config.to_client_kwargs() == summary_llm_config.to_client_kwargs()
+        )
+        summary_client = openai_client if reuse_base_client else self._build_client(summary_llm_config)
+        return summary_llm_config, summary_client
 
     def set_event_emitter(self, event_emitter: Callable[[Any], None]) -> None:
         """Inject a unified event emitter (typically from AgentEventsMiddleware)."""
@@ -403,12 +455,11 @@ class ContextCompactionMiddleware(Middleware):
         if params.llm_config is None:
             raise RuntimeError("llm_config is required for emergency compaction summarization")
 
-        summary_llm_config = params.llm_config.copy()
-        summary_llm_config.temperature = 0
-        summary_llm_config.stream = False
+        base_llm_config = cast(LLMConfig, params.llm_config)
+        summary_llm_config, summary_client = self._resolve_summary_runtime(base_llm_config, params.openai_client)
 
         llm_caller = LLMCaller(
-            params.openai_client,
+            summary_client,
             summary_llm_config,
             retry_attempts=1,
             middleware_manager=None,
@@ -422,7 +473,7 @@ class ContextCompactionMiddleware(Middleware):
                 max_tokens=max_tokens,
                 force_stop_reason=None,
                 agent_state=params.agent_state,
-                tool_call_mode="xml",
+                tool_call_mode=params.tool_call_mode,
                 tools=None,
                 openai_client=params.openai_client,
                 shutdown_event=params.shutdown_event,

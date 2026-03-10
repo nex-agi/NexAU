@@ -34,7 +34,7 @@ middlewares:
       max_context_tokens: 200000
       auto_compact: true
       threshold: 0.75
-      compaction_strategy: "sliding_window"
+      compaction_strategy: "llm_summary"
       window_size: 2
       summary_model: ${env.LLM_MODEL}
       summary_base_url: ${env.LLM_BASE_URL}

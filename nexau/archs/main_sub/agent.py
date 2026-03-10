@@ -523,7 +523,6 @@ class Agent:
             llm_config=self.config.llm_config or LLMConfig(),
             max_iterations=self.exec_config.max_iterations,
             max_context_tokens=self.exec_config.max_context_tokens,
-            overflow_max_tokens_stop_enabled=self.exec_config.overflow_max_tokens_stop_enabled,
             max_running_subagents=self.exec_config.max_running_subagents,
             retry_attempts=self.exec_config.retry_attempts,
             token_counter=token_counter,

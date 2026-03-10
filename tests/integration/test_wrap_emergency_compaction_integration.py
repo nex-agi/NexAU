@@ -163,7 +163,6 @@ def test_wrap_emergency_compaction_triggers_with_large_tool_outputs(monkeypatch)
         max_iterations=8,
         retry_attempts=1,
         max_context_tokens=4000,
-        overflow_max_tokens_stop_enabled=False,
         tool_call_mode="openai",
     )
 

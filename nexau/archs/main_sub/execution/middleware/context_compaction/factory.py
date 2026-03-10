@@ -37,20 +37,21 @@ def create_compaction_strategy(config: CompactionConfig) -> CompactionStrategy:
     Raises:
         ValueError: If strategy type is unknown
     """
-    if config.compaction_strategy == "sliding_window":
+    if config.compaction_strategy in {"llm_summary", "sliding_window"}:
         return SlidingWindowCompaction(
             keep_iterations=config.keep_iterations,
             keep_user_rounds=config.keep_user_rounds,
+            summary_llm_config=config.summary_llm_config,
             summary_model=config.summary_model,
             summary_base_url=config.summary_base_url,
             summary_api_key=config.summary_api_key,
             summary_api_type=config.summary_api_type,
             retry_attempts=config.retry_attempts,
             max_context_tokens=config.max_context_tokens,
-            compact_prompt_path=config.compact_prompt_path,  # Already resolved by config
+            compact_prompt_path=config.compact_prompt_path,
         )
 
-    elif config.compaction_strategy == "tool_result_compaction":
+    if config.compaction_strategy == "tool_result_compaction":
         return ToolResultCompaction(
             keep_iterations=config.keep_iterations,
             keep_user_rounds=config.keep_user_rounds,

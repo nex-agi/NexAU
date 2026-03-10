@@ -89,7 +89,7 @@ middlewares:
       max_context_tokens: 200000
       auto_compact: true
       threshold: 0.75
-      compaction_strategy: "sliding_window"
+      compaction_strategy: "llm_summary"
       keep_iterations: 2  # Keep last 2 iterations uncompacted
 
       # Required: LLM for summarization

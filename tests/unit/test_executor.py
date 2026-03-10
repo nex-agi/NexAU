@@ -625,7 +625,7 @@ class TestExecutorExecution:
                 assert len(executor.queued_messages) == 0
 
     def test_execute_with_token_limit_exceeded(self, mock_llm_config, agent_state):
-        """Test execution handles token limit exceeded."""
+        """Test execution continues even when local token budget is exceeded."""
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
@@ -648,11 +648,20 @@ class TestExecutorExecution:
 
             # Mock LLM caller
             with patch.object(executor.llm_caller, "call_llm") as mock_call_llm:
-                mock_call_llm.return_value = None  # Simulate forced stop
+                mock_call_llm.return_value = ModelResponse(content="Simple response")
 
-                response, messages = executor.execute(history, agent_state)
+                with patch.object(executor.response_parser, "parse_response") as mock_parse:
+                    mock_parse.return_value = ParsedResponse(
+                        original_response="Simple response",
+                        tool_calls=[],
+                        sub_agent_calls=[],
+                        batch_agent_calls=[],
+                    )
 
-                assert "Prompt too long" in response or "Error:" in response
+                    response, messages = executor.execute(history, agent_state)
+
+                mock_call_llm.assert_called()
+                assert response == "Simple response"
 
     def test_execute_with_exception(self, mock_llm_config, agent_state):
         """Test execution handles exceptions gracefully."""

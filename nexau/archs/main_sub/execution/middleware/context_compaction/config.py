@@ -14,10 +14,15 @@
 
 """Configuration schema for context compaction middleware."""
 
+from __future__ import annotations
+
+import warnings
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, model_validator
+
+from .llm_config_utils import normalize_summary_llm_overrides
 
 
 class CompactionConfig(BaseModel):
@@ -30,49 +35,51 @@ class CompactionConfig(BaseModel):
     threshold: float = 0.75
 
     # Strategy Selection
-    compaction_strategy: Literal["sliding_window", "tool_result_compaction"] = "tool_result_compaction"
+    compaction_strategy: Literal["llm_summary", "sliding_window", "tool_result_compaction"] = "tool_result_compaction"
 
     # Shared Settings (used by both strategies)
     keep_iterations: int = 3  # Number of recent iterations to keep uncompacted
     keep_user_rounds: int = 0  # Number of recent user rounds to keep uncompacted (0 = disabled)
 
-    # Sliding Window Specifics (Optional in YAML, handled by validator)
+    # Summary LLM overrides
+    summary_llm_config: dict[str, Any] | None = None
+
+    # Legacy flat summary settings (still supported for backward compatibility)
     summary_model: str | None = None
     summary_base_url: str | None = None
     summary_api_key: str | None = None
-    summary_api_type: str = "openai_chat_completion"
+    summary_api_type: str | None = None
     compact_prompt_path: str | None = None
     retry_attempts: int = 3
 
     @model_validator(mode="after")
-    def validate_and_resolve_paths(self) -> "CompactionConfig":
-        """Validate strategy dependencies and resolve file paths."""
-        # Ensure sliding window has required LLM creds
+    def validate_and_resolve_paths(self) -> CompactionConfig:
+        """Validate config and resolve prompt paths."""
         if self.compaction_strategy == "sliding_window":
-            missing: list[str] = []
-            if not self.summary_model:
-                missing.append("summary_model")
-            if not self.summary_base_url:
-                missing.append("summary_base_url")
-            if not self.summary_api_key:
-                missing.append("summary_api_key")
-            if not self.summary_api_type:
-                missing.append("summary_api_type")
-            if missing:
-                raise ValueError(f"Strategy 'sliding_window' requires the following params: {', '.join(missing)}")
+            warnings.warn(
+                "`compaction_strategy=sliding_window` is deprecated; use `llm_summary` instead.",
+                FutureWarning,
+                stacklevel=2,
+            )
+            self.compaction_strategy = "llm_summary"
 
-        # Resolve compact prompt path
+        self.summary_llm_config = (
+            normalize_summary_llm_overrides(
+                self.summary_llm_config,
+                summary_model=self.summary_model,
+                summary_base_url=self.summary_base_url,
+                summary_api_key=self.summary_api_key,
+                summary_api_type=self.summary_api_type,
+            )
+            or None
+        )
+
         if self.compact_prompt_path:
-            # User provided custom path, use it as-is
             resolved_path = Path(self.compact_prompt_path)
         else:
-            # Use default built-in template path
-            # This path is relative to the compact_stratigies module
             config_dir = Path(__file__).parent
             prompts_dir = config_dir / "prompts"
             resolved_path = prompts_dir / "compact_prompt.md"
 
-        # Convert resolved path back to string and store it
         self.compact_prompt_path = str(resolved_path)
-
         return self

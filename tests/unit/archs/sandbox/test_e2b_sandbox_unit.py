@@ -370,6 +370,25 @@ class TestExecuteBashDefensive:
         assert result.status == SandboxStatus.ERROR
         assert "unexpected" in (result.error or "")
 
+    def test_prepare_output_dir_precreates_output_artifacts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+
+        output_dir = sandbox._prepare_output_dir("echo hi")
+
+        assert output_dir.startswith("/tmp/nexau_bash_tool_results/")
+        assert backend.commands.calls == [
+            (
+                f"mkdir -p {output_dir} && : > {output_dir}/stdout.txt && : > {output_dir}/stderr.txt",
+                {"user": "user"},
+            )
+        ]
+        assert backend._filesystem.written == [
+            (f"{output_dir}/command.txt", "echo hi"),
+        ]
+
     def test_invalid_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
         backend = _FakeSandbox()
         _enable_fake_e2b(monkeypatch, backend)
