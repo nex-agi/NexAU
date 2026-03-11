@@ -440,6 +440,7 @@ def call_llm_with_different_client(
             middleware_manager=middleware_manager,
             model_call_params=model_call_params,
             tracer=tracer,
+            cache_control_ttl=llm_config.cache_control_ttl,
         )
     elif llm_config.api_type == "openai_responses":
         return call_llm_with_openai_responses(
@@ -510,6 +511,7 @@ def call_llm_with_anthropic_chat_completion(
     middleware_manager: MiddlewareManager | None = None,
     model_call_params: ModelCallParams | None = None,
     tracer: BaseTracer | None = None,
+    cache_control_ttl: str | None = None,
 ) -> ModelResponse:
     """Call Anthropic chat completion with the given messages and return response content."""
     messages = _strip_responses_api_artifacts(kwargs.get("messages", []))
@@ -517,6 +519,12 @@ def call_llm_with_anthropic_chat_completion(
 
     # Check if tracing is active (there's a current span and we have a tracer)
     should_trace = tracer is not None and get_current_span() is not None
+
+    def _build_cache_control() -> dict[str, str]:
+        cc: dict[str, str] = {"type": "ephemeral"}
+        if cache_control_ttl:
+            cc["ttl"] = cache_control_ttl
+        return cc
 
     def _apply_cache_control(
         system_messages: list[dict[str, Any]],
@@ -530,12 +538,12 @@ def call_llm_with_anthropic_chat_completion(
         for sys_block in system_messages:
             should_cache = sys_block.pop("_cache", True)
             if should_cache:
-                sys_block["cache_control"] = {"type": "ephemeral"}
+                sys_block["cache_control"] = _build_cache_control()
 
         if user_messages and user_messages[-1].get("content"):
             content = cast(list[dict[str, Any]] | str | None, user_messages[-1].get("content"))
             if isinstance(content, list) and content:
-                content[0]["cache_control"] = {"type": "ephemeral"}
+                content[0]["cache_control"] = _build_cache_control()
 
     def llm_call(messages: list[dict[str, Any]]):
         # 组装 Anthropic 参数

@@ -38,6 +38,7 @@ class LLMConfig:
         stream: bool = False,
         additional_drop_params: Iterable[str] | None = None,
         api_type: str = "openai_chat_completion",
+        cache_control_ttl: str | None = None,
         **kwargs: Any,
     ):
         """
@@ -74,6 +75,7 @@ class LLMConfig:
         params_iterable = additional_drop_params or []
         self.additional_drop_params = tuple(params_iterable)
         self.api_type = api_type
+        self.cache_control_ttl = cache_control_ttl
 
         # Store additional parameters
         self.extra_params = kwargs
@@ -218,6 +220,7 @@ class LLMConfig:
             debug=self.debug,
             stream=self.stream,
             additional_drop_params=self.additional_drop_params,
+            cache_control_ttl=self.cache_control_ttl,
             **self.extra_params,
         )
 
