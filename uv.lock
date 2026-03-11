@@ -1063,7 +1063,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.0.0" },
     { name = "json-repair", specifier = ">=0.55.0" },
     { name = "jsonschema", specifier = ">=4.0.0" },
-    { name = "langfuse", specifier = ">=3.2.3" },
+    { name = "langfuse", specifier = ">=3.2.3,<4" },
     { name = "mcp", specifier = ">=1.12.3" },
     { name = "nest-asyncio", specifier = ">=1.6.0" },
     { name = "openai", specifier = ">=2.14.0" },
