@@ -450,6 +450,92 @@ class TestAgentConfigBuilderCore:
         with pytest.raises(ConfigConfigError, match="System prompt file not found"):
             builder.build_system_prompt_path()
 
+    def test_build_system_prompt_path_list_of_strings(self, temp_dir):
+        """Test path resolution for list[str] system_prompt with file type."""
+        from nexau.archs.main_sub.config.base import SystemPromptBlock
+
+        f1 = Path(temp_dir) / "static.md"
+        f2 = Path(temp_dir) / "dynamic.md"
+        f1.write_text("static")
+        f2.write_text("dynamic")
+
+        builder = AgentConfigBuilder(
+            {"name": "agent", "system_prompt": ["static.md", "dynamic.md"], "system_prompt_type": "file"},
+            Path(temp_dir),
+        )
+
+        builder.build_core_properties().build_system_prompt_path()
+        result = builder.agent_params["system_prompt"]
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert isinstance(result[0], SystemPromptBlock)
+        assert result[0].content == str(f1)
+        assert result[0].cache is True
+        assert isinstance(result[1], SystemPromptBlock)
+        assert result[1].content == str(f2)
+        assert result[1].cache is True
+
+    def test_build_system_prompt_path_list_with_system_prompt_block(self, temp_dir):
+        """Test path resolution for list with SystemPromptBlock entries."""
+        from nexau.archs.main_sub.config.base import SystemPromptBlock
+
+        f1 = Path(temp_dir) / "static.md"
+        f2 = Path(temp_dir) / "dynamic.md"
+        f1.write_text("static content")
+        f2.write_text("dynamic content")
+
+        builder = AgentConfigBuilder(
+            {
+                "name": "agent",
+                "system_prompt": [
+                    SystemPromptBlock(content="static.md", cache=True),
+                    SystemPromptBlock(content="dynamic.md", cache=False),
+                ],
+                "system_prompt_type": "file",
+            },
+            Path(temp_dir),
+        )
+
+        builder.build_core_properties().build_system_prompt_path()
+        result = builder.agent_params["system_prompt"]
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert isinstance(result[0], SystemPromptBlock)
+        assert result[0].content == str(f1)
+        assert result[0].cache is True
+        assert isinstance(result[1], SystemPromptBlock)
+        assert result[1].content == str(f2)
+        assert result[1].cache is False
+
+    def test_build_system_prompt_path_list_missing_file_raises(self, temp_dir):
+        """Test that missing file in list raises ConfigError."""
+        f1 = Path(temp_dir) / "exists.md"
+        f1.write_text("ok")
+
+        builder = AgentConfigBuilder(
+            {"name": "agent", "system_prompt": ["exists.md", "missing.md"], "system_prompt_type": "file"},
+            Path(temp_dir),
+        )
+
+        builder.build_core_properties()
+        with pytest.raises(ConfigConfigError, match="System prompt file not found"):
+            builder.build_system_prompt_path()
+
+    def test_build_system_prompt_path_string_type_skips_resolution(self, temp_dir):
+        """Test that system_prompt_type='string' skips file path resolution for lists."""
+        builder = AgentConfigBuilder(
+            {"name": "agent", "system_prompt": ["inline prompt 1", "inline prompt 2"], "system_prompt_type": "string"},
+            Path(temp_dir),
+        )
+
+        builder.build_core_properties().build_system_prompt_path()
+        result = builder.agent_params["system_prompt"]
+
+        # No path resolution for string type
+        assert result == ["inline prompt 1", "inline prompt 2"]
+
     def test_build_tools_loads_yaml_and_overrides_name(self, temp_dir):
         tool_yaml = Path(temp_dir) / "tool.yaml"
         tool_yaml.write_text(

@@ -832,13 +832,45 @@ class AgentConfigBuilder:
         )
 
         # Convert system_prompt from relative path to absolute path
-        if system_prompt and system_prompt_type in ["file", "jinja"] and not Path(system_prompt).is_absolute():
-            system_prompt = self.base_path / system_prompt
-            if not Path(system_prompt).exists():
-                raise ConfigError(
-                    f"System prompt file not found: {system_prompt}",
-                )
-            self.agent_params["system_prompt"] = str(system_prompt)
+        # When system_prompt is a list, resolve paths for each item individually
+        if system_prompt and system_prompt_type in ["file", "jinja"]:
+            if isinstance(system_prompt, list):
+                from .base import SystemPromptBlock
+
+                prompt_items = cast(list[str | SystemPromptBlock | dict[str, str | bool]], system_prompt)
+                resolved: list[str | SystemPromptBlock] = []
+                for item in prompt_items:
+                    # Extract the path string from str, SystemPromptBlock, or dict
+                    path_str: str
+                    cache: bool
+                    if isinstance(item, SystemPromptBlock):
+                        path_str = item.content
+                        cache = item.cache
+                    elif isinstance(item, dict):
+                        path_str = str(item["content"])
+                        cache = bool(item.get("cache", True))
+                    else:
+                        path_str = str(item)
+                        cache = True
+
+                    if not Path(path_str).is_absolute():
+                        abs_path: str = str(self.base_path / path_str)
+                        if not Path(abs_path).exists():
+                            raise ConfigError(
+                                f"System prompt file not found: {abs_path}",
+                            )
+                        resolved.append(SystemPromptBlock(content=abs_path, cache=cache))
+                    else:
+                        # Wrap all items consistently as SystemPromptBlock
+                        resolved.append(SystemPromptBlock(content=path_str, cache=cache))
+                self.agent_params["system_prompt"] = resolved
+            elif not Path(system_prompt).is_absolute():
+                system_prompt = self.base_path / system_prompt
+                if not Path(system_prompt).exists():
+                    raise ConfigError(
+                        f"System prompt file not found: {system_prompt}",
+                    )
+                self.agent_params["system_prompt"] = str(system_prompt)
 
         return self
 

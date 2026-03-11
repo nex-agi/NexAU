@@ -15,6 +15,7 @@
 """System prompt builder for agents."""
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
@@ -25,6 +26,15 @@ from nexau.archs.tool import Tool
 
 if TYPE_CHECKING:
     from nexau.archs.main_sub.config import AgentConfig
+
+
+@dataclass
+class SystemPromptPart:
+    """A rendered system prompt block with cache metadata."""
+
+    text: str
+    cache: bool = True
+
 
 logger = logging.getLogger(__name__)
 
@@ -91,21 +101,26 @@ class PromptBuilder:
         sub_agents: dict[str, "AgentConfig"] | None = None,
         runtime_context: dict[str, Any] | None = None,
         include_tool_instructions: bool = True,
-    ) -> str:
+    ) -> list[SystemPromptPart]:
         """Build the complete system prompt including tool and sub-agent docs.
 
-        Args:
-            agent_config: Agent configuration
-            tools: List of available tools
-            sub_agents: Dictionary of sub-agent configs
-            runtime_context: Additional runtime context
+        Supports three ``system_prompt`` formats:
+
+        1. **str** – single block, cached by default.
+        2. **list[str]** – multiple blocks, all cached by default.
+        3. **list[SystemPromptBlock]** – each block carries an explicit
+           ``cache`` flag so the caller can control which blocks receive
+           Anthropic ``cache_control``.
+
+        Tool / sub-agent documentation and execution instructions are always
+        appended to the **first** block.
 
         Returns:
-            Complete system prompt string
+            A list of ``SystemPromptPart(text, cache)`` objects.
         """
         try:
-            # Get base system prompt
-            base_prompt = self._get_base_system_prompt(agent_config, runtime_context or {})
+            # Get base system prompt parts
+            base_parts = self._get_base_system_prompt(agent_config, runtime_context or {})
 
             if include_tool_instructions:
                 # Build capabilities documentation
@@ -116,13 +131,15 @@ class PromptBuilder:
                 )
 
                 # Add tool execution instructions
-                execution_instructions = ""
-
                 execution_instructions = self._get_tool_execution_instructions() or ""
 
-                return f"{base_prompt}{capabilities_docs}{execution_instructions}"
-            else:
-                return base_prompt
+                # Append tool docs to the first block
+                base_parts[0] = SystemPromptPart(
+                    text=f"{base_parts[0].text}{capabilities_docs}{execution_instructions}",
+                    cache=base_parts[0].cache,
+                )
+
+            return base_parts
 
         except Exception as e:
             logger.error(f"❌ Error building system prompt: {e}")
@@ -132,36 +149,60 @@ class PromptBuilder:
         self,
         agent_config: "AgentConfig",
         runtime_context: dict[str, Any],
-    ) -> str:
-        """Get the base system prompt from configuration."""
+    ) -> list[SystemPromptPart]:
+        """Get the base system prompt from configuration.
+
+        Always returns a list of ``SystemPromptPart``.  The ``cache`` flag
+        comes from ``SystemPromptBlock.cache`` when the user provides
+        structured blocks, otherwise defaults to ``True``.
+        """
+        from nexau.archs.main_sub.config.base import SystemPromptBlock
+
         if not agent_config.system_prompt:
             agent_name = agent_config.name or "agent"
-            return self._get_default_system_prompt(agent_name)
+            return [SystemPromptPart(text=self._get_default_system_prompt(agent_name))]
 
         try:
-            # Build context for template rendering
-            context = self._build_template_context(
-                runtime_context,
-            )
+            context = self._build_template_context(runtime_context)
 
-            # Process the system prompt
-            rendered = self.prompt_handler.create_dynamic_prompt(
+            # When system_prompt is a list, render each item individually
+            if isinstance(agent_config.system_prompt, list):
+                parts: list[SystemPromptPart] = []
+                for prompt_item in agent_config.system_prompt:
+                    if isinstance(prompt_item, SystemPromptBlock):
+                        text = self.prompt_handler.create_dynamic_prompt(
+                            prompt_item.content,
+                            agent_config,
+                            additional_context=context,
+                            template_type=agent_config.system_prompt_type,
+                        )
+                        parts.append(SystemPromptPart(text=text, cache=prompt_item.cache))
+                    else:
+                        # Plain string in list — cached by default
+                        text = self.prompt_handler.create_dynamic_prompt(
+                            prompt_item,
+                            agent_config,
+                            additional_context=context,
+                            template_type=agent_config.system_prompt_type,
+                        )
+                        parts.append(SystemPromptPart(text=text))
+
+                # Append suffix and NEXAU.md to the last part
+                self._append_suffix_and_nexau_md(parts, agent_config, runtime_context)
+                return parts
+
+            # Single string — cached by default
+            text = self.prompt_handler.create_dynamic_prompt(
                 agent_config.system_prompt,
-                agent_config,  # Pass agent config as agent parameter
+                agent_config,
                 additional_context=context,
                 template_type=agent_config.system_prompt_type,
             )
+            parts = [SystemPromptPart(text=text)]
 
-            # Append suffix (e.g. team context injected after template resolution)
-            if agent_config.system_prompt_suffix:
-                rendered += agent_config.system_prompt_suffix
-
-            # 自动注入 NEXAU.md（如果存在于 sandbox work dir 中）
-            nexau_md = self._load_nexau_md(agent_config, runtime_context)
-            if nexau_md:
-                rendered += f"\n\n# Project Instructions (NEXAU.md)\n\n{nexau_md}"
-
-            return rendered
+            # Append suffix and NEXAU.md to the last part
+            self._append_suffix_and_nexau_md(parts, agent_config, runtime_context)
+            return parts
         except Exception as e:
             logger.error(f"❌ Error processing system prompt: {e}")
             raise ValueError("Error processing system prompt") from e
@@ -179,6 +220,25 @@ class PromptBuilder:
             raise ValueError("Error loading default system prompt") from e
         return "You are a helpful assistant."
 
+    def _append_suffix_and_nexau_md(
+        self,
+        parts: list[SystemPromptPart],
+        agent_config: "AgentConfig",
+        runtime_context: dict[str, Any],
+    ) -> None:
+        """Append system_prompt_suffix and NEXAU.md content to the last part."""
+        extra = ""
+        if agent_config.system_prompt_suffix:
+            extra += agent_config.system_prompt_suffix
+
+        nexau_md = self._load_nexau_md(agent_config, runtime_context)
+        if nexau_md:
+            extra += f"\n\n# Project Instructions (NEXAU.md)\n\n{nexau_md}"
+
+        if extra and parts:
+            last = parts[-1]
+            parts[-1] = SystemPromptPart(text=last.text + extra, cache=last.cache)
+
     def _load_nexau_md(
         self,
         agent_config: "AgentConfig",
@@ -186,14 +246,10 @@ class PromptBuilder:
     ) -> str | None:
         """Load NEXAU.md from sandbox work dir if it exists.
 
-        自动寻找 SANDBOX_WORK_DIR 内的 NEXAU.md 并返回其内容，
-        用于注入到 system prompt 的末尾。
-
         Resolution order for work dir:
         1. runtime_context["working_directory"]
         2. agent_config.sandbox_config.work_dir
         """
-        # 1. 确定 work dir
         work_dir_str = runtime_context.get("working_directory")
         if not work_dir_str and agent_config.sandbox_config:
             work_dir_str = agent_config.sandbox_config.work_dir
@@ -201,12 +257,10 @@ class PromptBuilder:
         if not work_dir_str:
             return None
 
-        # 2. 查找 NEXAU.md
         nexau_md_path = Path(work_dir_str) / "NEXAU.md"
         if not nexau_md_path.is_file():
             return None
 
-        # 3. 读取并返回内容
         try:
             content = nexau_md_path.read_text(encoding="utf-8").strip()
             if content:

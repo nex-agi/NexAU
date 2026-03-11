@@ -830,14 +830,26 @@ class Agent:
                 except Exception as exc:  # Defensive: user provided callable
                     logger.warning(f"⚠️ custom_llm_client_provider failed for '{self.agent_name}': {exc}")
 
-            # Build system prompt
-            system_prompt = self.prompt_builder.build_system_prompt(
+            # Build system prompt (returns list[SystemPromptPart])
+            system_prompt_parts = self.prompt_builder.build_system_prompt(
                 agent_config=self.config,
                 tools=self.config.tools,
                 sub_agents=self.config.sub_agents or {},
                 runtime_context=merged_context,
                 include_tool_instructions=not self.use_structured_tool_calls,
             )
+
+            # Convert each part into a separate SYSTEM Message.
+            # The ``cache`` flag is stored in metadata so that the Anthropic
+            # adapter can selectively apply ``cache_control``.
+            system_messages = [
+                Message(
+                    role=Role.SYSTEM,
+                    content=[TextBlock(text=part.text)],
+                    metadata={"cache": part.cache},
+                )
+                for part in system_prompt_parts
+            ]
 
             parent_run_id: str | None
 
@@ -878,14 +890,14 @@ class Agent:
                     # Initialize history with system prompt + stored messages
                     # Use update_baseline=True since we're loading from storage
                     self._history.replace_all(
-                        [Message(role=Role.SYSTEM, content=[TextBlock(text=system_prompt)])] + stored_non_system_messages,
+                        system_messages + stored_non_system_messages,
                         update_baseline=True,
                     )
                 else:
                     # Initialize with just system prompt
                     # Use update_baseline=True since this is initial state
                     self._history.replace_all(
-                        [Message(role=Role.SYSTEM, content=[TextBlock(text=system_prompt)])],
+                        system_messages,
                         update_baseline=True,
                     )
             else:
@@ -894,7 +906,7 @@ class Agent:
                 # Use update_baseline=True since we're resetting to known state
                 non_system_messages = [msg for msg in self.history if msg.role != Role.SYSTEM]
                 self._history.replace_all(
-                    [Message(role=Role.SYSTEM, content=[TextBlock(text=system_prompt)])] + non_system_messages,
+                    system_messages + non_system_messages,
                     update_baseline=True,
                 )
 

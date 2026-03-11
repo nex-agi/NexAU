@@ -13,6 +13,15 @@ TSubAgent = TypeVar("TSubAgent", bound=object)
 THook = TypeVar("THook", bound=object)
 
 
+class SystemPromptBlock(BaseModel):
+    """A single system prompt block with explicit cache control."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+    cache: bool = True
+
+
 class HookImportConfig(BaseModel):
     """Configuration block for importing a hook callable."""
 
@@ -38,7 +47,7 @@ class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
     type: Literal["agent"] | None = Field(default=None)
     name: str | None = None
     description: str | None = None
-    system_prompt: str | None = None
+    system_prompt: str | list[str | SystemPromptBlock] | None = None
     system_prompt_type: Literal["string", "file", "jinja"] = "string"
     system_prompt_suffix: str | None = None
     tools: list[Any] = Field(default_factory=list)

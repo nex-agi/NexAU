@@ -1214,3 +1214,94 @@ class TestLLMCallerIntegration:
         assert call_args[1]["max_tokens"] == 200
         assert "custom_stop" in call_args[1]["stop"]
         assert "</tool_use>" in call_args[1]["stop"]
+
+
+class TestAnthropicCacheControl:
+    """Tests for cache_control on Anthropic system blocks."""
+
+    def test_cache_control_applied_based_on_cache_flag(self):
+        """Test that cache_control is only added to system blocks with _cache=True."""
+        from unittest.mock import MagicMock
+
+        from nexau.archs.main_sub.execution.llm_caller import call_llm_with_anthropic_chat_completion
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(type="text", text="response")]
+        mock_response.stop_reason = "end_turn"
+        mock_response.model = "claude-3"
+        mock_response.usage = MagicMock(input_tokens=10, output_tokens=5)
+        mock_client.messages.create.return_value = mock_response
+
+        kwargs = {
+            "messages": [
+                {"role": "system", "content": "static prompt"},
+                {"role": "system", "content": "dynamic prompt"},
+                {"role": "user", "content": "hello"},
+            ],
+            "model": "claude-3",
+            "max_tokens": 100,
+        }
+
+        # Patch openai_to_anthropic_message to return system blocks with _cache flags
+        with patch(
+            "nexau.archs.main_sub.execution.llm_caller.openai_to_anthropic_message",
+            return_value=(
+                [
+                    {"type": "text", "text": "static prompt", "_cache": True},
+                    {"type": "text", "text": "dynamic prompt", "_cache": False},
+                ],
+                [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+            ),
+        ):
+            call_llm_with_anthropic_chat_completion(mock_client, kwargs)
+
+        call_args = mock_client.messages.create.call_args
+        system_blocks = call_args[1]["system"]
+
+        # First block (cache=True) should have cache_control
+        assert system_blocks[0].get("cache_control") == {"type": "ephemeral"}
+        assert "_cache" not in system_blocks[0]
+
+        # Second block (cache=False) should NOT have cache_control
+        assert "cache_control" not in system_blocks[1]
+        assert "_cache" not in system_blocks[1]
+
+    def test_cache_control_defaults_to_true_when_no_flag(self):
+        """Test that system blocks without _cache flag default to cached."""
+        from unittest.mock import MagicMock
+
+        from nexau.archs.main_sub.execution.llm_caller import call_llm_with_anthropic_chat_completion
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(type="text", text="response")]
+        mock_response.stop_reason = "end_turn"
+        mock_response.model = "claude-3"
+        mock_response.usage = MagicMock(input_tokens=10, output_tokens=5)
+        mock_client.messages.create.return_value = mock_response
+
+        kwargs = {
+            "messages": [
+                {"role": "system", "content": "prompt"},
+                {"role": "user", "content": "hello"},
+            ],
+            "model": "claude-3",
+            "max_tokens": 100,
+        }
+
+        # System block without _cache flag (legacy single-string prompt)
+        with patch(
+            "nexau.archs.main_sub.execution.llm_caller.openai_to_anthropic_message",
+            return_value=(
+                [{"type": "text", "text": "prompt"}],
+                [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+            ),
+        ):
+            call_llm_with_anthropic_chat_completion(mock_client, kwargs)
+
+        call_args = mock_client.messages.create.call_args
+        system_blocks = call_args[1]["system"]
+
+        # Should default to cached
+        assert system_blocks[0].get("cache_control") == {"type": "ephemeral"}

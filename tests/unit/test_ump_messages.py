@@ -192,3 +192,44 @@ def test_unknown_role_logs_warning_and_coerces_to_user(caplog: LogCaptureFixture
 
     assert ump[0].role == Role.USER
     assert any("Unknown role" in rec.getMessage() and "coercing to user" in rec.getMessage() for rec in caplog.records)
+
+
+def test_anthropic_adapter_carries_cache_flag_from_metadata() -> None:
+    """Test that Message metadata['cache'] is propagated as _cache on system blocks."""
+    from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
+    from nexau.core.messages import Message, TextBlock
+
+    messages = [
+        Message(role=Role.SYSTEM, content=[TextBlock(text="static prompt")], metadata={"cache": True}),
+        Message(role=Role.SYSTEM, content=[TextBlock(text="dynamic prompt")], metadata={"cache": False}),
+        Message(role=Role.USER, content=[TextBlock(text="hello")]),
+    ]
+
+    adapter = AnthropicMessagesAdapter()
+    system_blocks, convo = adapter.to_vendor_format(messages)
+
+    assert len(system_blocks) == 2
+    assert system_blocks[0]["text"] == "static prompt"
+    assert system_blocks[0]["_cache"] is True
+    assert system_blocks[1]["text"] == "dynamic prompt"
+    assert system_blocks[1]["_cache"] is False
+
+    assert len(convo) == 1
+    assert convo[0]["role"] == "user"
+
+
+def test_anthropic_adapter_no_cache_metadata_omits_flag() -> None:
+    """Test that system blocks without metadata['cache'] don't get _cache key."""
+    from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
+    from nexau.core.messages import Message, TextBlock
+
+    messages = [
+        Message(role=Role.SYSTEM, content=[TextBlock(text="no metadata")]),
+        Message(role=Role.USER, content=[TextBlock(text="hello")]),
+    ]
+
+    adapter = AnthropicMessagesAdapter()
+    system_blocks, _ = adapter.to_vendor_format(messages)
+
+    assert len(system_blocks) == 1
+    assert "_cache" not in system_blocks[0]

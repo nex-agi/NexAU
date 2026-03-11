@@ -46,7 +46,12 @@ class AnthropicMessagesAdapter(LLMAdapter):
                 # Anthropic expects "system" as a separate top-level parameter, not message role.
                 system_text = msg.get_text_content()
                 if system_text:
-                    system_blocks.append({"type": "text", "text": system_text})
+                    sys_block: dict[str, Any] = {"type": "text", "text": system_text}
+                    # Carry cache flag from metadata so the caller can
+                    # selectively apply Anthropic cache_control.
+                    if "cache" in msg.metadata:
+                        sys_block["_cache"] = msg.metadata["cache"]
+                    system_blocks.append(sys_block)
                 continue
 
             content_blocks: list[dict[str, Any]] = []

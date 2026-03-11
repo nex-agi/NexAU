@@ -518,18 +518,29 @@ def call_llm_with_anthropic_chat_completion(
     # Check if tracing is active (there's a current span and we have a tracer)
     should_trace = tracer is not None and get_current_span() is not None
 
-    def llm_call(messages: list[dict[str, Any]]):
-        # 组装 Anthropic 参数
-        system_messages, user_messages = openai_to_anthropic_message(messages)
-        # set cache control ttl
+    def _apply_cache_control(
+        system_messages: list[dict[str, Any]],
+        user_messages: list[dict[str, Any]],
+    ) -> None:
+        """Apply Anthropic cache_control to system and user message blocks.
+
+        System blocks carry a ``_cache`` flag from SystemPromptBlock
+        configuration; when absent the default is to cache.
+        """
+        for sys_block in system_messages:
+            should_cache = sys_block.pop("_cache", True)
+            if should_cache:
+                sys_block["cache_control"] = {"type": "ephemeral"}
+
         if user_messages and user_messages[-1].get("content"):
             content = cast(list[dict[str, Any]] | str | None, user_messages[-1].get("content"))
             if isinstance(content, list) and content:
-                content[0]["cache_control"] = {
-                    "type": "ephemeral",
-                    # remove ttl due to litellm incompatibility
-                    # "ttl": kwargs.get("anthropic_cache_control_ttl", "5m"),
-                }
+                content[0]["cache_control"] = {"type": "ephemeral"}
+
+    def llm_call(messages: list[dict[str, Any]]):
+        # 组装 Anthropic 参数
+        system_messages, user_messages = openai_to_anthropic_message(messages)
+        _apply_cache_control(system_messages, user_messages)
 
         new_kwargs = kwargs.copy()
         new_kwargs.pop("messages", None)
@@ -554,14 +565,7 @@ def call_llm_with_anthropic_chat_completion(
 
     def llm_stream_call(messages: list[dict[str, Any]]) -> tuple[dict[str, Any], str | None]:
         system_messages, user_messages = openai_to_anthropic_message(messages)
-        if user_messages and user_messages[-1].get("content"):
-            content = cast(list[dict[str, Any]] | str | None, user_messages[-1].get("content"))
-            if isinstance(content, list) and content:
-                content[0]["cache_control"] = {
-                    "type": "ephemeral",
-                    # remove ttl due to litellm incompatibility
-                    # "ttl": kwargs.get("anthropic_cache_control_ttl", "5m"),
-                }
+        _apply_cache_control(system_messages, user_messages)
 
         new_kwargs: dict[str, Any] = kwargs.copy()
         new_kwargs.pop("messages", None)

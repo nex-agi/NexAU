@@ -124,34 +124,43 @@ class TestBuildSystemPrompt:
 
     def test_build_system_prompt_basic(self, mock_config):
         """Test building a basic system prompt."""
+        from nexau.archs.main_sub.prompt_builder import SystemPromptPart
+
         builder = PromptBuilder()
 
-        with patch.object(builder, "_get_base_system_prompt", return_value="Base prompt\n"):
+        with patch.object(builder, "_get_base_system_prompt", return_value=[SystemPromptPart(text="Base prompt\n")]):
             with patch.object(builder, "_build_capabilities_docs", return_value="Capabilities\n"):
                 with patch.object(builder, "_get_tool_execution_instructions", return_value="Instructions\n"):
                     result = builder.build_system_prompt(mock_config)
 
-        assert result == "Base prompt\nCapabilities\nInstructions\n"
+        assert isinstance(result, list)
+        assert result[0].text == "Base prompt\nCapabilities\nInstructions\n"
+        assert result[0].cache is True
 
     def test_build_system_prompt_with_tools(self, mock_config, mock_tool):
         """Test building system prompt with tools."""
+        from nexau.archs.main_sub.prompt_builder import SystemPromptPart
+
         builder = PromptBuilder()
 
-        with patch.object(builder, "_get_base_system_prompt", return_value="Base\n"):
+        with patch.object(builder, "_get_base_system_prompt", return_value=[SystemPromptPart(text="Base\n")]):
             with patch.object(builder, "_build_capabilities_docs", return_value="Tools\n"):
                 with patch.object(builder, "_get_tool_execution_instructions", return_value="Instructions\n"):
                     result = builder.build_system_prompt(mock_config, tools=[mock_tool])
 
-        assert "Base\n" in result
-        assert "Tools\n" in result
-        assert "Instructions\n" in result
+        assert isinstance(result, list)
+        assert "Base\n" in result[0].text
+        assert "Tools\n" in result[0].text
+        assert "Instructions\n" in result[0].text
 
     def test_build_system_prompt_with_sub_agents(self, mock_config):
         """Test building system prompt with sub-agents."""
+        from nexau.archs.main_sub.prompt_builder import SystemPromptPart
+
         builder = PromptBuilder()
         sub_agents = {"researcher": Mock()}
 
-        with patch.object(builder, "_get_base_system_prompt", return_value="Base\n"):
+        with patch.object(builder, "_get_base_system_prompt", return_value=[SystemPromptPart(text="Base\n")]):
             with patch.object(builder, "_build_capabilities_docs", return_value="SubAgents\n"):
                 with patch.object(builder, "_get_tool_execution_instructions", return_value="Instructions\n"):
                     result = builder.build_system_prompt(
@@ -159,14 +168,16 @@ class TestBuildSystemPrompt:
                         sub_agents=sub_agents,
                     )
 
-        assert "SubAgents\n" in result
+        assert "SubAgents\n" in result[0].text
 
     def test_build_system_prompt_with_runtime_context(self, mock_config):
         """Test building system prompt with runtime context."""
+        from nexau.archs.main_sub.prompt_builder import SystemPromptPart
+
         builder = PromptBuilder()
         runtime_context = {"custom_key": "custom_value"}
 
-        with patch.object(builder, "_get_base_system_prompt", return_value="Base\n") as mock_base:
+        with patch.object(builder, "_get_base_system_prompt", return_value=[SystemPromptPart(text="Base\n")]) as mock_base:
             with patch.object(builder, "_build_capabilities_docs", return_value="Caps\n") as mock_caps:
                 with patch.object(builder, "_get_tool_execution_instructions", return_value="Inst\n"):
                     builder.build_system_prompt(
@@ -180,9 +191,11 @@ class TestBuildSystemPrompt:
 
     def test_build_system_prompt_without_tool_instructions(self, mock_config):
         """Ensure tool instructions can be skipped when requested."""
+        from nexau.archs.main_sub.prompt_builder import SystemPromptPart
+
         builder = PromptBuilder()
 
-        with patch.object(builder, "_get_base_system_prompt", return_value="Base\n"):
+        with patch.object(builder, "_get_base_system_prompt", return_value=[SystemPromptPart(text="Base\n")]):
             with patch.object(builder, "_build_capabilities_docs", return_value="Caps\n"):
                 with patch.object(builder, "_get_tool_execution_instructions", return_value="ShouldNotAppear\n") as mock_exec:
                     result = builder.build_system_prompt(
@@ -191,7 +204,33 @@ class TestBuildSystemPrompt:
                     )
 
         mock_exec.assert_not_called()
-        assert "ShouldNotAppear" not in result
+        assert "ShouldNotAppear" not in result[0].text
+
+    def test_build_system_prompt_multi_block_with_cache_control(self, mock_config):
+        """Test building system prompt with explicit cache control."""
+        from nexau.archs.main_sub.prompt_builder import SystemPromptPart
+
+        builder = PromptBuilder()
+        parts = [
+            SystemPromptPart(text="Static part\n", cache=True),
+            SystemPromptPart(text="Dynamic part\n", cache=False),
+        ]
+
+        with patch.object(builder, "_get_base_system_prompt", return_value=parts):
+            with patch.object(builder, "_build_capabilities_docs", return_value="Caps\n"):
+                with patch.object(builder, "_get_tool_execution_instructions", return_value="Inst\n"):
+                    result = builder.build_system_prompt(mock_config)
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        # Tool docs appended to first block
+        assert "Static part\n" in result[0].text
+        assert "Caps\n" in result[0].text
+        assert "Inst\n" in result[0].text
+        assert result[0].cache is True
+        # Dynamic block untouched
+        assert result[1].text == "Dynamic part\n"
+        assert result[1].cache is False
 
     def test_build_system_prompt_error_handling(self, mock_config):
         """Test error handling in build_system_prompt."""
@@ -218,22 +257,29 @@ class TestGetBaseSystemPrompt:
 
     def test_get_base_system_prompt_no_custom_prompt(self, mock_config):
         """Test getting base system prompt when no custom prompt is set."""
+
         builder = PromptBuilder()
 
         with patch.object(builder, "_get_default_system_prompt", return_value="Default prompt"):
             result = builder._get_base_system_prompt(mock_config, {})
 
-        assert result == "Default prompt"
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0].text == "Default prompt"
+        assert result[0].cache is True
 
     def test_get_base_system_prompt_with_custom_prompt(self, mock_config):
         """Test getting base system prompt with custom prompt."""
+
         mock_config.system_prompt = "Custom prompt"
         builder = PromptBuilder()
 
         with patch.object(builder.prompt_handler, "create_dynamic_prompt", return_value="Processed prompt"):
             result = builder._get_base_system_prompt(mock_config, {})
 
-        assert result == "Processed prompt"
+        assert isinstance(result, list)
+        assert result[0].text == "Processed prompt"
+        assert result[0].cache is True
 
     def test_get_base_system_prompt_with_runtime_context(self, mock_config):
         """Test getting base system prompt with runtime context."""
@@ -256,6 +302,56 @@ class TestGetBaseSystemPrompt:
         with patch.object(builder.prompt_handler, "create_dynamic_prompt", side_effect=Exception("Test error")):
             with pytest.raises(ValueError, match="Error processing system prompt"):
                 builder._get_base_system_prompt(mock_config, {})
+
+    def test_get_base_system_prompt_list_of_strings(self, mock_config):
+        """Test _get_base_system_prompt with list[str] — all default to cache=True."""
+        from nexau.archs.main_sub.prompt_builder import SystemPromptPart
+
+        mock_config.system_prompt = ["Block A", "Block B"]
+        builder = PromptBuilder()
+
+        with patch.object(builder.prompt_handler, "create_dynamic_prompt", side_effect=lambda p, *a, **kw: f"rendered:{p}"):
+            result = builder._get_base_system_prompt(mock_config, {})
+
+        assert len(result) == 2
+        assert result[0] == SystemPromptPart(text="rendered:Block A", cache=True)
+        assert result[1] == SystemPromptPart(text="rendered:Block B", cache=True)
+
+    def test_get_base_system_prompt_list_with_system_prompt_block(self, mock_config):
+        """Test _get_base_system_prompt with SystemPromptBlock entries."""
+        from nexau.archs.main_sub.config.base import SystemPromptBlock
+        from nexau.archs.main_sub.prompt_builder import SystemPromptPart
+
+        mock_config.system_prompt = [
+            SystemPromptBlock(content="Static instructions", cache=True),
+            SystemPromptBlock(content="Current time: now", cache=False),
+        ]
+        builder = PromptBuilder()
+
+        with patch.object(builder.prompt_handler, "create_dynamic_prompt", side_effect=lambda p, *a, **kw: f"rendered:{p}"):
+            result = builder._get_base_system_prompt(mock_config, {})
+
+        assert len(result) == 2
+        assert result[0] == SystemPromptPart(text="rendered:Static instructions", cache=True)
+        assert result[1] == SystemPromptPart(text="rendered:Current time: now", cache=False)
+
+    def test_get_base_system_prompt_mixed_list(self, mock_config):
+        """Test _get_base_system_prompt with mixed str and SystemPromptBlock."""
+        from nexau.archs.main_sub.config.base import SystemPromptBlock
+        from nexau.archs.main_sub.prompt_builder import SystemPromptPart
+
+        mock_config.system_prompt = [
+            "Plain string block",
+            SystemPromptBlock(content="Dynamic block", cache=False),
+        ]
+        builder = PromptBuilder()
+
+        with patch.object(builder.prompt_handler, "create_dynamic_prompt", side_effect=lambda p, *a, **kw: f"rendered:{p}"):
+            result = builder._get_base_system_prompt(mock_config, {})
+
+        assert len(result) == 2
+        assert result[0] == SystemPromptPart(text="rendered:Plain string block", cache=True)
+        assert result[1] == SystemPromptPart(text="rendered:Dynamic block", cache=False)
 
 
 class TestGetDefaultSystemPrompt:
@@ -751,9 +847,11 @@ class TestPromptBuilderIntegration:
                     sub_agents=sub_agents,
                 )
 
-        assert "System Prompt" in result
-        assert "calculator" in result
-        assert "researcher" in result
+        assert isinstance(result, list)
+        combined = "".join(part.text for part in result)
+        assert "System Prompt" in combined
+        assert "calculator" in combined
+        assert "researcher" in combined
 
     def test_extract_parameters_integration(self, full_tool):
         """Test parameter extraction in a realistic scenario."""
