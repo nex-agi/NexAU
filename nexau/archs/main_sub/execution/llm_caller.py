@@ -995,14 +995,19 @@ def _prepare_responses_api_input(messages: list[dict[str, Any]]) -> tuple[list[d
                 assert function.get("name") is not None, "Function must contain a name"
                 assert function.get("arguments") is not None, "Function must contain arguments"
                 assert isinstance(function.get("name"), str), "Name must be a string"
-                assert isinstance(function.get("arguments"), dict), "Arguments must be a dict"
+                # Responses API requires arguments as a JSON string.
+                # Legacy chat format (messages_to_legacy_openai_chat) serializes
+                # arguments as a string, but direct construction may pass a dict.
+                raw_arguments = function.get("arguments")
+                if isinstance(raw_arguments, dict):
+                    raw_arguments = json.dumps(raw_arguments, ensure_ascii=False)
 
                 prepared.append(
                     {
                         "type": "function_call",
                         "call_id": tool_call_dict.get("id"),
                         "name": function.get("name"),
-                        "arguments": function.get("arguments"),
+                        "arguments": raw_arguments,
                     },
                 )
 
