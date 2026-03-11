@@ -42,6 +42,10 @@ logger = logging.getLogger(__name__)
 class ToolExecutor:
     """Handles tool execution with XML parsing and type conversion."""
 
+    # LoadSkill resolves details from the in-memory skill registry and should not
+    # trigger lazy sandbox startup (which may upload folder assets).
+    _SANDBOX_OPTIONAL_TOOL_NAMES = {"LoadSkill"}
+
     def __init__(
         self,
         *,
@@ -94,7 +98,9 @@ class ToolExecutor:
             tool = self.tool_registry[tool_name]
             # Fetch tool while holding the lock to avoid TOCTOU races with concurrent registry updates.
 
-        sandbox: BaseSandbox | None = agent_state.get_sandbox()
+        sandbox: BaseSandbox | None = None
+        if tool.name not in self._SANDBOX_OPTIONAL_TOOL_NAMES:
+            sandbox = agent_state.get_sandbox()
 
         tool_parameters = parameters.copy()
         if self.middleware_manager:

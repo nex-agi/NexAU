@@ -29,6 +29,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.execution.hooks import (
     AfterToolHookInput,
     FunctionMiddleware,
@@ -36,6 +37,7 @@ from nexau.archs.main_sub.execution.hooks import (
     MiddlewareManager,
 )
 from nexau.archs.main_sub.execution.tool_executor import ToolExecutor
+from nexau.archs.main_sub.skill import Skill, load_skill
 from nexau.archs.tool.tool import ConfigError as ToolConfigError
 from nexau.archs.tool.tool import Tool
 
@@ -119,6 +121,104 @@ class TestToolExecutorExecution:
 
         assert "result" in result
         assert "Processed: test" in str(result)
+
+    def test_load_skill_does_not_start_sandbox(self, global_storage, agent_context, mock_executor):
+        """LoadSkill should use the in-memory registry without booting the sandbox."""
+        sandbox_manager = Mock()
+        sandbox_manager.start_sync.side_effect = AssertionError("LoadSkill should not start sandbox")
+        local_agent_state = AgentState(
+            agent_name="test_agent",
+            agent_id="test_agent_123",
+            run_id="run_123",
+            root_run_id="run_123",
+            context=agent_context,
+            global_storage=global_storage,
+            executor=mock_executor,
+            sandbox_manager=sandbox_manager,
+        )
+        local_agent_state.set_global_value(
+            "skill_registry",
+            {
+                "memory-skill": Skill(
+                    name="memory-skill",
+                    description="Skill stored in memory",
+                    detail="Detailed skill content",
+                    folder="",
+                )
+            },
+        )
+
+        load_skill_tool = Tool(
+            name="LoadSkill",
+            description="Load skill details from the registry",
+            input_schema={
+                "type": "object",
+                "properties": {"skill_name": {"type": "string"}},
+                "required": ["skill_name"],
+            },
+            implementation=load_skill,
+        )
+
+        executor = ToolExecutor(
+            tool_registry={"LoadSkill": load_skill_tool},
+            stop_tools=set(),
+        )
+
+        result = executor.execute_tool(
+            agent_state=local_agent_state,
+            tool_name="LoadSkill",
+            parameters={"skill_name": "memory-skill"},
+            tool_call_id="call_load_skill",
+        )
+
+        sandbox_manager.start_sync.assert_not_called()
+        assert "memory-skill" in result["result"]
+
+    def test_sandbox_dependent_tool_still_starts_sandbox(self, global_storage, agent_context, mock_executor):
+        """Tools that declare a sandbox parameter should still trigger lazy sandbox startup."""
+        mock_sandbox = Mock()
+        mock_sandbox.work_dir = "/tmp/sandbox"
+        sandbox_manager = Mock()
+        sandbox_manager.start_sync.return_value = mock_sandbox
+        local_agent_state = AgentState(
+            agent_name="test_agent",
+            agent_id="test_agent_123",
+            run_id="run_123",
+            root_run_id="run_123",
+            context=agent_context,
+            global_storage=global_storage,
+            executor=mock_executor,
+            sandbox_manager=sandbox_manager,
+        )
+        received_sandbox = None
+
+        def sandbox_tool(sandbox, agent_state=None) -> dict:
+            nonlocal received_sandbox
+            received_sandbox = sandbox
+            return {"work_dir": sandbox.work_dir}
+
+        tool = Tool(
+            name="sandbox_tool",
+            description="A tool that needs sandbox access",
+            input_schema={"type": "object", "properties": {}},
+            implementation=sandbox_tool,
+        )
+
+        executor = ToolExecutor(
+            tool_registry={"sandbox_tool": tool},
+            stop_tools=set(),
+        )
+
+        result = executor.execute_tool(
+            agent_state=local_agent_state,
+            tool_name="sandbox_tool",
+            parameters={},
+            tool_call_id="call_sandbox_tool",
+        )
+
+        sandbox_manager.start_sync.assert_called_once()
+        assert received_sandbox is mock_sandbox
+        assert result["work_dir"] == "/tmp/sandbox"
 
     def test_execute_tool_not_found(self, agent_state):
         """Test execution with non-existent tool."""

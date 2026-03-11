@@ -29,6 +29,7 @@ from nexau.archs.main_sub.config import ExecutionConfig
 from nexau.archs.main_sub.context_value import ContextValue
 from nexau.archs.main_sub.execution.llm_caller import openai_to_anthropic_message
 from nexau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
+from nexau.archs.main_sub.skill import Skill
 from nexau.archs.tool import Tool
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
 from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
@@ -214,6 +215,37 @@ class TestAgent:
             assert payload_by_name["web_search"]["input_schema"]["properties"]["query"]["type"] == "string"
             assert agent.skill_registry["web_search"].detail is not None
             assert "FULL DESCRIPTION" in (agent.skill_registry["web_search"].detail or "")
+
+    def test_reusing_agent_config_keeps_skill_source_folder_and_runtime_mapping(self, tmp_path):
+        """Reusing the same AgentConfig should not rewrite skill source folders to sandbox paths."""
+        local_skill_folder = tmp_path / "feishu-toolkit"
+        local_skill_folder.mkdir()
+        folder_skill = Skill(
+            name="feishu-skill",
+            description="Folder based skill",
+            detail="Use files shipped with the skill",
+            folder=str(local_skill_folder),
+        )
+        agent_config = AgentConfig(
+            name="folder_skill_agent",
+            llm_config=LLMConfig(model="gpt-4o-mini"),
+            skills=[folder_skill],
+        )
+
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            agent1 = Agent(config=agent_config)
+            agent2 = Agent(config=agent_config)
+
+        expected_folder_1 = str(agent1.sandbox_manager.work_dir / ".skills" / local_skill_folder.name)
+        expected_folder_2 = str(agent2.sandbox_manager.work_dir / ".skills" / local_skill_folder.name)
+
+        assert agent_config.skills[0].folder == str(local_skill_folder)
+        assert agent1.skill_registry["feishu-skill"].folder == expected_folder_1
+        assert agent2.skill_registry["feishu-skill"].folder == expected_folder_2
+        assert agent1.sandbox_manager._session_context["upload_assets"] == [(str(local_skill_folder), expected_folder_1)]
+        assert agent2.sandbox_manager._session_context["upload_assets"] == [(str(local_skill_folder), expected_folder_2)]
 
     def test_tool_call_payload_anthropic_mode(self, sample_tool):
         """Anthropic mode should build anthropic tool schema with sub-agent."""

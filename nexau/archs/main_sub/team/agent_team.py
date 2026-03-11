@@ -343,8 +343,8 @@ class AgentTeam:
         await self._engine.create(member)
 
         # 4. 注入 team 上下文到 teammate system prompt（deepcopy 避免污染原始 config）
-        #    浅拷贝会导致 skills 等嵌套对象被共享，_initialize_sandbox 修改 skill.folder 时
-        #    会污染原始 candidate config，导致后续 spawn 同角色时 upload_assets 路径错误
+        #    浅拷贝会导致 skills / middlewares 等嵌套对象被共享，后续 teammate 运行期修改
+        #    可能回写到 candidate config，影响同角色的后续 spawn。
         config = _safe_deepcopy_config(self._candidates[role_name])
         # 注入 teammate tools 到 deepcopy 后的 config（避免污染原始 candidate config）
         config.tools = list(config.tools) + get_teammate_tools()

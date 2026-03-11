@@ -46,7 +46,7 @@ from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.main_sub.execution.stop_result import StopResult
 from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.prompt_builder import PromptBuilder
-from nexau.archs.main_sub.skill import build_tool_skill
+from nexau.archs.main_sub.skill import Skill, build_tool_skill
 from nexau.archs.main_sub.sub_agent_naming import build_sub_agent_tool_name
 from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
@@ -169,12 +169,7 @@ class Agent:
 
         tools = self.config.tools
 
-        runtime_skills = list(self.config.skills)
-        existing_skill_names = {skill.name for skill in runtime_skills}
-        for tool in tools:
-            if getattr(tool, "as_skill", False) is True and tool.name not in existing_skill_names:
-                runtime_skills.append(build_tool_skill(tool, tool_call_mode=self.tool_call_mode))
-                existing_skill_names.add(tool.name)
+        runtime_skills = self._build_runtime_skills()
 
         # Build tool registry for quick lookup
         self.tool_registry = {tool.name: tool for tool in tools}
@@ -558,14 +553,8 @@ class Agent:
             # 共享模式：使用外部注入的 sandbox_manager（Team 场景）
             self.sandbox_manager: BaseSandboxManager[BaseSandbox] = self._shared_sandbox_manager
 
-            # 仅处理 skill.folder 路径映射，通过 add_upload_assets 动态注册
-            upload_assets: list[tuple[str, str]] = []
-            for i, skill in enumerate(self.config.skills):
-                if skill.folder:
-                    local_folder = skill.folder
-                    skill.folder = os.path.join(self.sandbox_manager.work_dir, ".skills", os.path.basename(local_folder))
-                    self.config.skills[i] = skill
-                    upload_assets.append((local_folder, skill.folder))
+            # 仅注册 folder-based skills 的上传资产；运行时 skill_registry 会单独映射 sandbox 路径
+            upload_assets = self._build_skill_upload_assets()
             self.sandbox_manager.add_upload_assets(upload_assets)
             # 不注册 cleanup_manager，由 Team 统一管理生命周期
         else:
@@ -583,14 +572,8 @@ class Agent:
                     envs=sandbox_config.envs,
                 )
 
-            # Upload skill assets to sandbox
-            upload_assets = []
-            for i, skill in enumerate(self.config.skills):
-                if skill.folder:
-                    local_folder = skill.folder
-                    skill.folder = os.path.join(self.sandbox_manager.work_dir, ".skills", os.path.basename(local_folder))
-                    self.config.skills[i] = skill
-                    upload_assets.append((local_folder, skill.folder))
+            # Upload folder-based skill assets to sandbox lazily at first sandbox start.
+            upload_assets = self._build_skill_upload_assets()
 
             # 功能说明1：仅保存会话上下文，不启动 sandbox
             # 功能说明2：sandbox 会在首次调用工具时通过 start_sync() 延迟启动
@@ -604,6 +587,44 @@ class Agent:
             )
 
             cleanup_manager.register_sandbox_manager(self.sandbox_manager)
+
+    def _sandbox_skill_folder(self, local_folder: str) -> str:
+        """Return the sandbox path used for a folder-based skill."""
+        return str(Path(self.sandbox_manager.work_dir) / ".skills" / os.path.basename(local_folder))
+
+    def _build_skill_upload_assets(self) -> list[tuple[str, str]]:
+        """Collect local->sandbox directory uploads for folder-based skills.
+
+        Keeps ``self.config.skills`` immutable so the original local folder can be
+        reused across multiple Agent instances built from the same config.
+        """
+        upload_assets: list[tuple[str, str]] = []
+        for skill in self.config.skills:
+            if skill.folder:
+                upload_assets.append((skill.folder, self._sandbox_skill_folder(skill.folder)))
+        return upload_assets
+
+    def _build_runtime_skills(self) -> list[Skill]:
+        """Build runtime skill registry entries without mutating ``self.config.skills``."""
+        runtime_skills: list[Skill] = []
+        existing_skill_names: set[str] = set()
+
+        for skill in self.config.skills:
+            runtime_skill = Skill(
+                name=skill.name,
+                description=skill.description,
+                detail=skill.detail,
+                folder=self._sandbox_skill_folder(skill.folder) if skill.folder else skill.folder,
+            )
+            runtime_skills.append(runtime_skill)
+            existing_skill_names.add(runtime_skill.name)
+
+        for tool in self.config.tools:
+            if getattr(tool, "as_skill", False) is True and tool.name not in existing_skill_names:
+                runtime_skills.append(build_tool_skill(tool, tool_call_mode=self.tool_call_mode))
+                existing_skill_names.add(tool.name)
+
+        return runtime_skills
 
     def _resolve_token_counter(self) -> TokenCounter:
         """Cast configured token counter to TokenCounter instance."""
