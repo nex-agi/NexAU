@@ -631,6 +631,13 @@ def call_llm_with_openai_chat_completion(
     """Call OpenAI chat completion with the given messages and return response content."""
 
     messages = _strip_responses_api_artifacts(kwargs.get("messages", []))
+    # Some providers (eg. AWS Bedrock) reject assistant messages where content is an empty string.
+    # Only strip content from assistant messages with tool_calls, where content is optional.
+    for msg in messages:
+        if isinstance(msg, dict):
+            typed_msg = cast(dict[str, object], msg)
+            if typed_msg.get("role") == "assistant" and typed_msg.get("content") == "" and typed_msg.get("tool_calls"):
+                del typed_msg["content"]
     kwargs["messages"] = messages
     stream_requested = bool(kwargs.pop("stream", False) or getattr(llm_config, "stream", False))
 
