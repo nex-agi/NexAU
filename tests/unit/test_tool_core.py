@@ -120,13 +120,12 @@ def test_execute_invalid_params_raise_value_error(validator_tool: Tool):
         validator_tool.execute(x="not-an-int")
 
 
-def test_validate_params_returns_false_on_schema_error(
-    capsys: CaptureFixture[str],
+def test_validate_params_raises_value_error_with_detail(
     validator_tool: Tool,
 ):
-    assert not validator_tool.validate_params({"x": "bad"})
-    captured = capsys.readouterr()
-    assert "Invalid parameters" in captured.out
+    with pytest.raises(ValueError, match="Invalid parameters") as exc_info:
+        validator_tool.validate_params({"x": "bad"})
+    assert "'bad' is not of type 'integer'" in str(exc_info.value)
 
 
 def test_validate_schema_invalid_schema_raises_value_error():

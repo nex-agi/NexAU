@@ -201,10 +201,7 @@ class Tool:
 
         # Validate parameters (excluding agent_state and global_storage for schema validation)
         validation_params = {k: v for k, v in filtered_params.items() if k not in ("agent_state", "global_storage", "sandbox")}
-        if not self.validate_params(validation_params):
-            raise ValueError(
-                f"Invalid parameters for tool '{self.name}': {validation_params}",
-            )
+        self.validate_params(validation_params)
 
         try:
             # Execute the implementation
@@ -248,11 +245,14 @@ class Tool:
                 "tool_name": self.name,
             }
 
-    def validate_params(self, params: dict[str, Any]) -> bool:
+    def validate_params(self, params: dict[str, Any]) -> None:
         """Validate parameters against schema.
 
         Only validates parameters that are defined in the schema.
         Extra parameters (injected by hooks or with default values) are ignored.
+
+        Raises:
+            ValueError: If parameters fail schema validation, with detailed error message.
         """
         # Extract only the parameters that are defined in the schema
         schema_properties = self.input_schema.get("properties", {})
@@ -261,12 +261,10 @@ class Tool:
         try:
             # Validate only the schema-defined parameters
             jsonschema.validate(schema_params, self.input_schema)
-            return True
         except jsonschema.ValidationError as e:
-            print(
-                f"Invalid parameters for tool '{self.name}': {schema_params}, error: {e}",
-            )
-            return False
+            raise ValueError(
+                f"Invalid parameters for tool '{self.name}': {e.message}. params={schema_params}",
+            ) from e
 
     def _validate_schema(self):
         """Validate that the input schema is valid JSON Schema."""
