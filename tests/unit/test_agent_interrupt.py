@@ -245,17 +245,16 @@ class TestStopErrorBranches:
         assert result.stop_reason == AgentStopReason.USER_INTERRUPTED
 
     @pytest.mark.anyio
-    async def test_persist_exception_does_not_raise(self):
-        """Step 5: Exception during _persist_session_state is caught."""
+    async def test_persist_exception_raises_runtime_error(self):
+        """Step 5: Exception during _persist_session_state should fail stop."""
         agent = _make_agent()
         agent._wait_for_execution_complete = AsyncMock()
         agent._persist_session_state = AsyncMock(
             side_effect=RuntimeError("Session DB down"),
         )
 
-        result = await agent.stop()
-
-        assert result.stop_reason == AgentStopReason.USER_INTERRUPTED
+        with pytest.raises(RuntimeError, match="stop persistence failed: Session DB down"):
+            await agent.stop()
 
 
 # ── _wait_for_execution_complete ──────────────────────────────────

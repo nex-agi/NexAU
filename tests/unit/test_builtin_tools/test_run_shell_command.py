@@ -14,6 +14,7 @@
 
 """Unit tests for run_shell_command builtin tool."""
 
+import threading
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -28,6 +29,7 @@ def _make_agent_state(sandbox):
     """Create mock agent_state with sandbox."""
     agent_state = Mock()
     agent_state.get_sandbox.return_value = sandbox
+    agent_state.shutdown_event = None
     return agent_state
 
 
@@ -88,13 +90,23 @@ class TestRunShellCommandIntegration:
         info.is_directory = True
         sandbox.get_file_info.return_value = info
 
+        start_result = Mock()
+        start_result.background_pid = 123
+        sandbox.execute_bash.return_value = start_result
+
         cmd_result = Mock()
         cmd_result.stdout = "hello world"
         cmd_result.stderr = ""
         cmd_result.exit_code = 0
         cmd_result.error = None
         cmd_result.status = SandboxStatus.SUCCESS
-        sandbox.execute_bash.return_value = cmd_result
+        cmd_result.output_dir = "/tmp/out"
+        cmd_result.stdout_file = "/tmp/out/stdout.txt"
+        cmd_result.stderr_file = "/tmp/out/stderr.txt"
+        cmd_result.truncated = False
+        cmd_result.original_stdout_length = None
+        cmd_result.original_stderr_length = None
+        sandbox.get_background_task_status.return_value = cmd_result
 
         agent_state = _make_agent_state(sandbox)
         result = run_shell_command("echo hello", agent_state=agent_state)
@@ -102,3 +114,50 @@ class TestRunShellCommandIntegration:
         assert "error" not in result or result.get("error") is None
         assert "hello world" in result["content"]
         assert "hello world" in result["returnDisplay"]
+
+    @patch("nexau.archs.tool.builtin.shell_tools.run_shell_command.time.sleep", return_value=None)
+    def test_stop_request_kills_running_foreground_command(self, _sleep_mock):
+        """Should kill the sandbox task when shutdown_event is set during polling."""
+        sandbox = Mock()
+        sandbox.work_dir = Path("/tmp/work")
+        sandbox.file_exists.return_value = True
+        info = Mock()
+        info.is_directory = True
+        sandbox.get_file_info.return_value = info
+
+        start_result = Mock()
+        start_result.background_pid = 456
+        sandbox.execute_bash.return_value = start_result
+
+        running_result = Mock()
+        running_result.status = SandboxStatus.RUNNING
+        running_result.stdout = "partial output"
+        running_result.stderr = ""
+        running_result.exit_code = -1
+        running_result.error = None
+        running_result.output_dir = "/tmp/out"
+        running_result.stdout_file = "/tmp/out/stdout.txt"
+        running_result.stderr_file = "/tmp/out/stderr.txt"
+        running_result.truncated = False
+        running_result.original_stdout_length = None
+        running_result.original_stderr_length = None
+
+        shutdown_event = threading.Event()
+
+        def _status_side_effect(pid: int):
+            assert pid == 456
+            shutdown_event.set()
+            return running_result
+
+        sandbox.get_background_task_status.side_effect = _status_side_effect
+
+        agent_state = _make_agent_state(sandbox)
+        agent_state.shutdown_event = shutdown_event
+
+        result = run_shell_command("echo hello", agent_state=agent_state)
+
+        sandbox.kill_background_task.assert_called_once_with(456)
+        assert result["error"]["message"] == "Command interrupted by stop request"
+        assert "Interrupted: command stopped due to stop request." in result["content"]
+        assert result["returnDisplay"] == "partial output"
+        assert result["exit_code"] == -1

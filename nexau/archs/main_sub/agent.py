@@ -18,6 +18,7 @@ import asyncio
 import inspect
 import logging
 import os
+import threading
 import traceback
 import uuid
 import warnings
@@ -206,6 +207,10 @@ class Agent:
         # asyncio.Event 只能在同一事件循环中使用，interrupt() 和 run_async 共享同一循环
         self._run_complete: asyncio.Event = asyncio.Event()
         self._run_complete.set()  # 初始状态：未运行
+
+        # stop() 与 run_async() 运行在不同线程/事件循环中，需要共享 stop 持久化状态。
+        self._stop_state_lock = threading.Lock()
+        self._stop_persist_completed = False
 
         # Queue for messages to be processed in the next execution cycle
         self.queued_messages: list[Message] = []
@@ -965,8 +970,11 @@ class Agent:
                         custom_llm_client_provider=custom_llm_client_provider,
                     )
 
-                # Persist context and storage to session
-                await self._persist_session_state(ctx.context)
+                # Persist context and storage to session unless stop() 已经完成同一轮持久化。
+                with self._stop_state_lock:
+                    should_persist_on_success = not (self.executor.stop_signal and self._stop_persist_completed)
+                if should_persist_on_success:
+                    await self._persist_session_state(ctx.context)
 
                 # Handle sandbox lifecycle after agent execution
                 # 共享 sandbox 由 AgentTeam 统一管理生命周期，单个 agent 不应 stop/pause
@@ -989,7 +997,10 @@ class Agent:
             except Exception as e:
                 # RFC-0001: 中断或异常时也持久化 session state
                 try:
-                    await self._persist_session_state(ctx.context)
+                    with self._stop_state_lock:
+                        should_persist_on_error = not (self.executor.stop_signal and self._stop_persist_completed)
+                    if should_persist_on_error:
+                        await self._persist_session_state(ctx.context)
                 except Exception:
                     logger.warning("Failed to persist session state on error path")
                 logger.error(f"❌ Agent '{self.config.name}' encountered error: {e}")
@@ -998,6 +1009,8 @@ class Agent:
             finally:
                 # RFC-0001: 标记 run 完成，唤醒 interrupt() 的等待
                 self._run_complete.set()
+                with self._stop_state_lock:
+                    self._stop_persist_completed = False
 
     def run(
         self,
@@ -1290,8 +1303,11 @@ class Agent:
             await self._persist_session_state(
                 self._last_context if hasattr(self, "_last_context") else {},
             )
+            with self._stop_state_lock:
+                self._stop_persist_completed = True
         except Exception as e:
             logger.warning(f"Failed to persist session state during stop: {e}")
+            raise RuntimeError(f"stop persistence failed: {e}") from e
 
         logger.info(f"✅ Agent '{self.config.name}' stopped successfully")
 

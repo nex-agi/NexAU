@@ -14,6 +14,7 @@
 
 """Agent state management for unified state container."""
 
+import threading
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
@@ -168,6 +169,11 @@ class AgentState:
         if self._sandbox_manager is not None:
             return self._sandbox_manager.start_sync()
         return self._sandbox
+
+    @property
+    def shutdown_event(self) -> threading.Event:
+        """Get the executor shutdown event for stop-aware tools."""
+        return self._executor.shutdown_event
 
     def set_sandbox(self, sandbox: "BaseSandbox") -> None:
         """Set the sandbox associated with the agent state."""

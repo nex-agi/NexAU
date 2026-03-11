@@ -10,10 +10,11 @@ Supports foreground and background execution, timeout handling, and process mana
 import shlex
 import time
 from collections.abc import Callable
+from threading import Event
 from typing import Any
 
 from nexau.archs.main_sub.agent_state import AgentState
-from nexau.archs.sandbox import BaseSandbox, SandboxStatus
+from nexau.archs.sandbox import BaseSandbox, CommandResult, SandboxStatus
 from nexau.archs.tool.builtin._sandbox_utils import get_sandbox, resolve_path
 
 # Configuration constants (matching gemini-cli)
@@ -22,6 +23,7 @@ TRUNCATE_OUTPUT_THRESHOLD = 4_000_000  # Truncate when output exceeds this many 
 TRUNCATE_OUTPUT_LINES = 1000  # Keep last N lines when truncating
 MAX_TRUNCATED_LINE_WIDTH = 1000  # Max chars per line in truncated output
 MAX_TRUNCATED_CHARS = 4000  # Keep last N chars for single massive line
+FOREGROUND_COMMAND_POLL_INTERVAL_SECONDS = 0.2
 
 
 def _truncate_shell_output(content: str) -> str:
@@ -49,6 +51,88 @@ def _truncate_shell_output(content: str) -> str:
         # Single massive line: keep last N chars
         snippet = content[-MAX_TRUNCATED_CHARS:]
         return f"Output too large. Showing the last {MAX_TRUNCATED_CHARS:,} characters of the output.\n...{snippet}"
+
+
+def _build_terminal_command_result(
+    *,
+    status: SandboxStatus,
+    duration_ms: int,
+    error_message: str,
+    latest_result: CommandResult | None,
+) -> CommandResult:
+    """Build a terminal command result from the latest background task snapshot."""
+    stdout = latest_result.stdout if latest_result is not None else ""
+    stderr = latest_result.stderr if latest_result is not None else ""
+    truncated = latest_result.truncated if latest_result is not None else False
+    original_stdout_length = latest_result.original_stdout_length if latest_result is not None else None
+    original_stderr_length = latest_result.original_stderr_length if latest_result is not None else None
+    output_dir = latest_result.output_dir if latest_result is not None else None
+    stdout_file = latest_result.stdout_file if latest_result is not None else None
+    stderr_file = latest_result.stderr_file if latest_result is not None else None
+
+    return CommandResult(
+        status=status,
+        stdout=stdout,
+        stderr=stderr,
+        exit_code=-1,
+        duration_ms=duration_ms,
+        error=error_message,
+        truncated=truncated,
+        original_stdout_length=original_stdout_length,
+        original_stderr_length=original_stderr_length,
+        output_dir=output_dir,
+        stdout_file=stdout_file,
+        stderr_file=stderr_file,
+    )
+
+
+def _execute_foreground_command(
+    *,
+    sandbox: BaseSandbox,
+    command: str,
+    timeout_ms: int | None,
+    shutdown_event: Event | None,
+) -> CommandResult:
+    """Execute a foreground shell command via background task polling.
+
+    前台命令统一走 background task + 轮询，这样 stop/shutdown_event
+    可以复用 sandbox 现有的 kill_background_task 能力中断长时间阻塞命令。
+    """
+    start_time = time.monotonic()
+    start_result = sandbox.execute_bash(command, timeout=timeout_ms, background=True)
+    background_pid = start_result.background_pid
+
+    if background_pid is None:
+        return start_result
+
+    latest_result: CommandResult | None = None
+    while True:
+        if shutdown_event is not None and shutdown_event.is_set():
+            sandbox.kill_background_task(background_pid)
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+            return _build_terminal_command_result(
+                status=SandboxStatus.STOPPED,
+                duration_ms=duration_ms,
+                error_message="Command interrupted by stop request",
+                latest_result=latest_result,
+            )
+
+        current_result = sandbox.get_background_task_status(background_pid)
+        if current_result.status != SandboxStatus.RUNNING:
+            return current_result
+
+        latest_result = current_result
+        if timeout_ms is not None and int((time.monotonic() - start_time) * 1000) >= timeout_ms:
+            sandbox.kill_background_task(background_pid)
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+            return _build_terminal_command_result(
+                status=SandboxStatus.TIMEOUT,
+                duration_ms=duration_ms,
+                error_message=f"Command timed out after {timeout_ms}ms",
+                latest_result=latest_result,
+            )
+
+        time.sleep(FOREGROUND_COMMAND_POLL_INTERVAL_SECONDS)
 
 
 def run_shell_command(
@@ -174,13 +258,22 @@ def run_shell_command(
         # Streaming output is not supported by execute_bash; ignore update_output.
         _ = update_output
 
+        shutdown_event = agent_state.shutdown_event if agent_state is not None else None
+        if not isinstance(shutdown_event, Event):
+            shutdown_event = None
+
         # Execute command through sandbox, optionally scoping to directory via `cd`.
         cmd_to_run = command
         if cwd:
             cmd_to_run = f"cd {shlex.quote(cwd)} && {command}"
 
         start = time.time()
-        cmd_result = sandbox.execute_bash(cmd_to_run, timeout=timeout_arg)
+        cmd_result = _execute_foreground_command(
+            sandbox=sandbox,
+            command=cmd_to_run,
+            timeout_ms=timeout_arg,
+            shutdown_event=shutdown_event,
+        )
         duration_ms = int((time.time() - start) * 1000)
 
         stdout = cmd_result.stdout or ""
@@ -200,6 +293,8 @@ def run_shell_command(
         if cmd_result.status == SandboxStatus.TIMEOUT:
             timeout_minutes = (timeout_ms / 60000) if timeout_ms else 0
             llm_parts.append(f"Timeout: command timed out after {timeout_minutes:.1f} minutes.")
+        elif cmd_result.status == SandboxStatus.STOPPED:
+            llm_parts.append("Interrupted: command stopped due to stop request.")
         else:
             llm_parts.append(f"Output: {output if output else '(empty)'}")
 
@@ -214,6 +309,8 @@ def run_shell_command(
         # Build return display
         if output and output.strip():
             return_display = output
+        elif cmd_result.status == SandboxStatus.STOPPED:
+            return_display = "Command interrupted by stop request."
         elif cmd_result.status == SandboxStatus.TIMEOUT:
             return_display = f"Command timed out after {timeout_ms / 60000:.1f} minutes."
         elif error_message:
@@ -242,6 +339,7 @@ def run_shell_command(
 
         if error_message or cmd_result.status in (
             SandboxStatus.ERROR,
+            SandboxStatus.STOPPED,
             SandboxStatus.TIMEOUT,
         ):
             result["error"] = {
