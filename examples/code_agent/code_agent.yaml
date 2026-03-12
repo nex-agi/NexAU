@@ -87,4 +87,4 @@ tracers:
     params:
       public_key: ${env.LANGFUSE_PUBLIC_KEY}
       secret_key: ${env.LANGFUSE_SECRET_KEY}
-      host: https://langfuse.xiaobei.top/
+      host: ${env.LANGFUSE_HOST}
