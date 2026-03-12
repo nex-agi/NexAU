@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --port 3001",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for Executor._wait_for_messages and enqueue_message (team_mode)."""
+"""Unit tests for team-mode Executor waiting and stop-tool behavior."""
 
 from __future__ import annotations
 
@@ -260,3 +260,120 @@ class TestForceStop:
         t.join(timeout=2)
 
         assert result == [False]
+
+
+class TestTeamModeStopTools:
+    def _prepare_execute_dependencies(self, executor: Executor) -> None:
+        """Stub heavy dependencies so execute() only exercises stop-tool control flow."""
+        from nexau.core.messages import Message, Role, TextBlock
+
+        mock_response = MagicMock()
+        mock_response.content = "assistant response"
+        mock_response.to_ump_message.return_value = Message(
+            role=Role.ASSISTANT,
+            content=[TextBlock(text="assistant response")],
+        )
+
+        executor.token_counter = MagicMock()
+        executor.token_counter.count_tokens.return_value = 0
+        executor.llm_caller = MagicMock()
+        executor.llm_caller.call_llm.return_value = mock_response
+        executor.response_parser = MagicMock()
+
+        parsed_response = MagicMock()
+        parsed_response.model_response = None
+        executor.response_parser.parse_response.return_value = parsed_response
+
+        object.__setattr__(
+            executor, "_apply_after_agent_hooks", MagicMock(side_effect=lambda **kwargs: (kwargs["final_response"], kwargs["messages"]))
+        )
+
+    def test_ask_user_stop_tool_waits_for_followup_message(self):
+        """ask_user should pause in team_mode instead of terminating the executor."""
+        executor = make_executor(team_mode=True)
+        self._prepare_execute_dependencies(executor)
+
+        def fake_process_xml_calls(hook_input, **_kwargs):  # noqa: ANN001
+            executor._last_stop_tool_name = "ask_user"
+            return (
+                "processed ask_user",
+                True,
+                '{"content": "Asking user questions, waiting for user answers..."}',
+                hook_input.messages,
+                [],
+            )
+
+        executor._process_xml_calls = MagicMock(side_effect=fake_process_xml_calls)
+        executor._wait_for_messages = MagicMock(return_value=False)
+
+        response, _messages = executor.execute(
+            [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Need more input."},
+            ],
+            agent_state=MagicMock(),
+        )
+
+        executor._wait_for_messages.assert_called_once()
+        assert executor._is_waiting_for_user is True
+        assert response == "processed ask_user"
+
+    def test_non_finish_team_stop_tool_waits_in_team_mode(self):
+        """Custom/domain stop tools should not terminate a team-mode executor."""
+        executor = make_executor(team_mode=True)
+        self._prepare_execute_dependencies(executor)
+
+        def fake_process_xml_calls(hook_input, **_kwargs):  # noqa: ANN001
+            executor._last_stop_tool_name = "complete_task"
+            return (
+                "processed complete_task",
+                True,
+                '{"result": "done"}',
+                hook_input.messages,
+                [],
+            )
+
+        executor._process_xml_calls = MagicMock(side_effect=fake_process_xml_calls)
+        executor._wait_for_messages = MagicMock(return_value=False)
+
+        response, _messages = executor.execute(
+            [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Finish the work."},
+            ],
+            agent_state=MagicMock(),
+        )
+
+        executor._wait_for_messages.assert_called_once()
+        assert executor._is_waiting_for_user is False
+        assert response == "processed complete_task"
+
+    def test_finish_team_stop_tool_terminates_in_team_mode(self):
+        """finish_team is the only stop tool that should end the team run."""
+        executor = make_executor(team_mode=True)
+        self._prepare_execute_dependencies(executor)
+
+        def fake_process_xml_calls(hook_input, **_kwargs):  # noqa: ANN001
+            executor._last_stop_tool_name = "finish_team"
+            return (
+                "processed finish_team",
+                True,
+                '{"result": "done"}',
+                hook_input.messages,
+                [],
+            )
+
+        executor._process_xml_calls = MagicMock(side_effect=fake_process_xml_calls)
+        executor._wait_for_messages = MagicMock(return_value=False)
+
+        response, _messages = executor.execute(
+            [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Finish the work."},
+            ],
+            agent_state=MagicMock(),
+        )
+
+        executor._wait_for_messages.assert_not_called()
+        assert executor._is_waiting_for_user is False
+        assert response == '{"result": "done"}'

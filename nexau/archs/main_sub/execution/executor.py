@@ -647,8 +647,10 @@ class Executor:
                     # RFC-0002: team_mode 下，仅「无更多 tool call」时继续等待，
                     # stop_tool（如 finish_team）显式调用时必须退出。
                     if self.team_mode:
-                        # stop_tool 显式触发时，即使在 team_mode 下也必须退出
-                        if stop_tool_result is not None:
+                        # team_mode 下只有框架级 stop tool `finish_team` 会真正结束执行；
+                        # 其他 stop_tools（如 ask_user / complete_task / 自定义 stop tool）
+                        # 只用于结束当前这一轮工具调用，然后继续进入等待态。
+                        if stop_tool_result is not None and self._last_stop_tool_name == "finish_team":
                             logger.info(
                                 "🛑 Stop tool detected in team_mode, exiting executor loop",
                             )

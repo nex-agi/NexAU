@@ -15,6 +15,7 @@ htmlcov/
 .vscode/
 .mypy_cache/
 .hypothesis/
+.claude
 
 # Nx
 .nx/

@@ -123,6 +123,7 @@ class TeammateWatchdog:
                     self._idle_notified = True
                     logger.info("Watchdog: all agents idle, waking leader (one-shot)")
                     self._notify_leader(
-                        "[All Idle] All agents are idle. Review task board status and decide next steps — assign new tasks, check results.",
+                        "[All Idle] All agents are idle. Review task board status and decide next steps — assign new tasks, check results."
+                        + "If no further tasks are needed, call finish_team to end the team.",
                         "watchdog",
                     )
