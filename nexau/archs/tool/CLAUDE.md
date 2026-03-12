@@ -132,8 +132,23 @@ def tool_with_state(param: str, agent_state: AgentState):
 
 **Reserved Parameters**:
 
-- `agent_state`: Injected by framework (not allowed in `extra_kwargs`)
-- `global_storage`: Injected by framework (not allowed in `extra_kwargs`)
+- `ctx`: `FrameworkContext` — injected by framework, provides typed access to framework services (not allowed in `extra_kwargs`)
+- `agent_state`: `AgentState` — injected by framework, legacy (not allowed in `extra_kwargs`)
+- `global_storage`: `GlobalStorage` — injected by framework, legacy (not allowed in `extra_kwargs`)
+
+**Preferred: Use `ctx: FrameworkContext`** (RFC-0006) for new tools. The framework inspects the function signature and injects whichever reserved parameters are declared:
+
+```python
+from nexau.archs.main_sub.framework_context import FrameworkContext
+
+def my_tool(param: str, ctx: FrameworkContext) -> str:
+    """Tool that uses framework context."""
+    # Access framework services via typed API
+    other_tool = ctx.tools.get(name="OtherTool")
+    return "result"
+```
+
+Legacy `agent_state` / `global_storage` injection still works for backwards compatibility. Runtime-added deferred tools are not supported yet; `ctx.tools.add()` is for eager runtime tools only.
 
 ### Tool Executor (`builtin/` directory)
 
@@ -182,6 +197,10 @@ Located in `nexau/archs/tool/builtin/`:
 
 - `multiedit_tool`: Apply multiple edits to a single file
 - `run_code_tool`: Execute code in notebook environment
+
+#### Tool Search (`tool_search.py`)
+
+- `tool_search`: Search and inject deferred tools on demand. Uses `ctx: FrameworkContext` to access `ctx.tools.search()`. Automatically registered when any tool has `defer_loading: true`.
 
 #### MCP Integration (`mcp_client.py`)
 
@@ -309,6 +328,47 @@ def my_tool(param: str) -> str:
 ```
 
 The framework automatically catches exceptions and marks them as errors.
+
+### ToolRegistry and Deferred Loading
+
+`ToolRegistry` (`tool_registry.py`) manages deferred tools — tools registered but not included in the LLM's tool list until explicitly searched.
+
+**Key Concepts**:
+
+- Tools with `defer_loading: true` in YAML are kept out of the LLM context
+- A built-in `ToolSearch` tool is auto-registered when any deferred tool exists
+- When the LLM calls `ToolSearch`, matched tools are injected into the active tool list
+- From the next turn, injected tools are available for direct function calls
+
+**YAML Configuration**:
+
+```yaml
+type: tool
+name: SlackSendMessage
+description: "Send a message to a Slack channel"
+defer_loading: true        # Not sent to LLM until searched
+search_hint: "slack chat"  # Optional: improves search relevance
+input_schema:
+  type: object
+  properties:
+    channel:
+      type: string
+    message:
+      type: string
+  required: [channel, message]
+```
+
+**How ToolSearch accesses ToolRegistry** (RFC-0005 + RFC-0006):
+
+The `tool_search` function declares `ctx: FrameworkContext`. The framework injects it automatically. Internally it calls `ctx.tools.search(query=query, max_results=max_results)`, which delegates to `ToolRegistry.search()`. No GlobalStorage or extra_kwargs needed.
+
+**`defer_loading` vs `lazy` vs `as_skill`**:
+
+| Attribute | What it defers | When loaded |
+|-----------|---------------|-------------|
+| `defer_loading` | Tool **schema** from LLM context | When LLM calls `ToolSearch` |
+| `lazy` | Python **import** of the binding | On first tool execution |
+| `as_skill` | Tool from direct LLM access | When LLM calls the Skill tool |
 
 ## Common Issues
 

@@ -47,12 +47,12 @@ from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.main_sub.execution.stop_result import StopResult
 from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.prompt_builder import PromptBuilder
-from nexau.archs.main_sub.skill import Skill, build_tool_skill
-from nexau.archs.main_sub.sub_agent_naming import build_sub_agent_tool_name
+from nexau.archs.main_sub.skill import Skill, build_load_skill_tool, build_tool_skill
 from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
     normalize_tool_call_mode,
 )
+from nexau.archs.main_sub.tool_payloads import build_anthropic_tool_payload, build_openai_tool_payload
 from nexau.archs.main_sub.utils.cleanup_manager import cleanup_manager
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
 from nexau.archs.sandbox import (
@@ -65,6 +65,8 @@ from nexau.archs.sandbox import (
 from nexau.archs.session import AgentRunActionKey, SessionManager
 from nexau.archs.session.orm import InMemoryDatabaseEngine
 from nexau.archs.tool import Tool
+from nexau.archs.tool.builtin.tool_search import tool_search
+from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
@@ -155,26 +157,46 @@ class Agent:
                 self.config.llm_config.set_param("prompt_cache_key", cache_key)
                 logger.info("Injected prompt_cache_key=%s for agent '%s'", cache_key, self.config.name)
 
-        # Initialize MCP tools if configured
-        if self.config.mcp_servers:
-            self._initialize_mcp_tools()
-
-        # Build tool payloads after all tools (including MCP) are loaded
-        self.tool_call_payload = self._build_tool_call_payload() if self.use_structured_tool_calls else []
-        logger.info(
-            "Registered %d tools, %d sub_agents", len(self.config.tools), len(self.config.sub_agents) if self.config.sub_agents else 0
-        )
+        # Load tool sources
+        configured_tools = list(self.config.tools)
+        mcp_tools = self._initialize_mcp_tools() if self.config.mcp_servers else []
 
         # Initialize sandbox
         self._initialize_sandbox()
 
-        tools = self.config.tools
-
+        nexau_package_path = Path(__file__).parent.parent.parent
+        searchable_tools = [*configured_tools, *mcp_tools]
         runtime_skills = self._build_runtime_skills()
 
-        # Build tool registry for quick lookup
-        self.tool_registry = {tool.name: tool for tool in tools}
-        self.serial_tool_name = [tool.name for tool in tools if tool.disable_parallel]
+        skill_tools: list[Tool] = []
+        skill_tool = build_load_skill_tool(searchable_tools, runtime_skills)
+        if skill_tool is not None:
+            skill_tools.append(skill_tool)
+
+        # RFC-0005: 构建 ToolRegistry，支持 deferred loading
+        self._tool_registry = ToolRegistry()
+        self._tool_registry.add_source("config", configured_tools)
+        if mcp_tools:
+            self._tool_registry.add_source("mcp", mcp_tools)
+        if skill_tools:
+            self._tool_registry.add_source("builtin", skill_tools)
+
+        # RFC-0005: 无条件注册 ToolSearch 内置工具
+        # 即使当前没有 deferred 工具，后续通过 MCP 或运行时添加时也能搜索
+        tool_search_tool = Tool.from_yaml(
+            str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "tool_search.yaml"),
+            binding=tool_search,
+            as_skill=False,
+        )
+        self._tool_registry.add_source("builtin", [tool_search_tool])
+
+        logger.info(
+            "Registered %d tools (%d eager, %d deferred), %d sub_agents",
+            len(self._tool_registry.get_all()),
+            self._tool_registry.eager_count,
+            self._tool_registry.deferred_count,
+            len(self.config.sub_agents) if self.config.sub_agents else 0,
+        )
 
         # Build skill registry for quick lookup
         self.skill_registry = {skill.name: skill for skill in runtime_skills}
@@ -395,7 +417,7 @@ class Agent:
             logger.error(f"❌ Failed to initialize OpenAI client: {e}")
             return None
 
-    def _initialize_mcp_tools(self) -> None:
+    def _initialize_mcp_tools(self) -> list[Tool]:
         """Initialize tools from MCP servers."""
         try:
             # Import here to avoid circular imports and optional dependency
@@ -406,9 +428,8 @@ class Agent:
             )
 
             mcp_tools = sync_initialize_mcp_tools(self.config.mcp_servers)
-            self.config.tools.extend(mcp_tools)
-
             logger.info(f"Successfully initialized {len(mcp_tools)} MCP tools")
+            return list(mcp_tools)
 
         except ImportError:
             logger.error(
@@ -417,96 +438,29 @@ class Agent:
         except Exception as e:
             logger.error(f"Failed to initialize MCP tools: {e}")
 
-    def _structured_tool_description(self, tool: Tool) -> str:
-        """Return the description exposed to structured tool-calling models."""
-        if tool.as_skill:
-            if not tool.skill_description:
-                raise ValueError(
-                    f"Tool {tool.name} is marked as a skill but has no skill_description",
-                )
-            return tool.skill_description
-        return tool.description or ""
-
-    def _build_openai_tool_specs(self) -> list[ChatCompletionToolParam]:
-        """Convert configured tools and sub-agents into OpenAI tool definitions."""
-        tools_spec: list[ChatCompletionToolParam] = []
-        for tool in self.config.tools:
-            tool_spec = tool.to_openai()
-            try:
-                function_block = cast(Any, tool_spec).get("function")
-                if isinstance(function_block, dict):
-                    function_block["description"] = self._structured_tool_description(tool)
-            except (AttributeError, KeyError, TypeError):
-                pass
-            tools_spec.append(tool_spec)
-
-        if not self.config.sub_agents:
-            return tools_spec
-        for sub_agent_name in (self.config.sub_agents or {}).keys():
-            tools_spec.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": build_sub_agent_tool_name(sub_agent_name),
-                        "description": (
-                            self.config.sub_agents[sub_agent_name].description or f"Delegate work to sub-agent '{sub_agent_name}'."
-                        ),
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string",
-                                    "description": "Task or question for the sub-agent.",
-                                },
-                            },
-                            "required": ["message"],
-                        },
-                    },
-                },
-            )
-
-        return tools_spec
-
-    def _build_anthropic_tool_specs(self) -> list[ToolParam]:
-        """Convert tools and sub-agents into anthropic tool definitions."""
-        tools_spec: list[ToolParam] = []
-        for tool in self.config.tools:
-            tool_spec = tool.to_anthropic()
-            try:
-                tool_spec["description"] = self._structured_tool_description(tool)
-            except (KeyError, TypeError):
-                pass
-            tools_spec.append(tool_spec)
-
-        if not self.config.sub_agents:
-            return tools_spec
-        for sub_agent_name in (self.config.sub_agents or {}).keys():
-            tools_spec.append(
-                {
-                    "name": build_sub_agent_tool_name(sub_agent_name),
-                    "description": self.config.sub_agents[sub_agent_name].description or f"Delegate work to sub-agent '{sub_agent_name}'.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "message": {
-                                "type": "string",
-                                "description": "Task or question for the sub-agent.",
-                            },
-                        },
-                        "required": ["message"],
-                    },
-                },
-            )
-
-        return tools_spec
+        return []
 
     def _build_tool_call_payload(self) -> list[ChatCompletionToolParam] | list[ToolParam]:
         """Build structured tool definitions for the active tool_call_mode."""
+        eager_tools = self._tool_registry.compute_eager_tools()
         if self.tool_call_mode == "openai":
-            return self._build_openai_tool_specs()
+            return build_openai_tool_payload(
+                eager_tools=eager_tools,
+                sub_agents=self.config.sub_agents,
+            )
         if self.tool_call_mode == "anthropic":
-            return self._build_anthropic_tool_specs()
+            return build_anthropic_tool_payload(
+                eager_tools=eager_tools,
+                sub_agents=self.config.sub_agents,
+            )
         return []
+
+    @property
+    def tool_call_payload(self) -> list[ChatCompletionToolParam] | list[ToolParam]:
+        """Return the current structured tool payload derived from ToolRegistry."""
+        if not self.use_structured_tool_calls:
+            return []
+        return self._build_tool_call_payload()
 
     def _initialize_execution_components(self) -> None:
         """Initialize execution components."""
@@ -515,8 +469,7 @@ class Agent:
         self.executor = Executor(
             agent_name=self.agent_name,
             agent_id=self.agent_id,
-            tool_registry=self.tool_registry,
-            serial_tool_name=self.serial_tool_name,
+            tool_registry=self._tool_registry,
             sub_agents=self.config.sub_agents or {},
             stop_tools=self.config.stop_tools or set(),
             openai_client=self.openai_client,
@@ -534,7 +487,6 @@ class Agent:
             global_storage=self.global_storage,
             tool_call_mode=self.tool_call_mode,
             team_mode=self._team_state is not None,
-            openai_tools=self.tool_call_payload,
             session_manager=self._session_manager,
             user_id=self._user_id,
             session_id=self._session_id,
@@ -838,7 +790,7 @@ class Agent:
             # Build system prompt (returns list[SystemPromptPart])
             system_prompt_parts = self.prompt_builder.build_system_prompt(
                 agent_config=self.config,
-                tools=self.config.tools,
+                tools=self._tool_registry.compute_eager_tools(),
                 sub_agents=self.config.sub_agents or {},
                 runtime_context=merged_context,
                 include_tool_instructions=not self.use_structured_tool_calls,
@@ -944,7 +896,7 @@ class Agent:
                 context=ctx,
                 global_storage=self.global_storage,
                 parent_agent_state=parent_agent_state,
-                executor=self.executor,
+                tool_registry=self._tool_registry,
                 sandbox_manager=sandbox_mgr,
                 variables=effective_variables,
                 team_state=self._team_state,
@@ -1182,12 +1134,6 @@ class Agent:
                 self.history.flush()
             except Exception:
                 logger.warning("Failed to flush history in finally block")
-
-    def add_tool(self, tool: Tool) -> None:
-        """Add a tool to the agent."""
-        self.config.tools.append(tool)
-        self.tool_registry[tool.name] = tool
-        self.executor.add_tool(tool)
 
     async def _persist_session_state(self, context: dict[str, Any]) -> None:
         """Persist context and storage to session.

@@ -18,7 +18,7 @@ Tests real Agent execution with real LLM, verifying:
 - Multi-turn conversations
 - Session persistence and recovery
 - Tool execution with state
-- Sub-agent delegation
+- Deferred tool loading and ToolSearch (RFC-0005)
 - Event streaming
 - Error handling and recovery
 """
@@ -463,3 +463,239 @@ class TestAgentMaxIterations:
         assert isinstance(response, str)
         # Response should exist (agent completed within limit)
         assert len(response) > 0
+
+
+class TestAgentToolSearch:
+    """Test deferred tool loading with ToolSearch (RFC-0005).
+
+    Verifies the full chain: deferred tool → LLM calls ToolSearch → tool injected → LLM calls injected tool.
+    """
+
+    @pytest.fixture
+    def weather_tool(self):
+        """Create a deferred weather tool."""
+
+        def get_weather(city: str) -> dict[str, Any]:
+            """Get weather for a city."""
+            return {
+                "city": city,
+                "temperature": 22,
+                "unit": "celsius",
+                "condition": "sunny",
+            }
+
+        return Tool(
+            name="GetWeather",
+            description="Get the current weather for a given city. Returns temperature and conditions.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "City name to get weather for",
+                    }
+                },
+                "required": ["city"],
+            },
+            implementation=get_weather,
+            defer_loading=True,
+            search_hint="weather forecast temperature",
+        )
+
+    @pytest.fixture
+    def stock_tool(self):
+        """Create a deferred stock price tool."""
+
+        def get_stock_price(symbol: str) -> dict[str, Any]:
+            """Get stock price for a symbol."""
+            return {
+                "symbol": symbol,
+                "price": 185.50,
+                "currency": "USD",
+                "change": "+2.3%",
+            }
+
+        return Tool(
+            name="GetStockPrice",
+            description="Get the current stock price for a given ticker symbol.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Stock ticker symbol (e.g. AAPL, GOOGL)",
+                    }
+                },
+                "required": ["symbol"],
+            },
+            implementation=get_stock_price,
+            defer_loading=True,
+            search_hint="stock price market ticker",
+        )
+
+    @pytest.fixture
+    def eager_calculator_tool(self):
+        """Create an eager (non-deferred) calculator tool."""
+
+        def calculate(expression: str) -> dict[str, Any]:
+            """Evaluate a math expression."""
+            try:
+                result = eval(expression, {"__builtins__": {}}, {})
+                return {"result": result, "expression": expression}
+            except Exception as e:
+                return {"error": str(e)}
+
+        return Tool(
+            name="Calculator",
+            description="Evaluate mathematical expressions like '2 + 2' or '10 * 5'.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "Math expression to evaluate",
+                    }
+                },
+                "required": ["expression"],
+            },
+            implementation=calculate,
+            defer_loading=False,
+        )
+
+    @pytest.mark.llm
+    def test_deferred_tool_search_and_call(self, weather_tool):
+        """Test full chain: LLM searches for deferred tool, then calls it.
+
+        RFC-0005: deferred tool → ToolSearch → inject → function call
+        """
+        config = AgentConfig(
+            name="tool_search_agent",
+            system_prompt=(
+                "You are a helpful assistant. You MUST use tools to answer questions — never answer from your own knowledge. "
+                "Some tools are deferred and must be found via ToolSearch before use. "
+                "When the user asks about weather, first call ToolSearch to find the weather tool, then call it."
+            ),
+            llm_config=LLMConfig(),
+            tools=[weather_tool],
+        )
+
+        engine = InMemoryDatabaseEngine()
+        session_manager = SessionManager(engine=engine)
+
+        agent = Agent(
+            config=config,
+            session_manager=session_manager,
+            user_id="test_user",
+            session_id="tool_search_session",
+        )
+
+        response = agent.run(message="Use ToolSearch to find the GetWeather tool, then call it to get weather for Tokyo.")
+        assert isinstance(response, str)
+        # The tool returns temperature=22, condition=sunny
+        assert "22" in response or "sunny" in response.lower()
+
+    @pytest.mark.llm
+    def test_multiple_deferred_tools_selective_search(self, weather_tool, stock_tool):
+        """Test LLM selects the right deferred tool when multiple are available."""
+        config = AgentConfig(
+            name="multi_deferred_agent",
+            system_prompt=(
+                "You are a helpful assistant. You MUST use tools to answer questions — never answer from your own knowledge. "
+                "All tools are deferred. You MUST call ToolSearch first to find the right tool, then call it."
+            ),
+            llm_config=LLMConfig(),
+            tools=[weather_tool, stock_tool],
+        )
+
+        engine = InMemoryDatabaseEngine()
+        session_manager = SessionManager(engine=engine)
+
+        agent = Agent(
+            config=config,
+            session_manager=session_manager,
+            user_id="test_user",
+            session_id="multi_deferred_session",
+        )
+
+        # Ask about stock — should search for and use GetStockPrice, not GetWeather
+        response = agent.run(message="Use ToolSearch to find a stock price tool, then call it to get the stock price of AAPL.")
+        assert isinstance(response, str)
+        # The tool returns price=185.50
+        assert "185" in response
+
+    @pytest.mark.llm
+    def test_eager_and_deferred_tools_coexist(self, weather_tool, eager_calculator_tool):
+        """Test eager tools work normally alongside deferred tools."""
+        config = AgentConfig(
+            name="mixed_tools_agent",
+            system_prompt=(
+                "You are a helpful assistant with a Calculator tool always available. "
+                "Other tools like weather require searching first via ToolSearch."
+            ),
+            llm_config=LLMConfig(),
+            tools=[eager_calculator_tool, weather_tool],
+        )
+
+        engine = InMemoryDatabaseEngine()
+        session_manager = SessionManager(engine=engine)
+
+        agent = Agent(
+            config=config,
+            session_manager=session_manager,
+            user_id="test_user",
+            session_id="mixed_tools_session",
+        )
+
+        # Ask a math question — should use eager Calculator directly (no ToolSearch needed)
+        response = agent.run(message="What is 123 * 456?")
+        assert isinstance(response, str)
+        assert "56088" in response or "56,088" in response
+
+    @pytest.mark.llm
+    def test_deferred_tool_with_streaming_events(self, weather_tool):
+        """Test that ToolSearch + deferred tool calls emit proper streaming events."""
+        events_received: list[Any] = []
+
+        def on_event(event: Any) -> None:
+            events_received.append(event)
+
+        middleware = AgentEventsMiddleware(session_id="stream_deferred_session", on_event=on_event)
+
+        config = AgentConfig(
+            name="streaming_deferred_agent",
+            system_prompt=(
+                "You are a helpful assistant. You MUST use ToolSearch to find deferred tools before calling them. "
+                "NEVER answer weather questions from your own knowledge — always use the GetWeather tool. "
+                "Step 1: call ToolSearch to find the weather tool. Step 2: call GetWeather with the city."
+            ),
+            llm_config=LLMConfig(),
+            tools=[weather_tool],
+            middlewares=[middleware],
+        )
+
+        engine = InMemoryDatabaseEngine()
+        session_manager = SessionManager(engine=engine)
+
+        agent = Agent(
+            config=config,
+            session_manager=session_manager,
+            user_id="test_user",
+            session_id="stream_deferred_session",
+        )
+
+        async def run_streaming():
+            result = await agent.run_async(
+                message="Use the GetWeather tool to get weather for Paris. You must call ToolSearch first to find it."
+            )
+            return result if isinstance(result, str) else result[0]
+
+        response = asyncio.run(run_streaming())
+
+        assert isinstance(response, str)
+        assert len(response) > 0
+
+        # Verify streaming events include tool calls (ToolSearch + GetWeather)
+        event_types = [type(e).__name__ for e in events_received]
+        assert any("RunStarted" in t for t in event_types)
+        assert any("RunFinished" in t for t in event_types)
+        assert any("ToolCall" in t for t in event_types)

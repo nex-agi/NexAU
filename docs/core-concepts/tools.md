@@ -22,6 +22,9 @@ NexAU comes with a variety of pre-built tools for common tasks.
 #### Session Tools (`nexau.archs.tool.builtin.session_tools`)
 - **write_todos**, **complete_task**, **save_memory**, **ask_user**: Task management, persistence, user interaction.
 
+#### Tool Search (`nexau.archs.tool.builtin.tool_search`)
+- **ToolSearch**: Search and inject deferred tools on demand. Automatically registered when any tool has `defer_loading: true`.
+
 ### How to use Use these built-in tools
 If you use python to create Agent:
 
@@ -205,6 +208,66 @@ middlewares:
 
 See [Middleware Hooks — LongToolOutputMiddleware](../advanced-guides/hooks.md#longtooloutputmiddleware) for full configuration reference.
 
+## Deferred Tool Loading
+
+When an agent has many tools, sending all tool schemas to the LLM every turn wastes context tokens. **Deferred loading** (`defer_loading: true`) keeps a tool's schema out of the LLM context until the LLM explicitly searches for it via the built-in `ToolSearch` tool.
+
+### How it works
+
+1. Tools with `defer_loading: true` are registered but **not** included in the LLM's tool list
+2. A built-in `ToolSearch` tool is automatically added to the agent
+3. When the LLM calls `ToolSearch`, matched tools are **injected** into the tool list
+4. From the next turn onwards, the LLM can call the injected tools directly
+
+### YAML Configuration
+
+```yaml
+type: tool
+name: SlackSendMessage
+description: "Send a message to a Slack channel"
+defer_loading: true        # Not sent to LLM until searched
+search_hint: "slack chat"  # Optional: improves search relevance
+
+input_schema:
+  type: object
+  properties:
+    channel:
+      type: string
+    message:
+      type: string
+  required: [channel, message]
+  additionalProperties: false
+```
+
+### Agent YAML Configuration
+
+```yaml
+tools:
+  - name: read_file
+    yaml_path: ./tools/ReadFile.yaml
+    binding: nexau.archs.tool.builtin.file_tools:read_file
+    # No defer_loading → always available (eager)
+
+  - name: slack_send
+    yaml_path: ./tools/SlackSendMessage.yaml
+    binding: my_tools.slack:send_message
+    defer_loading: true   # Only available after ToolSearch
+    search_hint: "slack chat messaging"
+```
+
+### When to use
+
+- **Many optional tools** — MCP integrations, specialized APIs that the LLM rarely needs
+- **Large tool schemas** — Tools with complex input schemas that consume many tokens
+- **Conditional capabilities** — Tools that only make sense in certain conversation contexts
+
+### `defer_loading` vs `lazy` vs `as_skill`
+
+| Attribute | What it defers | When loaded |
+|-----------|---------------|-------------|
+| `defer_loading` | Tool **schema** from LLM context | When LLM calls `ToolSearch` |
+| `lazy` | Python **import** of the binding | On first tool execution |
+| `as_skill` | Tool from direct LLM access | When LLM calls the Skill tool |
 
 ## Lazy loading long tool descriptions via Skills
 

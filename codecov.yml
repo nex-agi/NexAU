@@ -1,17 +1,66 @@
-# General Codecov configuration for PR feedback.
+# Codecov configuration — PR feedback & coverage gates.
+#
+# Docs: https://docs.codecov.com/docs/codecov-yaml
+
 coverage:
   status:
     project:
       default:
-        target: auto
+        target: auto     # Compare against base commit
+        threshold: 1%    # Allow up to 1% drop before failing
     patch:
       default:
-        target: auto
+        target: 80%      # New/changed lines should have ≥80% coverage
 
-comment: # this is a top-level key
-  layout: " diff, flags, files"
+  # Ignore paths that inflate/deflate coverage unfairly
+  ignore:
+    - "nexau/cli/**"             # CLI wrappers, hard to unit-test
+    - "nexau/archs/transports/grpc/**"  # Generated / low-priority
+    - "nexau/archs/transports/websocket/**"
+
+comment:
+  layout: "header, diff, flags, components, files"
   behavior: default
-  require_changes: false # learn more in the Requiring Changes section below
-  require_base: false # [true :: must have a base report to post]
-  require_head: true # [true :: must have a head report to post]
-  hide_project_coverage: false # [true :: only show coverage on the git diff]
+  require_changes: false
+  require_base: false
+  require_head: true
+  hide_project_coverage: false
+
+# Flag definitions — match CI upload flags
+flags:
+  unittests-saas:
+    paths:
+      - nexau/
+    carryforward: true   # Keep previous result if flag not uploaded in this commit
+  unittests-selfhost:
+    paths:
+      - nexau/
+    carryforward: true
+
+# Component-level tracking — shows per-module coverage changes in PR comment
+component_management:
+  default_rules:
+    statuses:
+      - type: project
+        target: auto
+  individual_components:
+    - component_id: agent-system
+      name: Agent System
+      paths:
+        - nexau/archs/main_sub/**
+    - component_id: tool-system
+      name: Tool System
+      paths:
+        - nexau/archs/tool/**
+    - component_id: llm-aggregators
+      name: LLM Aggregators
+      paths:
+        - nexau/archs/llm/**
+    - component_id: session
+      name: Session
+      paths:
+        - nexau/archs/session/**
+    - component_id: transports
+      name: Transports
+      paths:
+        - nexau/archs/transports/**

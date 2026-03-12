@@ -1,13 +1,15 @@
+import logging
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 import yaml
-from pytest import CaptureFixture
+from pytest import CaptureFixture, LogCaptureFixture
 
 from nexau.archs.main_sub.agent_state import AgentState
-from nexau.archs.tool.tool import Tool
+from nexau.archs.main_sub.framework_context import FrameworkContext
+from nexau.archs.tool.tool import ConfigError, Tool
 
 
 @pytest.fixture
@@ -61,7 +63,7 @@ def test_from_yaml_prefers_agent_binding_over_yaml_binding(tmp_path: Path):
     assert tool.implementation_import_path is None
 
 
-@pytest.mark.parametrize("reserved_field", ["global_storage", "agent_state"])
+@pytest.mark.parametrize("reserved_field", ["global_storage", "agent_state", "ctx"])
 def test_from_yaml_rejects_reserved_fields(tmp_path: Path, reserved_field):
     yaml_path = tmp_path / f"{reserved_field}.yaml"
     yaml_content = {
@@ -113,6 +115,33 @@ def test_execute_maps_agent_state_to_global_storage(agent_state: AgentState):
 
     assert result["global_storage"] is agent_state.global_storage
     assert captured["value"] is agent_state.global_storage
+
+
+def test_tool_accepts_framework_context_annotation() -> None:
+    def impl(ctx: FrameworkContext | None = None) -> dict[str, str]:
+        return {"status": "ok"}
+
+    tool = Tool(name="ctx_ok", description="desc", input_schema={}, implementation=impl)
+
+    assert tool.execute(ctx=None) == {"status": "ok"}
+
+
+def test_tool_rejects_invalid_ctx_annotation() -> None:
+    def impl(ctx: str) -> dict[str, str]:
+        return {"status": ctx}
+
+    with pytest.raises(ConfigError, match="declares 'ctx' with incompatible type"):
+        Tool(name="ctx_bad", description="desc", input_schema={}, implementation=impl)
+
+
+def test_tool_warns_when_ctx_annotation_missing(caplog: LogCaptureFixture) -> None:
+    def impl(ctx) -> dict[str, str]:
+        return {"status": "ok"}
+
+    with caplog.at_level(logging.WARNING, logger="nexau.archs.tool.tool"):
+        Tool(name="ctx_untyped", description="desc", input_schema={}, implementation=impl)
+
+    assert "declares 'ctx' without a FrameworkContext annotation" in caplog.text
 
 
 def test_execute_invalid_params_raise_value_error(validator_tool: Tool):

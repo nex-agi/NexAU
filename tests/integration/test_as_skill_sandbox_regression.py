@@ -37,7 +37,7 @@ def _build_agent_state(agent: Agent) -> AgentState:
         root_run_id="integration-run",
         context=AgentContext({}),
         global_storage=agent.global_storage,
-        executor=agent.executor,
+        tool_registry=agent._tool_registry,
         sandbox_manager=agent.sandbox_manager,
     )
 

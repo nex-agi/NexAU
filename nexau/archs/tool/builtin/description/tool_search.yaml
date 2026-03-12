@@ -1,0 +1,26 @@
+type: tool
+name: ToolSearch
+description: >-
+  Search for deferred tools to make them available for use.
+  Use this tool to load deferred tools BEFORE calling them directly.
+
+  Use keywords to find tools by name/description (e.g. "web fetch", "notebook edit").
+  Prefix with "+" to require a keyword match (e.g. "+slack send").
+
+  Once a tool appears in the results, it is immediately available to call in the next turn.
+input_schema:
+  type: object
+  properties:
+    query:
+      type: string
+      description: >-
+        Search query. Use keywords to find tools by name or description.
+        Use "+keyword" to require a match.
+    max_results:
+      type: integer
+      description: "Maximum number of results to return (default: 5)"
+      default: 5
+  required:
+    - query
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

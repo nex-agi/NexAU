@@ -81,13 +81,9 @@ class TestContextValue:
 
 class TestAgentStateVariables:
     @pytest.fixture
-    def mock_executor(self):
-        executor = Mock()
-        executor.add_tool = Mock()
-        return cast(Executor, executor)
+    def make_state(self):
+        from nexau.archs.tool.tool_registry import ToolRegistry
 
-    @pytest.fixture
-    def make_state(self, mock_executor):
         def _make(variables: ContextValue | None = None) -> AgentState:
             return AgentState(
                 agent_name="test",
@@ -96,7 +92,7 @@ class TestAgentStateVariables:
                 root_run_id="run_1",
                 context=AgentContext({}),
                 global_storage=GlobalStorage(),
-                executor=mock_executor,
+                tool_registry=ToolRegistry(),
                 variables=variables,
             )
 

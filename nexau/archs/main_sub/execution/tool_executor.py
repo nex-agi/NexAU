@@ -14,20 +14,20 @@
 
 """Tool execution management with XML parsing and parallel execution."""
 
-import _thread
 import dataclasses
 import json
 import logging
-import threading
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from ..agent_state import AgentState
+    from ..framework_context import FrameworkContext
 
 from nexau.archs.sandbox.base_sandbox import BaseSandbox
 from nexau.archs.tool.tool import Tool
+from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
 
@@ -49,25 +49,25 @@ class ToolExecutor:
     def __init__(
         self,
         *,
-        tool_registry: dict[str, Tool],
+        tool_registry: ToolRegistry,
         stop_tools: set[str],
         middleware_manager: MiddlewareManager | None = None,
-        registry_lock: _thread.RLock | None = None,
     ):
         """Initialize tool executor.
 
         Args:
-            tool_registry: Dictionary mapping tool names to tool objects
+            tool_registry: Tool registry used to resolve tools
             stop_tools: Set of tool names that should trigger execution stop
             middleware_manager: Optional middleware manager
-            registry_lock: Optional shared lock protecting tool_registry access
         """
-        self.tool_registry: dict[str, Any] = tool_registry
+        self._tool_registry = tool_registry
         self.stop_tools: set[str] = stop_tools
         self.xml_parser = XMLParser()
         self.middleware_manager = middleware_manager
-        # Re-entrant lock is shared with Executor to synchronize add/read and allow nested acquisitions in hooks.
-        self._registry_lock: _thread.RLock = registry_lock or threading.RLock()
+
+    def _get_tool(self, tool_name: str) -> Tool | None:
+        """Resolve a tool by name from the current registry source."""
+        return self._tool_registry.get_tool(tool_name)
 
     def execute_tool(
         self,
@@ -76,6 +76,7 @@ class ToolExecutor:
         parameters: dict[str, Any],
         tool_call_id: str,
         parallel_execution_id: str | None = None,
+        framework_context: "FrameworkContext | None" = None,
     ) -> JsonDict:
         """Execute a tool with given parameters.
 
@@ -90,13 +91,11 @@ class ToolExecutor:
         Raises:
             ValueError: If tool is not found
         """
-        with self._registry_lock:
-            if tool_name not in self.tool_registry:
-                error_msg = f"Tool '{tool_name}' for agent '{agent_state.agent_id}' not found"
-                logger.error(f"❌ {error_msg}")
-                raise ValueError(error_msg)
-            tool = self.tool_registry[tool_name]
-            # Fetch tool while holding the lock to avoid TOCTOU races with concurrent registry updates.
+        tool = self._get_tool(tool_name)
+        if tool is None:
+            error_msg = f"Tool '{tool_name}' for agent '{agent_state.agent_id}' not found"
+            logger.error(f"❌ {error_msg}")
+            raise ValueError(error_msg)
 
         sandbox: BaseSandbox | None = None
         if tool.name not in self._SANDBOX_OPTIONAL_TOOL_NAMES:
@@ -130,6 +129,7 @@ class ToolExecutor:
                 tool_name=tool_name,
                 tool_parameters=tool_parameters,
                 tool_call_id=tool_call_id,
+                framework_context=framework_context,
             )
         else:
             return self._execute_tool_inner(
@@ -139,6 +139,7 @@ class ToolExecutor:
                 tool_name=tool_name,
                 tool_parameters=tool_parameters,
                 tool_call_id=tool_call_id,
+                framework_context=framework_context,
             )
 
     def _execute_tool_with_tracing(
@@ -150,6 +151,7 @@ class ToolExecutor:
         tool_name: str,
         tool_parameters: dict[str, Any],
         tool_call_id: str,
+        framework_context: "FrameworkContext | None" = None,
     ) -> JsonDict:
         """Execute tool with tracing enabled.
 
@@ -184,6 +186,7 @@ class ToolExecutor:
                     tool_name=tool_name,
                     tool_parameters=tool_parameters,
                     tool_call_id=tool_call_id,
+                    framework_context=framework_context,
                 )
                 trace_ctx.set_outputs({"result": result})
                 return result
@@ -200,6 +203,7 @@ class ToolExecutor:
         tool_name: str,
         tool_parameters: dict[str, Any],
         tool_call_id: str,
+        framework_context: "FrameworkContext | None" = None,
     ) -> JsonDict:
         """Inner tool execution logic without tracing wrapper.
 
@@ -209,6 +213,7 @@ class ToolExecutor:
             tool_name: Name of the tool
             tool_parameters: Parameters for the tool
             tool_call_id: Unique ID for this tool call
+            framework_context: Optional FrameworkContext (RFC-0006)
 
         Returns:
             Tool execution result
@@ -216,6 +221,9 @@ class ToolExecutor:
         execution_params: JsonDict = dict(tool_parameters)
         execution_params["agent_state"] = agent_state
         execution_params["sandbox"] = sandbox
+        # RFC-0006: 注入 FrameworkContext
+        if framework_context is not None:
+            execution_params["ctx"] = framework_context
 
         call_params = ToolCallParams(
             agent_state=agent_state,
@@ -339,8 +347,7 @@ class ToolExecutor:
         if not isinstance(param_value, str):
             return param_value
 
-        with self._registry_lock:
-            tool = self.tool_registry.get(tool_name)
+        tool = self._get_tool(tool_name)
         if tool is None:
             return param_value
         schema = getattr(tool, "input_schema", {})

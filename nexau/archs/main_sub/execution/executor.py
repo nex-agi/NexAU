@@ -22,7 +22,6 @@ from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import copy_context
-from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 
 from anthropic.types import ToolParam
@@ -57,13 +56,15 @@ from nexau.archs.main_sub.execution.response_parser import ResponseParser
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
 from nexau.archs.main_sub.execution.tool_executor import ToolExecutor
+from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
     normalize_tool_call_mode,
 )
+from nexau.archs.main_sub.tool_payloads import build_anthropic_tool_payload, build_openai_tool_payload
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
-from nexau.archs.tool.tool import Tool
+from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, coerce_tool_result_content
 
@@ -80,7 +81,7 @@ class Executor:
         self,
         agent_name: str,
         agent_id: str,
-        tool_registry: dict[str, Any],
+        tool_registry: ToolRegistry,
         sub_agents: dict[str, AgentConfig],
         stop_tools: set[str],
         openai_client: Any,
@@ -95,11 +96,9 @@ class Executor:
         after_tool_hooks: list[AfterToolHook] | None = None,
         before_tool_hooks: list[BeforeToolHook] | None = None,
         middlewares: list[Middleware] | None = None,
-        serial_tool_name: list[str] | None = None,
         global_storage: Any = None,
         tool_call_mode: str = "openai",
         team_mode: bool = False,
-        openai_tools: list[ChatCompletionToolParam] | list[ToolParam] | None = None,
         session_manager: "SessionManager | None" = None,
         user_id: str | None = None,
         session_id: str | None = None,
@@ -109,8 +108,7 @@ class Executor:
         Args:
             agent_name: Name of the agent
             agent_id: ID of the agent
-            tool_registry: Dictionary of available tools
-            serial_tool_name: List of tool names that should be executed serially
+            tool_registry: ToolRegistry containing available tools
             sub_agents: Dictionary of sub-agent configs
             stop_tools: Set of tool names that trigger execution stop
             openai_client: OpenAI client instance
@@ -127,7 +125,6 @@ class Executor:
             middlewares: Optional list of middleware objects applied to all phases
             tool_call_mode: Preferred tool call format ('xml', 'openai', or 'anthropic')
             team_mode: If True, executor runs in "forever run" mode for team agents
-            openai_tools: Structured tool definitions for OpenAI/anthropic tool calls
             session_manager: Optional SessionManager for unified data access
             user_id: Optional user ID for persistence
             session_id: Optional session ID for persistence
@@ -137,7 +134,6 @@ class Executor:
         self.max_running_subagents = max_running_subagents
 
         # Initialize components
-        self._tool_registry_lock = threading.RLock()
         self.middleware_manager = self._build_middleware_manager(
             middlewares or [],
             before_model_hooks or [],
@@ -147,11 +143,11 @@ class Executor:
         )
         self._wire_middleware_llm_runtime(llm_config, openai_client)
         self._wire_middleware_event_emitters()
+        self._tool_registry = tool_registry
         self.tool_executor = ToolExecutor(
             tool_registry=tool_registry,
             stop_tools=stop_tools,
             middleware_manager=self.middleware_manager,
-            registry_lock=self._tool_registry_lock,
         )
 
         self.subagent_manager = SubAgentManager(
@@ -184,10 +180,8 @@ class Executor:
         self.token_counter = token_counter or TokenCounter(model=llm_config.model)
 
         # Tool call behavior
-        self.serial_tool_name = serial_tool_name or []
         self.tool_call_mode = normalize_tool_call_mode(tool_call_mode)
         self.use_structured_tool_calls = self.tool_call_mode in STRUCTURED_TOOL_CALL_MODES
-        self.structured_tool_payload: list[ChatCompletionToolParam] | list[ToolParam] = deepcopy(openai_tools) if openai_tools else []
         if self.use_structured_tool_calls and not self.structured_tool_payload:
             logger.warning(
                 f"⚠️ {self.tool_call_mode.capitalize()} tool call mode enabled but no tool definitions were provided.",
@@ -313,6 +307,25 @@ class Executor:
         """
         return self._execution_done
 
+    @property
+    def structured_tool_payload(self) -> list[ChatCompletionToolParam] | list[ToolParam]:
+        """Return the current structured tool payload derived at call time."""
+        if not self.use_structured_tool_calls:
+            return []
+
+        eager_tools = self._tool_registry.compute_eager_tools()
+        if self.tool_call_mode == "openai":
+            return build_openai_tool_payload(
+                eager_tools=eager_tools,
+                sub_agents=self.subagent_manager.sub_agents,
+            )
+        if self.tool_call_mode == "anthropic":
+            return build_anthropic_tool_payload(
+                eager_tools=eager_tools,
+                sub_agents=self.subagent_manager.sub_agents,
+            )
+        return []
+
     def _wait_for_messages(self) -> bool:
         """Enter idle wait until new messages arrive or stop signal is received.
 
@@ -365,6 +378,16 @@ class Executor:
         # Reset the stop signal
         self.stop_signal = False
         self._shutdown_event.clear()
+
+        # RFC-0006: 构建 FrameworkContext，供工具函数通过 ctx 参数访问框架服务
+        framework_context = FrameworkContext(
+            agent_name=self.agent_name,
+            agent_id=self.agent_id,
+            run_id=agent_state.run_id,
+            root_run_id=agent_state.root_run_id,
+            _tool_registry=self._tool_registry,
+            _shutdown_event=self._shutdown_event,
+        )
 
         # RFC-0001: 标记 execute() 正在运行
         self._execution_done.clear()
@@ -485,9 +508,8 @@ class Executor:
 
                 tools_payload = None
                 if self.use_structured_tool_calls:
-                    with self._tool_registry_lock:
-                        # Snapshot current structured tool definitions under lock to avoid concurrent mutation
-                        tools_payload = deepcopy(self.structured_tool_payload)
+                    # RFC-0005: 每轮从当前 tool source 派生 payload，以当前状态为准
+                    tools_payload = self.structured_tool_payload
 
                 # Count current prompt tokens (including tool definitions if present)
 
@@ -585,6 +607,7 @@ class Executor:
                 ) = self._process_xml_calls(
                     after_model_hook_input,
                     custom_llm_client_provider=custom_llm_client_provider,
+                    framework_context=framework_context,
                 )
 
                 # Update messages with any modifications from hooks
@@ -817,6 +840,7 @@ class Executor:
         hook_input: AfterModelHookInput,
         *,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
+        framework_context: FrameworkContext,
     ) -> tuple[str, bool, str | None, list[Message], list[dict[str, Any]]]:
         """Process XML tool calls and sub-agent calls using two-phase approach.
 
@@ -870,6 +894,7 @@ class Executor:
             parsed_response,
             hook_input.agent_state,
             custom_llm_client_provider=custom_llm_client_provider,
+            framework_context=framework_context,
         )
         return processed_response, should_stop, stop_tool_result, current_messages, execution_feedbacks
 
@@ -879,6 +904,7 @@ class Executor:
         agent_state: "AgentState",
         *,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
+        framework_context: FrameworkContext,
     ) -> tuple[str, bool, str | None, list[dict[str, Any]]]:
         """Execute all parsed calls in parallel.
 
@@ -968,7 +994,7 @@ class Executor:
             # Set parallel execution ID for grouping
             sub_agent_call.parallel_execution_id = parallel_execution_id
 
-        serial_tool_names = set(self.serial_tool_name)
+        serial_tool_names = set(self._tool_registry.compute_serial_tool_names())
 
         try:
             # Batch all context snapshots before any task submission to prevent
@@ -988,6 +1014,7 @@ class Executor:
                     self._execute_tool_call_safe,
                     tool_call,
                     agent_state,
+                    framework_context,
                 )
                 tool_futures[future] = ("tool", tool_call)
 
@@ -1186,6 +1213,7 @@ class Executor:
         self,
         tool_call: ToolCall,
         agent_state: "AgentState",
+        framework_context: FrameworkContext,
     ) -> tuple[str, Any, bool]:
         """Safely execute a tool call."""
         try:
@@ -1205,6 +1233,7 @@ class Executor:
                 converted_params,
                 tool_call_id=tool_call_id,
                 parallel_execution_id=tool_call.parallel_execution_id,
+                framework_context=framework_context,
             )
 
             return (tool_call.tool_name, result, False)
@@ -1283,22 +1312,6 @@ class Executor:
         logger.info(
             f"✅ Executor cleanup completed for agent '{self.agent_name}'",
         )
-
-    def add_tool(self, tool: Tool) -> None:
-        """Add a tool to the executor.
-
-        Args:
-            tool: Tool instance to add
-        """
-        with self._tool_registry_lock:
-            # Keep registry and structured payload updates atomic for concurrent readers/writers
-            self.tool_executor.tool_registry[tool.name] = tool
-            if self.tool_call_mode == "openai":
-                openai_tools = cast(list[ChatCompletionToolParam], self.structured_tool_payload)
-                openai_tools.append(tool.to_openai())
-            else:
-                anthropic_tools = cast(list[ToolParam], self.structured_tool_payload)
-                anthropic_tools.append(tool.to_anthropic())
 
     def add_sub_agent(self, name: str, agent_config: AgentConfig) -> None:
         """Add a sub-agent config.

@@ -32,6 +32,7 @@ class ToolConfigEntry(BaseModel):
     binding: str | None = None
     lazy: bool = False
     as_skill: bool = False
+    defer_loading: bool = False
     extra_kwargs: dict[str, Any] = Field(default_factory=dict)
 
 

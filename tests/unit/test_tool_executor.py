@@ -40,6 +40,23 @@ from nexau.archs.main_sub.execution.tool_executor import ToolExecutor
 from nexau.archs.main_sub.skill import Skill, load_skill
 from nexau.archs.tool.tool import ConfigError as ToolConfigError
 from nexau.archs.tool.tool import Tool
+from nexau.archs.tool.tool_registry import ToolRegistry
+
+
+def make_tool_registry(tools: dict[str, Tool] | None = None) -> ToolRegistry:
+    registry = ToolRegistry()
+    if tools:
+        registry.add_source("test", list(tools.values()))
+    return registry
+
+
+def make_simple_tool(name: str) -> Tool:
+    return Tool(
+        name=name,
+        description=f"Tool {name}",
+        input_schema={"type": "object", "properties": {}},
+        implementation=lambda: {"result": name},
+    )
 
 
 class TestToolExecutorInitialization:
@@ -47,7 +64,8 @@ class TestToolExecutorInitialization:
 
     def test_init_basic(self):
         """Test basic initialization without optional parameters."""
-        tool_registry = {"tool1": Mock()}
+        tool = make_simple_tool("tool1")
+        tool_registry = make_tool_registry({"tool1": tool})
         stop_tools = {"stop_tool"}
 
         executor = ToolExecutor(
@@ -55,7 +73,7 @@ class TestToolExecutorInitialization:
             stop_tools=stop_tools,
         )
 
-        assert executor.tool_registry == tool_registry
+        assert executor._tool_registry.get_all() == {"tool1": tool}
         assert executor.stop_tools == stop_tools
         assert executor.middleware_manager is None
         assert executor.xml_parser is not None
@@ -63,7 +81,7 @@ class TestToolExecutorInitialization:
     def test_init_with_hook_manager(self):
         """Test initialization with tool hook manager."""
         mock_hook_manager = MiddlewareManager()
-        tool_registry = {}
+        tool_registry = make_tool_registry()
         stop_tools = set()
 
         executor = ToolExecutor(
@@ -76,7 +94,8 @@ class TestToolExecutorInitialization:
 
     def test_init_with_all_parameters(self):
         """Test initialization with all optional parameters."""
-        tool_registry = {"tool1": Mock()}
+        tool = make_simple_tool("tool1")
+        tool_registry = make_tool_registry({"tool1": tool})
         stop_tools = {"stop_tool"}
         mock_hook_manager = MiddlewareManager()
 
@@ -86,7 +105,7 @@ class TestToolExecutorInitialization:
             middleware_manager=mock_hook_manager,
         )
 
-        assert executor.tool_registry == tool_registry
+        assert executor._tool_registry.get_all() == {"tool1": tool}
         assert executor.stop_tools == stop_tools
         assert executor.middleware_manager == mock_hook_manager
 
@@ -108,7 +127,7 @@ class TestToolExecutorExecution:
         )
 
         executor = ToolExecutor(
-            tool_registry={"simple_tool": tool},
+            tool_registry=make_tool_registry({"simple_tool": tool}),
             stop_tools=set(),
         )
 
@@ -122,7 +141,7 @@ class TestToolExecutorExecution:
         assert "result" in result
         assert "Processed: test" in str(result)
 
-    def test_load_skill_does_not_start_sandbox(self, global_storage, agent_context, mock_executor):
+    def test_load_skill_does_not_start_sandbox(self, global_storage, agent_context):
         """LoadSkill should use the in-memory registry without booting the sandbox."""
         sandbox_manager = Mock()
         sandbox_manager.start_sync.side_effect = AssertionError("LoadSkill should not start sandbox")
@@ -133,7 +152,7 @@ class TestToolExecutorExecution:
             root_run_id="run_123",
             context=agent_context,
             global_storage=global_storage,
-            executor=mock_executor,
+            tool_registry=ToolRegistry(),
             sandbox_manager=sandbox_manager,
         )
         local_agent_state.set_global_value(
@@ -160,7 +179,7 @@ class TestToolExecutorExecution:
         )
 
         executor = ToolExecutor(
-            tool_registry={"LoadSkill": load_skill_tool},
+            tool_registry=make_tool_registry({"LoadSkill": load_skill_tool}),
             stop_tools=set(),
         )
 
@@ -174,7 +193,7 @@ class TestToolExecutorExecution:
         sandbox_manager.start_sync.assert_not_called()
         assert "memory-skill" in result["result"]
 
-    def test_sandbox_dependent_tool_still_starts_sandbox(self, global_storage, agent_context, mock_executor):
+    def test_sandbox_dependent_tool_still_starts_sandbox(self, global_storage, agent_context):
         """Tools that declare a sandbox parameter should still trigger lazy sandbox startup."""
         mock_sandbox = Mock()
         mock_sandbox.work_dir = "/tmp/sandbox"
@@ -187,7 +206,7 @@ class TestToolExecutorExecution:
             root_run_id="run_123",
             context=agent_context,
             global_storage=global_storage,
-            executor=mock_executor,
+            tool_registry=ToolRegistry(),
             sandbox_manager=sandbox_manager,
         )
         received_sandbox = None
@@ -205,7 +224,7 @@ class TestToolExecutorExecution:
         )
 
         executor = ToolExecutor(
-            tool_registry={"sandbox_tool": tool},
+            tool_registry=make_tool_registry({"sandbox_tool": tool}),
             stop_tools=set(),
         )
 
@@ -223,7 +242,7 @@ class TestToolExecutorExecution:
     def test_execute_tool_not_found(self, agent_state):
         """Test execution with non-existent tool."""
         executor = ToolExecutor(
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             stop_tools=set(),
         )
 
@@ -252,7 +271,7 @@ class TestToolExecutorExecution:
         )
 
         executor = ToolExecutor(
-            tool_registry={"error_tool": tool},
+            tool_registry=make_tool_registry({"error_tool": tool}),
             stop_tools=set(),
         )
 
@@ -286,7 +305,7 @@ class TestToolExecutorExecution:
         )
 
         executor = ToolExecutor(
-            tool_registry={"state_tool": tool},
+            tool_registry=make_tool_registry({"state_tool": tool}),
             stop_tools=set(),
         )
 
@@ -318,7 +337,7 @@ class TestToolExecutorExtraKwargs:
             extra_kwargs={"a": 1, "b": 2},
         )
 
-        executor = ToolExecutor(tool_registry={"with_extra": tool}, stop_tools=set())
+        executor = ToolExecutor(tool_registry=make_tool_registry({"with_extra": tool}), stop_tools=set())
 
         result = executor.execute_tool(
             agent_state=agent_state,
@@ -356,7 +375,7 @@ class TestToolExecutorExtraKwargs:
             extra_kwargs={"x": 1},
         )
 
-        executor = ToolExecutor(tool_registry={"unknown_field": tool}, stop_tools=set())
+        executor = ToolExecutor(tool_registry=make_tool_registry({"unknown_field": tool}), stop_tools=set())
 
         result = executor.execute_tool(
             agent_state=agent_state,
@@ -382,7 +401,7 @@ class TestToolExecutorExtraKwargs:
             extra_kwargs={"a": 10},
         )
 
-        executor = ToolExecutor(tool_registry={"required_from_extra": tool}, stop_tools=set())
+        executor = ToolExecutor(tool_registry=make_tool_registry({"required_from_extra": tool}), stop_tools=set())
 
         result = executor.execute_tool(
             agent_state=agent_state,
@@ -407,7 +426,7 @@ class TestToolExecutorExtraKwargs:
             extra_kwargs={"x": 1},
         )
 
-        executor = ToolExecutor(tool_registry={"unknown_ok": tool}, stop_tools=set())
+        executor = ToolExecutor(tool_registry=make_tool_registry({"unknown_ok": tool}), stop_tools=set())
 
         result = executor.execute_tool(
             agent_state=agent_state,
@@ -446,7 +465,7 @@ class TestToolExecutorHooks:
         )
 
         executor = ToolExecutor(
-            tool_registry={"simple_tool": tool},
+            tool_registry=make_tool_registry({"simple_tool": tool}),
             stop_tools=set(),
             middleware_manager=middleware_manager,
         )
@@ -479,7 +498,7 @@ class TestToolExecutorHooks:
         )
 
         executor = ToolExecutor(
-            tool_registry={"simple_tool": tool},
+            tool_registry=make_tool_registry({"simple_tool": tool}),
             stop_tools=set(),
             middleware_manager=None,
         )
@@ -518,7 +537,7 @@ class TestToolExecutorHooks:
         )
 
         executor = ToolExecutor(
-            tool_registry={"multiplier_tool": tool},
+            tool_registry=make_tool_registry({"multiplier_tool": tool}),
             stop_tools=set(),
             middleware_manager=middleware_manager,
         )
@@ -550,7 +569,7 @@ class TestToolExecutorStopTools:
         )
 
         executor = ToolExecutor(
-            tool_registry={"stop_tool": tool},
+            tool_registry=make_tool_registry({"stop_tool": tool}),
             stop_tools={"stop_tool"},
         )
 
@@ -578,7 +597,7 @@ class TestToolExecutorStopTools:
         )
 
         executor = ToolExecutor(
-            tool_registry={"stop_tool": tool},
+            tool_registry=make_tool_registry({"stop_tool": tool}),
             stop_tools={"stop_tool"},
         )
 
@@ -607,7 +626,7 @@ class TestToolExecutorStopTools:
         )
 
         executor = ToolExecutor(
-            tool_registry={"stop_tool": tool},
+            tool_registry=make_tool_registry({"stop_tool": tool}),
             stop_tools={"stop_tool"},
         )
 
@@ -636,7 +655,7 @@ class TestToolExecutorStopTools:
         )
 
         executor = ToolExecutor(
-            tool_registry={"normal_tool": tool},
+            tool_registry=make_tool_registry({"normal_tool": tool}),
             stop_tools=set(),  # Empty stop tools
         )
 
@@ -668,7 +687,7 @@ class TestToolExecutorParameterConversion:
         )
 
         executor = ToolExecutor(
-            tool_registry={"bool_tool": tool},
+            tool_registry=make_tool_registry({"bool_tool": tool}),
             stop_tools=set(),
         )
 
@@ -691,7 +710,7 @@ class TestToolExecutorParameterConversion:
         )
 
         executor = ToolExecutor(
-            tool_registry={"bool_tool": tool},
+            tool_registry=make_tool_registry({"bool_tool": tool}),
             stop_tools=set(),
         )
 
@@ -703,7 +722,7 @@ class TestToolExecutorParameterConversion:
     def test_convert_boolean_already_bool(self):
         """Test that boolean values are preserved."""
         executor = ToolExecutor(
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             stop_tools=set(),
         )
 
@@ -724,7 +743,7 @@ class TestToolExecutorParameterConversion:
         )
 
         executor = ToolExecutor(
-            tool_registry={"int_tool": tool},
+            tool_registry=make_tool_registry({"int_tool": tool}),
             stop_tools=set(),
         )
 
@@ -746,7 +765,7 @@ class TestToolExecutorParameterConversion:
         )
 
         executor = ToolExecutor(
-            tool_registry={"num_tool": tool},
+            tool_registry=make_tool_registry({"num_tool": tool}),
             stop_tools=set(),
         )
 
@@ -768,7 +787,7 @@ class TestToolExecutorParameterConversion:
         )
 
         executor = ToolExecutor(
-            tool_registry={"array_tool": tool},
+            tool_registry=make_tool_registry({"array_tool": tool}),
             stop_tools=set(),
         )
 
@@ -790,7 +809,7 @@ class TestToolExecutorParameterConversion:
         )
 
         executor = ToolExecutor(
-            tool_registry={"array_tool": tool},
+            tool_registry=make_tool_registry({"array_tool": tool}),
             stop_tools=set(),
         )
 
@@ -813,7 +832,7 @@ class TestToolExecutorParameterConversion:
         )
 
         executor = ToolExecutor(
-            tool_registry={"obj_tool": tool},
+            tool_registry=make_tool_registry({"obj_tool": tool}),
             stop_tools=set(),
         )
 
@@ -835,7 +854,7 @@ class TestToolExecutorParameterConversion:
         )
 
         executor = ToolExecutor(
-            tool_registry={"obj_tool": tool},
+            tool_registry=make_tool_registry({"obj_tool": tool}),
             stop_tools=set(),
         )
 
@@ -857,7 +876,7 @@ class TestToolExecutorParameterConversion:
         )
 
         executor = ToolExecutor(
-            tool_registry={"str_tool": tool},
+            tool_registry=make_tool_registry({"str_tool": tool}),
             stop_tools=set(),
         )
 
@@ -867,7 +886,7 @@ class TestToolExecutorParameterConversion:
     def test_convert_already_dict(self):
         """Test that dict values are returned as-is."""
         executor = ToolExecutor(
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             stop_tools=set(),
         )
 
@@ -878,7 +897,7 @@ class TestToolExecutorParameterConversion:
     def test_convert_already_list(self):
         """Test that list values are returned as-is."""
         executor = ToolExecutor(
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             stop_tools=set(),
         )
 
@@ -889,7 +908,7 @@ class TestToolExecutorParameterConversion:
     def test_convert_non_string_unchanged(self):
         """Test that non-string values are returned as-is."""
         executor = ToolExecutor(
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             stop_tools=set(),
         )
 
@@ -900,7 +919,7 @@ class TestToolExecutorParameterConversion:
     def test_convert_tool_not_found(self):
         """Test conversion when tool is not in registry."""
         executor = ToolExecutor(
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             stop_tools=set(),
         )
 
@@ -922,7 +941,7 @@ class TestToolExecutorParameterConversion:
         )
 
         executor = ToolExecutor(
-            tool_registry={"simple_tool": tool},
+            tool_registry=make_tool_registry({"simple_tool": tool}),
             stop_tools=set(),
         )
 
@@ -944,7 +963,7 @@ class TestToolExecutorParameterConversion:
         )
 
         executor = ToolExecutor(
-            tool_registry={"int_tool": tool},
+            tool_registry=make_tool_registry({"int_tool": tool}),
             stop_tools=set(),
         )
 
@@ -966,7 +985,7 @@ class TestToolExecutorParameterConversion:
         )
 
         executor = ToolExecutor(
-            tool_registry={"num_tool": tool},
+            tool_registry=make_tool_registry({"num_tool": tool}),
             stop_tools=set(),
         )
 
@@ -996,7 +1015,7 @@ class TestToolExecutorEdgeCases:
         )
 
         executor = ToolExecutor(
-            tool_registry={"complex_tool": tool},
+            tool_registry=make_tool_registry({"complex_tool": tool}),
             stop_tools=set(),
         )
 
@@ -1024,7 +1043,7 @@ class TestToolExecutorEdgeCases:
         )
 
         executor = ToolExecutor(
-            tool_registry={"no_param_tool": tool},
+            tool_registry=make_tool_registry({"no_param_tool": tool}),
             stop_tools=set(),
         )
 
@@ -1051,7 +1070,7 @@ class TestToolExecutorEdgeCases:
         )
 
         executor = ToolExecutor(
-            tool_registry={"simple_tool": tool},
+            tool_registry=make_tool_registry({"simple_tool": tool}),
             stop_tools=set(),
         )
 
@@ -1081,7 +1100,7 @@ class TestToolExecutorEdgeCases:
         )
 
         executor = ToolExecutor(
-            tool_registry={"stop_tool": tool},
+            tool_registry=make_tool_registry({"stop_tool": tool}),
             stop_tools={"stop_tool"},
         )
 
@@ -1121,7 +1140,7 @@ class TestToolExecutorIntegration:
         middleware_manager = MiddlewareManager([FunctionMiddleware(after_tool_hook=hook)])
 
         executor = ToolExecutor(
-            tool_registry={"stop_tool": tool},
+            tool_registry=make_tool_registry({"stop_tool": tool}),
             stop_tools={"stop_tool"},
             middleware_manager=middleware_manager,
         )
@@ -1159,7 +1178,7 @@ class TestToolExecutorReturnDisplayStripping:
         )
 
         executor = ToolExecutor(
-            tool_registry={"read_tool": tool},
+            tool_registry=make_tool_registry({"read_tool": tool}),
             stop_tools=set(),
         )
 
@@ -1200,7 +1219,7 @@ class TestToolExecutorReturnDisplayStripping:
         )
 
         executor = ToolExecutor(
-            tool_registry={"display_tool": tool},
+            tool_registry=make_tool_registry({"display_tool": tool}),
             stop_tools=set(),
             middleware_manager=middleware_manager,
         )
@@ -1232,7 +1251,7 @@ class TestToolExecutorReturnDisplayStripping:
         )
 
         executor = ToolExecutor(
-            tool_registry={"plain_tool": tool},
+            tool_registry=make_tool_registry({"plain_tool": tool}),
             stop_tools=set(),
         )
 
@@ -1271,7 +1290,7 @@ class TestToolExecutorParallelExecutionId:
         middleware_manager = MiddlewareManager([FunctionMiddleware(before_tool_hook=before_hook)])
 
         executor = ToolExecutor(
-            tool_registry={"test_tool": tool},
+            tool_registry=make_tool_registry({"test_tool": tool}),
             stop_tools=set(),
             middleware_manager=middleware_manager,
         )
@@ -1310,7 +1329,7 @@ class TestToolExecutorParallelExecutionId:
         middleware_manager = MiddlewareManager([FunctionMiddleware(before_tool_hook=before_hook)])
 
         executor = ToolExecutor(
-            tool_registry={"test_tool": tool},
+            tool_registry=make_tool_registry({"test_tool": tool}),
             stop_tools=set(),
             middleware_manager=middleware_manager,
         )

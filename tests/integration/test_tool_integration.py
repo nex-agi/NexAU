@@ -23,6 +23,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.sandbox import LocalSandbox
 from nexau.archs.tool.builtin.file_tools import read_file, replace, write_file
 from nexau.archs.tool.builtin.shell_tools import run_shell_command
@@ -77,7 +78,7 @@ class TestToolChainIntegration:
         content = "Line 1\nLine 2\nLine 3\n"
 
         write_file(file_path, content, agent_state=agent_state)
-        result = run_shell_command(f"wc -l {file_path}", agent_state=agent_state)
+        result = run_shell_command(f"wc -l {file_path}", agent_state=agent_state, ctx=FrameworkContext.for_testing())
         assert "error" not in result
         assert "3" in result["content"]
 
@@ -102,10 +103,10 @@ class TestToolErrorRecovery:
     @pytest.mark.integration
     def test_shell_tool_error_recovery(self, agent_state):
         """Test recovery from shell tool errors."""
-        result = run_shell_command("exit 1", agent_state=agent_state)
+        result = run_shell_command("exit 1", agent_state=agent_state, ctx=FrameworkContext.for_testing())
         assert "error" in result
 
-        result = run_shell_command("echo 'success'", agent_state=agent_state)
+        result = run_shell_command("echo 'success'", agent_state=agent_state, ctx=FrameworkContext.for_testing())
         assert "error" not in result
         assert "success" in result["content"]
 

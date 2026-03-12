@@ -14,14 +14,13 @@
 
 """Agent state management for unified state container."""
 
-import threading
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from nexau.archs.main_sub.execution.executor import Executor
     from nexau.archs.main_sub.team.state import AgentTeamState
     from nexau.archs.sandbox.base_sandbox import BaseSandbox, BaseSandboxManager
     from nexau.archs.tool.tool import Tool
+    from nexau.archs.tool.tool_registry import ToolRegistry
 
 from .agent_context import AgentContext, GlobalStorage
 from .context_value import ContextValue
@@ -46,7 +45,7 @@ class AgentState:
         root_run_id: str,
         context: AgentContext,
         global_storage: GlobalStorage,
-        executor: "Executor",
+        tool_registry: "ToolRegistry",
         parent_agent_state: Optional["AgentState"] = None,
         sandbox: Optional["BaseSandbox"] = None,
         sandbox_manager: Optional["BaseSandboxManager[Any]"] = None,
@@ -63,7 +62,7 @@ class AgentState:
             context: The AgentContext instance for runtime context management
             global_storage: The GlobalStorage instance
             parent_agent_state: Optional parent state when this is a sub-agent
-            executor: Optional executor reference to allow runtime tool injection
+            tool_registry: ToolRegistry for runtime tool injection
             sandbox: Optional sandbox instance (deprecated, use sandbox_manager)
             sandbox_manager: Optional sandbox manager for lazy sandbox access
             variables: Optional ContextValue with runtime variables
@@ -75,7 +74,7 @@ class AgentState:
         self.context = context
         self.global_storage = global_storage
         self.parent_agent_state = parent_agent_state
-        self._executor = executor
+        self._tool_registry = tool_registry
         self._sandbox = sandbox
         self._sandbox_manager = sandbox_manager
         self._variables = variables or ContextValue()
@@ -170,23 +169,21 @@ class AgentState:
             return self._sandbox_manager.start_sync()
         return self._sandbox
 
-    @property
-    def shutdown_event(self) -> threading.Event:
-        """Get the executor shutdown event for stop-aware tools."""
-        return self._executor.shutdown_event
-
     def set_sandbox(self, sandbox: "BaseSandbox") -> None:
         """Set the sandbox associated with the agent state."""
         self._sandbox = sandbox
 
     def add_tool(self, tool: "Tool") -> None:
-        """Dynamically add a tool into the current execution context.
+        """Dynamically add an eager tool into the current execution context.
 
-        The method prefers an attached executor reference; if unavailable,
-        it will look for an executor stored in global storage under the key
-        ``executor``. A RuntimeError is raised when no executor is found.
+        RFC-0005: 直接写入 ToolRegistry，不经过 Executor 间接层。
+        Deferred runtime additions are intentionally unsupported for now.
         """
-        self._executor.add_tool(tool)
+        if tool.defer_loading:
+            raise ValueError(
+                "Runtime-added deferred tools are not supported. Register deferred tools during agent initialization instead.",
+            )
+        self._tool_registry.add_source("runtime", [tool])
 
     def __repr__(self) -> str:
         """String representation of the agent state."""

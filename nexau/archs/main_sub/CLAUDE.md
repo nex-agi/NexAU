@@ -11,6 +11,8 @@ Agent (Lightweight Container)
     ├── AgentConfig (Configuration)
     ├── Executor (Heavy-lift Orchestrator)
     │   ├── AgentState (Per-execution state)
+    │   ├── FrameworkContext (Typed context for tools, RFC-0006)
+    │   ├── ToolRegistry (Deferred tool management, RFC-0005)
     │   ├── Middleware Pipeline
     │   ├── Tool Executor
     │   └── LLM Caller
@@ -137,6 +139,39 @@ class AgentState:
 - Sub-agents inherit `parent_run_id` and `root_run_id`
 - `global_storage` is shared across entire agent hierarchy
 - `history` is per-agent (not shared)
+
+### FrameworkContext (`framework_context.py`)
+
+Typed framework context for tool and middleware authors (RFC-0006). Replaces direct use of `AgentState` / `GlobalStorage` in tool functions with grouped, type-safe APIs.
+
+**Architecture**:
+
+```
+FrameworkContext
+    ├── agent_name, agent_id, run_id, root_run_id  (identity)
+    └── tools: ToolsAPI
+            ├── search(*, query, max_results) → list[Tool]
+            ├── add(*, tool) → None  # eager runtime tools only
+            └── get(*, name) → Tool | None
+```
+
+**How it's built**: `Executor.execute()` creates a `FrameworkContext` at the start of each run and passes it to `ToolExecutor.execute_tool()`, which injects it as `ctx` into tool functions that declare the parameter.
+
+**Tool injection**:
+
+```python
+from nexau.archs.main_sub.framework_context import FrameworkContext
+
+def my_tool(param: str, ctx: FrameworkContext) -> str:
+    """Tool using FrameworkContext."""
+    # Search for deferred tools
+    results = ctx.tools.search(query="slack")
+    # Look up a tool by name
+    tool = ctx.tools.get(name="ReadFile")
+    return "done"
+```
+
+The framework inspects each tool function's signature via `inspect.signature()`. If `ctx` is declared, `FrameworkContext` is injected. If `agent_state` is declared, `AgentState` is injected. Both can coexist for migration.
 
 ### Middleware System (`execution/middleware/`)
 
@@ -421,18 +456,30 @@ agent_config.middlewares = [
 
 ### State Access Pattern
 
+**Preferred: Use `ctx: FrameworkContext`** (RFC-0006):
+
+```python
+from nexau.archs.main_sub.framework_context import FrameworkContext
+
+def my_tool(param1: str, ctx: FrameworkContext):
+    # Access identity
+    agent_name = ctx.agent_name
+    run_id = ctx.run_id
+
+    # Access framework services via typed API
+    results = ctx.tools.search(query="web")
+    tool = ctx.tools.get(name="ReadFile")
+```
+
+**Legacy: `agent_state` still works** for backwards compatibility:
+
 ```python
 from nexau.archs.main_sub.agent_context import get_context
 
 def my_tool(param1: str, agent_state: AgentState):
-    # Access current execution state
     current_iteration = agent_state.current_iteration
     global_storage = agent_state.global_storage
     run_id = agent_state.run_id
-
-    # Access context via contextvar
-    agent_context = get_context()
-    print(f"Agent ID: {agent_context.agent_id}")
 ```
 
 ## Common Issues

@@ -46,15 +46,9 @@ from nexau.core.messages import (
 
 
 @pytest.fixture
-def mock_executor():
-    executor = Mock()
-    executor.add_tool = Mock()
-    executor.cleanup = Mock()
-    return executor
+def agent_state():
+    from nexau.archs.tool.tool_registry import ToolRegistry
 
-
-@pytest.fixture
-def agent_state(mock_executor):
     context = AgentContext()
     global_storage = GlobalStorage()
     return AgentState(
@@ -64,7 +58,7 @@ def agent_state(mock_executor):
         root_run_id="run_1",
         context=context,
         global_storage=global_storage,
-        executor=mock_executor,
+        tool_registry=ToolRegistry(),
     )
 
 

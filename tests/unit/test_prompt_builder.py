@@ -153,6 +153,21 @@ class TestBuildSystemPrompt:
         assert "Tools\n" in result[0].text
         assert "Instructions\n" in result[0].text
 
+    def test_build_system_prompt_with_empty_tool_list_does_not_fallback(self, mock_config):
+        """An explicit empty tool list should not fall back to agent_config.tools."""
+        from nexau.archs.main_sub.prompt_builder import SystemPromptPart
+
+        builder = PromptBuilder()
+        mock_config.tools = [Mock(name="configured_tool")]
+
+        with patch.object(builder, "_get_base_system_prompt", return_value=[SystemPromptPart(text="Base\n")]):
+            with patch.object(builder, "_build_capabilities_docs", return_value="Tools\n") as mock_caps:
+                with patch.object(builder, "_get_tool_execution_instructions", return_value="Instructions\n"):
+                    builder.build_system_prompt(mock_config, tools=[])
+
+        args, _ = mock_caps.call_args
+        assert args[0] == []
+
     def test_build_system_prompt_with_sub_agents(self, mock_config):
         """Test building system prompt with sub-agents."""
         from nexau.archs.main_sub.prompt_builder import SystemPromptPart

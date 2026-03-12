@@ -52,8 +52,10 @@ from nexau.core.messages import Message, Role, TextBlock
 
 
 @pytest.fixture
-def agent_state(mock_executor):
+def agent_state():
     """Create a mock agent state for testing."""
+    from nexau.archs.tool.tool_registry import ToolRegistry
+
     context = AgentContext()
     global_storage = GlobalStorage()
     return AgentState(
@@ -63,7 +65,7 @@ def agent_state(mock_executor):
         root_run_id="run_123",
         context=context,
         global_storage=global_storage,
-        executor=mock_executor,
+        tool_registry=ToolRegistry(),
     )
 
 

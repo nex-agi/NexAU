@@ -10,10 +10,10 @@ Supports foreground and background execution, timeout handling, and process mana
 import shlex
 import time
 from collections.abc import Callable
-from threading import Event
 from typing import Any
 
 from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.main_sub.framework_context import ExecutionAPI, FrameworkContext
 from nexau.archs.sandbox import BaseSandbox, CommandResult, SandboxStatus
 from nexau.archs.tool.builtin._sandbox_utils import get_sandbox, resolve_path
 
@@ -91,11 +91,11 @@ def _execute_foreground_command(
     sandbox: BaseSandbox,
     command: str,
     timeout_ms: int | None,
-    shutdown_event: Event | None,
+    execution: ExecutionAPI,
 ) -> CommandResult:
     """Execute a foreground shell command via background task polling.
 
-    前台命令统一走 background task + 轮询，这样 stop/shutdown_event
+    前台命令统一走 background task + 轮询，这样 stop/execution.is_shutting_down()
     可以复用 sandbox 现有的 kill_background_task 能力中断长时间阻塞命令。
     """
     start_time = time.monotonic()
@@ -107,7 +107,7 @@ def _execute_foreground_command(
 
     latest_result: CommandResult | None = None
     while True:
-        if shutdown_event is not None and shutdown_event.is_set():
+        if execution.is_shutting_down():
             sandbox.kill_background_task(background_pid)
             duration_ms = int((time.monotonic() - start_time) * 1000)
             return _build_terminal_command_result(
@@ -143,6 +143,8 @@ def run_shell_command(
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
     update_output: Callable[[str], None] | None = None,
     agent_state: AgentState | None = None,
+    *,
+    ctx: FrameworkContext,
 ) -> dict[str, Any]:
     """
     Executes a shell command.
@@ -258,9 +260,8 @@ def run_shell_command(
         # Streaming output is not supported by execute_bash; ignore update_output.
         _ = update_output
 
-        shutdown_event = agent_state.shutdown_event if agent_state is not None else None
-        if not isinstance(shutdown_event, Event):
-            shutdown_event = None
+        # RFC-0006: 通过 ctx.execution 获取停止信号
+        execution = ctx.execution
 
         # Execute command through sandbox, optionally scoping to directory via `cd`.
         cmd_to_run = command
@@ -272,7 +273,7 @@ def run_shell_command(
             sandbox=sandbox,
             command=cmd_to_run,
             timeout_ms=timeout_arg,
-            shutdown_event=shutdown_event,
+            execution=execution,
         )
         duration_ms = int((time.time() - start) * 1000)
 

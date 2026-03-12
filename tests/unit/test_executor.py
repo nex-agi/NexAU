@@ -30,6 +30,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from nexau.archs.main_sub.execution.executor import Executor
+from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.main_sub.execution.hooks import HookResult, Middleware
 from nexau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
 from nexau.archs.main_sub.execution.parse_structures import (
@@ -39,7 +40,42 @@ from nexau.archs.main_sub.execution.parse_structures import (
     ToolCall,
 )
 from nexau.archs.tool.tool import Tool
+from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.core.messages import ImageBlock, Role, TextBlock, ToolOutputImage, ToolResultBlock
+
+
+def make_tool_registry(tools: dict[str, Tool] | None = None) -> ToolRegistry:
+    registry = ToolRegistry()
+    if tools:
+        registry.add_source("test", list(tools.values()))
+    return registry
+
+
+def make_tool(
+    name: str,
+    *,
+    disable_parallel: bool = False,
+    defer_loading: bool = False,
+) -> Tool:
+    return Tool(
+        name=name,
+        description=f"Tool {name}",
+        input_schema={"type": "object", "properties": {}},
+        implementation=lambda: {"result": name},
+        disable_parallel=disable_parallel,
+        defer_loading=defer_loading,
+    )
+
+
+def make_framework_context(executor: Executor) -> FrameworkContext:
+    return FrameworkContext(
+        agent_name=executor.agent_name,
+        agent_id=executor.agent_id,
+        run_id="run_123",
+        root_run_id="root_123",
+        _tool_registry=executor._tool_registry,
+        _shutdown_event=executor._shutdown_event,
+    )
 
 
 class TestExecutorInitialization:
@@ -50,7 +86,7 @@ class TestExecutorInitialization:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -67,10 +103,12 @@ class TestExecutorInitialization:
 
     def test_executor_init_with_custom_params(self, mock_llm_config):
         """Test executor initialization with custom parameters."""
+        serial_tool = make_tool("serial_tool", disable_parallel=True)
+        registry = make_tool_registry({"serial_tool": serial_tool})
         executor = Executor(
             agent_name="custom_agent",
             agent_id="custom_id",
-            tool_registry={},
+            tool_registry=registry,
             sub_agents={},
             stop_tools={"stop_tool"},
             openai_client=Mock(),
@@ -79,13 +117,13 @@ class TestExecutorInitialization:
             max_context_tokens=64000,
             max_running_subagents=3,
             retry_attempts=3,
-            serial_tool_name=["serial_tool"],
         )
 
         assert executor.max_iterations == 50
         assert executor.max_context_tokens == 64000
         assert executor.max_running_subagents == 3
-        assert executor.serial_tool_name == ["serial_tool"]
+        assert executor._tool_registry.get_all()["serial_tool"].disable_parallel is True
+        assert registry.compute_serial_tool_names() == ["serial_tool"]
 
     def test_executor_init_with_hooks(self, mock_llm_config):
         """Test executor initialization with hooks."""
@@ -97,7 +135,7 @@ class TestExecutorInitialization:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -117,7 +155,7 @@ class TestExecutorInitialization:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -136,7 +174,7 @@ class TestExecutorMessageEnqueueing:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -155,7 +193,7 @@ class TestExecutorMessageEnqueueing:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -193,7 +231,7 @@ class TestExecutorExecution:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -235,7 +273,7 @@ class TestExecutorExecution:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -279,7 +317,7 @@ class TestExecutorExecution:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -327,32 +365,16 @@ class TestExecutorExecution:
             implementation=simple_tool,
         )
 
-        openai_tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "simple_tool",
-                    "description": "A simple tool",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"x": {"type": "integer"}},
-                        "required": ["x"],
-                    },
-                },
-            },
-        ]
-
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={"simple_tool": tool},
+            tool_registry=make_tool_registry({"simple_tool": tool}),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
             max_iterations=2,
             tool_call_mode="openai",
-            openai_tools=openai_tools,
         )
 
         history = [
@@ -416,28 +438,16 @@ class TestExecutorExecution:
             implementation=image_tool,
         )
 
-        openai_tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "image_tool",
-                    "description": "Returns an image",
-                    "parameters": {"type": "object", "properties": {}, "required": []},
-                },
-            },
-        ]
-
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={"image_tool": tool},
+            tool_registry=make_tool_registry({"image_tool": tool}),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
             max_iterations=2,
             tool_call_mode="openai",
-            openai_tools=openai_tools,
         )
 
         history = [
@@ -488,28 +498,16 @@ class TestExecutorExecution:
             implementation=image_tool,
         )
 
-        openai_tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "image_tool",
-                    "description": "Returns an image dict",
-                    "parameters": {"type": "object", "properties": {}, "required": []},
-                },
-            },
-        ]
-
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={"image_tool": tool},
+            tool_registry=make_tool_registry({"image_tool": tool}),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
             max_iterations=2,
             tool_call_mode="openai",
-            openai_tools=openai_tools,
         )
 
         history = [
@@ -552,7 +550,7 @@ class TestExecutorExecution:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=mock_client,
@@ -588,7 +586,7 @@ class TestExecutorExecution:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -629,7 +627,7 @@ class TestExecutorExecution:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -668,7 +666,7 @@ class TestExecutorExecution:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -698,7 +696,7 @@ class TestExecutorXMLCallProcessing:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -721,7 +719,8 @@ class TestExecutorXMLCallProcessing:
             messages=[],
         )
 
-        processed, should_stop, result, messages, feedbacks = executor._process_xml_calls(hook_input)
+        ctx = make_framework_context(executor)
+        processed, should_stop, result, messages, feedbacks = executor._process_xml_calls(hook_input, framework_context=ctx)
 
         assert processed == "Just a plain response"
         assert should_stop is True
@@ -749,12 +748,11 @@ class TestExecutorXMLCallProcessing:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={"simple_tool": tool},
+            tool_registry=make_tool_registry({"simple_tool": tool}),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
-            serial_tool_name=[],  # Empty list to avoid None check issues
         )
 
         from nexau.archs.main_sub.execution.hooks import AfterModelHookInput
@@ -786,7 +784,8 @@ class TestExecutorXMLCallProcessing:
                 messages=[],
             )
 
-            processed, should_stop, result, messages, feedbacks = executor._process_xml_calls(hook_input)
+            ctx = make_framework_context(executor)
+            processed, should_stop, result, messages, feedbacks = executor._process_xml_calls(hook_input, framework_context=ctx)
 
             # Tool results should be appended to the response
             assert "<tool_result>" in processed
@@ -806,12 +805,11 @@ class TestExecutorXMLCallProcessing:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={"sub_agent": sub_agent_config},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
-            serial_tool_name=[],  # Empty list to avoid None check issues
         )
 
         from nexau.archs.main_sub.execution.hooks import AfterModelHookInput
@@ -847,7 +845,8 @@ class TestExecutorXMLCallProcessing:
                     messages=[],
                 )
 
-                processed, should_stop, result, messages, feedbacks = executor._process_xml_calls(hook_input)
+                ctx = make_framework_context(executor)
+                processed, should_stop, result, messages, feedbacks = executor._process_xml_calls(hook_input, framework_context=ctx)
 
                 # Batch results should be appended to the response
                 assert "batch_agent" in processed or "Batch processed" in processed
@@ -878,7 +877,7 @@ class TestExecutorToolExecution:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={"test_tool": tool},
+            tool_registry=make_tool_registry({"test_tool": tool}),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -891,7 +890,8 @@ class TestExecutorToolExecution:
             raw_content="<tool_call>...</tool_call>",
         )
 
-        tool_name, result, is_error = executor._execute_tool_call_safe(tool_call, agent_state)
+        ctx = make_framework_context(executor)
+        tool_name, result, is_error = executor._execute_tool_call_safe(tool_call, agent_state, ctx)
 
         assert tool_name == "test_tool"
         assert is_error is False
@@ -917,7 +917,7 @@ class TestExecutorToolExecution:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={"error_tool": tool},
+            tool_registry=make_tool_registry({"error_tool": tool}),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -930,7 +930,8 @@ class TestExecutorToolExecution:
             raw_content="<tool_call>...</tool_call>",
         )
 
-        tool_name, result, is_error = executor._execute_tool_call_safe(tool_call, agent_state)
+        ctx = make_framework_context(executor)
+        tool_name, result, is_error = executor._execute_tool_call_safe(tool_call, agent_state, ctx)
 
         assert tool_name == "error_tool"
         assert is_error is False
@@ -947,7 +948,7 @@ class TestExecutorSubAgentExecution:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={"sub_agent": sub_agent_config},
             stop_tools=set(),
             openai_client=Mock(),
@@ -977,7 +978,7 @@ class TestExecutorSubAgentExecution:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -1010,7 +1011,7 @@ class TestExecutorCleanup:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -1027,7 +1028,7 @@ class TestExecutorCleanup:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -1053,36 +1054,68 @@ class TestExecutorCleanup:
 class TestExecutorHelperMethods:
     """Test executor helper methods."""
 
-    def test_add_tool(self, mock_llm_config):
-        """Test adding a tool dynamically."""
+    def test_structured_tool_payload_includes_sub_agents(self, mock_llm_config, agent_config):
+        """Structured payload should include sub-agent proxy definitions."""
+        tool = Tool(
+            name="simple_tool",
+            description="A simple tool",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            implementation=lambda: {"result": "ok"},
+        )
+        child_config = agent_config.model_copy(update={"name": "child", "description": "Delegate to child"})
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry({"simple_tool": tool}),
+            sub_agents={"child": child_config},
+            stop_tools=set(),
+            openai_client=Mock(),
+            llm_config=mock_llm_config,
+            tool_call_mode="openai",
+        )
+
+        payload_by_name = {spec["function"]["name"]: spec for spec in executor.structured_tool_payload}
+
+        assert "simple_tool" in payload_by_name
+        assert "sub-agent-child" in payload_by_name
+        assert payload_by_name["sub-agent-child"]["function"]["description"] == "Delegate to child"
+
+    def test_structured_tool_payload_uses_skill_description(self, mock_llm_config):
+        """Structured payload should use brief skill descriptions for as_skill tools."""
+        skill_tool = Tool(
+            name="web_search",
+            description="FULL DESCRIPTION: search the web with examples and workflow guidance.",
+            input_schema={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+            implementation=lambda query: {"query": query},
+            as_skill=True,
+            skill_description="BRIEF SKILL DESCRIPTION",
+        )
+        executor = Executor(
+            agent_name="test_agent",
+            agent_id="test_id",
+            tool_registry=make_tool_registry({"web_search": skill_tool}),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
+            tool_call_mode="anthropic",
         )
 
-        tool = Tool(
-            name="new_tool",
-            description="A new tool",
-            input_schema={"type": "object", "properties": {}},
-            implementation=lambda: {},
-        )
+        payload_by_name = {spec["name"]: spec for spec in executor.structured_tool_payload}
 
-        executor.add_tool(tool)
-
-        assert "new_tool" in executor.tool_executor.tool_registry
-        assert executor.tool_executor.tool_registry["new_tool"] == tool
+        assert payload_by_name["web_search"]["description"] == "BRIEF SKILL DESCRIPTION"
+        assert payload_by_name["web_search"]["input_schema"]["properties"]["query"]["type"] == "string"
 
     def test_add_sub_agent(self, mock_llm_config, agent_config):
         """Test adding a sub-agent config dynamically."""
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -1116,12 +1149,11 @@ class TestExecutorStopToolHandling:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={"stop_tool": tool},
+            tool_registry=make_tool_registry({"stop_tool": tool}),
             sub_agents={},
             stop_tools={"stop_tool"},
             openai_client=Mock(),
             llm_config=mock_llm_config,
-            serial_tool_name=[],  # Empty list to avoid None check issues
         )
 
         tool_call = ToolCall(
@@ -1137,7 +1169,8 @@ class TestExecutorStopToolHandling:
             batch_agent_calls=[],
         )
 
-        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(parsed_response, agent_state)
+        ctx = make_framework_context(executor)
+        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(parsed_response, agent_state, framework_context=ctx)
 
         # The stop tool should be detected in the result
         assert "<tool_result>" in processed
@@ -1181,12 +1214,11 @@ class TestExecutorParallelExecution:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={"tool1": tool_obj1, "tool2": tool_obj2},
+            tool_registry=make_tool_registry({"tool1": tool_obj1, "tool2": tool_obj2}),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
-            serial_tool_name=[],  # Empty list to avoid None check issues
         )
 
         tool_call1 = ToolCall(
@@ -1210,7 +1242,9 @@ class TestExecutorParallelExecution:
             batch_agent_calls=[],
         )
 
-        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(parsed_response, agent_state)
+        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(
+            parsed_response, agent_state, framework_context=make_framework_context(executor)
+        )
 
         # Both tools should be executed
         assert "tool1" in processed
@@ -1237,12 +1271,11 @@ class TestExecutorParallelExecution:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={"test_tool": tool},
+            tool_registry=make_tool_registry({"test_tool": tool}),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
             llm_config=mock_llm_config,
-            serial_tool_name=[],  # Empty list to avoid None check issues
         )
 
         # Create tool calls with duplicate IDs
@@ -1267,7 +1300,9 @@ class TestExecutorParallelExecution:
             batch_agent_calls=[],
         )
 
-        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(parsed_response, agent_state)
+        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(
+            parsed_response, agent_state, framework_context=make_framework_context(executor)
+        )
 
         # Both tools should be executed despite duplicate IDs
         # The second one should have a modified ID (this happens in-place during execution)
@@ -1298,7 +1333,7 @@ class TestExecutorWithHooks:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -1340,7 +1375,7 @@ class TestExecutorEdgeCases:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -1362,7 +1397,9 @@ class TestExecutorEdgeCases:
             batch_agent_calls=[],
         )
 
-        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(parsed_response, agent_state)
+        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(
+            parsed_response, agent_state, framework_context=make_framework_context(executor)
+        )
 
         # Should return early without executing
         assert should_stop is False
@@ -1375,7 +1412,7 @@ class TestExecutorEdgeCases:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={},
+            tool_registry=make_tool_registry(),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -1443,7 +1480,7 @@ class TestExecutorParallelExecutionId:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={"tool1": tool1, "tool2": tool2},
+            tool_registry=make_tool_registry({"tool1": tool1, "tool2": tool2}),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -1463,7 +1500,7 @@ class TestExecutorParallelExecutionId:
         )
 
         # Execute the parsed response
-        executor._execute_parsed_calls(parsed_response, agent_state)
+        executor._execute_parsed_calls(parsed_response, agent_state, framework_context=make_framework_context(executor))
 
         # Verify all tool calls received the same parallel_execution_id
         assert len(captured_parallel_execution_ids) == 2
@@ -1497,7 +1534,7 @@ class TestExecutorParallelExecutionId:
             executor = Executor(
                 agent_name="test_agent",
                 agent_id="test_id",
-                tool_registry={},
+                tool_registry=make_tool_registry(),
                 sub_agents={"test_sub_agent": sub_agent_config},
                 stop_tools=set(),
                 openai_client=Mock(),
@@ -1516,7 +1553,7 @@ class TestExecutorParallelExecutionId:
             )
 
             # Execute the parsed response
-            executor._execute_parsed_calls(parsed_response, agent_state)
+            executor._execute_parsed_calls(parsed_response, agent_state, framework_context=make_framework_context(executor))
 
             # Verify all sub-agent calls received the same parallel_execution_id
             assert len(captured_parallel_execution_ids) == 2
@@ -1548,7 +1585,7 @@ class TestExecutorParallelExecutionId:
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
-            tool_registry={"test_tool": tool},
+            tool_registry=make_tool_registry({"test_tool": tool}),
             sub_agents={},
             stop_tools=set(),
             openai_client=Mock(),
@@ -1566,7 +1603,8 @@ class TestExecutorParallelExecutionId:
             sub_agent_calls=[],
             batch_agent_calls=[],
         )
-        executor._execute_parsed_calls(parsed_response1, agent_state)
+        ctx = make_framework_context(executor)
+        executor._execute_parsed_calls(parsed_response1, agent_state, framework_context=ctx)
 
         # Execute second batch
         parsed_response2 = ParsedResponse(
@@ -1577,7 +1615,7 @@ class TestExecutorParallelExecutionId:
             sub_agent_calls=[],
             batch_agent_calls=[],
         )
-        executor._execute_parsed_calls(parsed_response2, agent_state)
+        executor._execute_parsed_calls(parsed_response2, agent_state, framework_context=ctx)
 
         # Verify: first 2 calls have same ID, third call has different ID
         assert len(captured_parallel_execution_ids) == 3
@@ -1631,7 +1669,7 @@ class TestExecutorParallelExecutionId:
             executor = Executor(
                 agent_name="test_agent",
                 agent_id="test_id",
-                tool_registry={"test_tool": tool},
+                tool_registry=make_tool_registry({"test_tool": tool}),
                 sub_agents={"test_sub_agent": sub_agent_config},
                 stop_tools=set(),
                 openai_client=Mock(),
@@ -1652,7 +1690,7 @@ class TestExecutorParallelExecutionId:
             )
 
             # Execute the parsed response
-            executor._execute_parsed_calls(parsed_response, agent_state)
+            executor._execute_parsed_calls(parsed_response, agent_state, framework_context=make_framework_context(executor))
 
             # Verify both tool call and sub-agent call received the same parallel_execution_id
             assert captured_tool_parallel_id is not None

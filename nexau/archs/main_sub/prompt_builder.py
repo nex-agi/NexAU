@@ -125,8 +125,8 @@ class PromptBuilder:
             if include_tool_instructions:
                 # Build capabilities documentation
                 capabilities_docs = self._build_capabilities_docs(
-                    tools or agent_config.tools,
-                    sub_agents or agent_config.sub_agents or {},
+                    tools if tools is not None else agent_config.tools,
+                    sub_agents if sub_agents is not None else agent_config.sub_agents or {},
                     runtime_context,
                 )
 

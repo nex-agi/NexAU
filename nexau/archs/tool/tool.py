@@ -22,7 +22,8 @@ import traceback
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Literal, cast
+from types import UnionType
+from typing import Annotated, Any, Literal, Union, cast, get_args, get_origin, get_type_hints
 
 import jsonschema
 import yaml
@@ -32,6 +33,7 @@ from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
+_UNRESOLVED_ANNOTATION = object()
 
 
 class ToolYamlSchema(BaseModel):
@@ -46,6 +48,8 @@ class ToolYamlSchema(BaseModel):
     skill_description: str | None = None
     disable_parallel: bool = False
     lazy: bool = False
+    defer_loading: bool = False
+    search_hint: str | None = None
     template_override: str | None = None
     builtin: str | None = None
     binding: str | None = None
@@ -70,11 +74,15 @@ class Tool:
         as_skill: bool = False,
         disable_parallel: bool = False,
         lazy: bool = False,
+        defer_loading: bool = False,
+        search_hint: str | None = None,
         template_override: str | None = None,
         extra_kwargs: dict[str, Any] | None = None,
+        source_name: str | None = None,
     ):
         """Initialize a tool with schema and implementation."""
         self.name = name
+        self.source_name = source_name
         self.description = description
         self.skill_description = skill_description
         self.as_skill = as_skill
@@ -93,9 +101,11 @@ class Tool:
                 self.implementation = func
         else:
             self.implementation = implementation
+        self.defer_loading = defer_loading
+        self.search_hint = search_hint
         self.template_override = template_override
         self.disable_parallel = disable_parallel
-        reserved_keys = {"agent_state", "global_storage"}
+        reserved_keys = {"agent_state", "global_storage", "ctx"}
         extra_kwargs = extra_kwargs or {}
         conflict_keys = set(extra_kwargs) & reserved_keys
         if conflict_keys:
@@ -106,16 +116,21 @@ class Tool:
 
         # Validate schema
         self._validate_schema()
+        self._validate_reserved_param_annotations()
 
     @classmethod
     def from_yaml(
         cls,
         yaml_path: str,
-        binding: Callable[..., Any] | str | None,
+        binding: Callable[..., Any] | str | None = None,
+        *,
         as_skill: bool = False,
         extra_kwargs: dict[str, Any] | None = None,
         lazy: bool | None = None,
-        **kwargs: Any,
+        name: str | None = None,
+        description: str | None = None,
+        description_suffix: str = "",
+        defer_loading: bool | None = None,
     ) -> "Tool":
         """Load tool definition from YAML file and bind to implementation."""
         path = Path(yaml_path)
@@ -127,12 +142,20 @@ class Tool:
         tool_def = tool_def_model.model_dump()
 
         # Extract required fields
-        name = tool_def["name"]
-        description = tool_def["description"]
+        source_name = tool_def["name"]
+        base_description = tool_def["description"]
         skill_description = tool_def.get("skill_description", "")
         input_schema = tool_def.get("input_schema", {})
         disable_parallel = tool_def.get("disable_parallel", False)
+        yaml_defer_loading = tool_def.get("defer_loading", False)
+        search_hint_val = tool_def.get("search_hint")
         yaml_lazy = tool_def.get("lazy", False)
+        effective_name = source_name if name is None else name
+        effective_source_name = source_name if effective_name != source_name else None
+        effective_description = base_description if description is None else description
+        if description_suffix:
+            effective_description += description_suffix
+        effective_defer_loading = yaml_defer_loading if defer_loading is None else defer_loading
         effective_lazy = yaml_lazy if lazy is None else lazy
 
         if binding is None and "binding" in tool_def:
@@ -140,32 +163,115 @@ class Tool:
 
         if "global_storage" in input_schema:
             raise ValueError(
-                f"Tool definition of `{name}` contains 'global_storage' field in {yaml_path}, "
+                f"Tool definition of `{source_name}` contains 'global_storage' field in {yaml_path}, "
                 "which will be injected by the framework, please remove it from the tool definition.",
             )
 
         if "agent_state" in input_schema:
             raise ValueError(
-                f"Tool definition of `{name}` contains 'agent_state' field in {yaml_path}, "
+                f"Tool definition of `{source_name}` contains 'agent_state' field in {yaml_path}, "
                 "which will be injected by the framework, please remove it from the tool definition."
+            )
+
+        if "ctx" in input_schema:
+            raise ValueError(
+                f"Tool definition of `{source_name}` contains 'ctx' field in {yaml_path}, "
+                "which will be injected by the framework, please remove it from the tool definition.",
             )
 
         template_override = tool_def.get("template_override")
 
         # Create tool instance
         return cls(
-            name=name,
-            description=description,
+            name=effective_name,
+            source_name=effective_source_name,
+            description=effective_description,
             skill_description=skill_description,
             input_schema=input_schema,
             implementation=binding,
             as_skill=as_skill,
             disable_parallel=disable_parallel,
             lazy=effective_lazy,
+            defer_loading=effective_defer_loading,
+            search_hint=search_hint_val,
             template_override=template_override,
             extra_kwargs=extra_kwargs,
-            **kwargs,
         )
+
+    def _validate_reserved_param_annotations(self) -> None:
+        """Validate reserved framework parameter annotations for tool implementations."""
+        impl = self.implementation
+        if impl is None:
+            return
+
+        signature = inspect.signature(impl)
+        ctx_param = signature.parameters.get("ctx")
+        if ctx_param is None:
+            return
+
+        if ctx_param.annotation is inspect.Signature.empty:
+            logger.warning(
+                "Tool '%s' declares 'ctx' without a FrameworkContext annotation; annotate it as FrameworkContext.",
+                self.name,
+            )
+            return
+
+        annotation = self._resolve_reserved_param_annotation(impl, "ctx")
+        if annotation is _UNRESOLVED_ANNOTATION:
+            return
+
+        if annotation is Any:
+            logger.warning(
+                "Tool '%s' declares 'ctx' as Any; annotate it as FrameworkContext for stricter validation.",
+                self.name,
+            )
+            return
+
+        if not self._is_framework_context_annotation(annotation):
+            raise ConfigError(
+                f"Tool '{self.name}' declares 'ctx' with incompatible type {annotation!r}; use FrameworkContext.",
+            )
+
+    def _resolve_reserved_param_annotation(self, impl: Callable[..., Any], param_name: str) -> Any:
+        """Resolve a reserved parameter annotation, including forward references."""
+        from nexau.archs.main_sub.framework_context import FrameworkContext
+
+        globalns = dict(getattr(impl, "__globals__", {}))
+        globalns.setdefault("FrameworkContext", FrameworkContext)
+        try:
+            hints = get_type_hints(impl, globalns=globalns, localns={"FrameworkContext": FrameworkContext}, include_extras=True)
+        except Exception as exc:
+            logger.warning(
+                "Tool '%s' declares '%s' but its annotation could not be resolved (%s); skipping strict type validation.",
+                self.name,
+                param_name,
+                exc,
+            )
+            return _UNRESOLVED_ANNOTATION
+
+        return hints.get(param_name, _UNRESOLVED_ANNOTATION)
+
+    @staticmethod
+    def _is_framework_context_annotation(annotation: Any) -> bool:
+        """Return whether an annotation represents FrameworkContext."""
+        from nexau.archs.main_sub.framework_context import FrameworkContext
+
+        if annotation is FrameworkContext:
+            return True
+
+        origin = get_origin(annotation)
+        if origin is None:
+            return False
+
+        if origin is Annotated:
+            args = get_args(annotation)
+            return bool(args) and Tool._is_framework_context_annotation(args[0])
+
+        if origin in (UnionType, Union):
+            union_args = [arg for arg in get_args(annotation) if arg is not type(None)]
+            return len(union_args) == 1 and Tool._is_framework_context_annotation(union_args[0])
+
+        return False
 
     def execute(self, **params: Any) -> dict[str, Any]:
         """Execute the tool with given parameters."""
@@ -178,34 +284,40 @@ class Tool:
 
                 func = import_from_string(str(self.implementation_import_path))
                 self.implementation = func
+                self._validate_reserved_param_annotations()
             else:
                 raise ValueError(f"Tool '{self.name}' has no implementation")
 
-        # Handle agent_state parameter
+        # RFC-0006: 参数注入 — ctx 优先，agent_state 向后兼容
         merged_params = {**self.extra_kwargs, **params}
-
         filtered_params = merged_params.copy()
-        if "agent_state" in merged_params:
-            # Check if the function signature accepts agent_state
-            sig = inspect.signature(self.implementation)
-            if "agent_state" not in sig.parameters:
-                # Remove agent_state if function doesn't accept it
-                filtered_params.pop("agent_state", None)
 
-                # For backwards compatibility, check if function accepts global_storage
-                if "global_storage" in sig.parameters:
-                    agent_state = merged_params["agent_state"]
-                    filtered_params["global_storage"] = agent_state.global_storage
-            if "sandbox" not in sig.parameters:
-                filtered_params.pop("sandbox", None)
+        impl = self.implementation
+        if impl is not None:
+            sig = inspect.signature(impl)
 
-        # Validate parameters (excluding agent_state and global_storage for schema validation)
-        validation_params = {k: v for k, v in filtered_params.items() if k not in ("agent_state", "global_storage", "sandbox")}
+            # RFC-0006: ctx (FrameworkContext) 注入
+            if "ctx" not in sig.parameters:
+                filtered_params.pop("ctx", None)
+
+            # 向后兼容: agent_state 注入
+            if "agent_state" in merged_params:
+                if "agent_state" not in sig.parameters:
+                    filtered_params.pop("agent_state", None)
+
+                    # For backwards compatibility, check if function accepts global_storage
+                    if "global_storage" in sig.parameters:
+                        agent_state = merged_params["agent_state"]
+                        filtered_params["global_storage"] = agent_state.global_storage
+                if "sandbox" not in sig.parameters:
+                    filtered_params.pop("sandbox", None)
+
+        # Validate parameters (excluding framework-injected params for schema validation)
+        _injected_keys = {"agent_state", "global_storage", "sandbox", "ctx"}
+        validation_params = {k: v for k, v in filtered_params.items() if k not in _injected_keys}
         self.validate_params(validation_params)
 
         try:
-            # Execute the implementation
-            impl = self.implementation
             if impl is None:
                 raise ValueError(f"Tool '{self.name}' has no implementation")
 

@@ -21,8 +21,13 @@ from unittest.mock import MagicMock
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.execution.executor import Executor
+from nexau.archs.tool.tool_registry import ToolRegistry
 
 # --- Helpers ---
+
+
+def make_tool_registry() -> ToolRegistry:
+    return ToolRegistry()
 
 
 def make_executor(team_mode: bool = True) -> Executor:
@@ -30,7 +35,7 @@ def make_executor(team_mode: bool = True) -> Executor:
     return Executor(
         agent_name="test-agent",
         agent_id="test-agent-1",
-        tool_registry={},
+        tool_registry=make_tool_registry(),
         sub_agents={},
         stop_tools=set(),
         openai_client=MagicMock(),

@@ -558,7 +558,102 @@ class TestAgentConfigBuilderCore:
         tool = builder.agent_params["tools"][0]
         assert isinstance(tool, Tool)
         assert tool.name == "alias_tool"
-        assert getattr(tool, "source_name", None) == "yaml_tool"
+        assert tool.source_name == "yaml_tool"
+
+    def test_build_tools_config_defer_loading_promotes_tool(self, temp_dir):
+        tool_yaml = Path(temp_dir) / "tool.yaml"
+        tool_yaml.write_text(
+            textwrap.dedent(
+                """
+                name: yaml_tool
+                description: Test tool
+                input_schema:
+                  type: object
+                """,
+            ),
+        )
+        builder = AgentConfigBuilder(
+            {
+                "tools": [
+                    {
+                        "name": "yaml_tool",
+                        "yaml_path": str(tool_yaml),
+                        "binding": "builtins:print",
+                        "defer_loading": True,
+                    }
+                ]
+            },
+            Path(temp_dir),
+        )
+
+        builder.build_tools()
+
+        tool = builder.agent_params["tools"][0]
+        assert isinstance(tool, Tool)
+        assert tool.defer_loading is True
+
+    def test_build_tools_config_defer_loading_false_overrides_yaml(self, temp_dir):
+        """Explicit defer_loading: false in config overrides YAML defer_loading: true."""
+        tool_yaml = Path(temp_dir) / "tool.yaml"
+        tool_yaml.write_text(
+            textwrap.dedent(
+                """
+                name: yaml_tool
+                description: Test tool
+                defer_loading: true
+                input_schema:
+                  type: object
+                """,
+            ),
+        )
+        builder = AgentConfigBuilder(
+            {
+                "tools": [
+                    {
+                        "name": "yaml_tool",
+                        "yaml_path": str(tool_yaml),
+                        "binding": "builtins:print",
+                        "defer_loading": False,
+                    }
+                ]
+            },
+            Path(temp_dir),
+        )
+
+        builder.build_tools()
+
+        tool = builder.agent_params["tools"][0]
+        assert isinstance(tool, Tool)
+        assert tool.defer_loading is False
+
+    def test_build_tools_rejects_non_bool_defer_loading(self, temp_dir):
+        tool_yaml = Path(temp_dir) / "tool.yaml"
+        tool_yaml.write_text(
+            textwrap.dedent(
+                """
+                name: yaml_tool
+                description: Test tool
+                input_schema:
+                  type: object
+                """,
+            ),
+        )
+        builder = AgentConfigBuilder(
+            {
+                "tools": [
+                    {
+                        "name": "yaml_tool",
+                        "yaml_path": str(tool_yaml),
+                        "binding": "builtins:print",
+                        "defer_loading": "yes",
+                    }
+                ]
+            },
+            Path(temp_dir),
+        )
+
+        with pytest.raises(ConfigConfigError, match="field 'defer_loading' must be a boolean"):
+            builder.build_tools()
 
     def test_build_tools_rejects_reserved_extra_kwargs(self, temp_dir):
         tool_yaml = Path(temp_dir) / "tool.yaml"

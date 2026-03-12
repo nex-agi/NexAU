@@ -927,6 +927,9 @@ class AgentConfigBuilder:
             raise ConfigError(f"Tool '{name}' field 'lazy' must be a boolean")
         lazy = lazy_raw
         as_skill = tool_config.get("as_skill", False)
+        defer_loading: object = tool_config.get("defer_loading")
+        if defer_loading is not None and not isinstance(defer_loading, bool):
+            raise ConfigError(f"Tool '{name}' field 'defer_loading' must be a boolean")
         extra_kwargs_raw: object | None = tool_config.get("extra_kwargs", {})
 
         if not yaml_path:
@@ -952,12 +955,13 @@ class AgentConfigBuilder:
             else:
                 yaml_path = base_path / yaml_path
 
-        # Create tool
-        tool = Tool.from_yaml(str(yaml_path), binding, as_skill=as_skill, extra_kwargs=extra_kwargs, lazy=lazy)
-
-        # Override tool name with config-provided alias if present
-        if name and tool.name != name:
-            setattr(tool, "source_name", getattr(tool, "source_name", tool.name))
-            tool.name = name
-
-        return tool
+        # Create tool with effective config-level overrides
+        return Tool.from_yaml(
+            str(yaml_path),
+            binding,
+            as_skill=as_skill,
+            extra_kwargs=extra_kwargs,
+            lazy=lazy,
+            name=name,
+            defer_loading=defer_loading,
+        )

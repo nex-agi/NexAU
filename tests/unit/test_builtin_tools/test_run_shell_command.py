@@ -18,6 +18,7 @@ import threading
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.sandbox import SandboxStatus
 from nexau.archs.tool.builtin.shell_tools.run_shell_command import (
     _truncate_shell_output,
@@ -29,7 +30,6 @@ def _make_agent_state(sandbox):
     """Create mock agent_state with sandbox."""
     agent_state = Mock()
     agent_state.get_sandbox.return_value = sandbox
-    agent_state.shutdown_event = None
     return agent_state
 
 
@@ -109,7 +109,8 @@ class TestRunShellCommandIntegration:
         sandbox.get_background_task_status.return_value = cmd_result
 
         agent_state = _make_agent_state(sandbox)
-        result = run_shell_command("echo hello", agent_state=agent_state)
+        ctx = FrameworkContext.for_testing()
+        result = run_shell_command("echo hello", agent_state=agent_state, ctx=ctx)
 
         assert "error" not in result or result.get("error") is None
         assert "hello world" in result["content"]
@@ -152,9 +153,9 @@ class TestRunShellCommandIntegration:
         sandbox.get_background_task_status.side_effect = _status_side_effect
 
         agent_state = _make_agent_state(sandbox)
-        agent_state.shutdown_event = shutdown_event
+        ctx = FrameworkContext.for_testing(shutdown_event=shutdown_event)
 
-        result = run_shell_command("echo hello", agent_state=agent_state)
+        result = run_shell_command("echo hello", agent_state=agent_state, ctx=ctx)
 
         sandbox.kill_background_task.assert_called_once_with(456)
         assert result["error"]["message"] == "Command interrupted by stop request"

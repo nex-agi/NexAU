@@ -25,7 +25,6 @@ import shutil
 import tempfile
 import types
 from pathlib import Path
-from typing import cast
 from unittest.mock import Mock, patch
 
 import dotenv
@@ -35,8 +34,6 @@ import yaml
 # Load .env BEFORE importing nexau modules (they may read env vars during init)
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 dotenv.load_dotenv(os.path.join(_project_root, ".env"), override=True)
-
-from nexau.archs.main_sub.execution.executor import Executor  # noqa: E402
 
 # Provide a lightweight anthropic stub for environments without the package
 
@@ -174,16 +171,10 @@ def agent_context():
 
 
 @pytest.fixture
-def mock_executor():
-    """Lightweight executor mock for agent state interactions."""
-    executor = Mock()
-    executor.add_tool = Mock()
-    return cast(Executor, executor)
-
-
-@pytest.fixture
-def agent_state(mock_llm_config, global_storage, agent_context, mock_executor):
+def agent_state(mock_llm_config, global_storage, agent_context):
     """Agent state for testing."""
+    from nexau.archs.tool.tool_registry import ToolRegistry
+
     return AgentState(
         agent_name="test_agent",
         agent_id="test_agent_123",
@@ -191,7 +182,7 @@ def agent_state(mock_llm_config, global_storage, agent_context, mock_executor):
         root_run_id="run_123",
         context=agent_context,
         global_storage=global_storage,
-        executor=mock_executor,
+        tool_registry=ToolRegistry(),
     )
 
 
