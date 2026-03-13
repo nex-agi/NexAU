@@ -215,8 +215,7 @@ Tool-based skills behave slightly differently depending on the active tool calli
 | `tool_call_mode` | What the model sees initially | When `LoadSkill` is needed |
 | --- | --- | --- |
 | `xml` | Only the tool's `skill_description` in the prompt skill registry | When the model needs the full tool instructions |
-| `openai` | The tool's `skill_description` plus the full JSON Schema in the structured tool definition | When the model needs the full workflow-level `description` |
-| `anthropic` | The tool's `skill_description` plus the full JSON Schema in the structured tool definition | When the model needs the full workflow-level `description` |
+| `structured` | The tool's `skill_description` plus the full JSON Schema in the structured tool definition | When the model needs the full workflow-level `description` |
 
 This means `description` and `skill_description` now serve different purposes for tool-based skills:
 
@@ -311,7 +310,7 @@ The agent can load detailed skill information using the `LoadSkill` tool.
 </tool_use>
 ```
 
-- In `openai` / `anthropic` modes, the model invokes `LoadSkill` through the provider's native structured tool-calling interface using the same `skill_name` argument.
+- In `structured` mode, the model invokes `LoadSkill` through the provider's native structured tool-calling interface using the same `skill_name` argument.
 
 **Response:**
 
@@ -332,7 +331,7 @@ This skill provides comprehensive data analysis capabilities...
 </SkillDetails>
 ```
 
-For tool-based skills in `openai` / `anthropic` modes, the `SkillDetail` body contains the tool's full `description` and guidance for native structured tool calling rather than XML-only usage examples.
+For tool-based skills in `structured` mode, the `SkillDetail` body contains the tool's full `description` and guidance for native structured tool calling rather than XML-only usage examples.
 
 ### System Prompt Integration
 
@@ -361,7 +360,7 @@ You can use the LoadSkill tool to get detailed information about any skill.
 Notes:
 
 - In `xml` mode, this brief registry is injected into the system prompt.
-- In `openai` / `anthropic` modes, folder-based skills still appear through the skill registry, while tool-based skills expose the same brief text through their structured tool definitions (`skill_description`) and use `LoadSkill` for the full detail.
+- In `structured` mode, folder-based skills still appear through the skill registry, while tool-based skills expose the same brief text through their structured tool definitions (`skill_description`) and use `LoadSkill` for the full detail.
 
 ---
 
@@ -388,7 +387,7 @@ Notes:
 - Use tool-based skills for capabilities that don't need extensive documentation
 - Make the skill description concise but informative
 - Keep the regular `description` field for the full operational guidance loaded through `LoadSkill`
-- Treat `skill_description` as discovery text and `description` as detailed instructions, especially in `openai` / `anthropic` modes
+- Treat `skill_description` as discovery text and `description` as detailed instructions, especially in `structured` mode
 
 ❌ **Don't:**
 - Don't set `as_skill=True` without providing `skill_description`

@@ -224,6 +224,8 @@ def messages_from_legacy_openai_chat(messages: list[dict[str, Any]]) -> list[Mes
             metadata["response_items"] = raw.get("response_items")
         if "reasoning" in raw:
             metadata["reasoning"] = raw.get("reasoning")
+        if "thought_signature" in raw:
+            metadata["thought_signature"] = raw.get("thought_signature")
 
         # Prefer explicit reasoning_content into a dedicated block (store-only)
         reasoning_content = raw.get("reasoning_content")
@@ -272,6 +274,9 @@ def messages_from_legacy_openai_chat(messages: list[dict[str, Any]]) -> list[Mes
         # Tool result messages (OpenAI tool role)
         if role == Role.TOOL:
             tool_call_id = _coerce_str(raw.get("tool_call_id"))
+            tool_name = _coerce_str(raw.get("name"))
+            if tool_name:
+                metadata["tool_name"] = tool_name
             # Replace content blocks with an explicit tool_result block (preserve images if present).
             has_images = any(isinstance(b, ImageBlock) for b in content_blocks)
             if has_images:

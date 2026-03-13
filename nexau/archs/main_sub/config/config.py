@@ -109,6 +109,15 @@ class AgentConfig(
     llm_config: LLMConfig | None = None
     sandbox_config: SandboxConfig | None = Field(default=None)
 
+    @field_validator("tool_call_mode", mode="before")
+    @classmethod
+    def _normalize_tool_call_mode(cls, value: object) -> str:
+        if value is None:
+            return normalize_tool_call_mode(None)
+        if not isinstance(value, str):
+            raise ValueError("tool_call_mode must be a string")
+        return normalize_tool_call_mode(value)
+
     @field_validator("sandbox_config", mode="before")
     @classmethod
     def _validate_sandbox_config(cls, value: object) -> SandboxConfig | None:
@@ -283,7 +292,7 @@ class ExecutionConfig:
     max_running_subagents: int = 5
     retry_attempts: int = 5
     timeout: int = 300
-    tool_call_mode: str = "openai"
+    tool_call_mode: str = "structured"
 
     def __post_init__(self) -> None:
         """Validate execution configuration."""
@@ -423,7 +432,7 @@ class AgentConfigBuilder:
 
         self.agent_params["stop_tools"] = set(self.config.get("stop_tools", []))
         self.agent_params["max_iterations"] = self.config.get("max_iterations", 100)
-        self.agent_params["tool_call_mode"] = self.config.get("tool_call_mode", "openai")
+        self.agent_params["tool_call_mode"] = self.config.get("tool_call_mode", "structured")
         self.agent_params["retry_attempts"] = self.config.get("retry_attempts", 5)
         self.agent_params["timeout"] = self.config.get("timeout", 300)
 
@@ -680,7 +689,7 @@ class AgentConfigBuilder:
         # add tool-based skills
         tool_call_mode = self.agent_params.get(
             "tool_call_mode",
-            self.config.get("tool_call_mode", "openai"),
+            self.config.get("tool_call_mode", "structured"),
         )
         for tool in self.agent_params.get("tools", []):
             if tool.as_skill:

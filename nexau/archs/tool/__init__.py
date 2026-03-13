@@ -12,7 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .tool import Tool
+from .tool import (
+    Tool,
+    StructuredToolDefinition,
+    build_structured_tool_definition,
+    normalize_structured_tool_definition,
+    structured_tool_definition_to_anthropic,
+    structured_tool_definition_to_openai,
+)
 from .tool_registry import ToolRegistry
 
-__all__ = ["Tool", "ToolRegistry"]
+__all__ = [
+    "Tool",
+    "ToolRegistry",
+    "StructuredToolDefinition",
+    "build_structured_tool_definition",
+    "normalize_structured_tool_definition",
+    "structured_tool_definition_to_anthropic",
+    "structured_tool_definition_to_openai",
+]

@@ -12,20 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Main execution orchestrator for agents."""
+"""Main execution orchestrator for agents.
+
+RFC-0006: 中性 Structured Tool Definitions 在执行器中的持有与分发
+
+执行器在 structured 模式下只缓存 neutral structured definitions，真正的
+OpenAI / Anthropic / Gemini provider schema 由 LLMCaller 在请求边界延迟适配。
+"""
 
 import json
 import logging
 import threading
 import uuid
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import copy_context
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
-
-from anthropic.types import ToolParam
-from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_state import AgentState
@@ -58,13 +62,14 @@ from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
 from nexau.archs.main_sub.execution.tool_executor import ToolExecutor
 from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.main_sub.history_list import HistoryList
+from nexau.archs.main_sub.sub_agent_naming import build_sub_agent_tool_name
 from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
     normalize_tool_call_mode,
 )
-from nexau.archs.main_sub.tool_payloads import build_anthropic_tool_payload, build_openai_tool_payload
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
 from nexau.archs.tool.tool_registry import ToolRegistry
+from nexau.archs.tool.tool import StructuredToolDefinition, Tool, build_structured_tool_definition
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, coerce_tool_result_content
 
@@ -97,8 +102,9 @@ class Executor:
         before_tool_hooks: list[BeforeToolHook] | None = None,
         middlewares: list[Middleware] | None = None,
         global_storage: Any = None,
-        tool_call_mode: str = "openai",
+        tool_call_mode: str = "structured",
         team_mode: bool = False,
+        structured_tools: Sequence[StructuredToolDefinition] | None = None,
         session_manager: "SessionManager | None" = None,
         user_id: str | None = None,
         session_id: str | None = None,
@@ -123,8 +129,9 @@ class Executor:
             before_tool_hooks: Optional list of hooks called before tool execution
             after_tool_hooks: Optional list of hooks called after tool execution
             middlewares: Optional list of middleware objects applied to all phases
-            tool_call_mode: Preferred tool call format ('xml', 'openai', or 'anthropic')
+            tool_call_mode: Preferred tool call format ('xml' or 'structured')
             team_mode: If True, executor runs in "forever run" mode for team agents
+            structured_tools: Vendor-neutral structured tool definitions
             session_manager: Optional SessionManager for unified data access
             user_id: Optional user ID for persistence
             session_id: Optional session ID for persistence
@@ -144,6 +151,7 @@ class Executor:
         self._wire_middleware_llm_runtime(llm_config, openai_client)
         self._wire_middleware_event_emitters()
         self._tool_registry = tool_registry
+        self._tool_registry_lock = threading.RLock()
         self.tool_executor = ToolExecutor(
             tool_registry=tool_registry,
             stop_tools=stop_tools,
@@ -182,9 +190,27 @@ class Executor:
         # Tool call behavior
         self.tool_call_mode = normalize_tool_call_mode(tool_call_mode)
         self.use_structured_tool_calls = self.tool_call_mode in STRUCTURED_TOOL_CALL_MODES
-        if self.use_structured_tool_calls and not self.structured_tool_payload:
+
+        # 1. RFC-0006: 执行器内部只保存 neutral structured definitions，避免主状态提前 vendor 化。
+        if structured_tools is not None:
+            self.structured_tool_definitions = deepcopy(list(structured_tools))
+        elif self.use_structured_tool_calls:
+            self.structured_tool_definitions = [
+                tool.to_structured_definition(
+                    description=self._structured_tool_description(tool),
+                )
+                for tool in self._tool_registry.compute_eager_tools()
+            ]
+            for sub_agent_name, sub_agent_config in sub_agents.items():
+                self.structured_tool_definitions.append(
+                    self._build_sub_agent_tool_definition(sub_agent_name, sub_agent_config),
+                )
+        else:
+            self.structured_tool_definitions = []
+
+        if self.use_structured_tool_calls and not self.structured_tool_definitions:
             logger.warning(
-                f"⚠️ {self.tool_call_mode.capitalize()} tool call mode enabled but no tool definitions were provided.",
+                f"⚠️ {self.tool_call_mode.capitalize()} tool call mode enabled but no structured tool definitions were provided.",
             )
 
         # Process tracking for parallel execution
@@ -307,24 +333,49 @@ class Executor:
         """
         return self._execution_done
 
-    @property
-    def structured_tool_payload(self) -> list[ChatCompletionToolParam] | list[ToolParam]:
-        """Return the current structured tool payload derived at call time."""
+    def _snapshot_structured_tool_definitions(self) -> list[StructuredToolDefinition]:
+        """Return a synchronized snapshot of neutral structured tool definitions.
+
+        RFC-0006: neutral structured definitions 与 ToolRegistry 运行时注入同步
+
+        ToolSearch 会把 deferred tools 注入到 ToolRegistry；这里在每轮模型调用前
+        将新增 eager tools / sub-agent 代理补齐到执行器缓存中，确保下一轮 LLM
+        可以立即看到新可用的 neutral structured definitions。
+        """
+
         if not self.use_structured_tool_calls:
             return []
 
-        eager_tools = self._tool_registry.compute_eager_tools()
-        if self.tool_call_mode == "openai":
-            return build_openai_tool_payload(
-                eager_tools=eager_tools,
-                sub_agents=self.subagent_manager.sub_agents,
-            )
-        if self.tool_call_mode == "anthropic":
-            return build_anthropic_tool_payload(
-                eager_tools=eager_tools,
-                sub_agents=self.subagent_manager.sub_agents,
-            )
-        return []
+        with self._tool_registry_lock:
+            definition_names = {definition["name"] for definition in self.structured_tool_definitions}
+
+            # 1. 同步 ToolRegistry 中当前所有 eager tools（含 ToolSearch 注入结果）。
+            for tool in self._tool_registry.compute_eager_tools():
+                if tool.name in definition_names:
+                    continue
+                self.structured_tool_definitions.append(
+                    tool.to_structured_definition(
+                        description=self._structured_tool_description(tool),
+                    ),
+                )
+                definition_names.add(tool.name)
+
+            # 2. 同步动态新增的 sub-agent 代理定义。
+            for sub_agent_name, sub_agent_config in self.subagent_manager.sub_agents.items():
+                sub_agent_tool_name = build_sub_agent_tool_name(sub_agent_name)
+                if sub_agent_tool_name in definition_names:
+                    continue
+                self.structured_tool_definitions.append(
+                    self._build_sub_agent_tool_definition(sub_agent_name, sub_agent_config),
+                )
+                definition_names.add(sub_agent_tool_name)
+
+            return deepcopy(self.structured_tool_definitions)
+
+    @property
+    def structured_tool_payload(self) -> list[StructuredToolDefinition]:
+        """Return a snapshot of neutral structured tool definitions."""
+        return self._snapshot_structured_tool_definitions()
 
     def _wait_for_messages(self) -> bool:
         """Enter idle wait until new messages arrive or stop signal is received.
@@ -508,14 +559,14 @@ class Executor:
 
                 tools_payload = None
                 if self.use_structured_tool_calls:
-                    # RFC-0005: 每轮从当前 tool source 派生 payload，以当前状态为准
-                    tools_payload = self.structured_tool_payload
+                    # 1. RFC-0006: 每轮调用前同步 ToolRegistry 注入结果，再快照 neutral definitions。
+                    tools_payload = self._snapshot_structured_tool_definitions()
 
                 # Count current prompt tokens (including tool definitions if present)
 
                 current_prompt_tokens = self.token_counter.count_tokens(
                     messages,
-                    tools=cast(list[dict[str, Any]], tools_payload),
+                    tools=tools_payload,
                 )
 
                 force_stop_reason = AgentStopReason.SUCCESS
@@ -1313,6 +1364,62 @@ class Executor:
             f"✅ Executor cleanup completed for agent '{self.agent_name}'",
         )
 
+    @staticmethod
+    def _structured_tool_description(tool: Tool) -> str:
+        """Return the description exposed to structured tool-calling models."""
+
+        return tool.get_structured_description()
+
+    @staticmethod
+    def _build_sub_agent_tool_definition(
+        name: str,
+        agent_config: AgentConfig,
+    ) -> StructuredToolDefinition:
+        """Build the neutral structured definition for a sub-agent proxy.
+
+        RFC-0006: 中性 Structured Tool Definitions
+
+        SubAgent 在 structured 模式下与普通 Tool 共享统一的 neutral definition
+        契约，provider-specific schema 继续延迟到 LLMCaller 请求边界生成。
+        """
+
+        return build_structured_tool_definition(
+            name=build_sub_agent_tool_name(name),
+            description=agent_config.description or f"Delegate work to sub-agent '{name}'.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Task or question for the sub-agent.",
+                    },
+                },
+                "required": ["message"],
+            },
+            kind="sub_agent",
+        )
+
+    def add_tool(self, tool: Tool) -> None:
+        """Add a tool to the executor.
+
+        Args:
+            tool: Tool instance to add
+        """
+        if tool.defer_loading:
+            raise ValueError(
+                "Runtime-added deferred tools are not supported. Register deferred tools during agent initialization instead.",
+            )
+
+        with self._tool_registry_lock:
+            # Keep registry and structured definition updates atomic for concurrent readers/writers
+            self._tool_registry.add_source("runtime", [tool])
+            if self.use_structured_tool_calls:
+                self.structured_tool_definitions.append(
+                    tool.to_structured_definition(
+                        description=self._structured_tool_description(tool),
+                    ),
+                )
+
     def add_sub_agent(self, name: str, agent_config: AgentConfig) -> None:
         """Add a sub-agent config.
 
@@ -1320,4 +1427,9 @@ class Executor:
             name: Name of the sub-agent
             agent_config: Config creates the agent
         """
+        with self._tool_registry_lock:
+            if self.use_structured_tool_calls:
+                self.structured_tool_definitions.append(
+                    self._build_sub_agent_tool_definition(name, agent_config),
+                )
         self.subagent_manager.add_sub_agent(name, agent_config)

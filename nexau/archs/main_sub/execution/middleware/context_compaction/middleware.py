@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -27,6 +27,7 @@ import openai
 
 from nexau.archs.llm.llm_aggregators.events import CompactionFinishedEvent, CompactionStartedEvent
 from nexau.archs.llm.llm_config import LLMConfig
+from nexau.archs.tool.tool import StructuredToolDefinitionLike
 
 from ...hooks import AfterModelHookInput, BeforeModelHookInput, HookResult, Middleware, ModelCallFn, ModelCallParams
 from ...llm_caller import LLMCaller
@@ -334,33 +335,22 @@ class ContextCompactionMiddleware(Middleware):
 
     @staticmethod
     def _normalize_tools_for_token_count(
-        tools: list[Any] | None,
-    ) -> list[dict[str, Any]] | None:
+        tools: Sequence[StructuredToolDefinitionLike] | None,
+    ) -> list[Mapping[str, object]] | None:
         """Convert tool payloads into dicts for token estimation when possible."""
         if not tools:
             return None
 
-        normalized: list[dict[str, Any]] = []
+        normalized: list[Mapping[str, object]] = []
         for tool in tools:
-            if isinstance(tool, dict):
-                normalized.append(cast(dict[str, Any], tool))
-                continue
-
-            model_dump = getattr(tool, "model_dump", None)
-            if callable(model_dump):
-                dumped = model_dump()
-                if isinstance(dumped, dict):
-                    normalized.append(cast(dict[str, Any], dumped))
-                    continue
-
-            return None
+            normalized.append(cast(Mapping[str, object], tool))
 
         return normalized
 
     def _estimate_tokens(
         self,
         messages: list[Message],
-        tools: list[Any] | None = None,
+        tools: Sequence[StructuredToolDefinitionLike] | None = None,
     ) -> int | None:
         """Estimate tokens for diagnostics; never raise from middleware paths."""
         normalized_tools = self._normalize_tools_for_token_count(tools)

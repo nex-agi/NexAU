@@ -1000,6 +1000,17 @@ class TestGeminiRestStreamAggregator:
         parts = result["candidates"][0]["content"]["parts"]
         assert any(p.get("text") == "OK" for p in parts)
 
+    def test_null_parts_chunks_are_ignored(self):
+        """Gemini streaming chunks with ``parts: null`` should be skipped safely."""
+        agg = GeminiRestStreamAggregator()
+        agg.consume({"candidates": [{"content": {"parts": None}}]})
+        agg.consume({"candidates": [{"content": None}]})
+        agg.consume({"candidates": [{"content": {"parts": [None, {"text": "Recovered"}]}}]})
+
+        result = agg.finalize()
+        parts = result["candidates"][0]["content"]["parts"]
+        assert any(p.get("text") == "Recovered" for p in parts)
+
 
 # ---------------------------------------------------------------------------
 # _iter_gemini_sse_chunks unit tests
@@ -1292,6 +1303,21 @@ class TestCallLLMWithGeminiRestStreaming:
         call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config)
 
         assert mock_post.call_args.kwargs["stream"] is True
+
+    @patch("nexau.archs.main_sub.execution.llm_caller.requests.post")
+    def test_streaming_ignores_null_parts_chunks(self, mock_post, gemini_llm_config):
+        """Gemini SSE chunks with ``content.parts = null`` should not crash the stream path."""
+        mock_post.return_value = _make_sse_response(
+            [
+                {"candidates": [{"content": {"parts": None}}]},
+                {"candidates": [{"content": {"parts": [{"text": "Recovered"}]}}]},
+            ]
+        )
+
+        kwargs = {"messages": [{"role": "user", "content": "Hi"}], "stream": True}
+        result = call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config)
+
+        assert result.content == "Recovered"
 
 
 class TestGeminiRestEventAggregator:

@@ -56,7 +56,7 @@ Refer to `references/agent-yaml-reference.md` for the complete field reference. 
 - Use `${env.VAR_NAME}` for environment variable substitution (LLM keys, sandbox paths)
 - Set `system_prompt_type: jinja` when using template variables like `{{ date }}`
 - Set `system_prompt_type: string` for plain text prompts
-- Choose `tool_call_mode: openai` for OpenAI-compatible APIs
+- Choose `tool_call_mode: structured` for provider-native structured tool calling
 - Reference tool YAMLs with relative paths: `./tools/tool.tool.yaml`
 - Reference system prompt with relative path: `./systemprompt.md`
 

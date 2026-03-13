@@ -112,17 +112,9 @@ class TestStructuredAsSkillIntegration:
             assert [tool.name for tool in agent.config.tools].count("LoadSkill") == 1
             assert "brief_search" in agent.skill_registry
 
-            if tool_call_mode == "openai":
-                payload_by_name = {spec["function"]["name"]: spec for spec in cast(list[dict[str, Any]], agent.tool_call_payload)}
-                assert (
-                    payload_by_name["brief_search"]["function"]["description"]
-                    == "BRIEF SKILL DESCRIPTION: Search internal knowledge sources."
-                )
-                assert payload_by_name["brief_search"]["function"]["parameters"]["properties"]["query"]["type"] == "string"
-            else:
-                payload_by_name = {spec["name"]: spec for spec in cast(list[dict[str, Any]], agent.tool_call_payload)}
-                assert payload_by_name["brief_search"]["description"] == "BRIEF SKILL DESCRIPTION: Search internal knowledge sources."
-                assert payload_by_name["brief_search"]["input_schema"]["properties"]["query"]["type"] == "string"
+            payload_by_name = {spec["name"]: spec for spec in cast(list[dict[str, Any]], agent.tool_call_payload)}
+            assert payload_by_name["brief_search"]["description"] == "BRIEF SKILL DESCRIPTION: Search internal knowledge sources."
+            assert payload_by_name["brief_search"]["input_schema"]["properties"]["query"]["type"] == "string"
 
             skill_result = load_skill(
                 "brief_search",

@@ -155,6 +155,8 @@ class AnthropicEventAggregator(Aggregator[RawMessageStreamEvent, None]):
 
         match event.delta:
             case TextDelta(text=text):
+                if not text:
+                    return
                 self._on_event(
                     TextMessageContentEvent(
                         message_id=self._message_id,
@@ -163,6 +165,8 @@ class AnthropicEventAggregator(Aggregator[RawMessageStreamEvent, None]):
                     )
                 )
             case InputJSONDelta(partial_json=fragment):
+                if not fragment:
+                    return
                 tool_id = self._tool_ids.get(idx, "")
                 if not tool_id:
                     _logger.warning("Received input_json_delta for unknown tool at index %d", idx)
@@ -175,6 +179,8 @@ class AnthropicEventAggregator(Aggregator[RawMessageStreamEvent, None]):
                     )
                 )
             case ThinkingDelta(thinking=thinking):
+                if not thinking:
+                    return
                 thinking_id = self._thinking_ids.get(idx)
                 if not thinking_id:
                     _logger.warning("Received thinking_delta for unknown thinking block at index %d", idx)

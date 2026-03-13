@@ -73,7 +73,7 @@ You can use Amap Maps tools to:
 
 When using map tools, always provide clear and helpful information to users.
 Explain what you're doing and provide context for the results.""",
-            tool_call_mode="openai",
+            tool_call_mode="structured",
             mcp_servers=mcp_servers,
             llm_config=llm_config,
         )

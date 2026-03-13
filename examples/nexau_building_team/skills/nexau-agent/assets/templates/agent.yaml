@@ -8,7 +8,7 @@ description: >-                      # TODO: Replace with agent description
 max_context_tokens: 200000
 system_prompt: ./systemprompt.md
 system_prompt_type: jinja            # Use "string" if no template variables needed
-tool_call_mode: openai
+tool_call_mode: structured
 max_iterations: 80                   # Adjust based on complexity
 
 llm_config:

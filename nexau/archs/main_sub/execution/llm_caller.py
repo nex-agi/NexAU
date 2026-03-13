@@ -12,30 +12,45 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Simple LLM API caller component."""
+"""LLM request assembly and provider-boundary adapters.
+
+RFC-0006: structured tool calling 的 provider 延迟适配
+
+本模块在真正发送请求前，根据 ``llm_config.api_type`` 把 neutral structured
+tool definitions 适配成 OpenAI / Anthropic / Gemini 所需的 provider schema。
+"""
 
 import json
 import logging
 import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, Literal, cast
 
 import openai
 import requests
-from anthropic.types import ToolParam
 from openai import Stream
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
-from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 
 from nexau.archs.llm.llm_config import LLMConfig
+from nexau.archs.tool.tool import (
+    StructuredToolDefinitionLike,
+    normalize_structured_tool_definition,
+    structured_tool_definition_to_anthropic,
+    structured_tool_definition_to_openai,
+)
 from nexau.archs.tracer.context import TraceContext, get_current_span
 from nexau.archs.tracer.core import BaseTracer, SpanType
 from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
 from nexau.core.messages import Message, Role, ToolResultBlock, ToolUseBlock
 
 from ..agent_state import AgentState
-from ..tool_call_modes import STRUCTURED_TOOL_CALL_MODES, normalize_tool_call_mode
+from ..tool_call_modes import (
+    STRUCTURED_TOOL_CALL_MODES,
+    StructuredProviderTarget,
+    normalize_tool_call_mode,
+    resolve_structured_provider_target,
+)
 from .hooks import MiddlewareManager, ModelCallParams
 from .model_response import ModelResponse
 from .stop_reason import AgentStopReason
@@ -220,17 +235,19 @@ class LLMCaller:
         force_stop_reason: AgentStopReason | None = None,
         agent_state: AgentState | None = None,
         tool_call_mode: str = "xml",
-        tools: list[ChatCompletionToolParam] | list[ToolParam] | None = None,
+        tools: Sequence[StructuredToolDefinitionLike] | None = None,
         openai_client: Any | None = None,
         shutdown_event: threading.Event | None = None,
     ) -> ModelResponse | None:
         """Call LLM with the given messages and return normalized response.
 
+        RFC-0006: structured tool calling 的 provider 延迟适配
+
         Args:
             messages: List of conversation messages
             max_tokens: Maximum tokens for the response
-            tool_call_mode: Tool calling strategy ('xml', 'openai', or 'anthropic')
-            tools: Optional structured tool definitions for the selected mode
+            tool_call_mode: Tool calling strategy ('xml' or 'structured')
+            tools: Optional neutral structured tool definitions
 
         Returns:
             A normalized ModelResponse object containing content and tool calls
@@ -247,6 +264,14 @@ class LLMCaller:
 
         normalized_mode = normalize_tool_call_mode(tool_call_mode)
         use_structured_tools = normalized_mode in STRUCTURED_TOOL_CALL_MODES
+        structured_provider_target: StructuredProviderTarget | None = None
+        adapted_tools: list[Mapping[str, object]] | None = None
+        if use_structured_tools:
+            # 1. RFC-0006: structured provider 目标完全由 api_type 决定。
+            structured_provider_target = resolve_structured_provider_target(self.llm_config.api_type)
+
+            # 2. 仅在真正组装请求体时，把 neutral definitions 延迟转换为 provider schema。
+            adapted_tools = _adapt_structured_tools_for_provider(tools, structured_provider_target)
 
         # Prepare API parameters
         api_params = self.llm_config.to_openai_params()
@@ -254,13 +279,16 @@ class LLMCaller:
         if max_tokens is not None:
             api_params["max_tokens"] = max_tokens
 
-        if normalized_mode == "anthropic":
-            api_params["tools"] = tools
+        if adapted_tools and structured_provider_target == "anthropic":
+            api_params["tools"] = adapted_tools
             api_params.setdefault("tool_choice", {"type": "auto"})
 
-        if tools and normalized_mode == "openai":
-            api_params["tools"] = tools
+        if adapted_tools and structured_provider_target == "openai":
+            api_params["tools"] = adapted_tools
             api_params.setdefault("tool_choice", "auto")
+
+        if adapted_tools and structured_provider_target == "gemini":
+            api_params["tools"] = adapted_tools
 
         # Add XML stop sequences to prevent malformed XML
         if not use_structured_tools:
@@ -357,20 +385,21 @@ class LLMCaller:
                 if force_stop_reason and force_stop_reason != AgentStopReason.SUCCESS:
                     return None
                 kwargs = dict(params.api_params)
-                tool_image_policy: Literal["inject_user_message", "embed_in_tool_message"] = (
-                    "embed_in_tool_message" if self.llm_config.api_type == "openai_responses" else "inject_user_message"
-                )
                 logger.debug(
                     "🔍 [HISTORY-DEBUG] LLM call: %d Message objects, roles=%s",
                     len(params.messages),
                     [m.role.value for m in params.messages],
                 )
-                kwargs["messages"] = messages_to_legacy_openai_chat(params.messages, tool_image_policy=tool_image_policy)
-                logger.debug(
-                    "🔍 [HISTORY-DEBUG] After legacy conversion: %d dicts, roles=%s",
-                    len(kwargs["messages"]),
-                    [m.get("role") for m in kwargs["messages"]],
-                )
+                if self.llm_config.api_type in {"openai_chat_completion", "openai_responses"}:
+                    tool_image_policy: Literal["inject_user_message", "embed_in_tool_message"] = (
+                        "embed_in_tool_message" if self.llm_config.api_type == "openai_responses" else "inject_user_message"
+                    )
+                    kwargs["messages"] = messages_to_legacy_openai_chat(params.messages, tool_image_policy=tool_image_policy)
+                    logger.debug(
+                        "🔍 [HISTORY-DEBUG] After legacy conversion: %d dicts, roles=%s",
+                        len(kwargs["messages"]),
+                        [m.get("role") for m in kwargs["messages"]],
+                    )
                 client = params.openai_client if params.openai_client is not None else self.openai_client
                 response_content = call_llm_with_different_client(
                     client,
@@ -485,6 +514,36 @@ def openai_to_anthropic_message(messages: list[dict[str, Any]]) -> tuple[list[di
     return system_messages, user_messages
 
 
+def _adapt_structured_tools_for_provider(
+    tools: Sequence[StructuredToolDefinitionLike] | None,
+    provider_target: StructuredProviderTarget,
+) -> list[Mapping[str, object]] | None:
+    """Adapt neutral structured tools for the selected provider.
+
+    RFC-0006: Provider 延迟适配
+
+    输入保持 neutral / compatibility definition，输出在请求边界收敛到目标
+    provider 所需 schema；Gemini 路径继续保留 neutral definition 并走原生 adapter。
+    """
+
+    if not tools:
+        return None
+
+    adapted_tools: list[Mapping[str, object]] = []
+    for tool in tools:
+        normalized = normalize_structured_tool_definition(tool)
+        if provider_target == "openai":
+            adapted_tools.append(structured_tool_definition_to_openai(normalized))
+        elif provider_target == "anthropic":
+            adapted_tools.append(structured_tool_definition_to_anthropic(normalized))
+        elif provider_target == "gemini":
+            adapted_tools.append(normalized)
+        else:  # pragma: no cover - guarded by provider target resolution
+            raise ValueError(f"Unsupported structured provider target: {provider_target}")
+
+    return adapted_tools
+
+
 def _strip_responses_api_artifacts(messages: list[Any]) -> list[Any]:
     """Remove Responses API-only artifacts from generic chat messages."""
 
@@ -514,7 +573,6 @@ def call_llm_with_anthropic_chat_completion(
     cache_control_ttl: str | None = None,
 ) -> ModelResponse:
     """Call Anthropic chat completion with the given messages and return response content."""
-    messages = _strip_responses_api_artifacts(kwargs.get("messages", []))
     stream_requested = bool(kwargs.pop("stream", False))
 
     # Check if tracing is active (there's a current span and we have a tracer)
@@ -545,9 +603,18 @@ def call_llm_with_anthropic_chat_completion(
             if isinstance(content, list) and content:
                 content[0]["cache_control"] = _build_cache_control()
 
-    def llm_call(messages: list[dict[str, Any]]):
+    def _build_anthropic_messages() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if type(model_call_params) is ModelCallParams:
+            from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
+
+            return AnthropicMessagesAdapter().to_vendor_format(model_call_params.messages)
+
+        legacy_messages = _strip_responses_api_artifacts(kwargs.get("messages", []))
+        return openai_to_anthropic_message(cast(list[dict[str, Any]], legacy_messages))
+
+    def llm_call() -> Any:
         # 组装 Anthropic 参数
-        system_messages, user_messages = openai_to_anthropic_message(messages)
+        system_messages, user_messages = _build_anthropic_messages()
         _apply_cache_control(system_messages, user_messages)
 
         new_kwargs = kwargs.copy()
@@ -568,11 +635,11 @@ def call_llm_with_anthropic_chat_completion(
             return resp
 
     if not stream_requested:
-        response = llm_call(messages)
+        response = llm_call()
         return ModelResponse.from_anthropic_message(response)
 
-    def llm_stream_call(messages: list[dict[str, Any]]) -> tuple[dict[str, Any], str | None]:
-        system_messages, user_messages = openai_to_anthropic_message(messages)
+    def llm_stream_call() -> tuple[dict[str, Any], str | None]:
+        system_messages, user_messages = _build_anthropic_messages()
         _apply_cache_control(system_messages, user_messages)
 
         new_kwargs: dict[str, Any] = kwargs.copy()
@@ -626,7 +693,7 @@ def call_llm_with_anthropic_chat_completion(
             message_payload = aggregator.finalize()
             return message_payload, aggregator.model_name
 
-    response_payload, _ = llm_stream_call(messages)
+    response_payload, _ = llm_stream_call()
 
     return ModelResponse.from_anthropic_message(response_payload)
 
@@ -1891,29 +1958,49 @@ class GeminiRestStreamAggregator:
         RFC-0003: 处理单个 SSE 数据块
         """
         # 1. 提取 candidates
-        candidates = chunk_json.get("candidates", [])
+        candidates_raw = chunk_json.get("candidates")
+        if not isinstance(candidates_raw, Sequence) or isinstance(candidates_raw, str | bytes | bytearray):
+            return
+
+        candidates: list[Mapping[str, object]] = []
+        for candidate_item in cast(Sequence[object], candidates_raw):
+            if isinstance(candidate_item, Mapping):
+                candidates.append(cast(Mapping[str, object], candidate_item))
         if not candidates:
             return
 
         candidate = candidates[0]
-        content_obj = candidate.get("content", {})
-        parts = content_obj.get("parts", [])
+        content_raw = candidate.get("content")
+        content_obj: Mapping[str, object] = cast(Mapping[str, object], content_raw) if isinstance(content_raw, Mapping) else {}
+
+        parts_raw = content_obj.get("parts")
+        if not isinstance(parts_raw, Sequence) or isinstance(parts_raw, str | bytes | bytearray):
+            parts: list[Mapping[str, object]] = []
+        else:
+            parts = []
+            for part_item in cast(Sequence[object], parts_raw):
+                if isinstance(part_item, Mapping):
+                    parts.append(cast(Mapping[str, object], part_item))
 
         # 2. 遍历 parts，分类聚合
         for part in parts:
             if part.get("thought"):
-                text = part.get("text", "")
-                if text:
+                text = part.get("text")
+                if isinstance(text, str) and text:
                     self._reasoning_parts.append(text)
 
             if "thoughtSignature" in part:
-                self._thought_signature = part["thoughtSignature"]
+                thought_signature = part["thoughtSignature"]
+                if isinstance(thought_signature, str):
+                    self._thought_signature = thought_signature
 
             if "text" in part and not part.get("thought"):
-                self._content_parts.append(part["text"])
+                content_text = part.get("text")
+                if isinstance(content_text, str):
+                    self._content_parts.append(content_text)
 
             if "functionCall" in part:
-                self._tool_calls.append(part)
+                self._tool_calls.append(dict(part))
 
         # 3. 提取 usage metadata（通常在最后一个 chunk）
         usage_meta = chunk_json.get("usageMetadata")
@@ -2028,138 +2115,50 @@ def _gemini_sanitize_parameters(params: dict[str, object]) -> dict[str, object]:
     return sanitized
 
 
-def convert_tools_to_gemini(tools: list[Any]) -> list[dict[str, Any]]:
-    """Convert OpenAI tool definitions to Gemini function declarations."""
+def convert_tools_to_gemini(
+    tools: Sequence[StructuredToolDefinitionLike],
+) -> list[dict[str, Any]]:
+    """Convert structured tool definitions to Gemini function declarations.
+
+    RFC-0006: Gemini 原生 structured tool adapter
+
+    Gemini 直接从 neutral structured definition 生成
+    ``functionDeclarations``，不再以 OpenAI schema 作为主中转形状。
+    """
+
     gemini_tools: list[dict[str, Any]] = []
     for tool in tools:
-        tool_dict = cast(dict[str, Any], tool)
-        if tool_dict.get("type") == "function":
-            func = cast(dict[str, Any], tool_dict.get("function", {}))
-            raw_params = func.get("parameters", {"type": "object", "properties": {}})
-            gemini_tools.append(
-                {
-                    "name": func.get("name"),
-                    "description": func.get("description", ""),
-                    "parameters": _gemini_sanitize_parameters(cast(dict[str, object], raw_params) if isinstance(raw_params, dict) else {}),
-                }
-            )
+        try:
+            normalized = normalize_structured_tool_definition(tool)
+        except ValueError:
+            if tool.get("type") != "function":
+                continue
+            raise
+
+        gemini_tools.append(
+            {
+                "name": normalized["name"],
+                "description": normalized["description"],
+                "parameters": _gemini_sanitize_parameters(
+                    cast(dict[str, object], normalized["input_schema"]),
+                ),
+            }
+        )
     return gemini_tools
 
 
 def openai_to_gemini_rest_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    """Convert OpenAI-style messages to Gemini REST API format."""
-    gemini_contents: list[dict[str, Any]] = []
-    system_instruction: dict[str, Any] | None = None
-    # Track function names from last assistant tool_calls for filling functionResponse.name (tool messages have no name)
-    # Use ID-based mapping for robust matching (positional matching breaks when synthetic tool results are injected)
-    last_tool_call_id_to_name: dict[str, str] = {}
-    last_model_function_names: list[str] = []
-    tool_result_index = 0
+    """Convert legacy OpenAI-style messages to Gemini REST payloads.
 
-    for msg in messages:
-        role = msg.get("role")
-        content = msg.get("content", "")
-        tool_calls = msg.get("tool_calls")
+    RFC-0006: Gemini legacy compatibility wrapper
 
-        if role == "system":
-            system_instruction = {"parts": [{"text": content}]}
-            continue
+    旧的 OpenAI-style message 入口保留为兼容包装，但内部委托到
+    ``GeminiMessagesAdapter`` 的原生 UMP -> Gemini 转换链路。
+    """
 
-        parts: list[dict[str, Any]] = []
-        if content:
-            parts.append({"text": content})
+    from nexau.core.adapters.gemini_messages import gemini_payload_from_legacy_openai_chat
 
-        if role == "assistant":
-            if tool_calls:
-                tool_calls_list = cast(list[dict[str, Any]], tool_calls)
-                last_model_function_names = [str(cast(dict[str, Any], tc.get("function", {})).get("name", "")) for tc in tool_calls_list]
-                tool_result_index = 0
-                # Build ID-based mapping for robust matching (handles synthetic/reordered tool results)
-                for tc in tool_calls_list:
-                    tc_id = str(tc.get("id", ""))
-                    tc_name = str(cast(dict[str, Any], tc.get("function", {})).get("name", ""))
-                    if tc_id and tc_name:
-                        last_tool_call_id_to_name[tc_id] = tc_name
-                logger.debug(
-                    "🔍 [DEBUG] Assistant tool_calls: ids=%r, names=%r, id_map=%r",
-                    [tc.get("id") for tc in tool_calls_list],
-                    last_model_function_names,
-                    last_tool_call_id_to_name,
-                )
-                # Gemini 3 Requirement: The first functionCall in a turn needs the thought_signature
-                # Check for top-level signature or OpenAI-compatible nested signature
-                thought_sig: str | None = cast(str | None, msg.get("thought_signature"))
-                if not thought_sig:
-                    # Fallback: check first tool_call for nested extra_content.google.thought_signature
-                    first_tc: dict[str, Any] = tool_calls_list[0] if tool_calls_list else {}
-                    extra_content = cast(dict[str, Any], first_tc.get("extra_content", {}))
-                    google_content = cast(dict[str, Any], extra_content.get("google", {}))
-                    thought_sig = cast(str | None, google_content.get("thought_signature"))
-
-                for i, tc in enumerate(tool_calls_list):
-                    func = cast(dict[str, Any], tc.get("function", {}))
-                    args: dict[str, Any] | str = func.get("arguments", "{}")
-                    if isinstance(args, str):
-                        try:
-                            args = cast(dict[str, Any], json.loads(args))
-                        except json.JSONDecodeError:
-                            args = {}
-
-                    fc_part: dict[str, Any] = {"functionCall": {"name": func.get("name"), "args": args}}
-                    if i == 0 and thought_sig:
-                        fc_part["thoughtSignature"] = thought_sig
-                    parts.append(fc_part)
-            elif parts and msg.get("thought_signature"):
-                # Handle cases where thought_signature is present but no tool_calls (rare for Gemini function calling flow)
-                parts[-1]["thoughtSignature"] = msg.get("thought_signature")
-
-            gemini_contents.append({"role": "model", "parts": parts})
-
-        elif role == "user":
-            gemini_contents.append({"role": "user", "parts": parts})
-
-        elif role == "tool":
-            # Fill name from last assistant's tool_calls.
-            # Resolution order: exact ID match → prefix ID match → positional → msg["name"]
-            tool_call_id = str(msg.get("tool_call_id", ""))
-            func_name: str | None = last_tool_call_id_to_name.get(tool_call_id) if tool_call_id else None
-            # 前缀匹配：框架可能在 tool_call_id 后追加 UUID（如 "tool_call" → "tool_call_a45a..."）
-            if func_name is None and tool_call_id:
-                for known_id, known_name in last_tool_call_id_to_name.items():
-                    if tool_call_id.startswith(known_id):
-                        func_name = known_name
-                        break
-            if func_name is None and tool_result_index < len(last_model_function_names):
-                func_name = last_model_function_names[tool_result_index] or None
-            tool_result_index += 1
-            if func_name is None:
-                func_name = msg.get("name")
-                if func_name is None:
-                    logger.error(
-                        "🔍 [DEBUG] Cannot resolve function name for tool result. "
-                        "tool_call_id=%r, id_map_keys=%r, "
-                        "positional_names=%r, tool_result_index=%d, "
-                        "msg_keys=%r, msg_name=%r, full_msg=%r",
-                        tool_call_id,
-                        list(last_tool_call_id_to_name.keys()),
-                        last_model_function_names,
-                        tool_result_index - 1,
-                        list(msg.keys()),
-                        msg.get("name"),
-                        {k: (v if k != "content" else f"<{len(str(v))} chars>") for k, v in msg.items()},
-                    )
-                    raise ValueError("Function name is required for tool result messages")
-            resp_part = {"functionResponse": {"name": func_name, "response": {"result": content}}}
-            if gemini_contents and gemini_contents[-1]["role"] == "user":
-                # Check if it's already a tool response block
-                if any("functionResponse" in p for p in gemini_contents[-1]["parts"]):
-                    gemini_contents[-1]["parts"].append(resp_part)
-                else:
-                    gemini_contents.append({"role": "user", "parts": [resp_part]})
-            else:
-                gemini_contents.append({"role": "user", "parts": [resp_part]})
-
-    return gemini_contents, system_instruction
+    return gemini_payload_from_legacy_openai_chat(messages)
 
 
 def call_llm_with_gemini_rest(
@@ -2170,7 +2169,13 @@ def call_llm_with_gemini_rest(
     llm_config: LLMConfig | None = None,
     tracer: BaseTracer | None = None,
 ) -> ModelResponse:
-    """Call Gemini API directly via REST."""
+    """Call Gemini API directly via REST.
+
+    RFC-0006: Gemini 原生 structured tool adapter
+
+    Gemini 请求体直接从统一消息表示与 neutral structured tool definitions
+    生成，不再把 OpenAI schema 作为 structured tool calling 的主中转格式。
+    """
     from nexau.core.messages import ImageBlock
 
     # TODO: Support image input for Gemini REST API
@@ -2187,7 +2192,12 @@ def call_llm_with_gemini_rest(
     tools = kwargs.get("tools")
 
     # Convert messages
-    contents, system_instruction = openai_to_gemini_rest_messages(messages)
+    if model_call_params is not None:
+        from nexau.core.adapters.gemini_messages import GeminiMessagesAdapter
+
+        contents, system_instruction = GeminiMessagesAdapter().to_vendor_format(model_call_params.messages)
+    else:
+        contents, system_instruction = openai_to_gemini_rest_messages(cast(list[dict[str, Any]], messages))
 
     # Base URL handling
     base_url = llm_config.base_url.rstrip("/") if llm_config.base_url else ""

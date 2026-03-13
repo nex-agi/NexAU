@@ -378,6 +378,56 @@ class TestThinkingFlow:
         assert isinstance(think_end, ThinkingTextMessageEndEvent)
         assert think_end.thinking_message_id == think_start.thinking_message_id
 
+    def test_empty_thinking_delta_is_ignored(self):
+        """Empty thinking deltas should not emit invalid content events."""
+        events: list[object] = []
+        agg = AnthropicEventAggregator(on_event=events.append, run_id="run_think_empty")
+
+        agg.aggregate(_make_message_start("msg_think_empty"))
+        agg.aggregate(_make_thinking_block_start(0))
+        agg.aggregate(_make_thinking_delta(0, ""))
+        agg.aggregate(_make_thinking_delta(0, "Step 1"))
+        agg.aggregate(_make_block_stop(0))
+        agg.aggregate(_make_message_stop())
+
+        thinking_events = [e for e in events if isinstance(e, ThinkingTextMessageContentEvent)]
+        assert len(thinking_events) == 1
+        assert thinking_events[0].delta == "Step 1"
+
+
+class TestEmptyDeltaIgnored:
+    """Tests that Anthropic empty deltas do not emit invalid AG-UI events."""
+
+    def test_empty_text_delta_is_ignored(self):
+        events: list[object] = []
+        agg = AnthropicEventAggregator(on_event=events.append, run_id="run_text_empty")
+
+        agg.aggregate(_make_message_start("msg_text_empty"))
+        agg.aggregate(_make_text_block_start(0))
+        agg.aggregate(_make_text_delta(0, ""))
+        agg.aggregate(_make_text_delta(0, "Hello"))
+        agg.aggregate(_make_block_stop(0))
+        agg.aggregate(_make_message_stop())
+
+        text_events = [e for e in events if isinstance(e, TextMessageContentEvent)]
+        assert len(text_events) == 1
+        assert text_events[0].delta == "Hello"
+
+    def test_empty_input_json_delta_is_ignored(self):
+        events: list[object] = []
+        agg = AnthropicEventAggregator(on_event=events.append, run_id="run_tool_empty")
+
+        agg.aggregate(_make_message_start("msg_tool_empty"))
+        agg.aggregate(_make_tool_use_block_start(0, "toolu_empty", "read_file"))
+        agg.aggregate(_make_input_json_delta(0, ""))
+        agg.aggregate(_make_input_json_delta(0, '{"path": "main.py"}'))
+        agg.aggregate(_make_block_stop(0))
+        agg.aggregate(_make_message_stop())
+
+        tool_arg_events = [e for e in events if isinstance(e, ToolCallArgsEvent)]
+        assert len(tool_arg_events) == 1
+        assert tool_arg_events[0].delta == '{"path": "main.py"}'
+
 
 class TestMixedContentBlocks:
     """Tests for responses with thinking + text + tool_use in a single message."""
@@ -497,18 +547,18 @@ class TestTimestamps:
 class TestEdgeCases:
     """Edge-case scenarios."""
 
-    def test_empty_text_delta_raises_validation_error(self):
-        """An empty text delta triggers a Pydantic validation error because delta requires min_length=1."""
-        from pydantic import ValidationError
-
+    def test_empty_text_delta_is_ignored(self):
+        """Empty text deltas should be skipped to avoid invalid AG-UI events."""
         events: list[object] = []
         agg = AnthropicEventAggregator(on_event=events.append, run_id="run_empty")
 
         agg.aggregate(_make_message_start("msg_empty"))
         agg.aggregate(_make_text_block_start(0))
 
-        with pytest.raises(ValidationError, match="string_too_short"):
-            agg.aggregate(_make_text_delta(0, ""))
+        agg.aggregate(_make_text_delta(0, ""))
+
+        content_events = [e for e in events if isinstance(e, TextMessageContentEvent)]
+        assert content_events == []
 
     def test_unknown_block_type_ignored_on_stop(self):
         """A content_block_stop for an unknown block type should not crash."""

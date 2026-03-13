@@ -18,8 +18,10 @@ Unit tests for AgentConfig and ExecutionConfig classes, focusing on skill-relate
 
 import pytest
 
+import nexau.archs.main_sub.tool_call_modes as tool_call_modes
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.config import AgentConfig, ExecutionConfig
+from nexau.archs.main_sub.tool_call_modes import normalize_tool_call_mode, resolve_structured_provider_target
 from nexau.archs.main_sub.skill import Skill
 from nexau.archs.tool.tool import Tool
 from nexau.archs.tracer.composite import CompositeTracer
@@ -72,18 +74,48 @@ class TestExecutionConfig:
         assert config.max_running_subagents == 3
         assert config.retry_attempts == 3
         assert config.timeout == 180
-        assert config.tool_call_mode == "openai"
+        assert config.tool_call_mode == "structured"
 
     def test_execution_config_supports_anthropic_mode(self):
-        """ExecutionConfig should normalize anthropic mode."""
+        """ExecutionConfig should normalize legacy structured aliases."""
         config = ExecutionConfig(tool_call_mode="anthropic")
 
-        assert config.tool_call_mode == "anthropic"
+        assert config.tool_call_mode == "structured"
+
+    def test_normalize_tool_call_mode_logs_legacy_alias_warning_once(self, caplog):
+        """Legacy structured aliases should emit a one-time compatibility warning."""
+
+        tool_call_modes._warned_legacy_tool_call_mode_aliases.clear()
+        caplog.clear()
+
+        with caplog.at_level("WARNING"):
+            assert normalize_tool_call_mode("openai") == "structured"
+            assert normalize_tool_call_mode("openai") == "structured"
+
+        warning_messages = [record.message for record in caplog.records if "[RFC-0006]" in record.message]
+        assert len(warning_messages) == 1
+        assert "legacy compatibility alias" in warning_messages[0]
 
     def test_execution_config_invalid_tool_call_mode(self):
         """Invalid tool_call_mode values should raise ValueError."""
         with pytest.raises(ValueError):
             ExecutionConfig(tool_call_mode="json")
+
+    @pytest.mark.parametrize(
+        ("api_type", "expected_provider"),
+        [
+            ("openai_chat_completion", "openai"),
+            ("openai_responses", "openai"),
+            ("anthropic_chat_completion", "anthropic"),
+            ("gemini_rest", "gemini"),
+        ],
+    )
+    def test_resolve_structured_provider_target(self, api_type: str, expected_provider: str):
+        assert resolve_structured_provider_target(api_type) == expected_provider
+
+    def test_resolve_structured_provider_target_rejects_unknown_api_type(self):
+        with pytest.raises(ValueError, match="Structured tool calling is not supported"):
+            resolve_structured_provider_target("custom_provider")
 
 
 class TestAgentConfigSkills:

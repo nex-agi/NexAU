@@ -23,7 +23,7 @@ from nexau.core.messages import ImageBlock, Message, ReasoningBlock, TextBlock, 
 
 logger = logging.getLogger(__name__)
 
-TokenCounterFn = Callable[[Sequence[Message], list[dict[str, Any]] | None], int]
+TokenCounterFn = Callable[[Sequence[Message], Sequence[Mapping[str, object]] | None], int]
 
 _IMAGE_TOKEN_ESTIMATE: Final[int] = 85
 _MESSAGE_OVERHEAD_TOKENS: Final[int] = 3
@@ -115,7 +115,10 @@ class TokenCounter:
         def encode_text(text: str) -> int:
             return self._encode_with_tiktoken(text, encoding)
 
-        def tiktoken_message_counter(messages: Sequence[Message], tools: list[dict[str, Any]] | None = None) -> int:
+        def tiktoken_message_counter(
+            messages: Sequence[Message],
+            tools: Sequence[Mapping[str, object]] | None = None,
+        ) -> int:
             return self._count_tokens_with_text_encoder(messages, tools, encode_text)
 
         return tiktoken_message_counter
@@ -123,7 +126,10 @@ class TokenCounter:
     def _create_fallback_counter(self) -> TokenCounterFn:
         """Create fallback counter using character approximation."""
 
-        def fallback_message_counter(messages: Sequence[Message], tools: list[dict[str, Any]] | None = None) -> int:
+        def fallback_message_counter(
+            messages: Sequence[Message],
+            tools: Sequence[Mapping[str, object]] | None = None,
+        ) -> int:
             total = self._count_tokens_with_text_encoder(messages, tools, self._approximate_text_tokens)
             return max(total, 1)
 
@@ -173,7 +179,7 @@ class TokenCounter:
     def _count_tokens_with_text_encoder(
         self,
         messages: Sequence[Message],
-        tools: list[dict[str, Any]] | None,
+        tools: Sequence[Mapping[str, object]] | None,
         text_encoder: Callable[[str], int],
     ) -> int:
         total_tokens = 0
@@ -291,7 +297,7 @@ class TokenCounter:
     def count_tokens(
         self,
         messages: Sequence[Message],
-        tools: list[dict[str, Any]] | None = None,
+        tools: Sequence[Mapping[str, object]] | None = None,
     ) -> int:
         """Count total tokens in a list of UMP messages."""
         return self._counter(messages, tools)

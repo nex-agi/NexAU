@@ -580,7 +580,7 @@ class SlidingWindowCompaction:
         summary_api_type = (
             self.summary_llm_config.api_type if self.summary_llm_config is not None else (self.summary_api_type or "openai_chat_completion")
         )
-        tool_call_mode = "anthropic" if summary_api_type == "anthropic_chat_completion" else "openai"
+        tool_call_mode = "structured"
 
         try:
             model_response = llm_caller.call_llm(

@@ -34,7 +34,7 @@ system_prompt: ./systemprompt.md     # Path to system prompt file (relative to Y
 system_prompt_type: jinja            # "jinja" for template variables, "string" for plain text
 
 # Tool calling format
-tool_call_mode: openai               # "openai" | "xml" | "anthropic"
+tool_call_mode: structured           # "structured" | "xml"
 
 # LLM configuration
 llm_config:
@@ -44,7 +44,7 @@ llm_config:
   max_tokens: 16000                  # Max output tokens per response
   temperature: 0.7                   # Sampling temperature (0.0-1.0)
   stream: False                      # Enable streaming (True/False)
-  api_type: openai_chat_completion   # "openai_chat_completion" | "openai_responses" | "anthropic_chat_completion"
+  api_type: openai_chat_completion   # "openai_chat_completion" | "openai_responses" | "anthropic_chat_completion" | "gemini_rest"
 
 # Sandbox configuration
 sandbox_config:
@@ -91,9 +91,8 @@ tracers:
 
 | Value | Use With |
 |-------|----------|
-| `openai` | OpenAI-compatible APIs (GPT, Claude via proxy, local models) |
+| `structured` | Native structured tool calling; the actual provider format is selected by `api_type` |
 | `xml` | XML-based tool calling |
-| `anthropic` | Anthropic native API |
 
 ### `api_type`
 
@@ -102,6 +101,7 @@ tracers:
 | `openai_chat_completion` | Standard OpenAI Chat Completions API (default) |
 | `openai_responses` | OpenAI Responses API (for gpt-5-codex) |
 | `anthropic_chat_completion` | Anthropic Messages API |
+| `gemini_rest` | Gemini REST API |
 
 ### `temperature` Guidelines
 

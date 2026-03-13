@@ -767,7 +767,7 @@ class TestExecutionConfig:
 
     def test_execution_config_normalizes_tool_call_mode(self):
         cfg = ExecutionConfig(tool_call_mode="OPENAI")
-        assert cfg.tool_call_mode == "openai"
+        assert cfg.tool_call_mode == "structured"
 
     def test_execution_config_from_agent_config_copies_values(self):
         agent_cfg = AgentConfig(name="agent", max_iterations=5, max_context_tokens=10, max_running_subagents=1, retry_attempts=2, timeout=3)

@@ -608,6 +608,55 @@ class TestLLMCallerBasicCalls:
         assert "tool_choice" in call_args[1]
         assert "stop" not in call_args[1] or "</tool_use>" not in call_args[1].get("stop", [])
 
+    def test_legacy_tool_call_mode_alias_uses_provider_selected_by_api_type(
+        self,
+        mock_openai_client,
+        mock_llm_config,
+        agent_state,
+    ):
+        """Legacy aliases should normalize to structured and still follow ``api_type``."""
+
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message.tool_calls = []
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+        mock_openai_client.chat.completions.create.return_value = mock_response
+
+        mock_llm_config.api_type = "openai_chat_completion"
+        mock_llm_config.to_openai_params = Mock(return_value={"model": "gpt-4o-mini"})
+
+        caller = LLMCaller(openai_client=mock_openai_client, llm_config=mock_llm_config)
+
+        caller.call_llm(
+            [Message.user("Hello")],
+            max_tokens=50,
+            force_stop_reason=AgentStopReason.SUCCESS,
+            agent_state=agent_state,
+            tool_call_mode="anthropic",
+            tools=[
+                {
+                    "name": "simple_tool",
+                    "description": "A simple tool",
+                    "input_schema": {"properties": {}},
+                    "kind": "tool",
+                }
+            ],
+        )
+
+        call_args = mock_openai_client.chat.completions.create.call_args
+        assert call_args.kwargs["tools"] == [
+            {
+                "type": "function",
+                "function": {
+                    "name": "simple_tool",
+                    "description": "A simple tool",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        assert call_args.kwargs["tool_choice"] == "auto"
+
     def test_call_llm_anthropic_mode_not_supported(
         self,
         mock_openai_client,

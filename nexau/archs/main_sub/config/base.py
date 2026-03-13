@@ -74,7 +74,7 @@ class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
     max_context_tokens: int = Field(default=128000, ge=1)
     max_running_subagents: int = Field(default=5, ge=0)
     max_iterations: int = Field(default=100, ge=1)
-    tool_call_mode: str = "openai"
+    tool_call_mode: str = "structured"
     retry_attempts: int = Field(default=5, ge=0)
     timeout: int = Field(default=300, ge=1)
     tracers: list[Any] = Field(default_factory=list)

@@ -12,18 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tool implementation for the NexAU framework."""
+"""Tool implementation plus neutral structured-tool helpers.
+
+RFC-0006: 中性 Structured Tool Definitions
+
+在 structured tool calling 路径中，Tool/SubAgent 先统一归一化为中性
+structured definition，再由边界 adapter 延迟转换为 OpenAI / Anthropic /
+Gemini 所需的 provider schema。
+"""
 
 import asyncio
 import dataclasses
 import inspect
 import logging
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from pathlib import Path
 from types import UnionType
-from typing import Annotated, Any, Literal, Union, cast, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Literal, TypedDict, Union, cast, get_args, get_origin, get_type_hints
 
 import jsonschema
 import yaml
@@ -34,6 +41,148 @@ from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 _UNRESOLVED_ANNOTATION = object()
+
+
+StructuredToolKind = Literal["tool", "sub_agent"]
+
+
+class StructuredToolDefinition(TypedDict):
+    """Vendor-neutral structured tool definition used by the runtime."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    kind: StructuredToolKind
+
+
+StructuredToolDefinitionLike = StructuredToolDefinition | Mapping[str, object]
+
+
+def normalize_input_schema(input_schema: Mapping[str, object] | None) -> dict[str, Any]:
+    """Normalize a tool schema to an object-shaped JSON Schema."""
+
+    params: dict[str, Any] = deepcopy(dict(input_schema or {}))
+    if not params:
+        return {"type": "object", "properties": {}}
+    if "type" not in params:
+        return {"type": "object", "properties": params.get("properties", {})}
+    return params
+
+
+def build_structured_tool_definition(
+    *,
+    name: str,
+    description: str | None,
+    input_schema: Mapping[str, object] | None,
+    kind: StructuredToolKind = "tool",
+) -> StructuredToolDefinition:
+    """Build a vendor-neutral structured tool definition.
+
+    RFC-0006: 中性 Structured Tool Definitions
+
+    统一 Tool 与 SubAgent 在 structured 模式下的上游表示，避免在 Agent /
+    Executor 主状态中提前持有 vendor-specific schema。
+    """
+
+    return {
+        "name": name,
+        "description": description or "",
+        "input_schema": normalize_input_schema(input_schema),
+        "kind": kind,
+    }
+
+
+def normalize_structured_tool_definition(
+    tool_definition: StructuredToolDefinitionLike,
+) -> StructuredToolDefinition:
+    """Normalize a neutral or provider-specific tool definition.
+
+    RFC-0006: 中性 Structured Tool Definitions
+
+    接受中性 definition，以及 OpenAI / Anthropic 兼容形状，并统一收敛到
+    runtime 使用的 neutral structured definition。
+    """
+
+    if tool_definition.get("type") == "function":
+        function_raw = tool_definition.get("function", {})
+        function_block: Mapping[str, object] = cast(Mapping[str, object], function_raw) if isinstance(function_raw, Mapping) else {}
+        name = function_block.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError("OpenAI tool definition missing function.name")
+        description = function_block.get("description")
+        parameters = function_block.get("parameters")
+        parameters_mapping: Mapping[str, object] | None = (
+            cast(Mapping[str, object], parameters) if isinstance(parameters, Mapping) else None
+        )
+        kind_raw = tool_definition.get("kind", "tool")
+        openai_compatible_kind: StructuredToolKind = "sub_agent" if kind_raw == "sub_agent" else "tool"
+        return build_structured_tool_definition(
+            name=name,
+            description=str(description) if description is not None else "",
+            input_schema=parameters_mapping,
+            kind=openai_compatible_kind,
+        )
+
+    if "name" in tool_definition and "input_schema" in tool_definition:
+        name = tool_definition.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError("Structured tool definition missing name")
+        description = tool_definition.get("description")
+        input_schema = tool_definition.get("input_schema")
+        input_schema_mapping: Mapping[str, object] | None = (
+            cast(Mapping[str, object], input_schema) if isinstance(input_schema, Mapping) else None
+        )
+        kind_raw = tool_definition.get("kind", "tool")
+        neutral_kind: StructuredToolKind = "sub_agent" if kind_raw == "sub_agent" else "tool"
+        return build_structured_tool_definition(
+            name=name,
+            description=str(description) if description is not None else "",
+            input_schema=input_schema_mapping,
+            kind=neutral_kind,
+        )
+
+    raise ValueError(f"Unsupported structured tool definition: {tool_definition}")
+
+
+def structured_tool_definition_to_openai(
+    tool_definition: StructuredToolDefinitionLike,
+) -> ChatCompletionToolParam:
+    """Convert a neutral or compatible tool definition into OpenAI schema.
+
+    RFC-0006: Provider 延迟适配
+
+    OpenAI family schema 只在真正发请求前生成；上游继续传递 neutral
+    definition 以避免 provider 耦合泄漏到 runtime 主状态。
+    """
+
+    normalized = normalize_structured_tool_definition(tool_definition)
+    return {
+        "type": "function",
+        "function": {
+            "name": normalized["name"],
+            "description": normalized["description"],
+            "parameters": normalize_input_schema(normalized["input_schema"]),
+        },
+    }
+
+
+def structured_tool_definition_to_anthropic(
+    tool_definition: StructuredToolDefinitionLike,
+) -> ToolParam:
+    """Convert a neutral or compatible tool definition into Anthropic schema.
+
+    RFC-0006: Provider 延迟适配
+
+    Anthropic tool schema 仅在 provider 边界生成，保持 Agent / Executor 内部
+    仍以 neutral structured definition 作为唯一上游表示。
+    """
+
+    normalized = normalize_structured_tool_definition(tool_definition)
+    return {
+        "name": normalized["name"],
+        "description": normalized["description"],
+        "input_schema": normalize_input_schema(normalized["input_schema"]),
+    }
 
 
 class ToolYamlSchema(BaseModel):
@@ -413,39 +562,56 @@ class Tool:
             tool_str += f"\nSkill description: {self.skill_description}"
         return tool_str
 
+    def get_structured_description(self) -> str:
+        """Return the description exposed to structured tool-calling models."""
+
+        if self.as_skill:
+            if not self.skill_description:
+                raise ValueError(
+                    f"Tool {self.name} is marked as a skill but has no skill_description",
+                )
+            return self.skill_description
+        return self.description or ""
+
+    def to_structured_definition(
+        self,
+        *,
+        description: str | None = None,
+        kind: StructuredToolKind = "tool",
+    ) -> StructuredToolDefinition:
+        """Return the vendor-neutral structured tool definition.
+
+        RFC-0006: 中性 Structured Tool Definitions
+
+        structured 模式下，Tool 先产出 neutral definition；provider-specific
+        schema 在后续 LLM adapter 中按 ``api_type`` 再做延迟转换。
+        """
+
+        return build_structured_tool_definition(
+            name=self.name,
+            description=self.description if description is None else description,
+            input_schema=self.get_schema(),
+            kind=kind,
+        )
+
     def to_openai(self) -> ChatCompletionToolParam:
-        """Return OpenAI tool definition (function calling schema)."""
+        """Return the OpenAI-compatible function tool schema.
 
-        # Deep copy to avoid accidental mutation sharing across callers
-        params: dict[str, Any] = deepcopy(self.get_schema())
+        RFC-0006: Provider 延迟适配兼容包装
 
-        # OpenAI expects a top-level object schema for parameters
-        if not params:
-            params = {"type": "object", "properties": {}}
-        elif "type" not in params:
-            params = {"type": "object", "properties": params.get("properties", {})}
+        该方法保留为兼容入口，内部委托 neutral structured definition →
+        OpenAI adapter，而不是把 OpenAI schema 当作 runtime 主表示。
+        """
 
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description or "",
-                "parameters": params,
-            },
-        }
+        return structured_tool_definition_to_openai(self.to_structured_definition())
 
     def to_anthropic(self) -> ToolParam:
-        """Return Anthropic tool definition (Tools beta schema)."""
+        """Return the Anthropic-compatible tool schema.
 
-        # Deep copy to avoid accidental mutation sharing across callers
-        params: dict[str, Any] = deepcopy(self.get_schema())
-        if not params:
-            params = {"type": "object", "properties": {}}
-        elif "type" not in params:
-            params = {"type": "object", "properties": params.get("properties", {})}
+        RFC-0006: Provider 延迟适配兼容包装
 
-        return {
-            "name": self.name,
-            "description": self.description or "",
-            "input_schema": params,
-        }
+        该方法保留为兼容入口，内部委托 neutral structured definition →
+        Anthropic adapter，而不是在 Tool 层直接持有 Anthropic 主形状。
+        """
+
+        return structured_tool_definition_to_anthropic(self.to_structured_definition())

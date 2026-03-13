@@ -12,7 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Refactored Agent implementation for the NexAU framework."""
+"""Agent container and runtime wiring for NexAU.
+
+RFC-0006: Agent 层持有 neutral structured tool definitions
+
+Agent 在 structured 模式下负责把 Tool / SubAgent 归一化为 neutral
+structured definitions；真正的 provider-specific payload 由 LLMCaller 在边界
+按 ``llm_config.api_type`` 延迟适配。
+"""
 
 import asyncio
 import inspect
@@ -22,7 +29,7 @@ import threading
 import traceback
 import uuid
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -33,9 +40,7 @@ import anthropic
 import dotenv
 import openai
 import yaml
-from anthropic.types import ToolParam
 from asyncer import asyncify, syncify
-from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
@@ -48,11 +53,12 @@ from nexau.archs.main_sub.execution.stop_result import StopResult
 from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.prompt_builder import PromptBuilder
 from nexau.archs.main_sub.skill import Skill, build_load_skill_tool, build_tool_skill
+from nexau.archs.main_sub.sub_agent_naming import build_sub_agent_tool_name
 from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
     normalize_tool_call_mode,
+    resolve_structured_provider_target,
 )
-from nexau.archs.main_sub.tool_payloads import build_anthropic_tool_payload, build_openai_tool_payload
 from nexau.archs.main_sub.utils.cleanup_manager import cleanup_manager
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
 from nexau.archs.sandbox import (
@@ -65,9 +71,10 @@ from nexau.archs.sandbox import (
 )
 from nexau.archs.session import AgentRunActionKey, SessionManager
 from nexau.archs.session.orm import InMemoryDatabaseEngine
-from nexau.archs.tool import Tool
+from nexau.archs.tool import Tool, build_structured_tool_definition
 from nexau.archs.tool.builtin.tool_search import tool_search
 from nexau.archs.tool.tool_registry import ToolRegistry
+from nexau.archs.tool.tool import StructuredToolDefinition
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
@@ -143,8 +150,12 @@ class Agent:
         # YAML-created ones.
         self.exec_config = ExecutionConfig.from_agent_config(self.config)
 
+        # 1. RFC-0006: 统一 Python / YAML 入口的 tool_call_mode 语义，并收敛 legacy alias。
         self.tool_call_mode = normalize_tool_call_mode(self.exec_config.tool_call_mode)
         self.use_structured_tool_calls = self.tool_call_mode in STRUCTURED_TOOL_CALL_MODES
+        if self.use_structured_tool_calls:
+            # 2. RFC-0006: structured provider 目标由 api_type 决定，而不是由 tool_call_mode 决定。
+            resolve_structured_provider_target(self.config.llm_config.api_type if self.config.llm_config else None)
 
         # Initialize services
         logger.info("Initializing LLM client (api_type=%s)", self.config.llm_config.api_type if self.config.llm_config else "default")
@@ -441,24 +452,73 @@ class Agent:
 
         return []
 
-    def _build_tool_call_payload(self) -> list[ChatCompletionToolParam] | list[ToolParam]:
-        """Build structured tool definitions for the active tool_call_mode."""
-        eager_tools = self._tool_registry.compute_eager_tools()
-        if self.tool_call_mode == "openai":
-            return build_openai_tool_payload(
-                eager_tools=eager_tools,
-                sub_agents=self.config.sub_agents,
+    def _structured_tool_description(self, tool: Tool) -> str:
+        """Return the description exposed to structured tool-calling models."""
+        return tool.get_structured_description()
+
+    def _build_sub_agent_tool_definition(
+        self,
+        sub_agent_name: str,
+        sub_agent_config: AgentConfig,
+    ) -> StructuredToolDefinition:
+        """Build the neutral structured definition for a sub-agent proxy.
+
+        RFC-0006: 中性 Structured Tool Definitions
+
+        SubAgent 与普通 Tool 在 Agent 层统一归一化为 neutral definition，避免
+        上游对象随着 provider 切换而改变内部主状态结构。
+        """
+
+        return build_structured_tool_definition(
+            name=build_sub_agent_tool_name(sub_agent_name),
+            description=sub_agent_config.description or f"Delegate work to sub-agent '{sub_agent_name}'.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Task or question for the sub-agent.",
+                    },
+                },
+                "required": ["message"],
+            },
+            kind="sub_agent",
+        )
+
+    def _build_tool_call_payload(self) -> list[StructuredToolDefinition]:
+        """Build neutral structured tool definitions for the active runtime.
+
+        RFC-0006: Agent 仅缓存 neutral structured definitions
+
+        structured 模式下，Agent 先为 Tool / SubAgent 生成 neutral definitions；
+        provider-specific OpenAI / Anthropic / Gemini schema 在发请求前再适配。
+        """
+
+        if not self.use_structured_tool_calls:
+            return []
+
+        tools_spec: list[StructuredToolDefinition] = []
+
+        # 1. 先从当前 ToolRegistry 读取所有 eager tool（含 builtin / MCP / LoadSkill / ToolSearch）。
+        for tool in self._tool_registry.compute_eager_tools():
+            tools_spec.append(
+                tool.to_structured_definition(
+                    description=self._structured_tool_description(tool),
+                ),
             )
-        if self.tool_call_mode == "anthropic":
-            return build_anthropic_tool_payload(
-                eager_tools=eager_tools,
-                sub_agents=self.config.sub_agents,
-            )
-        return []
+
+        if self.config.sub_agents:
+            # 2. 再把 SubAgent 代理也收敛到相同的 neutral definition 契约。
+            for sub_agent_name, sub_agent_config in self.config.sub_agents.items():
+                tools_spec.append(
+                    self._build_sub_agent_tool_definition(sub_agent_name, sub_agent_config),
+                )
+
+        return tools_spec
 
     @property
-    def tool_call_payload(self) -> list[ChatCompletionToolParam] | list[ToolParam]:
-        """Return the current structured tool payload derived from ToolRegistry."""
+    def tool_call_payload(self) -> list[StructuredToolDefinition]:
+        """Return the current neutral structured tool definitions."""
         if not self.use_structured_tool_calls:
             return []
         return self._build_tool_call_payload()
@@ -488,6 +548,7 @@ class Agent:
             global_storage=self.global_storage,
             tool_call_mode=self.tool_call_mode,
             team_mode=self._team_state is not None,
+            structured_tools=self.tool_call_payload,
             session_manager=self._session_manager,
             user_id=self._user_id,
             session_id=self._session_id,
@@ -612,7 +673,7 @@ class Agent:
 
             def wrapped_counter(
                 messages: Sequence[Message],
-                tools: list[dict[str, Any]] | None = None,
+                tools: Sequence[Mapping[str, object]] | None = None,
             ) -> int:
                 if tools is not None:
                     if has_tools_param or has_var_kwargs:
@@ -1138,6 +1199,11 @@ class Agent:
                 self.history.flush()
             except Exception:
                 logger.warning("Failed to flush history in finally block")
+
+    def add_tool(self, tool: Tool) -> None:
+        """Add a tool to the agent."""
+        self.config.tools.append(tool)
+        self.executor.add_tool(tool)
 
     async def _persist_session_state(self, context: dict[str, Any]) -> None:
         """Persist context and storage to session.

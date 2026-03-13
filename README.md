@@ -142,14 +142,14 @@ uv sync
         max_context_tokens=100000,
         system_prompt=str(base_dir / "system-workflow.md"),
         system_prompt_type="jinja",
-        tool_call_mode="openai", # xml, openai or anthorpic
+        tool_call_mode="structured", # xml or structured
         llm_config=LLMConfig(
             temperature=0.7,
             max_tokens=4096,
             model=os.getenv("LLM_MODEL"),
             base_url=os.getenv("LLM_BASE_URL"),
             api_key=os.getenv("LLM_API_KEY"),
-            api_type="openai_chat_completion", # support openai_chat_completion (default), openai_responses (especially for gpt-5-codex), anthropic_chat_completion
+            api_type="openai_chat_completion",
         ),
         tools=tools,
         skills=skills,

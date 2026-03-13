@@ -18,14 +18,12 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
-from anthropic.types import ToolParam
-from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
-
 from nexau.archs.sandbox.base_sandbox import BaseSandbox
+from nexau.archs.tool.tool import StructuredToolDefinitionLike
 from nexau.core.messages import Message
 
 from .model_response import ModelResponse
@@ -227,7 +225,7 @@ class ModelCallParams:
     force_stop_reason: AgentStopReason | None
     agent_state: AgentState | None
     tool_call_mode: str
-    tools: list[ChatCompletionToolParam] | list[ToolParam] | None
+    tools: Sequence[StructuredToolDefinitionLike] | None
     api_params: dict[str, Any]
     openai_client: Any | None = None
     llm_config: Any | None = None

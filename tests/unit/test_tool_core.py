@@ -9,7 +9,7 @@ from pytest import CaptureFixture, LogCaptureFixture
 
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.framework_context import FrameworkContext
-from nexau.archs.tool.tool import ConfigError, Tool
+from nexau.archs.tool.tool import ConfigError, Tool, normalize_structured_tool_definition
 
 
 @pytest.fixture
@@ -220,3 +220,43 @@ def test_to_openai_and_anthropic_fill_missing_schema_fields(tool_kwargs, expecte
     for prop in expected_props:
         assert prop in openai_params.get("properties", {})
         assert prop in anthropic_params.get("properties", {})
+
+
+def test_to_structured_definition_uses_skill_description_for_structured_models():
+    tool = Tool(
+        name="search",
+        description="Full description",
+        skill_description="Brief description",
+        input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
+        implementation=lambda query: query,
+        as_skill=True,
+    )
+
+    structured_def = tool.to_structured_definition(description=tool.get_structured_description())
+
+    assert structured_def == {
+        "name": "search",
+        "description": "Brief description",
+        "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}},
+        "kind": "tool",
+    }
+
+
+def test_normalize_structured_tool_definition_accepts_legacy_openai_shape():
+    openai_tool = {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read a file",
+            "parameters": {"properties": {"path": {"type": "string"}}},
+        },
+    }
+
+    normalized = normalize_structured_tool_definition(openai_tool)
+
+    assert normalized == {
+        "name": "read_file",
+        "description": "Read a file",
+        "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
+        "kind": "tool",
+    }

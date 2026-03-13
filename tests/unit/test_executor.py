@@ -365,6 +365,8 @@ class TestExecutorExecution:
             implementation=simple_tool,
         )
 
+        structured_tools = [tool.to_structured_definition()]
+
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
@@ -375,6 +377,7 @@ class TestExecutorExecution:
             llm_config=mock_llm_config,
             max_iterations=2,
             tool_call_mode="openai",
+            structured_tools=structured_tools,
         )
 
         history = [
@@ -438,6 +441,8 @@ class TestExecutorExecution:
             implementation=image_tool,
         )
 
+        structured_tools = [tool.to_structured_definition()]
+
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
@@ -448,6 +453,7 @@ class TestExecutorExecution:
             llm_config=mock_llm_config,
             max_iterations=2,
             tool_call_mode="openai",
+            structured_tools=structured_tools,
         )
 
         history = [
@@ -498,6 +504,8 @@ class TestExecutorExecution:
             implementation=image_tool,
         )
 
+        structured_tools = [tool.to_structured_definition()]
+
         executor = Executor(
             agent_name="test_agent",
             agent_id="test_id",
@@ -508,6 +516,7 @@ class TestExecutorExecution:
             llm_config=mock_llm_config,
             max_iterations=2,
             tool_call_mode="openai",
+            structured_tools=structured_tools,
         )
 
         history = [
@@ -1074,11 +1083,11 @@ class TestExecutorHelperMethods:
             tool_call_mode="openai",
         )
 
-        payload_by_name = {spec["function"]["name"]: spec for spec in executor.structured_tool_payload}
+        payload_by_name = {spec["name"]: spec for spec in executor.structured_tool_payload}
 
         assert "simple_tool" in payload_by_name
         assert "sub-agent-child" in payload_by_name
-        assert payload_by_name["sub-agent-child"]["function"]["description"] == "Delegate to child"
+        assert payload_by_name["sub-agent-child"]["description"] == "Delegate to child"
 
     def test_structured_tool_payload_uses_skill_description(self, mock_llm_config):
         """Structured payload should use brief skill descriptions for as_skill tools."""
