@@ -16,6 +16,7 @@
 Unit tests for agent components.
 """
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -260,14 +261,12 @@ class TestAgent:
             agent1 = Agent(config=agent_config)
             agent2 = Agent(config=agent_config)
 
-        expected_folder_1 = str(agent1.sandbox_manager.work_dir / ".skills" / local_skill_folder.name)
-        expected_folder_2 = str(agent2.sandbox_manager.work_dir / ".skills" / local_skill_folder.name)
-
+        # Local sandbox 共享文件系统，skill 保留原始路径，不上传
         assert agent_config.skills[0].folder == str(local_skill_folder)
-        assert agent1.skill_registry["feishu-skill"].folder == expected_folder_1
-        assert agent2.skill_registry["feishu-skill"].folder == expected_folder_2
-        assert agent1.sandbox_manager._session_context["upload_assets"] == [(str(local_skill_folder), expected_folder_1)]
-        assert agent2.sandbox_manager._session_context["upload_assets"] == [(str(local_skill_folder), expected_folder_2)]
+        assert agent1.skill_registry["feishu-skill"].folder == str(local_skill_folder)
+        assert agent2.skill_registry["feishu-skill"].folder == str(local_skill_folder)
+        assert agent1.sandbox_manager._session_context.get("upload_assets", []) == []
+        assert agent2.sandbox_manager._session_context.get("upload_assets", []) == []
 
     def test_tool_call_payload_anthropic_mode(self, sample_tool):
         """Anthropic mode should build anthropic tool schema with sub-agent."""

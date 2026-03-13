@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import textwrap
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -46,7 +45,8 @@ class TestAsSkillSandboxRegression:
     """Regression tests for issue 311-style as_skill + sandbox interactions."""
 
     @pytest.mark.integration
-    def test_loadskill_stays_in_memory_and_reused_config_keeps_folder_skill_upload_source(self, tmp_path: Path) -> None:
+    def test_loadskill_stays_in_memory_local_sandbox_no_upload(self, tmp_path: Path) -> None:
+        """Local sandbox should NOT copy skill folders — files are directly accessible."""
         base_dir = tmp_path
         tools_dir = base_dir / "tools"
         tools_dir.mkdir(parents=True)
@@ -88,23 +88,6 @@ class TestAsSkillSandboxRegression:
                 """,
             ).lstrip(),
         )
-        (tools_dir / "InspectSkillUpload.yaml").write_text(
-            textwrap.dedent(
-                """
-                type: tool
-                name: inspect_skill_upload
-                description: Verify folder-based skill assets are available in the sandbox.
-                input_schema:
-                  type: object
-                  properties:
-                    expected_skill_file:
-                      type: string
-                      description: Relative path to the uploaded skill asset inside the sandbox
-                  required:
-                    - expected_skill_file
-                """,
-            ).lstrip(),
-        )
 
         sandbox_dir = base_dir / "sandbox"
         sandbox_dir.mkdir(parents=True, exist_ok=True)
@@ -126,9 +109,6 @@ class TestAsSkillSandboxRegression:
                     yaml_path: ./tools/MemoryLookup.yaml
                     binding: tests.integration.test_as_skill_sandbox_regression:memory_lookup_impl
                     as_skill: true
-                  - name: inspect_skill_upload
-                    yaml_path: ./tools/InspectSkillUpload.yaml
-                    binding: tests.integration.test_as_skill_sandbox_regression:inspect_skill_upload
                 skills:
                   - ./skills/folder_skill
                 """,
@@ -137,7 +117,6 @@ class TestAsSkillSandboxRegression:
 
         config = AgentConfig.from_yaml(agent_yaml)
         original_skill_folder = config.skills[0].folder
-        uploaded_asset_relative_path = f".skills/{skill_dir.name}/payload.txt"
 
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock(name="openai_client")
@@ -147,35 +126,46 @@ class TestAsSkillSandboxRegression:
                 agent1_state = _build_agent_state(agent1)
                 assert agent1.sandbox_manager._instance is None
 
+                # tool-based skill: LoadSkill 应正常工作
                 load_skill_result = agent1.executor.tool_executor.execute_tool(
                     agent_state=agent1_state,
                     tool_name="LoadSkill",
                     parameters={"skill_name": "memory_lookup"},
                     tool_call_id="load_skill_call_1",
                 )
-
                 assert "FULL MEMORY TOOL DESCRIPTION" in load_skill_result["result"]
+                # LoadSkill 不应触发 sandbox 启动
                 assert agent1.sandbox_manager._instance is None
 
-                upload_check_1 = agent1.executor.tool_executor.execute_tool(
+                # folder-based skill: LoadSkill 返回的路径应为原始本地路径
+                load_folder_skill_result = agent1.executor.tool_executor.execute_tool(
                     agent_state=agent1_state,
-                    tool_name="inspect_skill_upload",
-                    parameters={"expected_skill_file": uploaded_asset_relative_path},
-                    tool_call_id="inspect_upload_call_1",
+                    tool_name="LoadSkill",
+                    parameters={"skill_name": "folder-skill"},
+                    tool_call_id="load_folder_skill_1",
                 )
+                assert f"<SkillFolder>{original_skill_folder}</SkillFolder>" in load_folder_skill_result["result"]
+                assert agent1.sandbox_manager._instance is None
 
-                assert upload_check_1["skill_file_exists"] is True
+                # Local sandbox 不应复制 skill 文件夹到 .skills/ 子目录
+                skills_copy_dir = sandbox_dir / ".skills"
+                assert not skills_copy_dir.exists(), "Local sandbox should NOT copy skill folders"
+
+                # config 的原始 folder 路径不应被修改
                 assert config.skills[0].folder == original_skill_folder
 
-                uploaded_skill_dir = sandbox_dir / ".skills" / skill_dir.name
-                if uploaded_skill_dir.exists():
-                    shutil.rmtree(uploaded_skill_dir)
-                assert not uploaded_skill_dir.exists()
+                # runtime skill 应保留原始路径
+                assert agent1.skill_registry["folder-skill"].folder == original_skill_folder
 
+                # 原始 skill 文件仍可直接访问
+                assert (Path(original_skill_folder) / "payload.txt").exists()
+
+                # 重用 config 创建第二个 agent，验证 LoadSkill 仍正常工作
                 agent2 = Agent(config=config)
                 try:
                     agent2_state = _build_agent_state(agent2)
                     assert config.skills[0].folder == original_skill_folder
+                    assert agent2.skill_registry["folder-skill"].folder == original_skill_folder
                     assert agent2.sandbox_manager._instance is None
 
                     load_skill_result_2 = agent2.executor.tool_executor.execute_tool(
@@ -184,19 +174,18 @@ class TestAsSkillSandboxRegression:
                         parameters={"skill_name": "memory_lookup"},
                         tool_call_id="load_skill_call_2",
                     )
-
                     assert "FULL MEMORY TOOL DESCRIPTION" in load_skill_result_2["result"]
-                    assert agent2.sandbox_manager._instance is None
 
-                    upload_check_2 = agent2.executor.tool_executor.execute_tool(
+                    # 第二个 agent 的 folder skill 路径也应为原始路径
+                    load_folder_skill_result_2 = agent2.executor.tool_executor.execute_tool(
                         agent_state=agent2_state,
-                        tool_name="inspect_skill_upload",
-                        parameters={"expected_skill_file": uploaded_asset_relative_path},
-                        tool_call_id="inspect_upload_call_2",
+                        tool_name="LoadSkill",
+                        parameters={"skill_name": "folder-skill"},
+                        tool_call_id="load_folder_skill_2",
                     )
-
-                    assert upload_check_2["skill_file_exists"] is True
-                    assert config.skills[0].folder == original_skill_folder
+                    assert f"<SkillFolder>{original_skill_folder}</SkillFolder>" in load_folder_skill_result_2["result"]
+                    assert agent2.sandbox_manager._instance is None
+                    assert not skills_copy_dir.exists()
                 finally:
                     agent2.sandbox_manager.stop()
             finally:

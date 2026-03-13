@@ -58,6 +58,7 @@ from nexau.archs.main_sub.utils.token_counter import TokenCounter
 from nexau.archs.sandbox import (
     BaseSandbox,
     BaseSandboxManager,
+    E2BSandboxConfig,
     E2BSandboxManager,
     LocalSandboxConfig,
     LocalSandboxManager,
@@ -506,19 +507,16 @@ class Agent:
         # 回写 typed config，确保后续代码可以直接访问 typed 属性
         self.config.sandbox_config = sandbox_config
 
+        # Local sandbox 共享文件系统，skill 文件夹直接可访问，无需上传
+        self._is_local_sandbox = isinstance(sandbox_config, LocalSandboxConfig)
+
         if self._shared_sandbox_manager is not None:
             # 共享模式：使用外部注入的 sandbox_manager（Team 场景）
             self.sandbox_manager: BaseSandboxManager[BaseSandbox] = self._shared_sandbox_manager
-
-            # 仅注册 folder-based skills 的上传资产；运行时 skill_registry 会单独映射 sandbox 路径
-            upload_assets = self._build_skill_upload_assets()
-            self.sandbox_manager.add_upload_assets(upload_assets)
             # 不注册 cleanup_manager，由 Team 统一管理生命周期
         else:
-            # 独立模式：创建独立 sandbox_manager（原有逻辑）
-            if isinstance(sandbox_config, LocalSandboxConfig):
-                self.sandbox_manager = LocalSandboxManager(work_dir=sandbox_config.work_dir)
-            else:
+            # 独立模式：创建独立 sandbox_manager
+            if isinstance(sandbox_config, E2BSandboxConfig):
                 self.sandbox_manager = E2BSandboxManager(
                     work_dir=sandbox_config.work_dir,
                     template=sandbox_config.template,
@@ -528,22 +526,23 @@ class Agent:
                     metadata=sandbox_config.metadata,
                     envs=sandbox_config.envs,
                 )
+            else:
+                self.sandbox_manager = LocalSandboxManager(work_dir=sandbox_config.work_dir)
 
-            # Upload folder-based skill assets to sandbox lazily at first sandbox start.
-            upload_assets = self._build_skill_upload_assets()
-
-            # 功能说明1：仅保存会话上下文，不启动 sandbox
-            # 功能说明2：sandbox 会在首次调用工具时通过 start_sync() 延迟启动
-            # 功能说明3：确保 sandbox 在正确的事件循环上下文中创建，避免 asyncio 问题
             self.sandbox_manager.prepare_session_context(
                 session_manager=self._session_manager,
                 user_id=self._user_id,
                 session_id=self._session_id,
                 sandbox_config=sandbox_config,
-                upload_assets=upload_assets,
+                upload_assets=[],  # upload assets 统一在下方注册
             )
 
             cleanup_manager.register_sandbox_manager(self.sandbox_manager)
+
+        # 远程 sandbox 需要上传 skill 文件夹；local sandbox 共享文件系统，跳过
+        if not self._is_local_sandbox:
+            upload_assets = self._build_skill_upload_assets()
+            self.sandbox_manager.add_upload_assets(upload_assets)
 
     def _sandbox_skill_folder(self, local_folder: str) -> str:
         """Return the sandbox path used for a folder-based skill."""
@@ -567,11 +566,16 @@ class Agent:
         existing_skill_names: set[str] = set()
 
         for skill in self.config.skills:
+            # Local sandbox 共享文件系统，保留原始路径；远程 sandbox 需要映射到 sandbox 内路径
+            if skill.folder and not self._is_local_sandbox:
+                sandbox_folder = self._sandbox_skill_folder(skill.folder)
+            else:
+                sandbox_folder = skill.folder
             runtime_skill = Skill(
                 name=skill.name,
                 description=skill.description,
                 detail=skill.detail,
-                folder=self._sandbox_skill_folder(skill.folder) if skill.folder else skill.folder,
+                folder=sandbox_folder,
             )
             runtime_skills.append(runtime_skill)
             existing_skill_names.add(runtime_skill.name)
