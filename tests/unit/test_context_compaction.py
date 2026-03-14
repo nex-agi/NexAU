@@ -204,6 +204,7 @@ class TestSlidingWindowCompaction:
             model="gpt-4o-mini",
             base_url="https://api.openai.com/v1",
             api_key="test-key",
+            api_type="openai_responses",
             temperature=0.3,
             max_tokens=2048,
             top_p=0.9,
@@ -213,6 +214,7 @@ class TestSlidingWindowCompaction:
             max_retries=7,
             debug=True,
             stream=True,
+            reasoning={"effort": "high", "summary": "detailed"},
         )
         compaction = SlidingWindowCompaction(
             keep_iterations=2,
@@ -231,6 +233,8 @@ class TestSlidingWindowCompaction:
         assert compaction.summary_llm_config.timeout == base_llm_config.timeout
         assert compaction.summary_llm_config.max_retries == base_llm_config.max_retries
         assert compaction.summary_llm_config.stream == base_llm_config.stream
+        assert compaction.summary_llm_config.api_type == base_llm_config.api_type
+        assert compaction.summary_llm_config.extra_params["reasoning"] == {"effort": "high", "summary": "detailed"}
         assert compaction._llm_caller is not None
         assert compaction._llm_caller.openai_client is mock_openai_client
         mock_openai_class.assert_not_called()

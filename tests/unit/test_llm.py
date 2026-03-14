@@ -175,7 +175,10 @@ class TestLLMConfig:
         original = LLMConfig(
             model="gpt-4",
             temperature=0.5,
+            api_type="openai_responses",
+            cache_control_ttl="1h",
             custom_param="value",
+            reasoning={"effort": "high", "summary": "detailed"},
             additional_drop_params=["stop"],
         )
 
@@ -184,7 +187,9 @@ class TestLLMConfig:
         assert copied.model == original.model
         assert copied.temperature == original.temperature
         assert copied.get_param("custom_param") == "value"
+        assert copied.get_param("reasoning") == {"effort": "high", "summary": "detailed"}
         assert copied.additional_drop_params == original.additional_drop_params
+        assert copied.cache_control_ttl == original.cache_control_ttl
         assert copied.api_type == original.api_type
         assert copied is not original
 

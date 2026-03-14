@@ -73,8 +73,20 @@ def _get_trace_id(tracer, span) -> str:
     return vendor.trace_id
 
 
-def _fetch_trace(trace_id: str, retries: int = 15, delay: float = 2.0) -> dict[str, Any]:
-    """Fetch a trace from Langfuse REST API with retry (eventual consistency)."""
+def _fetch_trace(
+    trace_id: str,
+    retries: int = 15,
+    delay: float = 2.0,
+    min_observations: int = 0,
+    required_observation_names: set[str] | None = None,
+) -> dict[str, Any]:
+    """Fetch a trace from Langfuse REST API with retry (eventual consistency).
+
+    Langfuse traces can become visible before all child observations are queryable.
+    To avoid flaky E2E assertions, optionally wait until the expected observation
+    count or names appear in the REST response.
+    """
+    required_names = required_observation_names or set()
     for i in range(retries):
         resp = requests.get(
             f"{_HOST}/api/public/traces/{trace_id}",
@@ -82,10 +94,17 @@ def _fetch_trace(trace_id: str, retries: int = 15, delay: float = 2.0) -> dict[s
             timeout=10,
         )
         if resp.status_code == 200:
-            return resp.json()
+            trace = resp.json()
+            observations = trace.get("observations", [])
+            observation_names = {obs.get("name") for obs in observations if isinstance(obs, dict)}
+            if len(observations) >= min_observations and required_names.issubset(observation_names):
+                return trace
         if i < retries - 1:
             time.sleep(delay)
-    pytest.fail(f"Trace {trace_id} not found after {retries * delay}s")
+    pytest.fail(
+        f"Trace {trace_id} did not reach the expected observation state after {retries * delay}s "
+        f"(min_observations={min_observations}, required_observation_names={sorted(required_names)})"
+    )
 
 
 def test_langfuse_e2e_agent_trace_with_tool_and_llm():
@@ -149,7 +168,11 @@ def test_langfuse_e2e_agent_trace_with_tool_and_llm():
     tracer.shutdown()
 
     # 6. 从 Langfuse REST API 验证
-    trace = _fetch_trace(trace_id)
+    trace = _fetch_trace(
+        trace_id,
+        min_observations=3,
+        required_observation_names={"test-agent", "search-tool", "gpt-4o-mini"},
+    )
 
     observations = trace.get("observations", [])
     assert len(observations) >= 3, f"Expected >= 3 observations (agent, tool, llm), got {len(observations)}"
@@ -206,7 +229,11 @@ def test_langfuse_e2e_generation_survives_empty_usage():
     tracer.flush()
     tracer.shutdown()
 
-    trace = _fetch_trace(trace_id)
+    trace = _fetch_trace(
+        trace_id,
+        min_observations=2,
+        required_observation_names={"agent-wrapper", "llm-empty-usage"},
+    )
 
     observations = trace.get("observations", [])
     llm_obs = next((o for o in observations if o["name"] == "llm-empty-usage"), None)

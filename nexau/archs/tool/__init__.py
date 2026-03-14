@@ -13,8 +13,8 @@
 # limitations under the License.
 
 from .tool import (
-    Tool,
     StructuredToolDefinition,
+    Tool,
     build_structured_tool_definition,
     normalize_structured_tool_definition,
     structured_tool_definition_to_anthropic,

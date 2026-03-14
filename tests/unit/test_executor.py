@@ -30,7 +30,6 @@ from unittest.mock import Mock, patch
 import pytest
 
 from nexau.archs.main_sub.execution.executor import Executor
-from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.main_sub.execution.hooks import HookResult, Middleware
 from nexau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
 from nexau.archs.main_sub.execution.parse_structures import (
@@ -39,6 +38,7 @@ from nexau.archs.main_sub.execution.parse_structures import (
     SubAgentCall,
     ToolCall,
 )
+from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.tool.tool import Tool
 from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.core.messages import ImageBlock, Role, TextBlock, ToolOutputImage, ToolResultBlock

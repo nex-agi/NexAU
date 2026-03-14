@@ -21,8 +21,8 @@ import pytest
 import nexau.archs.main_sub.tool_call_modes as tool_call_modes
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.config import AgentConfig, ExecutionConfig
-from nexau.archs.main_sub.tool_call_modes import normalize_tool_call_mode, resolve_structured_provider_target
 from nexau.archs.main_sub.skill import Skill
+from nexau.archs.main_sub.tool_call_modes import normalize_tool_call_mode, resolve_structured_provider_target
 from nexau.archs.tool.tool import Tool
 from nexau.archs.tracer.composite import CompositeTracer
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType

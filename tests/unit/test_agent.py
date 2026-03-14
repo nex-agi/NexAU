@@ -1345,7 +1345,6 @@ class TestAgentFromYaml:
 
     def test_from_yaml_with_overrides_warning(self, sample_yaml_config, global_storage):
         """Test from_yaml emits deprecation warning when overrides provided."""
-        from pathlib import Path
 
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()

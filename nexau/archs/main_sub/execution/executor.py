@@ -68,8 +68,8 @@ from nexau.archs.main_sub.tool_call_modes import (
     normalize_tool_call_mode,
 )
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
-from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.archs.tool.tool import StructuredToolDefinition, Tool, build_structured_tool_definition
+from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, coerce_tool_result_content
 

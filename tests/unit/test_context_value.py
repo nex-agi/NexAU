@@ -16,7 +16,6 @@
 
 import shutil
 import tempfile
-from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -24,7 +23,6 @@ import pytest
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.context_value import ContextValue
-from nexau.archs.main_sub.execution.executor import Executor
 from nexau.archs.sandbox.base_sandbox import SandboxStatus
 from nexau.archs.sandbox.local_sandbox import LocalSandbox
 from nexau.archs.transports.http.models import AgentRequest

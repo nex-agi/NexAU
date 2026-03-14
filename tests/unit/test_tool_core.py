@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 import yaml
-from pytest import CaptureFixture, LogCaptureFixture
+from pytest import LogCaptureFixture
 
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.framework_context import FrameworkContext

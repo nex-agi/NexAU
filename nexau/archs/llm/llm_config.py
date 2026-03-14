@@ -220,6 +220,7 @@ class LLMConfig:
             debug=self.debug,
             stream=self.stream,
             additional_drop_params=self.additional_drop_params,
+            api_type=self.api_type,
             cache_control_ttl=self.cache_control_ttl,
             **self.extra_params,
         )

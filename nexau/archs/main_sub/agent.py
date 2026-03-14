@@ -73,8 +73,8 @@ from nexau.archs.session import AgentRunActionKey, SessionManager
 from nexau.archs.session.orm import InMemoryDatabaseEngine
 from nexau.archs.tool import Tool, build_structured_tool_definition
 from nexau.archs.tool.builtin.tool_search import tool_search
-from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.archs.tool.tool import StructuredToolDefinition
+from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
