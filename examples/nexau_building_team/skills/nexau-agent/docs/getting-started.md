@@ -8,19 +8,19 @@
 **Using pip:**
 ```bash
 # Install from the latest release tag using SSH (you need to use ssh because nexau is a private repo)
-pip install git+ssh://git@github.com/nex-agi/NexAU.git@v0.3.9
+pip install git+ssh://git@github.com/nex-agi/NexAU.git@v0.4.0
 
 # or visit https://github.com/nex-agi/nexau/releases/ and download whl, then
-pip install nexau-0.3.9-py3-none-any.whl
+pip install nexau-0.4.0-py3-none-any.whl
 ```
 
 **Using uv:**
 ```bash
 # Install from the latest release tag using SSH
-uv pip install git+ssh://git@github.com/nex-agi/NexAU.git@v0.3.9
+uv pip install git+ssh://git@github.com/nex-agi/NexAU.git@v0.4.0
 
 # or visit https://github.com/nex-agi/nexau/releases/ and download whl, then
-uv pip install nexau-0.3.9-py3-none-any.whl
+uv pip install nexau-0.4.0-py3-none-any.whl
 ```
 
 ### Install Latest from Main Branch
