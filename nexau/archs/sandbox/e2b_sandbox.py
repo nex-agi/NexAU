@@ -110,6 +110,7 @@ class E2BSandbox(BaseSandbox):
     default_user: str = field(default="user")
     work_dir: str | Path | None = field(default=E2B_DEFAULT_WORK_DIR)
     envd_version: str | None = field(default=None)
+    max_retries: int = field(default=5)
     _api_key: str | None = field(default=None, repr=False)
     _api_url: str | None = field(default=None, repr=False)
 
@@ -128,6 +129,13 @@ class E2BSandbox(BaseSandbox):
     def set_api_credentials(self, api_key: str | None, api_url: str | None) -> None:
         self._api_key = api_key
         self._api_url = api_url
+
+    # Commands larger than this threshold (bytes) are written to a script file
+    # inside the sandbox and executed via `bash <script>` instead of being
+    # passed inline to `commands.run()`.  This avoids ConnectRPC message-size
+    # limits (~4 MB) and Linux MAX_ARG_STRLEN (~128 KB) that cause large
+    # heredocs / echo payloads to fail with exit-code 2.
+    _LARGE_CMD_THRESHOLD: int = 65_536  # 64 KB
 
     def _prepare_output_dir(self, command: str, user: str = "user") -> str:
         """Create an output directory and write command.txt in the sandbox.
@@ -149,6 +157,26 @@ class E2BSandbox(BaseSandbox):
         )
         self._sandbox._filesystem.write(f"{output_dir}/command.txt", command)
         return output_dir
+
+    def _maybe_scriptify(self, command: str, output_dir: str, user: str = "user") -> str:
+        """If *command* exceeds the large-command threshold, write it to a
+        temporary bash script inside the sandbox and return a short command
+        that sources it.  Otherwise return *command* unchanged.
+
+        This lets arbitrarily large commands (heredocs with big payloads,
+        long echo strings, etc.) work without hitting RPC or OS limits.
+        """
+        if len(command.encode("utf-8", errors="replace")) <= self._LARGE_CMD_THRESHOLD:
+            return command
+
+        script_path = f"{output_dir}/run.sh"
+        self._sandbox._filesystem.write(script_path, command)  # type: ignore[union-attr]
+        logger.info(
+            "[e2b] Command too large (%d bytes) – wrote to %s for execution",
+            len(command.encode("utf-8", errors="replace")),
+            script_path,
+        )
+        return f"bash {script_path}"
 
     def _read_output_files(self, output_dir: str) -> tuple[str, str]:
         """Read stdout.txt and stderr.txt from the output directory in the sandbox.
@@ -188,18 +216,39 @@ class E2BSandbox(BaseSandbox):
         base = cwd or str(self.work_dir)
         return f"{base}/{path}"
 
-    # Transient error patterns that warrant a reconnect + retry
+    # Transient error patterns that warrant a reconnect + retry.
+    # Aligned with NexQ's _RETRYABLE_E2B_TEXT_PAT for comprehensive coverage.
+    # Matched case-insensitively via _is_transient_error().
     _TRANSIENT_PATTERNS = (
-        "Event loop is closed",
-        "Server disconnected",
-        "Connection reset",
-        "Connection refused",
-        "RemoteProtocolError",
+        "event loop is closed",
+        "server disconnected",
+        "connection reset",
+        "connection refused",
+        "connection closed",
+        "connection aborted",
+        "remoteprotocolerror",
+        "incomplete chunked read",
+        "peer closed connection",
+        "context deadline exceeded",
+        "timed out",
+        "temporarily unavailable",
+        "temporary failure",
+        "nodename nor servname",
+        "name or service not known",
+        "ssl handshake",
+        "tlsv1 alert",
+        "gateway timeout",
+        "bad gateway",
+        "service unavailable",
+        "502 bad gateway",
+        "502 server error",
+        "503 service unavailable",
+        "internal server error",
     )
 
     def _is_transient_error(self, exc: Exception) -> bool:
         """Return True if the exception looks like a transient network error."""
-        msg = str(exc)
+        msg = str(exc).lower()
         return any(p in msg for p in self._TRANSIENT_PATTERNS)
 
     def _reconnect(self) -> None:
@@ -213,12 +262,13 @@ class E2BSandbox(BaseSandbox):
             api_url=self._api_url,
         )
 
-    def _retry_on_transient(self, fn: Callable[[], _T], max_retries: int = 2) -> _T:
+    def _retry_on_transient(self, fn: Callable[[], _T], max_retries: int | None = None) -> _T:
         """Execute *fn* with automatic reconnect + retry on transient errors.
 
         Args:
             fn: Zero-arg callable that performs the SDK operation.
             max_retries: How many times to retry after the first failure.
+                         Defaults to ``self.max_retries`` (from config).
 
         Returns:
             Whatever *fn* returns on success.
@@ -226,6 +276,8 @@ class E2BSandbox(BaseSandbox):
         Raises:
             The original exception if it is not transient or retries are exhausted.
         """
+        if max_retries is None:
+            max_retries = self.max_retries
         for attempt in range(max_retries + 1):
             try:
                 return fn()
@@ -301,6 +353,7 @@ class E2BSandbox(BaseSandbox):
             if background:
                 # 1. 创建输出目录，命令通过 shell 重定向写入文件
                 output_dir = self._prepare_output_dir(command, user=user)
+                command_stripped = self._maybe_scriptify(command_stripped, output_dir, user=user)
                 wrapped_cmd = f"{{ {command_stripped}; }} > {output_dir}/stdout.txt 2> {output_dir}/stderr.txt"
 
                 # Background mode: retry on transient network errors
@@ -336,13 +389,23 @@ class E2BSandbox(BaseSandbox):
                     except StopIteration:
                         pass
                     except Exception as exc:
-                        info["error"] = str(exc)
-                    finally:
-                        if h._result is not None:  # type: ignore[attr-defined]
-                            info["exit_code"] = h._result.exit_code  # type: ignore[attr-defined]
-                            if h._result.exit_code != 0:  # type: ignore[attr-defined]
-                                info["error"] = info.get("error") or f"Command failed with exit code {h._result.exit_code}"  # type: ignore[attr-defined]
-                        info["finished"] = True
+                        # Streaming connection dropped (e.g. proxy timeout after ~15 min).
+                        # The sandbox process may still be running — do NOT mark as
+                        # finished.  Set a stream_error flag so callers can fall back
+                        # to file-based status checking.
+                        info["stream_error"] = str(exc)
+                        logger.warning(
+                            "[e2b] Background consumer stream error (process may still be running): %s",
+                            exc,
+                        )
+                        return
+                    # Only mark finished when the handle has a real result
+                    # (process exited and envd reported it).
+                    if h._result is not None:  # type: ignore[attr-defined]
+                        info["exit_code"] = h._result.exit_code  # type: ignore[attr-defined]
+                        if h._result.exit_code != 0:  # type: ignore[attr-defined]
+                            info["error"] = info.get("error") or f"Command failed with exit code {h._result.exit_code}"  # type: ignore[attr-defined]
+                    info["finished"] = True
 
                 consumer_thread = threading.Thread(
                     target=_consume_events,
@@ -369,24 +432,105 @@ class E2BSandbox(BaseSandbox):
                     stderr_file=f"{output_dir}/stderr.txt" if output_dir else None,
                 )
 
-            # Foreground mode: 通过 shell 重定向将输出写入文件
+            # Foreground mode: 通过 shell 重定向将 stdout/stderr 写入文件。
+            # For long commands (>10 min), use background launch + poll to
+            # avoid HTTP long-connection drops behind gateways/proxies (~15 min).
+            _long_cmd_threshold_s = 600  # 10 minutes
+
             output_dir = self._prepare_output_dir(command, user=user)
+            command_stripped = self._maybe_scriptify(command_stripped, output_dir, user=user)
             wrapped_cmd = f"{{ {command_stripped}; }} > {output_dir}/stdout.txt 2> {output_dir}/stderr.txt"
 
             exit_code = 0
-            try:
-                # Retry on transient network errors (disconnects, resets, etc.)
-                self._retry_on_transient(
-                    lambda: self._sandbox.commands.run(  # type: ignore[union-attr]
-                        cmd=wrapped_cmd,
-                        timeout=int(timeout_seconds),
-                        cwd=cwd or str(self.work_dir),
-                        user=user,
-                        envs=self._merge_envs(envs),
-                    )
+
+            if timeout_seconds > _long_cmd_threshold_s:
+                # Long command: background launch + poll (same pattern as NexQ).
+                import shlex as _shlex
+
+                exitcode_path = f"{output_dir}/exitcode.txt"
+                pid_path = f"{output_dir}/pid.txt"
+                bg_script = (
+                    f"cd {_shlex.quote(cwd or str(self.work_dir))} && "
+                    f"({wrapped_cmd}; echo $? > {exitcode_path}) </dev/null >/dev/null 2>/dev/null &\n"
+                    f"echo $! > {pid_path}\n"
                 )
-            except CommandExitException as e:
-                exit_code = getattr(e, "exit_code", -1)
+                bg_start_cmd = "bash -lc " + _shlex.quote(bg_script)
+                self._sandbox.commands.run(bg_start_cmd, timeout=0, user=user, envs=self._merge_envs(envs))  # type: ignore[union-attr]
+
+                # Read PID for health checking (with retry for transient errors)
+                bg_pid_val: int | None = None
+                try:
+                    time.sleep(1)
+                    raw = self._retry_on_transient(
+                        lambda: self._sandbox._filesystem.read(pid_path),  # type: ignore[union-attr]
+                        max_retries=3,
+                    )
+                    pid_str = raw.decode().strip() if isinstance(raw, (bytes, bytearray)) else str(raw).strip()
+                    bg_pid_val = int(pid_str)
+                except Exception:
+                    pass
+
+                poll_interval = 10
+                _bg_timed_out = False
+                deadline = time.time() + timeout_seconds
+                while time.time() < deadline:
+                    time.sleep(poll_interval)
+                    try:
+                        status_cmd = f"if [ -f {exitcode_path} ]; then echo DONE; "
+                        if bg_pid_val is not None:
+                            status_cmd += f"elif kill -0 {bg_pid_val} 2>/dev/null; then echo RUNNING; "
+                        status_cmd += "else echo DEAD; fi"
+                        check = self._sandbox.commands.run(status_cmd, timeout=0, user="root")  # type: ignore[union-attr]
+                        st = (check.stdout or "").strip()
+                        if st == "DONE":
+                            break
+                        if st == "DEAD":
+                            break
+                    except Exception:
+                        continue
+                else:
+                    _bg_timed_out = True
+
+                # Always try to read exit code (process may have finished
+                # right as we timed out or after DEAD detection).
+                try:
+                    raw_ec = self._retry_on_transient(
+                        lambda: self._sandbox._filesystem.read(exitcode_path),  # type: ignore[union-attr]
+                        max_retries=3,
+                    )
+                    ec_str = raw_ec.decode().strip() if isinstance(raw_ec, (bytes, bytearray)) else str(raw_ec).strip()
+                    exit_code = int(ec_str)
+                except Exception:
+                    exit_code = -1
+
+                if _bg_timed_out and exit_code == -1:
+                    # Best-effort kill the background process to avoid resource leaks.
+                    if bg_pid_val is not None:
+                        try:
+                            self._sandbox.commands.run(  # type: ignore[union-attr]
+                                f"kill -TERM {bg_pid_val} 2>/dev/null || true",
+                                timeout=0,
+                                user="root",
+                            )
+                        except Exception:
+                            pass
+                    # Genuine timeout: raise TimeoutException so outer handler
+                    # returns SandboxStatus.TIMEOUT (consistent with sync mode).
+                    raise TimeoutException(f"Command timed out after {timeout}ms")
+            else:
+                # Short command: direct synchronous execution (safe within proxy timeout).
+                try:
+                    self._retry_on_transient(
+                        lambda: self._sandbox.commands.run(  # type: ignore[union-attr]
+                            cmd=wrapped_cmd,
+                            timeout=int(timeout_seconds),
+                            cwd=cwd or str(self.work_dir),
+                            user=user,
+                            envs=self._merge_envs(envs),
+                        )
+                    )
+                except CommandExitException as e:
+                    exit_code = getattr(e, "exit_code", -1)
 
             duration_ms = int((time.time() - start_time) * 1000)
 
@@ -504,6 +648,40 @@ class E2BSandbox(BaseSandbox):
                 stdout_file=f"{output_dir}/stdout.txt" if output_dir else None,
                 stderr_file=f"{output_dir}/stderr.txt" if output_dir else None,
             )
+
+        # Stream error but process might still be running — use kill -0 to check.
+        # NOTE: when the stream drops we lose the authoritative exit code from
+        # envd.  We report exit_code=-1 with a descriptive error as a safe
+        # default; callers should treat this as "indeterminate" rather than a
+        # definitive failure.
+        if task_info.get("stream_error") and self._sandbox is not None:
+            try:
+                check = self._sandbox.commands.run(
+                    f"kill -0 {pid} 2>/dev/null && echo ALIVE || echo DEAD",
+                    timeout=10,
+                    user="root",
+                )
+                if "DEAD" in (check.stdout or ""):
+                    task_info["finished"] = True
+                    task_info["exit_code"] = -1
+                    task_info["error"] = f"Process exited but exit code is unknown (event stream lost: {task_info['stream_error']})"
+                    return CommandResult(
+                        status=SandboxStatus.ERROR,
+                        stdout=t_stdout,
+                        stderr=t_stderr,
+                        exit_code=-1,
+                        duration_ms=duration_ms,
+                        error=task_info["error"],
+                        truncated=was_truncated,
+                        original_stdout_length=o_out,
+                        original_stderr_length=o_err,
+                        background_pid=pid,
+                        output_dir=output_dir,
+                        stdout_file=f"{output_dir}/stdout.txt" if output_dir else None,
+                        stderr_file=f"{output_dir}/stderr.txt" if output_dir else None,
+                    )
+            except Exception:
+                pass  # Can't check, assume still running
 
         # Task is still running, return accumulated output so far
         return CommandResult(
@@ -1028,12 +1206,13 @@ class E2BSandbox(BaseSandbox):
             raise ValueError(f"User must be 'root' or 'user' for E2B sandbox. But got {user}")
 
         try:
-            # Use mkdir command
             cmd = f"mkdir -p {directory_path}" if parents else f"mkdir {directory_path}"
-            result = self._sandbox.commands.run(
-                cmd=cmd,
-                cwd=str(self.work_dir),
-                user=user,
+            result = self._retry_on_transient(
+                lambda: self._sandbox.commands.run(  # type: ignore[union-attr]
+                    cmd=cmd,
+                    cwd=str(self.work_dir),
+                    user=user,
+                )
             )
 
             if result.exit_code != 0:
@@ -1250,10 +1429,12 @@ class E2BSandbox(BaseSandbox):
             else:
                 cmd = f'ls -1 "{pattern}" 2>/dev/null || true'
 
-            result = self._sandbox.commands.run(
-                cmd=cmd,
-                cwd=str(self.work_dir),
-                user=user,
+            result = self._retry_on_transient(
+                lambda: self._sandbox.commands.run(  # type: ignore[union-attr]
+                    cmd=cmd,
+                    cwd=str(self.work_dir),
+                    user=user,
+                )
             )
 
             if result.exit_code != 0 and result.exit_code != 1:
@@ -1688,6 +1869,7 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
                     output_char_threshold=sandbox_config.output_char_threshold,
                     truncate_head_chars=sandbox_config.truncate_head_chars,
                     truncate_tail_chars=sandbox_config.truncate_tail_chars,
+                    max_retries=sandbox_config.max_retries,
                 )
                 sandbox.set_api_credentials(self.api_key, self.api_url)
                 sandbox.envd_version = str(envd_ver)
@@ -1769,6 +1951,7 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
             output_char_threshold=sandbox_config.output_char_threshold,
             truncate_head_chars=sandbox_config.truncate_head_chars,
             truncate_tail_chars=sandbox_config.truncate_tail_chars,
+            max_retries=sandbox_config.max_retries,
         )
         sandbox.set_api_credentials(self.api_key, self.api_url)
         sandbox.envd_version = str(envd_ver)

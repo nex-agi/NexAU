@@ -18,7 +18,7 @@ from nexau.archs.sandbox import BaseSandbox, CommandResult, SandboxStatus
 from nexau.archs.tool.builtin._sandbox_utils import get_sandbox, resolve_path
 
 # Configuration constants (matching gemini-cli)
-DEFAULT_TIMEOUT_MS = 300000  # 5 minutes default timeout
+DEFAULT_TIMEOUT_MS = 1800000  # 30 minutes default timeout
 TRUNCATE_OUTPUT_THRESHOLD = 4_000_000  # Truncate when output exceeds this many chars
 TRUNCATE_OUTPUT_LINES = 1000  # Keep last N lines when truncating
 MAX_TRUNCATED_LINE_WIDTH = 1000  # Max chars per line in truncated output

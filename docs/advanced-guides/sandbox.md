@@ -119,6 +119,7 @@ sandbox_config:
   timeout: 300    # Timeout in seconds, default to 300
   api_key: ${env.E2B_API_KEY}  # Use environment variable
   persist_sandbox: true  # Optional, default to true. If false, sandbox is destroyed after agent.run
+  max_retries: 5  # Max retries for transient network errors (default: 5)
   metadata:
     project: my_project
     environment: production
@@ -135,6 +136,9 @@ sandbox_config:
 - `persist_sandbox`: Whether to persist sandbox state after agent.run (default: `true`). If `false`, sandbox is destroyed after each agent run
 - `metadata`: Custom metadata dictionary for the sandbox
 - `envs`: Environment variables to set in the sandbox
+- `keepalive_interval`: Seconds between keepalive pings to prevent idle disconnection (default: 60, set 0 to disable)
+- `force_http`: Use HTTP instead of HTTPS for envd connections, useful for self-hosted E2B (default: `false`, or set env `E2B_FORCE_HTTP=1`)
+- `max_retries`: Max retries for transient E2B network errors per SDK operation (default: 5). Retries use exponential backoff with automatic reconnection
 
 ### Programmatic Configuration
 

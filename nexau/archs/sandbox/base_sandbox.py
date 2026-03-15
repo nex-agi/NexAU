@@ -103,6 +103,8 @@ class E2BSandboxConfig(BaseSandboxConfig):
     keepalive_interval: int = 60  # seconds, 0 to disable
     # Self-host: use HTTP instead of HTTPS for envd (E2B SDK defaults to HTTPS)
     force_http: bool = Field(default_factory=lambda: os.getenv("E2B_FORCE_HTTP", "").lower() in ("1", "true", "yes"))
+    # Max retries for transient E2B network errors (per SDK operation)
+    max_retries: int = 5
 
 
 SandboxConfig = LocalSandboxConfig | E2BSandboxConfig
