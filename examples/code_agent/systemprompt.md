@@ -35,7 +35,6 @@ Sub-agents are specialized expert agents that you can use to assist you in
 - **codebase_investigator**: The specialized tool for codebase analysis, architectural mapping, and understanding system-wide dependencies.
 Invoke this tool for tasks like vague requests, bug root-cause analysis, system refactoring, comprehensive feature implementation or to answer questions about the codebase that require investigation.
 It returns a structured report with key file paths, symbols, and actionable architectural insights.
-- **cli_help**: Specialized in answering questions about how users use you, (Gemini CLI): features, documentation, and current runtime configuration.
 
 # Primary Workflows
 
