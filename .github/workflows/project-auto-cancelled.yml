@@ -22,6 +22,7 @@ jobs:
           STATUS_FIELD_ID="PVTSSF_lADOCmnEdM4BQARnzg-P8lI"
           CANCELLED_OPTION_ID="e25879b3"
 
+          ISSUE_NODE_ID="${{ github.event.issue.node_id }}"
           REPO_NAME="${{ github.repository }}"
           ISSUE_NUM="${{ github.event.issue.number }}"
           ISSUE_TITLE="${{ github.event.issue.title }}"
@@ -29,52 +30,91 @@ jobs:
 
           echo "Issue #$ISSUE_NUM in $REPO_NAME closed as '$REASON': $ISSUE_TITLE"
 
-          HAS_NEXT=true
-          CURSOR=""
-          ITEM_ID=""
-
-          while [ "$HAS_NEXT" = "true" ] && [ -z "$ITEM_ID" ]; do
-            if [ -z "$CURSOR" ]; then
-              AFTER_ARG=""
-            else
-              AFTER_ARG=", after: \"$CURSOR\""
-            fi
-
-            RESPONSE=$(gh api graphql -f query="
+          find_item_via_issue() {
+            gh api graphql -f query="
             {
-              node(id: \"$PROJECT_ID\") {
-                ... on ProjectV2 {
-                  items(first: 100${AFTER_ARG}) {
-                    pageInfo {
-                      hasNextPage
-                      endCursor
-                    }
+              node(id: \"$ISSUE_NODE_ID\") {
+                ... on Issue {
+                  projectItems(first: 20) {
                     nodes {
                       id
-                      content {
-                        ... on Issue {
-                          number
-                          repository { nameWithOwner }
+                      project { id }
+                    }
+                  }
+                }
+              }
+            }" | jq -r --arg project "$PROJECT_ID" '
+              .data.node.projectItems.nodes[]?
+              | select(.project.id == $project)
+              | .id
+            ' | head -n 1
+          }
+
+          find_item_via_project_scan() {
+            local has_next=true
+            local cursor=""
+            local item_id=""
+
+            while [ "$has_next" = "true" ] && [ -z "$item_id" ]; do
+              if [ -z "$cursor" ]; then
+                after_arg=""
+              else
+                after_arg=", after: \"$cursor\""
+              fi
+
+              response=$(gh api graphql -f query="
+              {
+                node(id: \"$PROJECT_ID\") {
+                  ... on ProjectV2 {
+                    items(first: 100${after_arg}) {
+                      pageInfo {
+                        hasNextPage
+                        endCursor
+                      }
+                      nodes {
+                        id
+                        content {
+                          ... on Issue {
+                            number
+                            repository { nameWithOwner }
+                          }
                         }
                       }
                     }
                   }
                 }
-              }
-            }")
+              }")
 
-            HAS_NEXT=$(echo "$RESPONSE" | jq -r '.data.node.items.pageInfo.hasNextPage')
-            CURSOR=$(echo "$RESPONSE" | jq -r '.data.node.items.pageInfo.endCursor')
-            ITEM_ID=$(echo "$RESPONSE" | jq -r --arg repo "$REPO_NAME" --arg num "$ISSUE_NUM" '
-              .data.node.items.nodes[]
-              | select(.content != null and (.content.number | tostring) == $num and .content.repository.nameWithOwner == $repo)
-              | .id
-            ' | head -n 1)
+              has_next=$(echo "$response" | jq -r '.data.node.items.pageInfo.hasNextPage')
+              cursor=$(echo "$response" | jq -r '.data.node.items.pageInfo.endCursor')
+              item_id=$(echo "$response" | jq -r --arg repo "$REPO_NAME" --arg num "$ISSUE_NUM" '
+                .data.node.items.nodes[]
+                | select(.content != null and (.content.number | tostring) == $num and .content.repository.nameWithOwner == $repo)
+                | .id
+              ' | head -n 1)
+            done
+
+            printf '%s' "$item_id"
+          }
+
+          ITEM_ID=""
+          for attempt in 1 2 3 4 5; do
+            ITEM_ID=$(find_item_via_issue || true)
+            if [ -z "$ITEM_ID" ]; then
+              ITEM_ID=$(find_item_via_project_scan || true)
+            fi
+
+            if [ -n "$ITEM_ID" ]; then
+              break
+            fi
+
+            echo "Project item not visible yet (attempt $attempt/5), retrying in 3s..."
+            sleep 3
           done
 
           if [ -z "$ITEM_ID" ]; then
-            echo "Issue not found in project, skipping."
-            exit 0
+            echo "Issue not found in project after retries."
+            exit 1
           fi
 
           echo "Found project item: $ITEM_ID — setting Status to Cancelled"
