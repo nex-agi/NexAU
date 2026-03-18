@@ -952,6 +952,40 @@ def call_llm_with_openai_responses(
     return ModelResponse.from_openai_response(response_payload)
 
 
+def _parse_image_url_part(part_map: Mapping[str, object]) -> dict[str, object] | None:
+    """Convert a legacy ``image_url`` content part to Responses API ``input_image`` format.
+
+    支持两种 image_url 值格式:
+    - dict: ``{"url": "...", "detail": "high"}``
+    - str:  ``"data:image/png;base64,..."``
+
+    Returns ``None`` when the part does not contain a usable URL.
+    """
+
+    image_url_any = part_map.get("image_url")
+    url: str | None = None
+    detail: str | None = None
+
+    if isinstance(image_url_any, Mapping):
+        image_url_map = cast(Mapping[str, object], image_url_any)
+        url_any = image_url_map.get("url")
+        if isinstance(url_any, str) and url_any.strip():
+            url = url_any.strip()
+        detail_any = image_url_map.get("detail")
+        if isinstance(detail_any, str) and detail_any in {"low", "high", "auto"}:
+            detail = detail_any
+    elif isinstance(image_url_any, str) and image_url_any.strip():
+        url = image_url_any.strip()
+
+    if not url:
+        return None
+
+    payload: dict[str, object] = {"type": "input_image", "image_url": url}
+    if detail and detail != "auto":
+        payload["detail"] = detail
+    return payload
+
+
 def _prepare_responses_api_input(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
     """Convert internal message representation into Responses API input items and instructions."""
 
@@ -986,25 +1020,9 @@ def _prepare_responses_api_input(messages: list[dict[str, Any]]) -> tuple[list[d
                             continue
 
                         if part_type == "image_url":
-                            image_url_any = part_map.get("image_url")
-                            url: str | None = None
-                            detail: str | None = None
-                            if isinstance(image_url_any, Mapping):
-                                image_url_map = cast(Mapping[str, Any], image_url_any)
-                                url_any = image_url_map.get("url")
-                                if isinstance(url_any, str) and url_any.strip():
-                                    url = url_any.strip()
-                                detail_any = image_url_map.get("detail")
-                                if isinstance(detail_any, str) and detail_any in {"low", "high", "auto"}:
-                                    detail = detail_any
-                            elif isinstance(image_url_any, str) and image_url_any.strip():
-                                url = image_url_any.strip()
-
-                            if url:
-                                payload: dict[str, Any] = {"type": "input_image", "image_url": url}
-                                if detail and detail != "auto":
-                                    payload["detail"] = detail
-                                out_items.append(payload)
+                            img_part = _parse_image_url_part(part_map)
+                            if img_part is not None:
+                                out_items.append(img_part)
                             continue
 
                     # Use array output if it contains any images; otherwise keep legacy string coercion.
@@ -1036,7 +1054,24 @@ def _prepare_responses_api_input(messages: list[dict[str, Any]]) -> tuple[list[d
             text_type = "output_text"
 
         content_parts: list[dict[str, Any]] = []
-        if content:
+        if isinstance(content, list):
+            # 多模态 content（text + image_url 等），逐 part 转换为 Responses API 格式
+            for part in cast(list[Any], content):
+                if not isinstance(part, Mapping):
+                    continue
+                part_map = cast(Mapping[str, Any], part)
+                part_type = str(part_map.get("type") or "")
+
+                if part_type in {"text", "input_text", "output_text"}:
+                    msg_text_val: object = part_map.get("text") or part_map.get("content")
+                    if msg_text_val:
+                        content_parts.append({"type": text_type, "text": str(msg_text_val)})
+
+                elif part_type == "image_url":
+                    img_part = _parse_image_url_part(part_map)
+                    if img_part is not None:
+                        content_parts.append(img_part)
+        elif content:
             content_parts.append({"type": text_type, "text": str(content)})
 
         message_item: dict[str, Any] = {

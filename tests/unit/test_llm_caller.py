@@ -253,6 +253,84 @@ class TestLLMCallerBasicCalls:
         assert assistant_messages[0]["phase"] == "commentary"
         assert assistant_messages[1]["phase"] == "final_answer"
 
+    def test_prepare_responses_api_input_user_multimodal_content(self):
+        """User message with list content (text + image_url) should produce input_text + input_image parts."""
+        from nexau.archs.main_sub.execution.llm_caller import _prepare_responses_api_input
+
+        prepared, _instructions = _prepare_responses_api_input(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe these"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR"}},
+                    ],
+                },
+            ]
+        )
+
+        assert len(prepared) == 1
+        msg = prepared[0]
+        assert msg["type"] == "message"
+        assert msg["role"] == "user"
+        parts = msg["content"]
+        assert len(parts) == 2
+        assert parts[0] == {"type": "input_text", "text": "describe these"}
+        assert parts[1] == {"type": "input_image", "image_url": "data:image/png;base64,iVBOR"}
+
+    def test_prepare_responses_api_input_user_image_with_detail(self):
+        """Image part with explicit detail should forward the detail field."""
+        from nexau.archs.main_sub.execution.llm_caller import _prepare_responses_api_input
+
+        prepared, _ = _prepare_responses_api_input(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "hi"},
+                        {"type": "image_url", "image_url": {"url": "https://example.com/img.png", "detail": "high"}},
+                    ],
+                },
+            ]
+        )
+
+        parts = prepared[0]["content"]
+        assert len(parts) == 2
+        img_part = parts[1]
+        assert img_part["type"] == "input_image"
+        assert img_part["image_url"] == "https://example.com/img.png"
+        assert img_part["detail"] == "high"
+
+    def test_prepare_responses_api_input_user_string_content_unchanged(self):
+        """Plain string content for user messages should still work (regression test)."""
+        from nexau.archs.main_sub.execution.llm_caller import _prepare_responses_api_input
+
+        prepared, _ = _prepare_responses_api_input([{"role": "user", "content": "just text"}])
+
+        assert len(prepared) == 1
+        msg = prepared[0]
+        assert msg["content"] == [{"type": "input_text", "text": "just text"}]
+
+    def test_prepare_responses_api_input_assistant_multimodal_content(self):
+        """Assistant message with list content should convert parts using output_text type."""
+        from nexau.archs.main_sub.execution.llm_caller import _prepare_responses_api_input
+
+        prepared, _ = _prepare_responses_api_input(
+            [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Here is the image analysis"},
+                    ],
+                },
+            ]
+        )
+
+        assert len(prepared) == 1
+        msg = prepared[0]
+        assert msg["role"] == "assistant"
+        assert msg["content"] == [{"type": "output_text", "text": "Here is the image analysis"}]
+
     def test_call_llm_responses_api_normalizes_tools(self, mock_openai_client, responses_llm_config, agent_state):
         """Ensure tool payloads satisfy Responses API expectations."""
 
