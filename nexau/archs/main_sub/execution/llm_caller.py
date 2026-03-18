@@ -206,6 +206,7 @@ class LLMCaller:
         retry_attempts: int = 5,
         middleware_manager: MiddlewareManager | None = None,
         global_storage: Any = None,
+        session_id: str | None = None,
     ):
         """Initialize LLM caller.
 
@@ -215,12 +216,15 @@ class LLMCaller:
             retry_attempts: Number of retry attempts for API calls
             middleware_manager: Optional middleware manager for wrapping calls
             global_storage: Optional global storage to retrieve tracer at call time
+            session_id: Optional session ID injected into provider payloads
+                (OpenAI ``user``, Anthropic ``metadata.user_id``; Gemini skipped)
         """
         self.openai_client = openai_client
         self.llm_config = llm_config
         self.retry_attempts = retry_attempts
         self.middleware_manager = middleware_manager
         self.global_storage = global_storage
+        self.session_id = session_id
 
     def _get_tracer(self) -> BaseTracer | None:
         """Get tracer from global storage at call time."""
@@ -385,6 +389,21 @@ class LLMCaller:
                 if force_stop_reason and force_stop_reason != AgentStopReason.SUCCESS:
                     return None
                 kwargs = dict(params.api_params)
+
+                # session_id → provider-specific user tracking field
+                if self.session_id is not None:
+                    if self.llm_config.api_type == "openai_chat_completion":
+                        kwargs.setdefault("user", self.session_id)
+                    elif self.llm_config.api_type == "openai_responses":
+                        # 'user' is deprecated and some backends actively reject it.
+                        # Only use its official replacements: safety_identifier + prompt_cache_key.
+                        kwargs.setdefault("safety_identifier", self.session_id)
+                        kwargs.setdefault("prompt_cache_key", self.session_id)
+                    elif self.llm_config.api_type == "anthropic_chat_completion":
+                        existing_metadata: dict[str, str] = kwargs.get("metadata") or {}
+                        existing_metadata.setdefault("user_id", self.session_id)
+                        kwargs["metadata"] = existing_metadata
+
                 logger.debug(
                     "🔍 [HISTORY-DEBUG] LLM call: %d Message objects, roles=%s",
                     len(params.messages),

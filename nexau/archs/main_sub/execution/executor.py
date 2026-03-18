@@ -177,6 +177,7 @@ class Executor:
             retry_attempts,
             middleware_manager=self.middleware_manager,
             global_storage=global_storage,
+            session_id=session_id,
         )
 
         # Execution parameters

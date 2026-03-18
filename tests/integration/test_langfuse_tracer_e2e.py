@@ -46,7 +46,7 @@ pytestmark = [
     ),
 ]
 
-_HOST = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+_HOST = os.getenv("LANGFUSE_HOST") or "https://cloud.langfuse.com"
 _PK = os.getenv("LANGFUSE_PUBLIC_KEY", "")
 _SK = os.getenv("LANGFUSE_SECRET_KEY", "")
 
