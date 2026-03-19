@@ -103,12 +103,18 @@ class TestDetectEncoding:
         sandbox.read_file.return_value = fail_res
         assert _detect_encoding("test.txt", sandbox) == "utf-8"
 
-    def test_gbk_file_detected_via_chardet(self):
-        """Non-UTF-8 file (GBK) should fall through to chardet detection."""
-        raw = "你好世界".encode("gbk")
+    def test_non_utf8_falls_through_to_chardet(self, monkeypatch: pytest.MonkeyPatch):
+        """Non-UTF-8 bytes should skip UTF-8 validation and adopt chardet result."""
+        raw = b"\xc4\xe3\xba\xc3"  # "你好" in GBK, invalid UTF-8
         sandbox = _make_sandbox_for_encoding(raw)
-        result = _detect_encoding("test.txt", sandbox)
-        assert result != "utf-8" or result == "utf-8"
+
+        fake_chardet = Mock()
+        fake_chardet.detect.return_value = {"encoding": "GB2312", "confidence": 0.9}
+        monkeypatch.setitem(
+            __import__("sys").modules, "chardet", fake_chardet
+        )
+
+        assert _detect_encoding("test.txt", sandbox) == "gb2312"
 
 
 class TestReadFileEncodingFallback:
