@@ -76,6 +76,17 @@ _DEFAULT_TAIL_CHARS = 5000
 _DEFAULT_TEMP_DIR = "/tmp/nexau_tool_outputs"
 """Default directory for persisted full outputs."""
 
+_DEFAULT_BYPASS_TOOL_NAMES: frozenset[str] = frozenset({"LoadSkill"})
+"""Tools bypassed by default.
+
+``LoadSkill`` reads from the in-memory skill registry without starting a
+sandbox (see ``ToolExecutor._SANDBOX_OPTIONAL_TOOL_NAMES``).  The sandbox
+reference is therefore ``None`` when the after-tool hook runs, making it
+impossible to persist the full output via the Sandbox API.  Bypassing it
+avoids the error and is semantically correct — skill content loaded into
+context should not be truncated.
+"""
+
 
 class LongToolOutputMiddleware(Middleware):
     """Truncates oversized tool outputs and persists the full version to disk.
@@ -101,8 +112,9 @@ class LongToolOutputMiddleware(Middleware):
             disable file persistence (truncation still applies, but no file
             is saved and no ``read_file`` hint is emitted).
         bypass_tool_names: Tool names whose output should never be truncated
-            by this middleware.  Useful for tools that already perform their
-            own truncation (e.g. ``execute_bash``).
+            by this middleware.  Defaults to ``{"LoadSkill"}``.  Useful for
+            tools that already perform their own truncation or that run
+            without a sandbox (e.g. ``execute_bash``, ``LoadSkill``).
     """
 
     def __init__(
@@ -135,7 +147,7 @@ class LongToolOutputMiddleware(Middleware):
         self.head_chars = head_chars
         self.tail_chars = tail_chars
         self.temp_dir = temp_dir
-        self._bypass_tool_names: frozenset[str] = frozenset(bypass_tool_names or ())
+        self._bypass_tool_names: frozenset[str] = _DEFAULT_BYPASS_TOOL_NAMES | frozenset(bypass_tool_names or ())
 
     # ------------------------------------------------------------------
     # Middleware hook

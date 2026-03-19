@@ -636,10 +636,25 @@ class TestBypassToolNames:
         result = mw.after_tool(hook_input)
         assert result.has_modifications()
 
-    def test_default_bypass_is_empty(self):
-        """By default, no tools are bypassed."""
+    def test_default_bypass_includes_load_skill(self):
+        """By default, LoadSkill is bypassed (no sandbox available for it)."""
         mw = LongToolOutputMiddleware()
-        assert len(mw._bypass_tool_names) == 0
+        assert "LoadSkill" in mw._bypass_tool_names
+
+    def test_custom_bypass_merges_with_defaults(self):
+        """User-provided bypass names are merged with the built-in defaults."""
+        mw = LongToolOutputMiddleware(bypass_tool_names=["execute_bash"])
+        assert "LoadSkill" in mw._bypass_tool_names
+        assert "execute_bash" in mw._bypass_tool_names
+
+    def test_load_skill_bypassed_even_without_sandbox(self, agent_state: AgentState):
+        """LoadSkill runs without a sandbox; the middleware must not attempt to write a temp file."""
+        long = _long_text(200)
+        mw = _make_middleware(max_output_chars=100, head_lines=3, tail_lines=2)
+        hook_input = _make_hook_input(agent_state, long, sandbox=None, tool_name="LoadSkill")
+
+        result = mw.after_tool(hook_input)
+        assert not result.has_modifications()
 
 
 # ---------------------------------------------------------------------------
