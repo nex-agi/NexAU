@@ -36,7 +36,7 @@ STRUCTURED_TOOL_CALL_MODES: set[str] = {"structured"}
 LEGACY_STRUCTURED_TOOL_CALL_MODE_ALIASES: set[str] = {"openai", "anthropic"}
 DEFAULT_TOOL_CALL_MODE = "structured"
 
-_OPENAI_FAMILY_API_TYPES = {"openai_chat_completion", "openai_responses"}
+_OPENAI_FAMILY_API_TYPES = {"openai_chat_completion", "openai_responses", "generate_with_token"}
 _ANTHROPIC_API_TYPES = {"anthropic_chat_completion"}
 _GEMINI_API_TYPES = {"gemini_rest"}
 

@@ -29,6 +29,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.execution.executor import Executor
 from nexau.archs.main_sub.execution.hooks import HookResult, Middleware
 from nexau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
@@ -39,9 +40,9 @@ from nexau.archs.main_sub.execution.parse_structures import (
     ToolCall,
 )
 from nexau.archs.main_sub.framework_context import FrameworkContext
-from nexau.archs.tool.tool import Tool
+from nexau.archs.tool.tool import Tool, build_structured_tool_definition
 from nexau.archs.tool.tool_registry import ToolRegistry
-from nexau.core.messages import ImageBlock, Role, TextBlock, ToolOutputImage, ToolResultBlock
+from nexau.core.messages import ImageBlock, Message, Role, TextBlock, ToolOutputImage, ToolResultBlock
 
 
 def make_tool_registry(tools: dict[str, Tool] | None = None) -> ToolRegistry:
@@ -293,6 +294,241 @@ class TestExecutorExecution:
         mock_call_llm.assert_not_called()
         assert middleware.after_agent_called is True
         assert response == "Stop signal received.::hooked"
+
+    def test_execute_generate_with_token_stores_trace_memory(self, agent_state, global_storage):
+        """generate_with_token execution should write token trace into shared trace memory."""
+        llm_config = LLMConfig(
+            model="token-model",
+            base_url="http://token-gateway",
+            api_key="test-key",
+            api_type="generate_with_token",
+        )
+        executor = Executor(
+            agent_name="test_agent",
+            agent_id="test_id",
+            tool_registry=make_tool_registry(),
+            sub_agents={},
+            stop_tools=set(),
+            openai_client=None,
+            llm_config=llm_config,
+            global_storage=global_storage,
+        )
+        agent_state.global_storage = global_storage
+
+        history = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        with patch("nexau.archs.main_sub.execution.executor.TokenTraceSession") as mock_session_cls:
+            mock_session = mock_session_cls.return_value
+            mock_session.export_trace.return_value = {
+                "final_token_list": [1, 2, 3, 4],
+                "response_mask": [0, 0, 1, 1],
+                "round_traces": [{"request_tokens": [1, 2], "response_tokens": [3, 4]}],
+                "token_provider_usage": [{"total_tokens": 4}],
+            }
+
+            with patch.object(
+                executor.llm_caller,
+                "call_llm",
+                return_value=ModelResponse(content="Done", output_token_ids=[3, 4]),
+            ):
+                response, _ = executor.execute(history, agent_state)
+
+        assert response == "Done"
+        trace_memory = global_storage.get("trace_memory", {})
+        assert trace_memory["final_token_list"] == [1, 2, 3, 4]
+        assert trace_memory["response_mask"] == [0, 0, 1, 1]
+        mock_session.initialize_from_messages.assert_called_once()
+        mock_session.append_model_response.assert_called_once()
+
+    def test_execute_generate_with_token_initializes_session_with_tools(self, agent_state, global_storage):
+        """generate_with_token should include structured tools during initial tokenization."""
+        structured_tools = [
+            build_structured_tool_definition(
+                name="simple_tool",
+                description="A simple tool",
+                input_schema={"type": "object"},
+            )
+        ]
+        llm_config = LLMConfig(
+            model="token-model",
+            base_url="http://token-gateway",
+            api_key="test-key",
+            api_type="generate_with_token",
+        )
+        executor = Executor(
+            agent_name="test_agent",
+            agent_id="test_id",
+            tool_registry=make_tool_registry(),
+            sub_agents={},
+            stop_tools=set(),
+            openai_client=None,
+            llm_config=llm_config,
+            global_storage=global_storage,
+            tool_call_mode="openai",
+            structured_tools=structured_tools,
+        )
+        agent_state.global_storage = global_storage
+
+        history = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        with patch("nexau.archs.main_sub.execution.executor.TokenTraceSession") as mock_session_cls:
+            mock_session = mock_session_cls.return_value
+            mock_session.export_trace.return_value = {
+                "final_token_list": [1, 2, 3],
+                "response_mask": [0, 0, 1],
+                "round_traces": [],
+                "token_provider_usage": [],
+            }
+
+            with patch.object(
+                executor.llm_caller,
+                "call_llm",
+                return_value=ModelResponse(content="Done", output_token_ids=[3]),
+            ):
+                response, _ = executor.execute(history, agent_state)
+
+        assert response == "Done"
+        mock_session.initialize_from_messages.assert_called_once()
+        init_args = mock_session.initialize_from_messages.call_args
+        initialized_messages = init_args.args[0]
+        assert [message.role for message in initialized_messages[:2]] == [Role.SYSTEM, Role.USER]
+        assert [message.get_text_content() for message in initialized_messages[:2]] == [
+            "You are a helpful assistant.",
+            "Hello",
+        ]
+        assert init_args.kwargs["tools"] == structured_tools
+
+    def test_execute_generate_with_token_multi_turn_tool_trace(self, agent_state, global_storage):
+        """generate_with_token should keep token trace state across tool-call rounds."""
+
+        def simple_tool(x: int) -> dict:
+            return {"result": x + 1}
+
+        tool = Tool(
+            name="simple_tool",
+            description="A simple tool",
+            input_schema={
+                "type": "object",
+                "properties": {"x": {"type": "integer"}},
+                "required": ["x"],
+            },
+            implementation=simple_tool,
+        )
+
+        structured_tools = [
+            build_structured_tool_definition(
+                name="simple_tool",
+                description="A simple tool",
+                input_schema={
+                    "type": "object",
+                    "properties": {"x": {"type": "integer"}},
+                    "required": ["x"],
+                },
+            )
+        ]
+
+        llm_config = LLMConfig(
+            model="token-model",
+            base_url="http://token-gateway",
+            api_key="test-key",
+            api_type="generate_with_token",
+        )
+        executor = Executor(
+            agent_name="test_agent",
+            agent_id="test_id",
+            tool_registry=make_tool_registry({"simple_tool": tool}),
+            sub_agents={},
+            stop_tools=set(),
+            openai_client=None,
+            llm_config=llm_config,
+            global_storage=global_storage,
+            max_iterations=2,
+            tool_call_mode="openai",
+            structured_tools=structured_tools,
+        )
+        agent_state.global_storage = global_storage
+
+        history = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Use the tool and finish."},
+        ]
+
+        first_response = ModelResponse(
+            content="",
+            tool_calls=[
+                ModelToolCall(
+                    call_id="call_123",
+                    name="simple_tool",
+                    arguments={"x": 3},
+                    raw_arguments='{"x": 3}',
+                )
+            ],
+            output_token_ids=[101, 102],
+        )
+        second_response = ModelResponse(content="Final response", output_token_ids=[201])
+
+        with patch("nexau.archs.main_sub.execution.executor.TokenTraceSession") as mock_session_cls:
+            mock_session = mock_session_cls.return_value
+            mock_session.export_trace.return_value = {
+                "final_token_list": [1, 2, 101, 102, 301, 302, 201],
+                "response_mask": [0, 0, 1, 1, 0, 0, 1],
+                "round_traces": [
+                    {"request_tokens": [1, 2], "response_tokens": [101, 102]},
+                    {"request_tokens": [1, 2, 101, 102, 301, 302], "response_tokens": [201]},
+                ],
+                "token_provider_usage": [{"total_tokens": 4}, {"total_tokens": 7}],
+            }
+
+            call_messages: list[list[Message]] = []
+
+            def llm_side_effect(messages, **kwargs):
+                call_messages.append(list(messages))
+                assert kwargs["token_trace_session"] is mock_session
+                if len(call_messages) == 1:
+                    return first_response
+
+                assert len(call_messages) == 2
+                tool_message = next(msg for msg in messages if msg.role == Role.TOOL)
+                tool_block = next(block for block in tool_message.content if isinstance(block, ToolResultBlock))
+                assert tool_block.tool_use_id == "call_123"
+                assert isinstance(tool_block.content, str)
+                assert '"result"' in tool_block.content
+                return second_response
+
+            with patch.object(executor.llm_caller, "call_llm", side_effect=llm_side_effect):
+                response, messages = executor.execute(history, agent_state)
+
+        assert response == "Final response"
+        assert len(call_messages) == 2
+        assert mock_session.initialize_from_messages.call_count == 1
+        assert mock_session.append_model_response.call_count == 2
+
+        first_append = mock_session.append_model_response.call_args_list[0].kwargs
+        second_append = mock_session.append_model_response.call_args_list[1].kwargs
+        assert first_append["output_token_ids"] == [101, 102]
+        assert second_append["output_token_ids"] == [201]
+
+        assert mock_session.append_messages.call_count == 1
+        append_messages_args = mock_session.append_messages.call_args.args
+        append_messages_kwargs = mock_session.append_messages.call_args.kwargs
+        appended_tool_messages = append_messages_args[0]
+        assert append_messages_kwargs["mask_value"] == 0
+        assert len(appended_tool_messages) == 1
+        appended_tool_message = appended_tool_messages[0]
+        assert appended_tool_message.role == Role.TOOL
+        appended_tool_block = next(block for block in appended_tool_message.content if isinstance(block, ToolResultBlock))
+        assert appended_tool_block.tool_use_id == "call_123"
+
+        trace_memory = global_storage.get("trace_memory", {})
+        assert trace_memory["final_token_list"] == [1, 2, 101, 102, 301, 302, 201]
+        assert trace_memory["response_mask"] == [0, 0, 1, 1, 0, 0, 1]
+        assert messages[-1].role == Role.ASSISTANT
 
     def test_before_and_after_agent_middlewares(self, mock_llm_config, agent_state):
         """Lifecycle middlewares can modify initial messages and final response."""

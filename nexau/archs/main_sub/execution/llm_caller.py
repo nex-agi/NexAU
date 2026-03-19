@@ -54,10 +54,25 @@ from ..tool_call_modes import (
 from .hooks import MiddlewareManager, ModelCallParams
 from .model_response import ModelResponse
 from .stop_reason import AgentStopReason
+from nexau.archs.main_sub.token_trace_session import TokenTraceSession
 
 logger = logging.getLogger(__name__)
 
 _MISSING_TOOL_RESULT_CONTENT = "no tool result (canceled, compacted or failed)"
+
+
+def _normalize_token_ids(value: object, *, context: str) -> list[int]:
+    """Normalize token ids to a list of ints."""
+    if not isinstance(value, list):
+        raise ValueError(f"{context} must be a list of integers")
+
+    token_ids: list[int] = []
+    for item in cast(list[object], value):
+        try:
+            token_ids.append(int(cast(int | str, item)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{context} contains a non-integer token: {item!r}") from exc
+    return token_ids
 
 
 def _compact_scalar(value: Any, *, max_chars: int = 256) -> str:
@@ -242,6 +257,7 @@ class LLMCaller:
         tools: Sequence[StructuredToolDefinitionLike] | None = None,
         openai_client: Any | None = None,
         shutdown_event: threading.Event | None = None,
+        token_trace_session: TokenTraceSession | None = None,
     ) -> ModelResponse | None:
         """Call LLM with the given messages and return normalized response.
 
@@ -342,6 +358,7 @@ class LLMCaller:
             llm_config=self.llm_config,
             retry_attempts=self.retry_attempts,
             shutdown_event=shutdown_event,
+            token_trace_session=token_trace_session,
         )
 
         def base_call(params: ModelCallParams) -> ModelResponse | None:
@@ -409,10 +426,10 @@ class LLMCaller:
                     len(params.messages),
                     [m.role.value for m in params.messages],
                 )
+                tool_image_policy: Literal["inject_user_message", "embed_in_tool_message"] = "inject_user_message"
                 if self.llm_config.api_type in {"openai_chat_completion", "openai_responses"}:
-                    tool_image_policy: Literal["inject_user_message", "embed_in_tool_message"] = (
-                        "embed_in_tool_message" if self.llm_config.api_type == "openai_responses" else "inject_user_message"
-                    )
+                    tool_image_policy = "embed_in_tool_message" if self.llm_config.api_type == "openai_responses" else "inject_user_message"
+                if self.llm_config.api_type != "generate_with_token":
                     kwargs["messages"] = messages_to_legacy_openai_chat(params.messages, tool_image_policy=tool_image_policy)
                     logger.debug(
                         "🔍 [HISTORY-DEBUG] After legacy conversion: %d dicts, roles=%s",
@@ -516,8 +533,268 @@ def call_llm_with_different_client(
             llm_config=llm_config,
             tracer=tracer,
         )
+    elif llm_config.api_type == "generate_with_token":
+        return call_llm_with_generate_with_token(
+            client,
+            kwargs,
+            model_call_params=model_call_params,
+            llm_config=llm_config,
+            tracer=tracer,
+        )
     else:
         raise ValueError(f"Invalid API type: {llm_config.api_type}")
+
+
+def _safe_int(value: Any) -> int:
+    """Best-effort integer coercion for provider usage metadata."""
+    try:
+        return int(cast(int | str, value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalize_generate_with_token_finish_reason(finish_reason: Any) -> str | None:
+    """Normalize finish reasons from generate-with-token responses."""
+    if finish_reason is None:
+        return None
+
+    if isinstance(finish_reason, Mapping):
+        finish_reason_mapping = cast(Mapping[str, Any], finish_reason)
+        finish_type = finish_reason_mapping.get("type")
+        if finish_type is not None:
+            return str(finish_type)
+        return json.dumps(dict(finish_reason_mapping), ensure_ascii=False)
+
+    return str(finish_reason)
+
+
+def _get_generate_with_token_meta_info(response_payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return `meta_info` mapping from generate-with-token responses when available."""
+    meta_info_raw = response_payload.get("meta_info")
+    if isinstance(meta_info_raw, Mapping):
+        return cast(Mapping[str, Any], meta_info_raw)
+    return {}
+
+
+def _extract_generate_with_token_message(response_payload: dict[str, Any]) -> tuple[dict[str, Any], Any]:
+    """Extract an assistant message from either OpenAI-like or raw token payloads."""
+    choices_payload = response_payload.get("choices")
+    if isinstance(choices_payload, list) and choices_payload:
+        choices_list = cast(list[object], choices_payload)
+        first_choice_raw = choices_list[0]
+        if not isinstance(first_choice_raw, Mapping):
+            raise ValueError("generate_with_token response choice must be a mapping")
+        choice_mapping = cast(Mapping[str, Any], first_choice_raw)
+        choice_message_payload = choice_mapping.get("message")
+        if not isinstance(choice_message_payload, Mapping):
+            raise ValueError("generate_with_token response missing assistant message")
+        return dict(cast(Mapping[str, Any], choice_message_payload)), choice_mapping.get("finish_reason")
+
+    fallback_message_payload: dict[str, Any] = {
+        "role": "assistant",
+        "content": response_payload.get("text"),
+    }
+    tool_calls_raw = response_payload.get("tool_calls")
+    if isinstance(tool_calls_raw, list):
+        fallback_message_payload["tool_calls"] = list(cast(list[object], tool_calls_raw))
+
+    finish_reason_raw = response_payload.get("finish_reason")
+    if finish_reason_raw is None:
+        finish_reason_raw = _get_generate_with_token_meta_info(response_payload).get("finish_reason")
+    return fallback_message_payload, finish_reason_raw
+
+
+def _extract_generate_with_token_nexrl_train(
+    response_payload: dict[str, Any],
+    *,
+    request_tokens: list[int],
+) -> dict[str, Any]:
+    """Extract or synthesize NexRL train metadata from generate-with-token responses."""
+    nexrl_train_payload = response_payload.get("nexrl_train")
+    if isinstance(nexrl_train_payload, Mapping):
+        return dict(cast(Mapping[str, Any], nexrl_train_payload))
+
+    output_token_ids = _normalize_token_ids(
+        response_payload.get("output_token_ids", response_payload.get("output_ids", [])),
+        context="generate_with_token output token ids",
+    )
+    meta_info = _get_generate_with_token_meta_info(response_payload)
+    response_logprobs: list[float] = []
+    output_token_logprobs = meta_info.get("output_token_logprobs")
+    if isinstance(output_token_logprobs, list):
+        for entry in cast(list[object], output_token_logprobs):
+            if isinstance(entry, (list, tuple)) and entry:
+                entry_items = cast(Sequence[object], entry)
+                first_logprob = entry_items[0]
+                if isinstance(first_logprob, (int, float)):
+                    response_logprobs.append(float(first_logprob))
+            elif isinstance(entry, (int, float)):
+                response_logprobs.append(float(entry))
+
+    return {
+        "prompt_tokens": list(request_tokens),
+        "response_tokens": output_token_ids,
+        "response_logprobs": response_logprobs,
+    }
+
+
+def _normalize_generate_with_token_usage(response_payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize token usage from generate-with-token responses."""
+    usage_payload = response_payload.get("usage")
+    if isinstance(usage_payload, Mapping):
+        usage_dict: dict[str, Any] = dict(cast(Mapping[str, Any], usage_payload))
+    else:
+        usage_dict = {}
+
+    meta_info = dict(_get_generate_with_token_meta_info(response_payload))
+    nexrl_train_payload = response_payload.get("nexrl_train")
+    nexrl_train = dict(cast(Mapping[str, Any], nexrl_train_payload)) if isinstance(nexrl_train_payload, Mapping) else {}
+
+    prompt_tokens = _safe_int(
+        usage_dict.get(
+            "prompt_tokens",
+            usage_dict.get(
+                "input_tokens",
+                meta_info.get("prompt_tokens", len(cast(list[Any], nexrl_train.get("prompt_tokens", [])))),
+            ),
+        )
+    )
+    completion_tokens = _safe_int(
+        usage_dict.get(
+            "completion_tokens",
+            usage_dict.get(
+                "output_tokens",
+                meta_info.get("completion_tokens", len(cast(list[Any], nexrl_train.get("response_tokens", [])))),
+            ),
+        )
+    )
+
+    if prompt_tokens > 0 or "prompt_tokens" in usage_dict or "input_tokens" in usage_dict or "prompt_tokens" in nexrl_train:
+        usage_dict.setdefault("prompt_tokens", prompt_tokens)
+        usage_dict.setdefault("input_tokens", prompt_tokens)
+
+    if completion_tokens > 0 or "completion_tokens" in usage_dict or "output_tokens" in usage_dict or "response_tokens" in nexrl_train:
+        usage_dict.setdefault("completion_tokens", completion_tokens)
+
+    if "total_tokens" not in usage_dict and (prompt_tokens or completion_tokens):
+        usage_dict["total_tokens"] = prompt_tokens + completion_tokens
+
+    cached_tokens = _safe_int(usage_dict.get("cached_tokens", meta_info.get("cached_tokens")))
+    if cached_tokens > 0 or "cached_tokens" in usage_dict or "cached_tokens" in meta_info:
+        usage_dict.setdefault("cached_tokens", cached_tokens)
+
+    finish_reason_raw = response_payload.get("finish_reason", meta_info.get("finish_reason"))
+    if finish_reason_raw is None:
+        choices_payload = response_payload.get("choices")
+        if isinstance(choices_payload, list) and choices_payload:
+            choices_list = cast(list[object], choices_payload)
+            first_choice_raw = choices_list[0]
+            if isinstance(first_choice_raw, Mapping):
+                finish_reason_raw = cast(Mapping[str, Any], first_choice_raw).get("finish_reason")
+    finish_reason = _normalize_generate_with_token_finish_reason(finish_reason_raw)
+    if finish_reason is not None:
+        usage_dict["finish_reason"] = finish_reason
+        if isinstance(finish_reason_raw, Mapping):
+            usage_dict["finish_reason_details"] = dict(cast(Mapping[str, Any], finish_reason_raw))
+
+    return usage_dict
+
+
+def call_llm_with_generate_with_token(
+    client: Any,
+    kwargs: dict[str, Any],
+    *,
+    model_call_params: ModelCallParams | None = None,
+    llm_config: LLMConfig | None = None,
+    tracer: BaseTracer | None = None,
+) -> ModelResponse:
+    """Call a client-backed token generate API and normalize the response."""
+    if llm_config is None:
+        raise ValueError("llm_config is required for generate_with_token call")
+    if model_call_params is None or model_call_params.token_trace_session is None:
+        raise ValueError("token_trace_session is required for generate_with_token call")
+    if client is None:
+        raise ValueError("client is required for generate_with_token call")
+
+    token_trace_session = model_call_params.token_trace_session
+    token_trace_session.sync_external_messages(model_call_params.messages)
+
+    request_tokens = list(token_trace_session.token_ids)
+    request_payload = kwargs.copy()
+    request_payload.pop("messages", None)
+    stream_requested = bool(request_payload.pop("stream", False) or getattr(llm_config, "stream", False))
+    if stream_requested:
+        logger.warning("Streaming is not supported for generate_with_token; falling back to non-stream mode")
+
+    def _invoke_generate() -> dict[str, Any]:
+        request_kwargs = token_trace_session.build_generate_with_token_kwargs(
+            max_output_tokens=cast(int | None, request_payload.pop("max_tokens", None)),
+            request_params=request_payload,
+        )
+        if model_call_params.tools is not None:
+            request_kwargs["tools"] = [
+                structured_tool_definition_to_openai(tool) for tool in cast(list[dict[str, Any]], model_call_params.tools)
+            ]
+        response_payload = client.generate_with_token(**request_kwargs)
+        if not isinstance(response_payload, Mapping):
+            raise ValueError("generate_with_token response must be a mapping")
+        return dict(cast(Mapping[str, Any], response_payload))
+
+    if tracer is not None and get_current_span() is not None:
+        trace_ctx = TraceContext(
+            tracer,
+            "generate_with_token",
+            SpanType.LLM,
+            inputs={
+                "model": llm_config.model,
+                "input_token_count": len(request_tokens),
+            },
+        )
+        with trace_ctx:
+            response_payload = _invoke_generate()
+            trace_ctx.set_outputs(response_payload)
+    else:
+        response_payload = _invoke_generate()
+
+    message_payload, finish_reason_raw = _extract_generate_with_token_message(response_payload)
+    nexrl_train = _extract_generate_with_token_nexrl_train(
+        response_payload,
+        request_tokens=request_tokens,
+    )
+
+    normalized_output_token_ids = _normalize_token_ids(
+        nexrl_train.get("response_tokens", []),
+        context="generate_with_token nexrl_train.response_tokens",
+    )
+
+    usage_dict = _normalize_generate_with_token_usage(response_payload)
+    if "finish_reason" not in usage_dict:
+        finish_reason = _normalize_generate_with_token_finish_reason(finish_reason_raw)
+        if finish_reason is not None:
+            usage_dict["finish_reason"] = finish_reason
+            if isinstance(finish_reason_raw, Mapping):
+                usage_dict["finish_reason_details"] = dict(cast(Mapping[str, Any], finish_reason_raw))
+    model_response = ModelResponse.from_openai_message(
+        message_payload,
+        usage=usage_dict,
+    )
+    model_response.raw_message = response_payload
+    model_response.output_token_ids = normalized_output_token_ids
+
+    output_text = model_response.content
+    if output_text is None and normalized_output_token_ids:
+        model_response.content = token_trace_session.detokenize(normalized_output_token_ids)
+        output_text = model_response.content
+
+    token_trace_session.record_round(
+        request_tokens=request_tokens,
+        response_tokens=normalized_output_token_ids,
+        response_text=output_text,
+        tool_calls=[call.to_openai_dict() for call in model_response.tool_calls],
+        usage=usage_dict,
+    )
+
+    return model_response
 
 
 def openai_to_anthropic_message(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

@@ -41,6 +41,10 @@ def _empty_json_dict_list() -> list[JsonDict]:
     return []
 
 
+def _empty_int_list() -> list[int]:
+    return []
+
+
 def _item_get(item: object, key: str, default: Any = None) -> Any:
     """Best-effort attribute/dict access helper for SDK objects."""
 
@@ -277,6 +281,7 @@ class ModelResponse:
     role: str = "assistant"
     raw_message: Any = None
     response_items: list[JsonDict] = field(default_factory=_empty_json_dict_list)
+    output_token_ids: list[int] = field(default_factory=_empty_int_list)
     reasoning_content: str | None = None
     """A description of the chain of thought used by a reasoning model while generating a response.
 
@@ -306,6 +311,7 @@ class ModelResponse:
     def __post_init__(self) -> None:
         self.tool_calls = list(self.tool_calls)
         self.response_items = list(self.response_items)
+        self.output_token_ids = [int(token) for token in self.output_token_ids]
         if self.usage is None:
             self.usage = _empty_json_dict()
 

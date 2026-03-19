@@ -59,6 +59,7 @@ from nexau.archs.main_sub.execution.parse_structures import (
 from nexau.archs.main_sub.execution.response_parser import ResponseParser
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
+from nexau.archs.main_sub.token_trace_session import TokenTraceContextOverflowError, TokenTraceSession
 from nexau.archs.main_sub.execution.tool_executor import ToolExecutor
 from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.main_sub.history_list import HistoryList
@@ -68,7 +69,11 @@ from nexau.archs.main_sub.tool_call_modes import (
     normalize_tool_call_mode,
 )
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
-from nexau.archs.tool.tool import StructuredToolDefinition, Tool, build_structured_tool_definition
+from nexau.archs.tool.tool import (
+    StructuredToolDefinition,
+    Tool,
+    build_structured_tool_definition,
+)
 from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, coerce_tool_result_content
@@ -181,6 +186,7 @@ class Executor:
         )
 
         # Execution parameters
+        self.llm_config = llm_config
         self.max_iterations = max_iterations
         self.max_context_tokens = max_context_tokens
         self.global_storage = global_storage
@@ -455,12 +461,34 @@ class Executor:
 
         force_stop_reason = AgentStopReason.SUCCESS
 
+        # RFC-0009: 从 AgentState 获取 token trace session 引用
+        token_trace_session = agent_state.token_trace_session
+
         try:
             # Use history directly as the single source of truth
             if history and isinstance(history[0], dict):
                 messages = messages_from_legacy_openai_chat(cast(list[dict[str, Any]], history))
             else:
                 messages = cast(list[Message], history).copy()
+
+            # RFC-0009: 复用外部传入的 session 以支持跨 run 延续 token buffer
+            tools_payload = None
+            if self.use_structured_tool_calls:
+                with self._tool_registry_lock:
+                    # Snapshot current structured tool definitions under lock to avoid concurrent mutation
+                    tools_payload = deepcopy(self.structured_tool_payload)
+
+            if self.llm_config.api_type == "generate_with_token":
+                if token_trace_session is None:
+                    token_trace_session = TokenTraceSession(
+                        self.llm_config,
+                        max_context_tokens=self.max_context_tokens,
+                    )
+                token_trace_session.initialize_from_messages(
+                    messages,
+                    tools=cast(list[dict[str, Any]] | None, tools_payload),
+                )
+                token_trace_session.sync_external_messages(messages)
 
             if self.middleware_manager:
                 before_agent_hook_input = BeforeAgentHookInput(
@@ -619,6 +647,7 @@ class Executor:
                     tool_call_mode=self.tool_call_mode,
                     tools=tools_payload,
                     shutdown_event=self._shutdown_event,
+                    token_trace_session=token_trace_session,
                 )
                 if model_response is None:
                     break
@@ -634,7 +663,13 @@ class Executor:
                 )
 
                 # Add the assistant's original response to conversation
-                messages.append(model_response.to_ump_message())
+                assistant_message = model_response.to_ump_message()
+                messages.append(assistant_message)
+                if token_trace_session is not None:
+                    token_trace_session.append_model_response(
+                        output_token_ids=model_response.output_token_ids,
+                        fallback_messages=[assistant_message],
+                    )
 
                 # Process tool calls and sub-agent calls
                 logger.info(
@@ -675,6 +710,7 @@ class Executor:
                 )
 
                 if openai_tool_mode:
+                    tool_result_messages: list[Message] = []
                     for feedback in execution_feedbacks:
                         call_obj = feedback.get("call")
                         call_type = feedback.get("call_type")
@@ -697,14 +733,16 @@ class Executor:
                             is_error=bool(feedback.get("is_error")),
                         )
 
-                        messages.append(
-                            Message(
-                                role=Role.TOOL,
-                                content=[tool_result_block],
-                            ),
+                        tool_result_message = Message(
+                            role=Role.TOOL,
+                            content=[tool_result_block],
                         )
+                        messages.append(tool_result_message)
+                        tool_result_messages.append(tool_result_message)
 
                     tool_results = ""
+                    if token_trace_session is not None and tool_result_messages:
+                        token_trace_session.append_messages(tool_result_messages, mask_value=0)
                 else:
                     tool_results = processed_response.replace(
                         assistant_content,
@@ -715,7 +753,12 @@ class Executor:
                 if tool_results:
                     from nexau.core.messages import TextBlock
 
-                    messages.append(Message(role=Role.USER, content=[TextBlock(text=f"Tool execution results:\n{tool_results}")]))
+                    tool_result_feedback_message = Message(
+                        role=Role.USER, content=[TextBlock(text=f"Tool execution results:\n{tool_results}")]
+                    )
+                    messages.append(tool_result_feedback_message)
+                    if token_trace_session is not None:
+                        token_trace_session.append_messages([tool_result_feedback_message], mask_value=0)
 
                 # Check if a stop tool was executed
                 if should_stop and len(self.queued_messages) == 0:
@@ -786,6 +829,22 @@ class Executor:
                 len(messages),
                 [m.role.value for m in messages],
             )
+            self._store_token_trace(token_trace_session)
+            return final_response, messages
+
+        except TokenTraceContextOverflowError as e:
+            # token trace session 不支持上下文折叠，超限时直接终止
+            force_stop_reason = AgentStopReason.CONTEXT_TOKEN_LIMIT
+            final_response = f"Error: {e}"
+            logger.error("❌ TokenTraceSession context overflow: %s", e)
+
+            final_response, messages = self._apply_after_agent_hooks(
+                agent_state=agent_state,
+                messages=messages,
+                final_response=final_response,
+                stop_reason=force_stop_reason,
+            )
+            self._store_token_trace(token_trace_session)
             return final_response, messages
 
         except Exception as e:
@@ -808,12 +867,27 @@ class Executor:
             logger.error(
                 f"❌ Error in agent execution: {e}",
             )
+            self._store_token_trace(token_trace_session)
             # Re-raise with more context
             raise RuntimeError(f"Error in agent execution: {e}") from e
 
         finally:
+            self._store_token_trace(token_trace_session)
+            # RFC-0009: 重置同步计数以匹配可能被压缩的 messages，确保下次 run 正确同步新消息
+            if token_trace_session is not None:
+                token_trace_session.synced_message_count = len(messages)
             # RFC-0001: 标记 execute() 已结束，唤醒 interrupt() 的等待
             self._execution_done.set()
+
+    def _store_token_trace(self, token_trace_session: TokenTraceSession | None) -> None:
+        """Persist token trace data into shared trace memory."""
+        if token_trace_session is None or self.global_storage is None:
+            return
+
+        existing_trace_memory = self.global_storage.get("trace_memory", {})
+        trace_memory = cast(dict[str, Any], existing_trace_memory) if isinstance(existing_trace_memory, dict) else {}
+        trace_memory.update(token_trace_session.export_trace())
+        self.global_storage.set("trace_memory", trace_memory)
 
     def _apply_after_agent_hooks(
         self,

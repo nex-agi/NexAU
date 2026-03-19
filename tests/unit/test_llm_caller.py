@@ -32,6 +32,7 @@ from unittest.mock import Mock, call, patch
 
 import pytest
 
+from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.execution.hooks import MiddlewareManager
 from nexau.archs.main_sub.execution.llm_caller import LLMCaller
 from nexau.archs.main_sub.execution.model_response import ModelResponse
@@ -385,6 +386,339 @@ class TestLLMCallerBasicCalls:
         assert normalized_tool["description"] == "A simple test tool"
         assert normalized_tool["parameters"] == tools_payload[0]["function"]["parameters"]
         assert "function" not in normalized_tool
+
+    def test_call_llm_generate_with_token_uses_client_response_tokens(self, agent_state):
+        """generate_with_token should parse OpenAI-like payloads from the client."""
+        llm_config = LLMConfig(
+            model="token-model",
+            base_url="http://token-gateway",
+            api_key="test-key",
+            api_type="generate_with_token",
+        )
+        token_trace_session = Mock()
+        token_trace_session.token_ids = [1, 2, 3]
+        token_trace_session.build_generate_with_token_kwargs.return_value = {
+            "model": "token-model",
+            "input_ids": [1, 2, 3],
+            "sampling_params": {"max_new_tokens": 32},
+        }
+        token_client = Mock()
+        token_client.generate_with_token.return_value = {
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "tool call incoming",
+                        "tool_calls": [
+                            {
+                                "id": "call_123",
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup_weather",
+                                    "arguments": '{"city":"Beijing"}',
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {"input_tokens": 3, "completion_tokens": 3, "total_tokens": 6},
+            "nexrl_train": {
+                "prompt_tokens": [1, 2, 3],
+                "response_tokens": [4, 5, 6],
+                "response_logprobs": [-0.1, -0.2, -0.3],
+            },
+        }
+
+        caller = LLMCaller(
+            openai_client=token_client,
+            llm_config=llm_config,
+        )
+        response = caller.call_llm(
+            [Message.user("hello")],
+            max_tokens=32,
+            force_stop_reason=AgentStopReason.SUCCESS,
+            agent_state=agent_state,
+            tool_call_mode="openai",
+            tools=[],
+            token_trace_session=token_trace_session,
+        )
+
+        assert isinstance(response, ModelResponse)
+        assert response.content == "tool call incoming"
+        assert response.output_token_ids == [4, 5, 6]
+        assert response.tool_calls[0].name == "lookup_weather"
+        token_trace_session.sync_external_messages.assert_called_once()
+        token_trace_session.record_round.assert_called_once()
+        token_client.generate_with_token.assert_called_once_with(
+            model="token-model",
+            input_ids=[1, 2, 3],
+            sampling_params={"max_new_tokens": 32},
+            tools=[],
+        )
+
+    def test_call_llm_generate_with_token_forwards_structured_tools(self, agent_state):
+        """generate_with_token should forward structured tools from model call params."""
+        llm_config = LLMConfig(
+            model="token-model",
+            base_url="http://token-gateway",
+            api_key="test-key",
+            api_type="generate_with_token",
+        )
+        token_trace_session = Mock()
+        token_trace_session.token_ids = [1, 2, 3]
+        token_trace_session.build_generate_with_token_kwargs.return_value = {
+            "model": "token-model",
+            "input_ids": [1, 2, 3],
+            "sampling_params": {"max_new_tokens": 32},
+        }
+        token_client = Mock()
+        token_client.generate_with_token.return_value = {
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"input_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+            "nexrl_train": {
+                "prompt_tokens": [1, 2, 3],
+                "response_tokens": [4],
+                "response_logprobs": [-0.1],
+            },
+        }
+        tools_payload = [
+            {
+                "name": "lookup_weather",
+                "description": "Look up weather",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string",
+                            "description": "City name",
+                        }
+                    },
+                    "required": ["city"],
+                },
+                "kind": "tool",
+            }
+        ]
+
+        caller = LLMCaller(
+            openai_client=token_client,
+            llm_config=llm_config,
+        )
+        response = caller.call_llm(
+            [Message.user("hello")],
+            max_tokens=32,
+            force_stop_reason=AgentStopReason.SUCCESS,
+            agent_state=agent_state,
+            tool_call_mode="openai",
+            tools=tools_payload,
+            token_trace_session=token_trace_session,
+        )
+
+        assert isinstance(response, ModelResponse)
+        token_client.generate_with_token.assert_called_once_with(
+            model="token-model",
+            input_ids=[1, 2, 3],
+            sampling_params={"max_new_tokens": 32},
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "lookup_weather",
+                        "description": "Look up weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "city": {
+                                    "type": "string",
+                                    "description": "City name",
+                                }
+                            },
+                            "required": ["city"],
+                        },
+                    },
+                }
+            ],
+        )
+
+    def test_call_llm_generate_with_token_detokenizes_when_text_missing(self, agent_state):
+        """generate_with_token should detokenize response tokens when text is missing."""
+        llm_config = LLMConfig(
+            model="token-model",
+            base_url="http://token-gateway",
+            api_key="test-key",
+            api_type="generate_with_token",
+        )
+        token_trace_session = Mock()
+        token_trace_session.token_ids = [11, 12]
+        token_trace_session.build_generate_with_token_kwargs.return_value = {
+            "model": "token-model",
+            "input_ids": [11, 12],
+        }
+        token_client = Mock()
+        token_client.generate_with_token.return_value = {
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": None},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"input_tokens": 2, "completion_tokens": 2, "total_tokens": 4},
+            "nexrl_train": {
+                "prompt_tokens": [11, 12],
+                "response_tokens": [13, 14],
+                "response_logprobs": [-0.1, -0.2],
+            },
+        }
+        token_trace_session.detokenize.return_value = "decoded output"
+
+        caller = LLMCaller(
+            openai_client=token_client,
+            llm_config=llm_config,
+        )
+        response = caller.call_llm(
+            [Message.user("hello")],
+            max_tokens=16,
+            force_stop_reason=AgentStopReason.SUCCESS,
+            agent_state=agent_state,
+            token_trace_session=token_trace_session,
+        )
+
+        assert isinstance(response, ModelResponse)
+        assert response.content == "decoded output"
+        assert response.output_token_ids == [13, 14]
+        token_trace_session.detokenize.assert_called_once_with([13, 14])
+        token_client.generate_with_token.assert_called_once_with(
+            model="token-model",
+            input_ids=[11, 12],
+        )
+
+    def test_call_llm_generate_with_token_uses_nexrl_train_usage(self, agent_state):
+        """generate_with_token should read token ids from nexrl_train."""
+        llm_config = LLMConfig(
+            model="token-model",
+            base_url="http://token-gateway",
+            api_key="test-key",
+            api_type="generate_with_token",
+        )
+        token_trace_session = Mock()
+        token_trace_session.token_ids = [21, 22, 23]
+        token_trace_session.build_generate_with_token_kwargs.return_value = {
+            "model": "token-model",
+            "input_ids": [21, 22, 23],
+        }
+        token_client = Mock()
+        token_client.generate_with_token.return_value = {
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "openai-like output"},
+                    "finish_reason": {"type": "length", "length": 2},
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 3,
+                "completion_tokens": 2,
+                "cached_tokens": 1,
+            },
+            "nexrl_train": {
+                "prompt_tokens": [21, 22, 23],
+                "response_tokens": [31, 32],
+                "response_logprobs": [-0.1, -0.2],
+            },
+        }
+
+        caller = LLMCaller(
+            openai_client=token_client,
+            llm_config=llm_config,
+        )
+        response = caller.call_llm(
+            [Message.user("hello")],
+            max_tokens=16,
+            force_stop_reason=AgentStopReason.SUCCESS,
+            agent_state=agent_state,
+            token_trace_session=token_trace_session,
+        )
+
+        assert isinstance(response, ModelResponse)
+        assert response.content == "openai-like output"
+        assert response.output_token_ids == [31, 32]
+        assert response.usage["input_tokens"] == 3
+        assert response.usage["completion_tokens"] == 2
+        assert response.usage["total_tokens"] == 5
+        assert response.usage["cached_tokens"] == 1
+        assert response.usage["finish_reason"] == "length"
+        token_trace_session.record_round.assert_called_once()
+        token_client.generate_with_token.assert_called_once_with(
+            model="token-model",
+            input_ids=[21, 22, 23],
+        )
+
+    def test_call_llm_generate_with_token_supports_raw_generate_payload(self, agent_state):
+        """generate_with_token should accept raw `/generate` payloads without OpenAI choices."""
+        llm_config = LLMConfig(
+            model="token-model",
+            base_url="http://token-gateway",
+            api_key="test-key",
+            api_type="generate_with_token",
+        )
+        token_trace_session = Mock()
+        token_trace_session.token_ids = [151644, 872, 198]
+        token_trace_session.build_generate_with_token_kwargs.return_value = {
+            "model": "token-model",
+            "input_ids": [151644, 872, 198],
+        }
+        token_client = Mock()
+        token_client.generate_with_token.return_value = {
+            "text": "你好，请帮我分析一下。",
+            "meta_info": {
+                "finish_reason": {"type": "length", "length": 32},
+                "prompt_tokens": 3,
+                "completion_tokens": 2,
+                "cached_tokens": 10,
+                "output_token_logprobs": [[-0.1, 31, None], [-0.2, 32, None]],
+            },
+            "output_ids": [31, 32],
+            "nexrl_train": {
+                "prompt_tokens": [151644, 872, 198],
+                "response_tokens": [31, 32],
+                "response_logprobs": [-0.1, -0.2],
+            },
+        }
+
+        caller = LLMCaller(
+            openai_client=token_client,
+            llm_config=llm_config,
+        )
+        response = caller.call_llm(
+            [Message.user("hello")],
+            max_tokens=16,
+            force_stop_reason=AgentStopReason.SUCCESS,
+            agent_state=agent_state,
+            token_trace_session=token_trace_session,
+        )
+
+        assert isinstance(response, ModelResponse)
+        assert response.content == "你好，请帮我分析一下。"
+        assert response.output_token_ids == [31, 32]
+        assert response.usage["input_tokens"] == 3
+        assert response.usage["completion_tokens"] == 2
+        assert response.usage["total_tokens"] == 5
+        assert response.usage["cached_tokens"] == 10
+        assert response.usage["finish_reason"] == "length"
+        token_trace_session.record_round.assert_called_once()
+        token_client.generate_with_token.assert_called_once_with(
+            model="token-model",
+            input_ids=[151644, 872, 198],
+        )
 
     def test_call_llm_responses_api_strips_status_from_history(self, mock_openai_client, responses_llm_config, agent_state):
         """Status fields from prior outputs should be removed when replaying context."""

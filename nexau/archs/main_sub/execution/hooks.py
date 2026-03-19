@@ -31,6 +31,7 @@ from .parse_structures import ParsedResponse
 
 if TYPE_CHECKING:
     from ..agent_state import AgentState
+    from ..token_trace_session import TokenTraceSession
     from .executor import AgentStopReason
 
 
@@ -231,6 +232,7 @@ class ModelCallParams:
     llm_config: Any | None = None
     retry_attempts: int = 5
     shutdown_event: threading.Event | None = None
+    token_trace_session: TokenTraceSession | None = None
 
 
 @dataclass

@@ -50,6 +50,7 @@ from nexau.archs.main_sub.context_value import ContextValue
 from nexau.archs.main_sub.execution.executor import Executor
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.main_sub.execution.stop_result import StopResult
+from nexau.archs.main_sub.token_trace_session import TokenTraceSession
 from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.prompt_builder import PromptBuilder
 from nexau.archs.main_sub.skill import Skill, build_load_skill_tool, build_tool_skill
@@ -92,6 +93,7 @@ class Agent:
         self,
         *,
         config: AgentConfig,
+        openai_client: Any | None = None,
         agent_id: str | None = None,
         global_storage: GlobalStorage | None = None,
         session_manager: SessionManager | None = None,
@@ -106,6 +108,7 @@ class Agent:
 
         Args:
             config: Agent configuration
+            openai_client: Optional prebuilt LLM client
             agent_id: Optional agent ID (auto-generated if not provided)
             global_storage: Optional global storage instance
             session_manager: Optional SessionManager for unified data access. If None,
@@ -159,7 +162,7 @@ class Agent:
 
         # Initialize services
         logger.info("Initializing LLM client (api_type=%s)", self.config.llm_config.api_type if self.config.llm_config else "default")
-        self.openai_client = self._initialize_openai_client()
+        self.openai_client = openai_client if openai_client is not None else self._initialize_openai_client()
 
         # 为 OpenAI Responses API 注入 prompt_cache_key，在代理上启用 prompt 缓存。
         # 每个 agent 生命周期使用固定的 key（跨轮次不变），不同 agent 使用不同 key。
@@ -233,6 +236,9 @@ class Agent:
 
         # Full, uncompacted trace (for debugging/training only; not used for execution).
         self._full_trace: list[Message] = []
+
+        # RFC-0009: 跨 run 延续的 token trace session
+        self._token_trace_session: TokenTraceSession | None = None
 
         # RFC-0001: 最近一次 run 的 context 引用，供 interrupt() 持久化使用
         self._last_context: dict[str, Any] = {}
@@ -416,7 +422,7 @@ class Agent:
         llm_config = self.config.llm_config or LLMConfig()
 
         try:
-            if llm_config.api_type == "gemini_rest":
+            if llm_config.api_type in {"gemini_rest", "generate_with_token"}:
                 return None
             if llm_config.api_type == "anthropic_chat_completion":
                 client_kwargs = llm_config.to_client_kwargs()
@@ -523,8 +529,14 @@ class Agent:
             return []
         return self._build_tool_call_payload()
 
+    @property
+    def tool_registry(self) -> dict[str, Tool]:
+        """Backward-compatible view of the registered tools."""
+        return self._tool_registry.get_all()
+
     def _initialize_execution_components(self) -> None:
         """Initialize execution components."""
+        self._validate_middleware_compatibility()
         token_counter = self._resolve_token_counter()
 
         self.executor = Executor(
@@ -553,6 +565,21 @@ class Agent:
             user_id=self._user_id,
             session_id=self._session_id,
         )
+
+    def _validate_middleware_compatibility(self) -> None:
+        """Validate middleware compatibility with the active LLM backend."""
+        if self.config.llm_config is None or self.config.llm_config.api_type != "generate_with_token":
+            return
+        if not self.config.middlewares:
+            return
+
+        from nexau.archs.main_sub.execution.middleware.context_compaction import ContextCompactionMiddleware
+
+        if any(isinstance(middleware, ContextCompactionMiddleware) for middleware in self.config.middlewares):
+            raise ValueError(
+                "api_type='generate_with_token' does not support ContextCompactionMiddleware. "
+                "Please disable context compaction for this agent."
+            )
 
     def _initialize_sandbox(self) -> None:
         """Initialize sandbox."""
@@ -947,6 +974,10 @@ class Agent:
             else:
                 self.history.extend(message)
 
+            # RFC-0009: 懒创建 token trace session，跨 run 复用
+            if self.config.llm_config and self.config.llm_config.api_type == "generate_with_token" and self._token_trace_session is None:
+                self._token_trace_session = TokenTraceSession(self.config.llm_config)
+
             # Create the AgentState instance
             # 功能说明1：传递 sandbox_manager 给 AgentState，而不是 sandbox 实例
             # 功能说明2：AgentState.get_sandbox() 会懒加载获取 sandbox 实例
@@ -965,6 +996,7 @@ class Agent:
                 sandbox_manager=sandbox_mgr,
                 variables=effective_variables,
                 team_state=self._team_state,
+                token_trace_session=self._token_trace_session,
             )
 
             # Execute with or without tracing
@@ -1127,9 +1159,6 @@ class Agent:
         都会尝试 flush 未持久化的消息。
         """
         try:
-            # Execute using the executor in a thread pool to avoid blocking the event loop
-            # This allows streaming events to be processed in real-time
-            # Using asyncer.asyncify for cleaner async/sync conversion
             response, updated_messages = await asyncify(self.executor.execute)(
                 self.history,
                 agent_state,
@@ -1159,6 +1188,8 @@ class Agent:
             except Exception:
                 self._full_trace = list(self.history)
 
+            self._update_trace_memory()
+
             # Flush pending messages to persistence
             self.history.flush()
 
@@ -1176,6 +1207,8 @@ class Agent:
                 # HistoryList will automatically persist this message
                 self.history.append(assistant_error_message)
 
+                self._update_trace_memory()
+
                 # Flush pending messages to persistence
                 self.history.flush()
 
@@ -1183,6 +1216,8 @@ class Agent:
             else:
                 assistant_error = Message.assistant(f"Error: {str(e)}")
                 self.history.append(assistant_error)
+
+                self._update_trace_memory()
 
                 # Flush pending messages to persistence
                 self.history.flush()
@@ -1199,6 +1234,13 @@ class Agent:
                 self.history.flush()
             except Exception:
                 logger.warning("Failed to flush history in finally block")
+
+    def _update_trace_memory(self) -> None:
+        """Persist message trace while preserving any token trace already captured."""
+        trace_memory_raw = self.global_storage.get("trace_memory", {})
+        trace_memory = cast(dict[str, Any], trace_memory_raw) if isinstance(trace_memory_raw, dict) else {}
+        trace_memory["message_trace"] = [message.model_dump(mode="python", exclude_none=True) for message in self._full_trace]
+        self.global_storage.set("trace_memory", trace_memory)
 
     def add_tool(self, tool: Tool) -> None:
         """Add a tool to the agent."""

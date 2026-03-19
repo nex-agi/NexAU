@@ -39,6 +39,7 @@ class LLMConfig:
         additional_drop_params: Iterable[str] | None = None,
         api_type: str = "openai_chat_completion",
         cache_control_ttl: str | None = None,
+        tokenizer_path: str | None = None,
         **kwargs: Any,
     ):
         """
@@ -58,6 +59,8 @@ class LLMConfig:
             debug: Enable debug logging of LLM messages
             stream: Enable streaming responses when supported by backend
             api_type: API type
+            tokenizer_path: HuggingFace tokenizer 路径或模型名称，如 "meta-llama/Llama-3.1-8B-Instruct"。
+                仅在 api_type="generate_with_token" 时生效，通过 AutoTokenizer.from_pretrained 加载。
             **kwargs: Additional model-specific parameters
         """
         self.model = model or self._get_model_from_env()
@@ -76,6 +79,7 @@ class LLMConfig:
         self.additional_drop_params = tuple(params_iterable)
         self.api_type = api_type
         self.cache_control_ttl = cache_control_ttl
+        self.tokenizer_path: str | None = tokenizer_path
 
         # Store additional parameters
         self.extra_params = kwargs
@@ -222,6 +226,7 @@ class LLMConfig:
             additional_drop_params=self.additional_drop_params,
             api_type=self.api_type,
             cache_control_ttl=self.cache_control_ttl,
+            tokenizer_path=self.tokenizer_path,
             **self.extra_params,
         )
 

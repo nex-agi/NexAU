@@ -28,6 +28,7 @@ from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import ExecutionConfig
 from nexau.archs.main_sub.context_value import ContextValue
+from nexau.archs.main_sub.execution.middleware.context_compaction import ContextCompactionMiddleware
 from nexau.archs.main_sub.execution.llm_caller import openai_to_anthropic_message
 from nexau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
 from nexau.archs.main_sub.skill import Skill
@@ -119,6 +120,45 @@ class TestAgent:
             agent = Agent(config=agent_config, global_storage=global_storage)
 
             assert agent.openai_client is None
+
+    def test_generate_with_token_rejects_context_compaction_middleware(self, global_storage):
+        """generate_with_token should fail fast when context compaction is configured."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            agent_config = AgentConfig(
+                name="test_agent",
+                llm_config=LLMConfig(
+                    model="test-model",
+                    api_type="generate_with_token",
+                    base_url="http://example.com",
+                    api_key="test-key",
+                    tokenizer_path="test-tokenizer",
+                ),
+                middlewares=[
+                    ContextCompactionMiddleware(
+                        compaction_strategy="tool_result_compaction",
+                    )
+                ],
+            )
+
+            with pytest.raises(
+                ValueError,
+                match="generate_with_token.*does not support ContextCompactionMiddleware",
+            ):
+                Agent(config=agent_config, global_storage=global_storage)
+
+    def test_add_tool(self, agent_config, global_storage, sample_tool):
+        """Test adding tools to agent."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            agent = Agent(config=agent_config, global_storage=global_storage)
+
+            agent.add_tool(sample_tool)
+
+            assert sample_tool.name in agent.tool_registry
+            assert sample_tool in agent.config.tools
 
     def test_tool_call_payload_includes_sub_agents_openai(self, sample_tool):
         """Legacy structured aliases should still build neutral tool and sub-agent definitions."""
