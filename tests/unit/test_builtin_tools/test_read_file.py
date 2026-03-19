@@ -53,7 +53,7 @@ class TestDetectEncoding:
     def test_ascii_head_chinese_tail_returns_utf8(self):
         """File with ASCII head and Chinese tail — the original bug scenario."""
         ascii_head = b"x = 1\n" * 2000
-        chinese_tail = "# 这是中文注释\n".encode("utf-8")
+        chinese_tail = "# 这是中文注释\n".encode()
         raw = ascii_head + chinese_tail
         assert len(ascii_head) > 10000
         sandbox = _make_sandbox_for_encoding(raw)
@@ -61,13 +61,13 @@ class TestDetectEncoding:
 
     def test_utf8_with_multibyte_returns_utf8(self):
         """UTF-8 file with multi-byte characters should return utf-8."""
-        raw = "こんにちは世界\n你好世界\n".encode("utf-8")
+        raw = "こんにちは世界\n你好世界\n".encode()
         sandbox = _make_sandbox_for_encoding(raw)
         assert _detect_encoding("test.txt", sandbox) == "utf-8"
 
     def test_utf8_bom_returns_utf8_sig(self):
         """File with UTF-8 BOM should return utf-8-sig."""
-        raw = b"\xef\xbb\xbf" + "hello".encode("utf-8")
+        raw = b"\xef\xbb\xbf" + b"hello"
         sandbox = _make_sandbox_for_encoding(raw)
         assert _detect_encoding("test.txt", sandbox) == "utf-8-sig"
 
@@ -110,9 +110,7 @@ class TestDetectEncoding:
 
         fake_chardet = Mock()
         fake_chardet.detect.return_value = {"encoding": "GB2312", "confidence": 0.9}
-        monkeypatch.setitem(
-            __import__("sys").modules, "chardet", fake_chardet
-        )
+        monkeypatch.setitem(__import__("sys").modules, "chardet", fake_chardet)
 
         assert _detect_encoding("test.txt", sandbox) == "gb2312"
 
