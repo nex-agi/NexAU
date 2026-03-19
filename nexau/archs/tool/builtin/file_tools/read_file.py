@@ -61,24 +61,68 @@ def _add_line_numbers(content: str, start_line: int = 1) -> str:
     return "\n".join(numbered_lines)
 
 
+# BOM signatures — UTF-32 must precede UTF-16 (prefix overlap)
+_BOM_ENCODINGS: list[tuple[bytes, str]] = [
+    (b"\xff\xfe\x00\x00", "utf-32-le"),
+    (b"\x00\x00\xfe\xff", "utf-32-be"),
+    (b"\xff\xfe", "utf-16-le"),
+    (b"\xfe\xff", "utf-16-be"),
+    (b"\xef\xbb\xbf", "utf-8-sig"),
+]
+
+_CHARDET_SAMPLE_SIZE = 50_000
+
+
 def _detect_encoding(file_path: str, sandbox: BaseSandbox) -> str:
-    """Detect file encoding with fallback to utf-8 (via sandbox read)."""
+    """Detect file encoding using a layered strategy with fallback to utf-8.
+
+    分层编码检测：
+    1. BOM 检测（确定性，最高优先级）
+    2. UTF-8 strict 验证（覆盖绝大多数现代源码文件）
+    3. chardet 启发式检测（处理真正的非 UTF-8 文件）
+    4. 回退到 utf-8
+    """
     try:
-        import chardet
-
         read_res = sandbox.read_file(file_path, binary=True)
-        if read_res.status == SandboxStatus.SUCCESS and read_res.content:
-            raw: bytes
-            if isinstance(read_res.content, (bytes, bytearray)):
-                raw = bytes(read_res.content)[:10000]
-            else:
-                # content is str when not bytes/bytearray (sandbox returns str|bytes)
-                raw = read_res.content.encode("utf-8", errors="replace")[:10000]
+        if read_res.status != SandboxStatus.SUCCESS or not read_res.content:
+            return "utf-8"
 
-            result = chardet.detect(raw)
-            if result.get("encoding") and result.get("confidence", 0) > 0.7:
-                return str(result["encoding"])
-    except (ImportError, Exception):
+        raw: bytes
+        if isinstance(read_res.content, (bytes, bytearray)):
+            raw = bytes(read_res.content)
+        else:
+            return "utf-8"
+
+        # 1. BOM 检测 — 确定性判断，最高优先级
+        for bom, encoding in _BOM_ENCODINGS:
+            if raw.startswith(bom):
+                return encoding
+
+        # 2. UTF-8 strict 验证 — 文件大小已由调用方限制在 10MB 内
+        #    ASCII 是 UTF-8 的严格子集，此步骤同时涵盖了纯 ASCII 文件
+        try:
+            raw.decode("utf-8", errors="strict")
+            return "utf-8"
+        except UnicodeDecodeError:
+            pass
+
+        # 3. chardet 启发式检测 — 仅对确认非 UTF-8 的文件使用
+        try:
+            import chardet
+
+            sample = raw[:_CHARDET_SAMPLE_SIZE]
+            result = chardet.detect(sample)
+            detected = str(result.get("encoding") or "").lower()
+            confidence: float = float(result.get("confidence", 0))
+
+            if detected == "ascii":
+                return "utf-8"
+            if detected and confidence > 0.7:
+                return detected
+        except ImportError:
+            pass
+
+    except Exception:
         pass
     return "utf-8"
 
@@ -201,10 +245,22 @@ def read_file(
         encoding = _detect_encoding(resolved_path, sandbox)
 
         read_res = sandbox.read_file(resolved_path, encoding=encoding, binary=False)
-        if read_res.status != SandboxStatus.SUCCESS:
-            raise RuntimeError(read_res.error or "Failed to read file")
-
-        content_str = read_res.content if isinstance(read_res.content, str) else ""
+        if read_res.status == SandboxStatus.SUCCESS:
+            content_str = read_res.content if isinstance(read_res.content, str) else ""
+        else:
+            # 编码读取失败（如 UnicodeDecodeError），用二进制 + UTF-8 replace 兜底
+            logger.warning(
+                "Failed to read %s with encoding %s, falling back to utf-8 with errors=replace",
+                file_path,
+                encoding,
+            )
+            bin_res = sandbox.read_file(resolved_path, binary=True)
+            if bin_res.status != SandboxStatus.SUCCESS or not bin_res.content:
+                raise RuntimeError(read_res.error or "Failed to read file")
+            if isinstance(bin_res.content, (bytes, bytearray)):
+                content_str = bytes(bin_res.content).decode("utf-8", errors="replace")
+            else:
+                content_str = str(bin_res.content)
         all_lines = content_str.splitlines()
         total_lines = len(all_lines)
 
