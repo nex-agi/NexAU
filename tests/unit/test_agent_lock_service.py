@@ -25,6 +25,7 @@ import pytest
 from nexau.archs.session import AgentLockService
 from nexau.archs.session.models.agent_lock import AgentLockModel
 from nexau.archs.session.orm import InMemoryDatabaseEngine, SQLDatabaseEngine
+from nexau.archs.session.orm.filters import AndFilter, ComparisonFilter
 
 
 class TestAgentLockServiceBasic:
@@ -577,5 +578,61 @@ class TestAgentLockServiceEdgeCases:
                 assert is_locked, "Other holder's lock should still exist"
             finally:
                 await service.stop()
+
+        asyncio.run(run())
+
+
+class TestLockReleaseFallback:
+    """Tests for __aexit__ error handling: delete failure → force_release fallback."""
+
+    def test_force_release_on_delete_returning_zero(self):
+        """When DELETE returns 0 (holder mismatch), force_release cleans up."""
+
+        async def run():
+            engine = InMemoryDatabaseEngine()
+            service = AgentLockService(engine=engine, lock_ttl=30.0, heartbeat_interval=10.0)
+
+            async with service.acquire(session_id="s1", agent_id="a1"):
+                # Tamper holder_id so DELETE with original holder returns 0
+                lock = await engine.find_first(
+                    AgentLockModel,
+                    filters=AndFilter(
+                        filters=[
+                            ComparisonFilter.eq("session_id", "s1"),
+                            ComparisonFilter.eq("agent_id", "a1"),
+                        ]
+                    ),
+                )
+                assert lock is not None
+                lock.holder_id = "tampered"
+                await engine.update(lock)
+
+            # force_release should have cleaned up
+            assert not await service.is_locked("s1", "a1")
+
+        asyncio.run(run())
+
+    def test_release_exception_triggers_force_release(self):
+        """When DELETE raises, force_release is attempted as fallback."""
+
+        async def run():
+            engine = InMemoryDatabaseEngine()
+            service = AgentLockService(engine=engine, lock_ttl=30.0, heartbeat_interval=10.0)
+
+            async with service.acquire(session_id="s1", agent_id="a1"):
+                original_delete = engine.delete
+                call_count = 0
+
+                async def failing_delete(*args, **kwargs):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count == 1:
+                        raise RuntimeError("DB connection lost")
+                    return await original_delete(*args, **kwargs)
+
+                engine.delete = failing_delete  # type: ignore[assignment]
+
+            # force_release (second delete call) should have cleaned up
+            assert not await service.is_locked("s1", "a1")
 
         asyncio.run(run())

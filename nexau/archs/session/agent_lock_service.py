@@ -301,7 +301,7 @@ class AgentLockService:
             yield
         finally:
             # Stop heartbeat
-            logger.debug(f"Releasing lock for session={session_id}, agent={agent_id}, holder={holder_id}")
+            logger.info(f"[LOCK_RELEASE] Starting lock release for session={session_id}, agent={agent_id}, holder={holder_id}")
             heartbeat_task.cancel()
             try:
                 await heartbeat_task
@@ -309,22 +309,30 @@ class AgentLockService:
                 pass
 
             # Release lock (only if we still hold it)
-            deleted_count = await self._engine.delete(
-                AgentLockModel,
-                filters=AndFilter(
-                    filters=[
-                        ComparisonFilter.eq("session_id", session_id),
-                        ComparisonFilter.eq("agent_id", agent_id),
-                        ComparisonFilter.eq("holder_id", holder_id),
-                    ]
-                ),
-            )
-            if deleted_count > 0:
-                logger.info(f"Lock released successfully for session={session_id}, agent={agent_id}, holder={holder_id}")
-            else:
-                logger.warning(
-                    f"Lock was already released or taken by another holder for session={session_id}, agent={agent_id}, holder={holder_id}"
+            need_force = False
+            try:
+                deleted_count = await self._engine.delete(
+                    AgentLockModel,
+                    filters=AndFilter(
+                        filters=[
+                            ComparisonFilter.eq("session_id", session_id),
+                            ComparisonFilter.eq("agent_id", agent_id),
+                            ComparisonFilter.eq("holder_id", holder_id),
+                        ]
+                    ),
                 )
+                logger.info(f"[LOCK_RELEASE] deleted_count={deleted_count} session={session_id}, agent={agent_id}, holder={holder_id}")
+                need_force = deleted_count == 0
+            except Exception as e:
+                logger.error(f"[LOCK_RELEASE] delete failed: {e!r} session={session_id}, agent={agent_id}")
+                need_force = True
+
+            if need_force:
+                try:
+                    await self.force_release(session_id, agent_id)
+                    logger.info(f"[LOCK_RELEASE] force_release succeeded session={session_id}, agent={agent_id}")
+                except Exception as e:
+                    logger.error(f"[LOCK_RELEASE] force_release also failed: {e!r}")
 
     async def is_locked(
         self,

@@ -26,6 +26,11 @@ try:
 except ImportError:
     pass
 
+try:
+    from .test_stop_e2e import *
+except ImportError:
+    pass
+
 __all__: list[str] = [
     # Add test class names as they are implemented
 ]
