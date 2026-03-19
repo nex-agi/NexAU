@@ -39,6 +39,7 @@ from nexau.core.messages import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from nexau.core.usage import TokenUsage
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -180,17 +181,19 @@ class TestNormalizeUsageAnthropicCache:
         }
         resp = ModelResponse.from_anthropic_message(message, usage=usage)
         assert resp.usage is not None
-        # input_tokens should be 100 + 200 + 300 = 600
-        assert resp.usage["input_tokens"] == 600
-        assert resp.usage["input_tokens_uncached"] == 100
-        assert resp.usage["completion_tokens"] == 50
+        assert resp.usage.input_tokens == 100
+        assert resp.usage.input_tokens_uncached == 100
+        assert resp.usage.completion_tokens == 50
+        assert resp.usage.cache_creation_tokens == 200
+        assert resp.usage.cache_read_tokens == 300
+        assert resp.usage.total_tokens == 650
 
     def test_usage_without_cache(self):
         message = {"role": "assistant", "content": [{"type": "text", "text": "ok"}]}
         usage = {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
         resp = ModelResponse.from_anthropic_message(message, usage=usage)
         assert resp.usage is not None
-        assert resp.usage["total_tokens"] == 150
+        assert resp.usage.total_tokens == 150
 
 
 # ===========================================================================
@@ -377,37 +380,38 @@ class TestContextCompactionTokenFallback:
     def test_get_current_tokens_from_total(self):
         mw = self._make_middleware()
         mock_response = Mock()
-        mock_response.usage = {"total_tokens": 5000}
+        mock_response.usage = TokenUsage(total_tokens=5000)
         hook_input = Mock(spec=AfterModelHookInput)
         hook_input.model_response = mock_response
         result = mw._get_current_tokens(hook_input)
         assert result == 5000
 
     def test_get_current_tokens_fallback_from_components(self):
-        """When total_tokens is missing, should calculate from input + output."""
+        """Context usage should prefer adjusted input tokens over total tokens."""
         mw = self._make_middleware()
         mock_response = Mock()
-        mock_response.usage = {"input_tokens": 3000, "output_tokens": 1000}
+        mock_response.usage = TokenUsage(input_tokens=3000, completion_tokens=1000, total_tokens=4000)
         hook_input = Mock(spec=AfterModelHookInput)
         hook_input.model_response = mock_response
         result = mw._get_current_tokens(hook_input)
-        assert result == 4000
+        assert result == 3000
 
     def test_get_current_tokens_with_anthropic_cache(self):
-        """Should include cache tokens when calculating from components."""
+        """Context usage should include adjusted input plus cache reads."""
         mw = self._make_middleware()
         mock_response = Mock()
-        mock_response.usage = {
-            "input_tokens": 100,
-            "output_tokens": 50,
-            "cache_creation_input_tokens": 200,
-            "cache_read_input_tokens": 300,
-        }
+        mock_response.usage = TokenUsage(
+            input_tokens=100,
+            completion_tokens=50,
+            total_tokens=650,
+            cache_creation_tokens=200,
+            cache_read_tokens=300,
+            input_tokens_uncached=100,
+        )
         hook_input = Mock(spec=AfterModelHookInput)
         hook_input.model_response = mock_response
         result = mw._get_current_tokens(hook_input)
-        # 100 + 200 + 300 + 50 = 650
-        assert result == 650
+        assert result == 400
 
     def test_get_current_tokens_none_when_no_usage(self):
         mw = self._make_middleware()
@@ -440,7 +444,7 @@ class TestContextCompactionPreCompactionCheck:
             Message(role=Role.ASSISTANT, content=[TextBlock(text="just text, no tools")]),
         ]
         mock_response = Mock()
-        mock_response.usage = {"total_tokens": 950}  # 95% usage, should trigger
+        mock_response.usage = TokenUsage(total_tokens=950)  # 95% usage, should trigger
         hook_input = AfterModelHookInput(
             messages=messages,
             model_response=mock_response,
@@ -464,7 +468,7 @@ class TestContextCompactionPreCompactionCheck:
             ),
         ]
         mock_response = Mock()
-        mock_response.usage = {"total_tokens": 500}  # 50%, below threshold
+        mock_response.usage = TokenUsage(total_tokens=500)  # 50%, below threshold
         hook_input = AfterModelHookInput(
             messages=messages,
             model_response=mock_response,

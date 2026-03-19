@@ -271,35 +271,10 @@ class ContextCompactionMiddleware(Middleware):
             return None
 
         usage = hook_input.model_response.usage
-
-        # Usage is now in normalized format with total_tokens field
-        if "total_tokens" in usage:
-            return usage["total_tokens"]
-
-        # Try to calculate from components if total is missing
-        input_tokens = usage.get("input_tokens") or usage.get("prompt_tokens")
-        output_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
-
-        if input_tokens is not None and output_tokens is not None:
-            try:
-                input_val = int(input_tokens)
-                output_val = int(output_tokens)
-
-                # Check for cache tokens (e.g. Anthropic)
-                # If input_tokens_uncached exists, input_tokens likely already includes cache (normalized)
-                # If not, and we have cache keys, we should add them (raw usage)
-                if "input_tokens_uncached" not in usage:
-                    cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
-                    cache_read = int(usage.get("cache_read_input_tokens") or 0)
-                    input_val += cache_creation + cache_read
-
-                return input_val + output_val
-            except (ValueError, TypeError):
-                pass
-
-        # Unknown format
-        logger.warning(f"[ContextCompactionMiddleware] Unknown usage format: {usage}")
-        return None
+        current_tokens = usage.context_used_tokens()
+        if current_tokens > 0:
+            return current_tokens
+        return usage.total_tokens if usage.total_tokens > 0 else None
 
     @staticmethod
     def _is_context_overflow_error(exc: BaseException) -> bool:

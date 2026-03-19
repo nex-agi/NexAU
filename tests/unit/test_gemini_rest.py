@@ -67,9 +67,9 @@ class TestModelResponseFromGeminiRest:
         assert result.reasoning_content is None
         assert result.thought_signature is None
         assert len(result.tool_calls) == 0
-        assert result.usage["input_tokens"] == 10
-        assert result.usage["completion_tokens"] == 8
-        assert result.usage["total_tokens"] == 18
+        assert result.usage.input_tokens == 10
+        assert result.usage.completion_tokens == 8
+        assert result.usage.total_tokens == 18
 
     def test_response_with_thinking(self):
         """Test parsing a response with thought content."""
@@ -90,7 +90,7 @@ class TestModelResponseFromGeminiRest:
 
         assert result.content == "The answer is 42."
         assert result.reasoning_content == "Let me think about this..."
-        assert result.usage["reasoning_tokens"] == 10
+        assert result.usage.reasoning_tokens == 10
 
     def test_response_with_thought_signature(self):
         """Test parsing a response with thought signature."""
@@ -204,9 +204,9 @@ class TestModelResponseFromGeminiRest:
         result = ModelResponse.from_gemini_rest(response_json)
 
         assert result.content == "Response without usage"
-        assert result.usage["input_tokens"] == 0
-        assert result.usage["completion_tokens"] == 0
-        assert result.usage["total_tokens"] == 0
+        assert result.usage.input_tokens == 0
+        assert result.usage.completion_tokens == 0
+        assert result.usage.total_tokens == 0
 
     def test_to_message_dict_with_thought_signature(self):
         """Test that thought_signature is preserved in to_message_dict."""
@@ -987,8 +987,8 @@ class TestGeminiRestStreamAggregator:
         result = agg.finalize()
         resp = ModelResponse.from_gemini_rest(result)
         assert resp.content == "Hello world"
-        assert resp.usage["input_tokens"] == 5
-        assert resp.usage["total_tokens"] == 8
+        assert resp.usage.input_tokens == 5
+        assert resp.usage.total_tokens == 8
 
     def test_empty_candidates_skipped(self):
         """Test chunks with empty candidates are silently skipped."""
@@ -1132,7 +1132,7 @@ class TestCallLLMWithGeminiRestStreaming:
         result = call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config)
 
         assert result.content == "Hello world!"
-        assert result.usage["input_tokens"] == 5
+        assert result.usage.input_tokens == 5
 
     @patch("nexau.archs.main_sub.execution.llm_caller.requests.post")
     def test_streaming_url_uses_stream_endpoint(self, mock_post, gemini_llm_config):

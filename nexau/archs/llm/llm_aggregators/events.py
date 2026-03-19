@@ -50,6 +50,8 @@ from ag_ui.core.events import (  # pyright: ignore[reportMissingTypeStubs]
     ThinkingTextMessageStartEvent as AgUiThinkingTextMessageStartEvent,
 )
 
+from nexau.core.usage import TokenUsage
+
 # ============= Core Aggregator Infrastructure =============
 
 
@@ -315,6 +317,14 @@ class TeamMessageEvent(BaseEvent):
     to_agent_id: str | None = None
 
 
+class UsageUpdateEvent(BaseEvent):
+    """Event emitted after an LLM call completes with canonical token usage."""
+
+    type: Literal["USAGE_UPDATE"] = "USAGE_UPDATE"  # type: ignore[assignment]
+    run_id: str
+    usage: TokenUsage
+
+
 # ============= UNION TYPES =============
 
 # Unified Event type that includes all AG UI core events and multimodal events
@@ -347,6 +357,7 @@ Event = (
     # Team message events (RFC-0002)
     | UserMessageEvent
     | TeamMessageEvent
+    | UsageUpdateEvent
 )
 
 __all__ = [
@@ -359,6 +370,7 @@ __all__ = [
     "CompactionStartedEvent",
     "CompactionFinishedEvent",
     "TransportErrorEvent",
+    "UsageUpdateEvent",
     # Text message events
     "TextMessageStartEvent",
     "TextMessageContentEvent",

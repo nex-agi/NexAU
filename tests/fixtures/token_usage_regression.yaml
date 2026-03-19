@@ -1,0 +1,120 @@
+- name: openai_chat_cached_reasoning
+  api_type: openai_chat_completion
+  raw_usage:
+    prompt_tokens: 120
+    completion_tokens: 30
+    total_tokens: 150
+    prompt_tokens_details:
+      cached_tokens: 20
+    completion_tokens_details:
+      reasoning_tokens: 5
+  expected:
+    input_tokens: 100
+    completion_tokens: 30
+    reasoning_tokens: 5
+    total_tokens: 150
+    cache_creation_tokens: 0
+    cache_read_tokens: 20
+    input_tokens_uncached: 100
+
+- name: openai_responses_nested_reasoning
+  api_type: openai_responses
+  raw_usage:
+    input_tokens: 90
+    output_tokens: 25
+    input_tokens_details:
+      cached_tokens: 15
+    output_tokens_details:
+      reasoning_tokens: 4
+  expected:
+    input_tokens: 75
+    completion_tokens: 25
+    reasoning_tokens: 4
+    total_tokens: 115
+    cache_creation_tokens: 0
+    cache_read_tokens: 15
+    input_tokens_uncached: 75
+
+- name: anthropic_cache_accounting
+  api_type: anthropic_chat_completion
+  raw_usage:
+    input_tokens: 100
+    output_tokens: 50
+    cache_creation_input_tokens: 200
+    cache_read_input_tokens: 300
+  expected:
+    input_tokens: 100
+    completion_tokens: 50
+    reasoning_tokens: 0
+    total_tokens: 650
+    cache_creation_tokens: 200
+    cache_read_tokens: 300
+    input_tokens_uncached: 100
+
+- name: gemini_reasoning_excluded_from_fallback_total
+  api_type: gemini_rest
+  raw_usage:
+    promptTokenCount: 8
+    candidatesTokenCount: 4
+    thoughtsTokenCount: 2
+  expected:
+    input_tokens: 8
+    completion_tokens: 4
+    reasoning_tokens: 2
+    total_tokens: 12
+    cache_creation_tokens: 0
+    cache_read_tokens: 0
+    input_tokens_uncached: 8
+
+- name: gemini_cached_content_tokens
+  api_type: gemini_rest
+  raw_usage:
+    promptTokenCount: 100
+    candidatesTokenCount: 20
+    thoughtsTokenCount: 5
+    cachedContentTokenCount: 30
+    totalTokenCount: 150
+  expected:
+    input_tokens: 100
+    completion_tokens: 20
+    reasoning_tokens: 5
+    total_tokens: 150
+    cache_creation_tokens: 0
+    cache_read_tokens: 30
+    input_tokens_uncached: 100
+
+- name: fallback_openai_style_cached_input
+  api_type: fallback
+  raw_usage:
+    prompt_tokens: 80
+    completion_tokens: 20
+    prompt_tokens_details:
+      cached_tokens: 10
+    completion_tokens_details:
+      reasoning_tokens: 3
+  expected:
+    input_tokens: 70
+    completion_tokens: 20
+    reasoning_tokens: 3
+    total_tokens: 100
+    cache_creation_tokens: 0
+    cache_read_tokens: 10
+    input_tokens_uncached: 70
+
+- name: fallback_multi_bucket_cache_write
+  api_type: fallback
+  raw_usage:
+    input_tokens: 40
+    output_tokens: 15
+    cache_read_input_tokens: 8
+    cache_write_5m_input_tokens: 6
+    cache_write_1h_input_tokens: 4
+    reasoning_tokens: 2
+  expected:
+    input_tokens: 26
+    completion_tokens: 15
+    reasoning_tokens: 2
+    total_tokens: 55
+    cache_creation_tokens: 6
+    cache_read_tokens: 8
+    input_tokens_uncached: 26

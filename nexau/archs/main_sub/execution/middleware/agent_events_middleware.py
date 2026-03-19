@@ -37,9 +37,11 @@ from nexau.archs.llm.llm_aggregators.events import (
     RunFinishedEvent,
     RunStartedEvent,
     ToolCallResultEvent,
+    UsageUpdateEvent,
 )
 from nexau.archs.main_sub.execution.hooks import (
     AfterAgentHookInput,
+    AfterModelHookInput,
     AfterToolHookInput,
     BeforeAgentHookInput,
     HookResult,
@@ -235,6 +237,21 @@ class AgentEventsMiddleware(Middleware):
             )
         )
 
+        return HookResult.no_changes()
+
+    def after_model(self, hook_input: AfterModelHookInput) -> HookResult:
+        """Emit a usage update event after each completed LLM call."""
+
+        if hook_input.model_response is None:
+            return HookResult.no_changes()
+
+        self.on_event(
+            UsageUpdateEvent(
+                run_id=hook_input.agent_state.run_id,
+                usage=hook_input.model_response.usage,
+                timestamp=int(datetime.now().timestamp() * 1000),
+            )
+        )
         return HookResult.no_changes()
 
     def stream_chunk(

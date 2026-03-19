@@ -39,6 +39,7 @@ from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat, messages_to_legacy_openai_chat
 from nexau.core.messages import ImageBlock, Message, Role, TextBlock, ToolResultBlock
+from nexau.core.usage import TokenUsage
 
 
 @pytest.fixture(autouse=True)
@@ -651,11 +652,11 @@ class TestLLMCallerBasicCalls:
         assert isinstance(response, ModelResponse)
         assert response.content == "openai-like output"
         assert response.output_token_ids == [31, 32]
-        assert response.usage["input_tokens"] == 3
-        assert response.usage["completion_tokens"] == 2
-        assert response.usage["total_tokens"] == 5
-        assert response.usage["cached_tokens"] == 1
-        assert response.usage["finish_reason"] == "length"
+        assert response.usage.input_tokens == 2
+        assert response.usage.completion_tokens == 2
+        assert response.usage.total_tokens == 5
+        assert response.usage.cache_read_tokens == 1
+        assert response.raw_message["choices"][0]["finish_reason"]["type"] == "length"
         token_trace_session.record_round.assert_called_once()
         token_client.generate_with_token.assert_called_once_with(
             model="token-model",
@@ -709,11 +710,11 @@ class TestLLMCallerBasicCalls:
         assert isinstance(response, ModelResponse)
         assert response.content == "你好，请帮我分析一下。"
         assert response.output_token_ids == [31, 32]
-        assert response.usage["input_tokens"] == 3
-        assert response.usage["completion_tokens"] == 2
-        assert response.usage["total_tokens"] == 5
-        assert response.usage["cached_tokens"] == 10
-        assert response.usage["finish_reason"] == "length"
+        assert response.usage.input_tokens == 0
+        assert response.usage.completion_tokens == 2
+        assert response.usage.total_tokens == 5
+        assert response.usage.cache_read_tokens == 10
+        assert response.raw_message["meta_info"]["finish_reason"]["type"] == "length"
         token_trace_session.record_round.assert_called_once()
         token_client.generate_with_token.assert_called_once_with(
             model="token-model",
@@ -1379,7 +1380,7 @@ class TestLLMCallerRetryLogic:
         empty_model_response = ModelResponse(
             content="",
             role="assistant",
-            usage={"finish_reason": "length"},
+            usage=TokenUsage(),
             raw_message=unsafe_raw_message,
         )
 

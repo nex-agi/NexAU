@@ -34,6 +34,7 @@ from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.parse_structures import ParsedResponse
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, ToolUseBlock
+from nexau.core.usage import TokenUsage
 
 
 @pytest.fixture
@@ -105,11 +106,7 @@ def mock_model_response():
     return ModelResponse(
         content="Test response",
         role="assistant",
-        usage={
-            "prompt_tokens": 100,
-            "completion_tokens": 50,
-            "total_tokens": 150,
-        },
+        usage=TokenUsage(input_tokens=100, completion_tokens=50, total_tokens=150),
     )
 
 
@@ -1551,11 +1548,7 @@ class TestContextCompactionMiddlewareAdvanced:
         high_usage_model_response = ModelResponse(
             content="Test response",
             role="assistant",
-            usage={
-                "prompt_tokens": 7500,
-                "completion_tokens": 500,
-                "total_tokens": 8000,
-            },
+            usage=TokenUsage(input_tokens=7500, completion_tokens=500, total_tokens=8000),
         )
 
         middleware = ContextCompactionMiddleware(
@@ -1620,11 +1613,7 @@ class TestContextCompactionMiddlewareAdvanced:
         high_usage_model_response = ModelResponse(
             content="Test response",
             role="assistant",
-            usage={
-                "prompt_tokens": 7500,
-                "completion_tokens": 500,
-                "total_tokens": 8000,
-            },
+            usage=TokenUsage(input_tokens=7500, completion_tokens=500, total_tokens=8000),
         )
 
         middleware = ContextCompactionMiddleware(
@@ -1688,11 +1677,7 @@ class TestContextCompactionMiddlewareAdvanced:
         high_usage_model_response = ModelResponse(
             content="Test response",
             role="assistant",
-            usage={
-                "prompt_tokens": 8500,
-                "completion_tokens": 500,
-                "total_tokens": 9000,
-            },
+            usage=TokenUsage(input_tokens=8500, completion_tokens=500, total_tokens=9000),
         )
 
         middleware = ContextCompactionMiddleware(

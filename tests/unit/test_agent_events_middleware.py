@@ -22,9 +22,10 @@ from ag_ui.core.events import RunFinishedEvent, RunStartedEvent
 from openai.types.chat import ChatCompletionChunk
 from openai.types.chat.chat_completion_chunk import Choice, ChoiceDelta
 
-from nexau.archs.llm.llm_aggregators.events import RunErrorEvent, ToolCallResultEvent
+from nexau.archs.llm.llm_aggregators.events import RunErrorEvent, ToolCallResultEvent, UsageUpdateEvent
 from nexau.archs.main_sub.execution.hooks import (
     AfterAgentHookInput,
+    AfterModelHookInput,
     AfterToolHookInput,
     BeforeAgentHookInput,
     ModelCallParams,
@@ -34,7 +35,9 @@ from nexau.archs.main_sub.execution.middleware.agent_events_middleware import (
     is_anthropic_event,
     is_openai_responses_event,
 )
+from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
+from nexau.core.usage import TokenUsage
 
 
 class TestAgentEventsMiddleware:
@@ -168,6 +171,25 @@ class TestAgentEventsMiddleware:
         # Content should be JSON string
         content = json.loads(event.content)
         assert content == {"result": "success", "data": [1, 2, 3]}
+        assert not result.has_modifications()
+
+    def test_after_model_emits_usage_update_event(self, middleware, mock_agent_state, events_captured):
+        hook_input = AfterModelHookInput(
+            agent_state=mock_agent_state,
+            messages=[],
+            max_iterations=5,
+            current_iteration=0,
+            original_response="ok",
+            model_response=ModelResponse(content="ok", usage=TokenUsage(input_tokens=10, completion_tokens=5, total_tokens=15)),
+        )
+
+        result = middleware.after_model(hook_input)
+
+        assert len(events_captured) == 1
+        event = events_captured[0]
+        assert isinstance(event, UsageUpdateEvent)
+        assert event.run_id == "test_run_123"
+        assert event.usage.total_tokens == 15
         assert not result.has_modifications()
 
     def test_stream_chunk_requires_agent_state(self, middleware):

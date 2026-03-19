@@ -33,6 +33,7 @@ from openai import Stream
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
 from nexau.archs.llm.llm_config import LLMConfig
+from nexau.archs.main_sub.token_trace_session import TokenTraceSession
 from nexau.archs.tool.tool import (
     StructuredToolDefinitionLike,
     normalize_structured_tool_definition,
@@ -54,7 +55,6 @@ from ..tool_call_modes import (
 from .hooks import MiddlewareManager, ModelCallParams
 from .model_response import ModelResponse
 from .stop_reason import AgentStopReason
-from nexau.archs.main_sub.token_trace_session import TokenTraceSession
 
 logger = logging.getLogger(__name__)
 
@@ -456,17 +456,15 @@ class LLMCaller:
                 if response_content.has_content() or response_content.has_tool_calls():
                     return response_content
                 else:
-                    finish_reason = None
-                    if isinstance(response_content.usage, dict):
-                        finish_reason = response_content.usage.get("finish_reason")
                     raw_message_meta = _raw_message_metadata(response_content.raw_message)
+                    finish_reason = raw_message_meta.get("finish_reason") or raw_message_meta.get("choice_finish_reason")
                     logger.error(
                         "❌ Empty model response received: finish_reason=%s, role=%s, content_len=%d, tool_calls=%d, usage=%s",
                         finish_reason if finish_reason is not None else "unknown",
                         response_content.role,
                         len(response_content.content or ""),
                         len(response_content.tool_calls),
-                        response_content.usage or {},
+                        response_content.usage.to_dict(),
                     )
                     logger.error("❌ Empty model raw_message_meta=%s", raw_message_meta)
                     raise Exception("No response content or tool calls")
@@ -1117,16 +1115,6 @@ def call_llm_with_openai_chat_completion(
     usage = None
     if hasattr(response_payload, "usage") and response_payload.usage is not None:
         usage = _to_serializable_dict(response_payload.usage)
-
-    finish_reason = None
-    try:
-        finish_reason = response_payload.choices[0].finish_reason
-    except Exception:
-        finish_reason = None
-    if finish_reason is not None:
-        usage = dict(usage or {})
-        usage["finish_reason"] = str(finish_reason)
-
     return ModelResponse.from_openai_message(response_message, usage=usage)
 
 
@@ -1171,8 +1159,12 @@ def call_llm_with_openai_responses(
 
     # Always request encrypted reasoning content so that reasoning items can be
     # passed back in subsequent conversation turns (required for stateless / ZDR mode).
-    request_payload.setdefault("include", [])
-    include_list: list[str] = request_payload["include"]
+    include_value = request_payload.get("include")
+    include_list: list[str] = []
+    if isinstance(include_value, (list, tuple)):
+        include_items = cast(list[object] | tuple[object, ...], include_value)
+        include_list = [item for item in include_items if isinstance(item, str)]
+    request_payload["include"] = include_list
     if "reasoning.encrypted_content" not in include_list:
         include_list.append("reasoning.encrypted_content")
 

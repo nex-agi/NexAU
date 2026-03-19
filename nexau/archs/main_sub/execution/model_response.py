@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 from json_repair import repair_json
 
+from nexau.core.usage import TokenUsage, UsageConverterRegistry, fallback_normalize_usage
+
 if TYPE_CHECKING:
     from nexau.core.messages import Message
 
@@ -117,66 +119,18 @@ def _coerce_usage(usage: Any) -> dict[str, Any] | None:
         return None
 
 
-def _normalize_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Normalize usage information to a standard format.
-
-    Standard format:
-    - input_tokens: Number of tokens in the input/prompt
-    - reasoning_tokens: Number of tokens used for reasoning (if applicable)
-    - completion_tokens: Number of tokens in the completion/output
-    - total_tokens: Total number of tokens used
-
-    Supports both OpenAI format (prompt_tokens, completion_tokens, total_tokens)
-    and Anthropic format (input_tokens, output_tokens).
-
-    Args:
-        usage: Raw usage dict from model response
-
-    Returns:
-        Normalized usage dict or None if input is None
-    """
+def _normalize_usage(usage: dict[str, Any] | None, api_type: str | None = None) -> TokenUsage:
+    """Normalize provider-specific usage payloads into TokenUsage."""
     usage = _coerce_usage(usage)
     if usage is None:
-        return None
+        return TokenUsage()
 
-    # Preserve all provider-specific fields (e.g., Anthropic cache tokens) while
-    # also ensuring the standard keys exist.
-    normalized: dict[str, Any] = dict(usage)
+    if api_type is not None:
+        converter = UsageConverterRegistry.get(api_type)
+        if converter is not None:
+            return converter.convert(dict(usage))
 
-    def _as_int(val: Any) -> int:
-        try:
-            return int(val)
-        except Exception:
-            return 0
-
-    # Base input tokens (provider-reported, typically excluding cache extras).
-    direct_input = _as_int(usage.get("input_tokens", usage.get("prompt_tokens", 0)))
-
-    # Anthropic cache accounting (if present).
-    cache_creation = _as_int(usage.get("cache_creation_input_tokens", 0))
-    cache_read = _as_int(usage.get("cache_read_input_tokens", 0))
-
-    # If cache fields exist, treat total input as: cache_creation + cache_read + input_tokens.
-    if ("cache_creation_input_tokens" in usage) or ("cache_read_input_tokens" in usage):
-        normalized.setdefault("input_tokens_uncached", direct_input)
-        direct_input = cache_creation + cache_read + direct_input
-
-    # Standard keys
-    normalized["input_tokens"] = direct_input
-    reasoning_tokens: Any = usage.get("reasoning_tokens", None)
-    if reasoning_tokens is None:
-        # OpenAI ChatCompletions may report reasoning under completion_tokens_details.reasoning_tokens.
-        details: dict[str, Any] = usage.get("completion_tokens_details") or usage.get("output_tokens_details") or {}
-        reasoning_tokens = details.get("reasoning_tokens", None)
-    normalized["reasoning_tokens"] = _as_int(reasoning_tokens)
-    normalized["completion_tokens"] = _as_int(usage.get("completion_tokens", usage.get("output_tokens", 0)))
-
-    if "total_tokens" in usage:
-        normalized["total_tokens"] = _as_int(usage.get("total_tokens"))
-    else:
-        normalized["total_tokens"] = normalized["input_tokens"] + normalized["reasoning_tokens"] + normalized["completion_tokens"]
-
-    return normalized
+    return fallback_normalize_usage(dict(usage))
 
 
 @dataclass
@@ -294,26 +248,16 @@ class ModelResponse:
     """Optional encrypted data for redacted reasoning (used by Anthropic)."""
     thought_signature: str | None = None
     """Gemini-specific thought signature for preserving reasoning context across turns."""
-    usage: JsonDict | None = None
-    """Token usage information from the model response (normalized format).
-
-    Standard format:
-    - input_tokens: Number of tokens in the input/prompt
-    - reasoning_tokens: Number of tokens used for reasoning (if applicable, 0 otherwise)
-    - completion_tokens: Number of tokens in the completion/output
-    - total_tokens: Total number of tokens used
-
-    All usage data is automatically normalized from provider-specific formats
-    (e.g., OpenAI's prompt_tokens/completion_tokens, Anthropic's input_tokens/output_tokens)
-    into this standard format.
-    """
+    usage: TokenUsage = field(default_factory=TokenUsage)
+    """Canonical token usage information for the model response."""
 
     def __post_init__(self) -> None:
         self.tool_calls = list(self.tool_calls)
         self.response_items = list(self.response_items)
         self.output_token_ids = [int(token) for token in self.output_token_ids]
-        if self.usage is None:
-            self.usage = _empty_json_dict()
+        usage = cast(TokenUsage | None, self.usage)
+        if usage is None:
+            self.usage = TokenUsage()
 
     @classmethod
     def from_openai_message(cls, message: Any, usage: dict[str, Any] | None = None) -> ModelResponse:
@@ -396,7 +340,7 @@ class ModelResponse:
             role=role,
             raw_message=message,
             reasoning_content=reasoning_content if reasoning_content else None,
-            usage=_normalize_usage(final_usage),
+            usage=_normalize_usage(final_usage, "openai_chat_completion"),
         )
 
     @classmethod
@@ -512,7 +456,7 @@ class ModelResponse:
             reasoning_content=reasoning_content,
             reasoning_signature=thinking_signature,
             reasoning_redacted_data=redacted_thinking_data,
-            usage=_normalize_usage(final_usage),
+            usage=_normalize_usage(final_usage, "anthropic_chat_completion"),
         )
 
     @classmethod
@@ -623,7 +567,7 @@ class ModelResponse:
             raw_message=response,
             response_items=response_items,
             reasoning_content=reasoning_content,
-            usage=_normalize_usage(usage),
+            usage=_normalize_usage(usage, "openai_responses"),
         )
 
     @staticmethod
@@ -777,13 +721,8 @@ class ModelResponse:
                 )
 
         # Extract usage metadata
-        usage_meta = response_json.get("usageMetadata", {})
-        normalized_usage = {
-            "input_tokens": usage_meta.get("promptTokenCount", 0),
-            "completion_tokens": usage_meta.get("candidatesTokenCount", 0),
-            "reasoning_tokens": usage_meta.get("thoughtsTokenCount", 0),
-            "total_tokens": usage_meta.get("totalTokenCount", 0),
-        }
+        usage_meta_raw = response_json.get("usageMetadata")
+        usage_meta: dict[str, Any] | None = cast(dict[str, Any], usage_meta_raw) if isinstance(usage_meta_raw, dict) else None
 
         return cls(
             content=content_text if content_text else None,
@@ -792,7 +731,7 @@ class ModelResponse:
             raw_message=response_json,
             reasoning_content=reasoning_content if reasoning_content else None,
             thought_signature=thought_signature,
-            usage=normalized_usage,
+            usage=_normalize_usage(usage_meta, "gemini_rest"),
         )
 
     def to_message_dict(self) -> dict[str, Any]:
@@ -849,6 +788,7 @@ class ModelResponse:
             )
 
         msg = Message(role=role, content=blocks)
+        msg.metadata["usage"] = self.usage.to_dict()
         if self.response_items:
             msg.metadata["response_items"] = self.response_items
         if self.thought_signature:

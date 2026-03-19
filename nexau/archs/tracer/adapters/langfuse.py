@@ -26,13 +26,14 @@ from langfuse import Langfuse, LangfuseGeneration, LangfuseSpan  # type: ignore
 from opentelemetry import trace as otel_trace_api
 
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
+from nexau.core.usage import TokenUsage
 
 logger = logging.getLogger(__name__)
 
 _TTFT_ATTRIBUTE_KEY = "time_to_first_token_ms"
 
 
-def _sanitize_usage(usage: Mapping[str, object]) -> dict[str, int]:
+def _sanitize_usage(usage: Mapping[str, object] | TokenUsage) -> dict[str, int]:
     """Sanitize usage data for Langfuse SDK compatibility.
 
     Langfuse SDK 的 UsageDetails 类型为 Union[Dict[str, int], OpenAiCompletionUsageSchema, ...]，
@@ -43,6 +44,8 @@ def _sanitize_usage(usage: Mapping[str, object]) -> dict[str, int]:
 
     此函数只保留值为 int 的顶层字段，丢弃非 int 值。
     """
+    if isinstance(usage, TokenUsage):
+        return usage.to_dict()
     return {k: v for k, v in usage.items() if isinstance(v, int)}
 
 
@@ -382,8 +385,8 @@ class LangfuseTracer(BaseTracer):
                     if "model" in outputs_map:
                         update_params["model"] = outputs_map["model"]
                     usage = outputs_map.get("usage")
-                    if isinstance(usage, Mapping):
-                        update_params["usage_details"] = _sanitize_usage(cast(Mapping[str, object], usage))
+                    if isinstance(usage, (Mapping, TokenUsage)):
+                        update_params["usage_details"] = _sanitize_usage(cast(Mapping[str, object] | TokenUsage, usage))
 
             ttft_ms: float | None = None
             for source in (attributes, span.attributes):

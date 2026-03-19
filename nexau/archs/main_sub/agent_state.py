@@ -17,8 +17,8 @@
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from nexau.archs.main_sub.token_trace_session import TokenTraceSession
     from nexau.archs.main_sub.team.state import AgentTeamState
+    from nexau.archs.main_sub.token_trace_session import TokenTraceSession
     from nexau.archs.sandbox.base_sandbox import BaseSandbox, BaseSandboxManager
     from nexau.archs.tool.tool import Tool
     from nexau.archs.tool.tool_registry import ToolRegistry

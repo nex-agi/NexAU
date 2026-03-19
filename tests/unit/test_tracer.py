@@ -21,6 +21,7 @@ from nexau.archs.tracer.context import (
     set_current_span,
 )
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
+from nexau.core.usage import TokenUsage
 
 
 class RecordingTracer(BaseTracer):
@@ -397,6 +398,28 @@ def test_sanitize_usage_filters_non_int_values():
     assert _sanitize_usage({"a": 1, "b": 2}) == {"a": 1, "b": 2}
     # 空 dict
     assert _sanitize_usage({}) == {}
+
+
+def test_sanitize_usage_keeps_aligned_cache_fields():
+    usage = TokenUsage(
+        input_tokens=70,
+        completion_tokens=20,
+        reasoning_tokens=3,
+        total_tokens=100,
+        cache_creation_tokens=5,
+        cache_read_tokens=10,
+        input_tokens_uncached=70,
+    )
+
+    assert _sanitize_usage(usage) == {
+        "input_tokens": 70,
+        "completion_tokens": 20,
+        "reasoning_tokens": 3,
+        "total_tokens": 100,
+        "cache_creation_tokens": 5,
+        "cache_read_tokens": 10,
+        "input_tokens_uncached": 70,
+    }
 
 
 def test_langfuse_tracer_end_span_sanitizes_usage():
