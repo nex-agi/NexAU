@@ -1170,6 +1170,76 @@ class TestSlidingWindowCompactionAdvanced:
         assert len(result) >= 2
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
+    def test_summary_placed_before_tool_chain(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
+        """Summary must appear right after system, not at the end of a tool-call chain.
+
+        Regression test for the bug where _inject_summary searched for the first
+        Role.USER message in kept groups, but in a long tool-calling chain the
+        only USER message was the very last one, causing the summary to be placed
+        at the end of the message list instead of near the beginning.
+
+        Scenario (keep_iterations=2):
+          Messages: [system, user, assistant+tool_use, tool_result,
+                     assistant+tool_use, tool_result, assistant+tool_use,
+                     tool_result, user]
+          Iterations (excluding system):
+            Iter 1: [user, assistant+tool_use, tool_result]
+            Iter 2: [assistant+tool_use, tool_result]         ← no USER
+            Iter 3: [assistant+tool_use, tool_result, user]   ← USER at end
+
+          Kept = Iter 2 + Iter 3 → first message is TOOL, not USER.
+          Summary should be inserted as a standalone USER message right after system.
+        """
+        mock_openai_class.return_value = mock_openai_client
+
+        compaction = SlidingWindowCompaction(
+            keep_iterations=2,
+            summary_model="gpt-4o-mini",
+            summary_base_url="https://api.openai.com/v1",
+            summary_api_key="test-key",
+            compact_prompt_path=temp_compact_prompt,
+        )
+        compaction._llm_caller.call_llm = Mock(  # type: ignore[method-assign]
+            return_value=ModelResponse(content="Summary of earlier conversation.", role="assistant"),
+        )
+
+        messages = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+            Message(role=Role.USER, content=[TextBlock(text="Please help me refactor")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[TextBlock(text="Sure"), ToolUseBlock(id="call_1", name="read_file", input={"path": "a.py"})],
+            ),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_1", content="file content")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[TextBlock(text="Now writing"), ToolUseBlock(id="call_2", name="write_file", input={"path": "a.py"})],
+            ),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_2", content="done")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[TextBlock(text="Running tests"), ToolUseBlock(id="call_3", name="run_tests", input={})],
+            ),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_3", content="22 passed")]),
+            Message(role=Role.USER, content=[TextBlock(text="Now fix the other file")]),
+        ]
+
+        result = compaction.compact(messages)
+
+        # 1. System is first
+        assert result[0].role == Role.SYSTEM
+
+        # 2. Summary must be the second message (right after system), not at the end
+        assert result[1].role == Role.USER
+        assert "This session is being continued" in result[1].get_text_content()
+        assert result[1].metadata.get("isSummary") is True
+
+        # 3. The original user message at the end should remain unmodified
+        last_user_msgs = [m for m in result if m.role == Role.USER and "Now fix the other file" in m.get_text_content()]
+        assert len(last_user_msgs) == 1
+        assert "This session is being continued" not in last_user_msgs[0].get_text_content()
+
+    @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
     def test_compact_with_normal_compact(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
         """Test normal LLM summarization compaction."""
         mock_openai_class.return_value = mock_openai_client

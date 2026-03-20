@@ -447,31 +447,51 @@ class SlidingWindowCompaction:
         groups_to_keep: list[list[Message]],
         summary: str,
     ) -> None:
-        """Inject summary into the first USER message of kept groups.
+        """Inject summary into the message list, always near the beginning.
 
-        Modifies result in place by appending messages from groups_to_keep,
-        with the summary prepended to the first USER message found.
+        When the first message of the kept groups is a USER message, the
+        summary is merged into it (preserving the original user content).
+        Otherwise a standalone summary USER message is inserted before the
+        kept groups so that the LLM always sees the context summary early in
+        the conversation — not buried at the end after a long tool-call chain.
 
         Args:
             result: Result message list to append to (modified in place).
             groups_to_keep: Groups of messages to keep.
             summary: Summary text to inject.
         """
-        first_user_modified = False
-        for group_msgs in groups_to_keep:
-            for msg in group_msgs:
-                if msg.role == Role.USER and not first_user_modified:
-                    original_content = msg.get_text_content()
-                    modified_content = (
-                        f"This session is being continued from a previous conversation that ran out of context. "
-                        f"The previous conversation is summarized as follows: {summary}. "
-                        f"The user request for this round is: {original_content}"
-                    )
-                    modified_msg = msg.model_copy(update={"content": [TextBlock(text=modified_content)]})
-                    modified_msg.metadata["isSummary"] = True
-                    result.append(modified_msg)
-                    first_user_modified = True
-                else:
+        summary_prefix = (
+            "This session is being continued from a previous conversation that ran out of context. "
+            f"The previous conversation is summarized as follows: {summary}."
+        )
+
+        # 1. 判断保留组的第一条消息是否为真正的 USER 消息
+        first_kept_msg: Message | None = None
+        if groups_to_keep and groups_to_keep[0]:
+            first_kept_msg = groups_to_keep[0][0]
+
+        if first_kept_msg is not None and first_kept_msg.role == Role.USER:
+            # 2a. 第一条就是 USER → 合并摘要到该消息（位置已正确）
+            merged = False
+            for group_msgs in groups_to_keep:
+                for msg in group_msgs:
+                    if msg is first_kept_msg and not merged:
+                        original_content = msg.get_text_content()
+                        modified_content = f"{summary_prefix} The user request for this round is: {original_content}"
+                        modified_msg = msg.model_copy(update={"content": [TextBlock(text=modified_content)]})
+                        modified_msg.metadata["isSummary"] = True
+                        result.append(modified_msg)
+                        merged = True
+                    else:
+                        result.append(msg)
+        else:
+            # 2b. 保留组以 ASSISTANT/TOOL 开头（典型的工具调用链场景）
+            #     → 在所有保留消息之前插入独立的摘要 USER 消息
+            summary_msg = Message(role=Role.USER, content=[TextBlock(text=summary_prefix)])
+            summary_msg.metadata["isSummary"] = True
+            result.append(summary_msg)
+            for group_msgs in groups_to_keep:
+                for msg in group_msgs:
                     result.append(msg)
 
     def _group_into_iterations(self, messages: list[Message]) -> list[list[Message]]:
