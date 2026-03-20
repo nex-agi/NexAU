@@ -230,14 +230,14 @@ class HistoryList(list[Message]):
         except Exception as e:
             logger.error(f"❌ Failed to flush history: {e}")
 
-    def flush(self) -> None:
-        """Flush pending messages to persistence.
+    def _prepare_flush(self) -> tuple[list[Message] | None, list[Message] | None, list[Message]]:
+        """Compute append/replace payloads and return (append, replace, non_system).
 
-        This should be called at the end of each run to persist all accumulated messages.
+        Shared flush logic: compares baseline fingerprints to determine whether
+        the change is append-only or a full replace. The third element of the
+        returned tuple is the current non-system message list, used to update
+        the baseline after persistence.
         """
-        if not self._persistence_enabled:
-            return
-
         current_non_system = [m for m in self if m.role != Role.SYSTEM]
 
         logger.debug(
@@ -274,12 +274,50 @@ class HistoryList(list[Message]):
         else:
             replace_messages = current_non_system
 
+        return append_messages, replace_messages, current_non_system
+
+    def flush(self) -> None:
+        """Flush pending messages to persistence (fire-and-forget).
+
+        This should be called at the end of each run to persist all accumulated messages.
+        The actual I/O is scheduled as a background task via ``create_task`` and is
+        **not** awaited.  Use :meth:`flush_async` when you need to guarantee the
+        write has completed before continuing (e.g. on error paths where the event
+        loop may shut down shortly after).
+        """
+        if not self._persistence_enabled:
+            return
+
+        append_messages, replace_messages, current_non_system = self._prepare_flush()
+
         if append_messages is not None or replace_messages is not None:
             self._schedule_async(
                 self._persist_flush_async(
                     append_messages=append_messages,
                     replace_messages=replace_messages,
                 )
+            )
+
+        self._pending_messages.clear()
+        self._baseline_fingerprints = self._compute_fingerprints(current_non_system)
+
+    async def flush_async(self) -> None:
+        """Flush pending messages to persistence (awaitable).
+
+        Same semantics as :meth:`flush` but **awaits** the persistence I/O instead
+        of scheduling it as a fire-and-forget task.  Use this on error / cleanup
+        paths where the caller needs to ensure data is written before the coroutine
+        or event loop exits.
+        """
+        if not self._persistence_enabled:
+            return
+
+        append_messages, replace_messages, current_non_system = self._prepare_flush()
+
+        if append_messages is not None or replace_messages is not None:
+            await self._persist_flush_async(
+                append_messages=append_messages,
+                replace_messages=replace_messages,
             )
 
         self._pending_messages.clear()

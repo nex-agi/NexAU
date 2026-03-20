@@ -684,6 +684,87 @@ def test_history_list_schedule_async_no_running_loop():
             mock_run.assert_called_once_with(mock_coro)
 
 
+def test_flush_async_persists_without_fire_and_forget(session_manager, history_key, engine):
+    """Test that flush_async awaits persistence directly (not fire-and-forget).
+
+    Unlike flush() which uses create_task (fire-and-forget), flush_async() must
+    await the persistence I/O. On error paths where the event loop may shut down
+    shortly after, flush_async() guarantees data is written before returning.
+    """
+
+    async def run():
+        await engine.setup_models([AgentRunActionModel])
+
+        history = HistoryList(
+            session_manager=session_manager,
+            history_key=history_key,
+            run_id="run_001",
+            root_run_id="run_001",
+            agent_name="test_agent",
+        )
+
+        history.append(Message.user("hello"))
+        history.append(Message.assistant("world"))
+
+        # flush_async awaits directly — no asyncio.sleep needed
+        await history.flush_async()
+
+        # Data should already be persisted (no sleep required)
+        loaded = await session_manager.agent_run_action.load_messages(key=history_key)
+        assert len(loaded) == 2
+        assert loaded[0].get_text_content() == "hello"
+        assert loaded[1].get_text_content() == "world"
+
+        # Baseline should be updated — calling flush_async again should be a no-op
+        await history.flush_async()
+        loaded_again = await session_manager.agent_run_action.load_messages(key=history_key)
+        assert len(loaded_again) == 2
+
+    asyncio.run(run())
+
+
+def test_flush_async_without_persistence():
+    """Test flush_async when persistence is not enabled (no-op)."""
+
+    async def run():
+        history = HistoryList()
+        history.append(Message.user("msg1"))
+        # Should not raise
+        await history.flush_async()
+        assert len(history) == 1
+
+    asyncio.run(run())
+
+
+def test_flush_async_replace_detection(session_manager, history_key, engine):
+    """Test that flush_async correctly detects replace vs append."""
+
+    async def run():
+        await engine.setup_models([AgentRunActionModel])
+
+        # 先写入初始数据
+        msg1 = Message.user("original")
+        history = HistoryList(
+            [msg1],
+            session_manager=session_manager,
+            history_key=history_key,
+            run_id="run_001",
+            root_run_id="run_001",
+            agent_name="test_agent",
+        )
+        await history.flush_async()
+
+        # 修改消息内容（触发 replace 而非 append）
+        msg1.content[0].text = "modified"
+        await history.flush_async()
+
+        loaded = await session_manager.agent_run_action.load_messages(key=history_key)
+        assert len(loaded) == 1
+        assert loaded[0].get_text_content() == "modified"
+
+    asyncio.run(run())
+
+
 def test_history_list_persist_flush_async_exception_handling(session_manager, history_key, engine):
     """Test _persist_flush_async handles exceptions gracefully."""
     from unittest.mock import AsyncMock, patch
