@@ -17,8 +17,11 @@
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 from nexau.archs.sandbox import SandboxStatus
 from nexau.archs.tool.builtin.file_tools import read_file, read_visual_file
+from nexau.archs.tool.builtin.file_tools.read_file import _detect_encoding
 
 
 def _make_agent_state(sandbox):
@@ -26,6 +29,127 @@ def _make_agent_state(sandbox):
     agent_state = Mock()
     agent_state.get_sandbox.return_value = sandbox
     return agent_state
+
+
+def _make_sandbox_for_encoding(raw_bytes: bytes) -> Mock:
+    """Create mock sandbox whose read_file(binary=True) returns raw_bytes."""
+    sandbox = Mock()
+    bin_res = Mock()
+    bin_res.status = SandboxStatus.SUCCESS
+    bin_res.content = raw_bytes
+    sandbox.read_file.return_value = bin_res
+    return sandbox
+
+
+class TestDetectEncoding:
+    """Test _detect_encoding layered strategy."""
+
+    def test_pure_ascii_returns_utf8(self):
+        """Pure ASCII content should return utf-8 (ASCII is a subset of UTF-8)."""
+        raw = b"def hello():\n    print('world')\n"
+        sandbox = _make_sandbox_for_encoding(raw)
+        assert _detect_encoding("test.py", sandbox) == "utf-8"
+
+    def test_ascii_head_chinese_tail_returns_utf8(self):
+        """File with ASCII head and Chinese tail — the original bug scenario."""
+        ascii_head = b"x = 1\n" * 2000
+        chinese_tail = "# 这是中文注释\n".encode()
+        raw = ascii_head + chinese_tail
+        assert len(ascii_head) > 10000
+        sandbox = _make_sandbox_for_encoding(raw)
+        assert _detect_encoding("verify.py", sandbox) == "utf-8"
+
+    def test_utf8_with_multibyte_returns_utf8(self):
+        """UTF-8 file with multi-byte characters should return utf-8."""
+        raw = "こんにちは世界\n你好世界\n".encode()
+        sandbox = _make_sandbox_for_encoding(raw)
+        assert _detect_encoding("test.txt", sandbox) == "utf-8"
+
+    def test_utf8_bom_returns_utf8_sig(self):
+        """File with UTF-8 BOM should return utf-8-sig."""
+        raw = b"\xef\xbb\xbf" + b"hello"
+        sandbox = _make_sandbox_for_encoding(raw)
+        assert _detect_encoding("test.txt", sandbox) == "utf-8-sig"
+
+    def test_utf16_le_bom_returns_utf16_le(self):
+        """File with UTF-16 LE BOM should return utf-16-le."""
+        raw = b"\xff\xfe" + "hello".encode("utf-16-le")
+        sandbox = _make_sandbox_for_encoding(raw)
+        assert _detect_encoding("test.txt", sandbox) == "utf-16-le"
+
+    def test_utf16_be_bom_returns_utf16_be(self):
+        """File with UTF-16 BE BOM should return utf-16-be."""
+        raw = b"\xfe\xff" + "hello".encode("utf-16-be")
+        sandbox = _make_sandbox_for_encoding(raw)
+        assert _detect_encoding("test.txt", sandbox) == "utf-16-be"
+
+    def test_utf32_le_bom_returns_utf32_le(self):
+        """UTF-32 LE BOM should be detected before UTF-16 LE (prefix overlap)."""
+        raw = b"\xff\xfe\x00\x00" + "hi".encode("utf-32-le")
+        sandbox = _make_sandbox_for_encoding(raw)
+        assert _detect_encoding("test.txt", sandbox) == "utf-32-le"
+
+    def test_empty_content_returns_utf8(self):
+        """Empty file content should fall back to utf-8."""
+        sandbox = _make_sandbox_for_encoding(b"")
+        assert _detect_encoding("test.txt", sandbox) == "utf-8"
+
+    def test_binary_read_failure_returns_utf8(self):
+        """If binary read fails, should fall back to utf-8."""
+        sandbox = Mock()
+        fail_res = Mock()
+        fail_res.status = SandboxStatus.ERROR
+        fail_res.content = None
+        sandbox.read_file.return_value = fail_res
+        assert _detect_encoding("test.txt", sandbox) == "utf-8"
+
+    def test_non_utf8_falls_through_to_chardet(self, monkeypatch: pytest.MonkeyPatch):
+        """Non-UTF-8 bytes should skip UTF-8 validation and adopt chardet result."""
+        raw = b"\xc4\xe3\xba\xc3"  # "你好" in GBK, invalid UTF-8
+        sandbox = _make_sandbox_for_encoding(raw)
+
+        fake_chardet = Mock()
+        fake_chardet.detect.return_value = {"encoding": "GB2312", "confidence": 0.9}
+        monkeypatch.setitem(__import__("sys").modules, "chardet", fake_chardet)
+
+        assert _detect_encoding("test.txt", sandbox) == "gb2312"
+
+
+class TestReadFileEncodingFallback:
+    """Test read_file falls back gracefully when encoding detection is wrong."""
+
+    def test_fallback_on_decode_error(self):
+        """If text read fails (e.g. wrong encoding), should fallback to binary + utf-8 replace."""
+        sandbox = Mock()
+        sandbox.work_dir = Path("/tmp/work")
+        sandbox.file_exists.return_value = True
+
+        info = Mock()
+        info.is_directory = False
+        info.size = 100
+        sandbox.get_file_info.return_value = info
+
+        raw = b"hello \x80\x81\x82 world"
+
+        def read_file_side_effect(path: str, encoding: str = "utf-8", binary: bool = False):
+            res = Mock()
+            if binary:
+                res.status = SandboxStatus.SUCCESS
+                res.content = raw
+            else:
+                res.status = SandboxStatus.ERROR
+                res.error = "UnicodeDecodeError"
+                res.content = None
+            return res
+
+        sandbox.read_file.side_effect = read_file_side_effect
+
+        agent_state = _make_agent_state(sandbox)
+        result = read_file(file_path="test.txt", agent_state=agent_state)
+
+        assert "error" not in result or result.get("error") is None
+        assert "hello" in result["content"]
+        assert "world" in result["content"]
 
 
 class TestReadFileLineLengthTruncation:
