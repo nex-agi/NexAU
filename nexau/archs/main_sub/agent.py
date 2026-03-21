@@ -193,14 +193,15 @@ class Agent:
         if skill_tools:
             self._tool_registry.add_source("builtin", skill_tools)
 
-        # RFC-0005: 无条件注册 ToolSearch 内置工具
-        # 即使当前没有 deferred 工具，后续通过 MCP 或运行时添加时也能搜索
-        tool_search_tool = Tool.from_yaml(
-            str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "tool_search.yaml"),
-            binding=tool_search,
-            as_skill=False,
-        )
-        self._tool_registry.add_source("builtin", [tool_search_tool])
+        # RFC-0005: 仅在存在 deferred 工具时注册 ToolSearch 内置工具
+        # 没有 deferred 工具时不暴露 ToolSearch，避免模型 payload 中出现无用工具
+        if self._tool_registry.deferred_count > 0:
+            tool_search_tool = Tool.from_yaml(
+                str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "tool_search.yaml"),
+                binding=tool_search,
+                as_skill=False,
+            )
+            self._tool_registry.add_source("builtin", [tool_search_tool])
 
         logger.info(
             "Registered %d tools (%d eager, %d deferred), %d sub_agents",

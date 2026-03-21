@@ -207,6 +207,66 @@ class TestAgent:
             assert "<available-deferred-tools>" not in tool_search_tool.description
             assert "GetWeather" not in tool_search_tool.description
 
+    def test_tool_search_not_registered_without_deferred_tools(self):
+        """ToolSearch should NOT appear in tool_call_payload when no deferred tools are configured (#367)."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            eager_tool = Tool(
+                name="Calculator",
+                description="Do math",
+                input_schema={
+                    "type": "object",
+                    "properties": {"expr": {"type": "string"}},
+                    "required": ["expr"],
+                },
+                implementation=lambda expr: expr,
+            )
+            agent_config = AgentConfig(
+                name="no_deferred",
+                llm_config=LLMConfig(model="gpt-4o-mini"),
+                tools=[eager_tool],
+                tool_call_mode="openai",
+            )
+
+            agent = Agent(config=agent_config)
+
+            payload_names = {spec["name"] for spec in agent.tool_call_payload}
+            assert "ToolSearch" not in payload_names
+            assert "Calculator" in payload_names
+            assert "ToolSearch" not in agent._tool_registry.get_all()
+
+    def test_tool_search_registered_with_deferred_tools(self):
+        """ToolSearch SHOULD appear in tool_call_payload when deferred tools are configured (#367)."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            deferred_tool = Tool(
+                name="GetWeather",
+                description="Get the current weather",
+                input_schema={
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+                implementation=lambda city: {"city": city},
+                defer_loading=True,
+            )
+            agent_config = AgentConfig(
+                name="has_deferred",
+                llm_config=LLMConfig(model="gpt-4o-mini"),
+                tools=[deferred_tool],
+                tool_call_mode="openai",
+            )
+
+            agent = Agent(config=agent_config)
+
+            payload_names = {spec["name"] for spec in agent.tool_call_payload}
+            assert "ToolSearch" in payload_names
+            # Deferred tool should NOT be in the eager payload
+            assert "GetWeather" not in payload_names
+            assert "ToolSearch" in agent._tool_registry.get_all()
+
     def test_tool_call_payload_uses_skill_description_for_as_skill_anthropic(self):
         """Structured payload should expose only the brief skill description for as_skill tools."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
