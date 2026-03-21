@@ -153,7 +153,7 @@ class Executor:
             after_tool_hooks or [],
             before_tool_hooks or [],
         )
-        self._wire_middleware_llm_runtime(llm_config, openai_client)
+        self._wire_middleware_llm_runtime(llm_config, openai_client, session_id=session_id)
         self._wire_middleware_event_emitters()
         self._tool_registry = tool_registry
         self._tool_registry_lock = threading.RLock()
@@ -273,6 +273,9 @@ class Executor:
         self,
         llm_config: LLMConfig,
         openai_client: Any,
+        *,
+        session_id: str | None = None,
+        global_storage: Any | None = None,
     ) -> None:
         """Inject base LLM runtime into middleware that needs inherited model settings."""
         if not self.middleware_manager:
@@ -283,7 +286,13 @@ class Executor:
             if not callable(setter):
                 continue
             try:
-                setter(llm_config, openai_client)
+                setter(llm_config, openai_client, session_id=session_id, global_storage=global_storage)
+            except TypeError:
+                # Backward compatibility: middleware without global_storage/session_id parameter
+                try:
+                    setter(llm_config, openai_client, session_id=session_id)
+                except TypeError:
+                    setter(llm_config, openai_client)
             except Exception as exc:
                 logger.warning(
                     "⚠️ Failed to wire LLM runtime for middleware %s: %s",

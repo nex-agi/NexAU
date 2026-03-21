@@ -483,7 +483,18 @@ class LangfuseTracer(BaseTracer):
             trace_id: The trace ID to set
         """
         self.trace_id = trace_id
-        logger.info(f"Langfuse trace ID set: {trace_id}")
+
+    def set_session_id(self, session_id: str) -> None:
+        """Set the canonical session ID for Langfuse traces.
+
+        Called by Agent to replace the default random UUID with the
+        framework's actual session_id, ensuring Langfuse traces are
+        grouped under the correct session.
+
+        Args:
+            session_id: The canonical session ID from Agent
+        """
+        self.session_id = session_id
 
     @staticmethod
     def _serialize_for_langfuse(data: Any) -> Any:

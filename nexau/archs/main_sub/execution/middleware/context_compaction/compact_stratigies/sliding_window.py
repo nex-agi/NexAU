@@ -16,7 +16,7 @@
 
 import logging
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import anthropic
 import openai
@@ -30,11 +30,27 @@ from nexau.core.messages import Message, Role, TextBlock, ToolUseBlock
 from .....utils.token_counter import TokenCounter
 from ..llm_config_utils import normalize_summary_llm_overrides, resolve_summary_llm_config
 
+if TYPE_CHECKING:
+    from nexau.archs.main_sub.agent_context import GlobalStorage
+
 logger = logging.getLogger(__name__)
 
 # Backward-compatibility: older tests patch `sliding_window.OpenAI`.
 OpenAI = openai.OpenAI
 Anthropic = anthropic.Anthropic
+
+_HANDOFF_SUMMARY_PREFIX = (
+    "Another language model started to solve this problem and produced a summary of the conversation so far. "
+    "You also have access to the state of the tools that were used by that language model. "
+    "Use this to build on the work that has already been done and avoid duplicating work. "
+    "Here is the summary produced by the other language model; use the information in this summary to assist with your own analysis:"
+)
+
+
+def with_handoff_prefix(summary: str) -> str:
+    """Prepend the fixed handoff prefix to compacted summary text."""
+    stripped_summary = summary.strip()
+    return f"{_HANDOFF_SUMMARY_PREFIX}\n\n{stripped_summary}" if stripped_summary else _HANDOFF_SUMMARY_PREFIX
 
 
 def _load_compact_prompt(prompt_path: str) -> str:
@@ -156,6 +172,8 @@ class SlidingWindowCompaction:
         self._base_openai_client: Any | None = None
         self._llm_caller: LLMCaller | None = None
         self._summary_client: Any | None = None
+        self._session_id: str | None = None
+        self._global_storage: GlobalStorage | None = None
 
         # Load compact prompt using the resolved path.
         self.compact_prompt = _load_compact_prompt(compact_prompt_path)
@@ -180,10 +198,15 @@ class SlidingWindowCompaction:
         self,
         llm_config: LLMConfig,
         openai_client: Any | None = None,
+        *,
+        session_id: str | None = None,
+        global_storage: Any | None = None,
     ) -> None:
         """Inject the agent/runtime LLM config used as the default summary model."""
         self._base_llm_config = llm_config.copy()
         self._base_openai_client = openai_client
+        self._session_id = session_id
+        self._global_storage = global_storage
         self._refresh_llm_runtime()
 
     def _resolve_summary_llm_config(self) -> LLMConfig:
@@ -221,7 +244,13 @@ class SlidingWindowCompaction:
 
         self.summary_llm_config = summary_llm_config
         self._summary_client = summary_client
-        self._llm_caller = LLMCaller(summary_client, summary_llm_config, retry_attempts=self.retry_attempts)
+        self._llm_caller = LLMCaller(
+            summary_client,
+            summary_llm_config,
+            retry_attempts=self.retry_attempts,
+            session_id=self._session_id,
+            global_storage=self._global_storage,
+        )
 
     def _ensure_llm_caller(self) -> LLMCaller:
         if self._llm_caller is None:
@@ -460,10 +489,7 @@ class SlidingWindowCompaction:
             groups_to_keep: Groups of messages to keep.
             summary: Summary text to inject.
         """
-        summary_prefix = (
-            "This session is being continued from a previous conversation that ran out of context. "
-            f"The previous conversation is summarized as follows: {summary}."
-        )
+        summary_prefix = with_handoff_prefix(summary)
 
         # 1. 判断保留组的第一条消息是否为真正的 USER 消息
         first_kept_msg: Message | None = None
@@ -480,6 +506,8 @@ class SlidingWindowCompaction:
                         modified_content = f"{summary_prefix} The user request for this round is: {original_content}"
                         modified_msg = msg.model_copy(update={"content": [TextBlock(text=modified_content)]})
                         modified_msg.metadata["isSummary"] = True
+                        if self._session_id is not None:
+                            modified_msg.metadata["session_id"] = self._session_id
                         result.append(modified_msg)
                         merged = True
                     else:
@@ -489,6 +517,8 @@ class SlidingWindowCompaction:
             #     → 在所有保留消息之前插入独立的摘要 USER 消息
             summary_msg = Message(role=Role.USER, content=[TextBlock(text=summary_prefix)])
             summary_msg.metadata["isSummary"] = True
+            if self._session_id is not None:
+                summary_msg.metadata["session_id"] = self._session_id
             result.append(summary_msg)
             for group_msgs in groups_to_keep:
                 for msg in group_msgs:

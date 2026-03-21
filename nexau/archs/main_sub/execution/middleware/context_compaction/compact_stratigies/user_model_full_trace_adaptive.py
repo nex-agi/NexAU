@@ -24,6 +24,8 @@ from typing import Any
 
 from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, ToolUseBlock
 
+from .sliding_window import with_handoff_prefix
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +59,6 @@ class UserModelFullTraceAdaptiveCompaction:
         merge_output_max_ratio: float = 0.06,
         summary_output_cap: int = 4096,
         merge_output_cap: int = 3072,
-        emergency_prompt_path: str | None = None,
     ) -> None:
         self.token_counter = token_counter
         self.max_context_tokens = max_context_tokens
@@ -66,11 +67,7 @@ class UserModelFullTraceAdaptiveCompaction:
         self.summary_output_max_tokens = max(256, min(summary_output_cap, int(max_context_tokens * summary_output_max_ratio)))
         self.merge_output_max_tokens = max(192, min(merge_output_cap, int(max_context_tokens * merge_output_max_ratio)))
 
-        if emergency_prompt_path is None:
-            prompt_path = Path(__file__).parent.parent / "prompts" / "emergency_compact_prompt.md"
-        else:
-            prompt_path = Path(emergency_prompt_path)
-
+        prompt_path = Path(__file__).parent.parent / "prompts" / "compact_prompt.md"
         self.emergency_prompt = prompt_path.read_text(encoding="utf-8")
 
     def compact(
@@ -106,7 +103,7 @@ class UserModelFullTraceAdaptiveCompaction:
 
         summary_message = Message(
             role=Role.FRAMEWORK,
-            content=[TextBlock(text=merged_summary)],
+            content=[TextBlock(text=with_handoff_prefix(merged_summary))],
             metadata={
                 "is_compacted": True,
                 "compaction_level": "emergency",

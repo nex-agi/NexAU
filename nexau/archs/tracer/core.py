@@ -33,6 +33,7 @@ class SpanType(str, Enum):
     SUB_AGENT = "SUB_AGENT"
     TOOL = "TOOL"
     LLM = "LLM"
+    COMPACTION = "COMPACTION"
 
 
 @dataclass
@@ -128,6 +129,16 @@ class BaseTracer(ABC):
         """Shutdown the tracer and release resources.
 
         Override this method in implementations that need cleanup.
+        """
+
+    def set_session_id(self, session_id: str) -> None:
+        """Set the canonical session ID for this tracer.
+
+        Called by Agent to synchronize its session_id so that
+        all trace data (e.g. Langfuse traces) carries the same
+        session identifier used throughout the framework.
+
+        Override in implementations that support session grouping.
         """
 
     # ---- Optional vendor context propagation hooks ----

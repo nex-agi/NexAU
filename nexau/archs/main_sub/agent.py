@@ -355,7 +355,11 @@ class Agent:
         """
         if self.config.resolved_tracer is not None:
             self.global_storage.set("tracer", self.config.resolved_tracer)
-            logger.debug("Tracer set from config.resolved_tracer")
+            # Synchronize the Agent's canonical session_id to the tracer
+            # so that trace backends (e.g. Langfuse) group traces under
+            # the correct session instead of a random UUID.
+            self.config.resolved_tracer.set_session_id(self._session_id)
+            logger.debug("Tracer set from config.resolved_tracer (session_id=%s)", self._session_id)
 
     @classmethod
     def from_yaml(

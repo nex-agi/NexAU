@@ -228,3 +228,11 @@ class CompositeTracer(BaseTracer):
                 tracer.shutdown()
             except Exception as e:
                 logger.warning(f"Failed to shutdown tracer {idx}: {e}")
+
+    def set_session_id(self, session_id: str) -> None:
+        """Forward session_id to all underlying tracers."""
+        for idx, tracer in enumerate(self.tracers):
+            try:
+                tracer.set_session_id(session_id)
+            except Exception as e:
+                logger.warning(f"Failed to set session_id in tracer {idx}: {e}")

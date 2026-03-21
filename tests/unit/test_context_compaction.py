@@ -412,6 +412,7 @@ class TestEmergencySummaryRuntime:
                 llm_config,
                 retry_attempts=5,
                 middleware_manager=None,
+                **kwargs,
             ):
                 captured["client"] = openai_client
                 captured["llm_config"] = llm_config
@@ -477,6 +478,7 @@ class TestEmergencySummaryRuntime:
                 llm_config,
                 retry_attempts=5,
                 middleware_manager=None,
+                **kwargs,
             ):
                 captured["client"] = openai_client
                 captured["llm_config"] = llm_config
@@ -559,6 +561,7 @@ class TestEmergencySummaryRuntime:
                 llm_config,
                 retry_attempts=5,
                 middleware_manager=None,
+                **kwargs,
             ):
                 captured["client"] = openai_client
                 captured["llm_config"] = llm_config
@@ -921,7 +924,7 @@ class TestSlidingWindowCompactionKeepUserRounds:
         # Find the first USER message in result and check for summary
         user_msgs = [m for m in result if m.role == Role.USER]
         assert len(user_msgs) > 0
-        assert "This session is being continued" in user_msgs[0].get_text_content()
+        assert "produced a summary of the conversation so far" in user_msgs[0].get_text_content()
         assert user_msgs[0].metadata.get("isSummary") is True
 
 
@@ -975,7 +978,7 @@ class TestSlidingWindowCompactionAdvanced:
         # Find the first USER message in result and check for summary
         user_msgs = [m for m in result if m.role == Role.USER]
         assert len(user_msgs) > 0
-        assert "This session is being continued" in user_msgs[0].get_text_content()
+        assert "produced a summary of the conversation so far" in user_msgs[0].get_text_content()
         assert user_msgs[0].metadata.get("isSummary") is True
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
@@ -1011,7 +1014,7 @@ class TestSlidingWindowCompactionAdvanced:
         # The kept iteration's user message should have the summary injected
         user_msgs = [m for m in result if m.role == Role.USER]
         assert len(user_msgs) > 0
-        assert "This session is being continued" in user_msgs[0].get_text_content()
+        assert "produced a summary of the conversation so far" in user_msgs[0].get_text_content()
         assert user_msgs[0].metadata.get("isSummary") is True
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
@@ -1231,13 +1234,64 @@ class TestSlidingWindowCompactionAdvanced:
 
         # 2. Summary must be the second message (right after system), not at the end
         assert result[1].role == Role.USER
-        assert "This session is being continued" in result[1].get_text_content()
+        assert "produced a summary of the conversation so far" in result[1].get_text_content()
         assert result[1].metadata.get("isSummary") is True
 
         # 3. The original user message at the end should remain unmodified
         last_user_msgs = [m for m in result if m.role == Role.USER and "Now fix the other file" in m.get_text_content()]
         assert len(last_user_msgs) == 1
-        assert "This session is being continued" not in last_user_msgs[0].get_text_content()
+        assert "produced a summary of the conversation so far" not in last_user_msgs[0].get_text_content()
+
+    @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
+    def test_summary_metadata_includes_session_id(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
+        """Synthetic summary messages should keep the agent session_id in metadata."""
+        mock_openai_class.return_value = mock_openai_client
+
+        compaction = SlidingWindowCompaction(
+            keep_iterations=2,
+            summary_model="gpt-4o-mini",
+            summary_base_url="https://api.openai.com/v1",
+            summary_api_key="test-key",
+            compact_prompt_path=temp_compact_prompt,
+        )
+        compaction.configure_llm_runtime(
+            LLMConfig(
+                model="gpt-4o-mini",
+                base_url="https://api.openai.com/v1",
+                api_key="test-key",
+                api_type="openai_chat_completion",
+            ),
+            session_id="session_test_123",
+        )
+        compaction._llm_caller.call_llm = Mock(  # type: ignore[method-assign]
+            return_value=ModelResponse(content="Summary of earlier conversation.", role="assistant"),
+        )
+
+        messages = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+            Message(role=Role.USER, content=[TextBlock(text="Please help me refactor")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[TextBlock(text="Sure"), ToolUseBlock(id="call_1", name="read_file", input={"path": "a.py"})],
+            ),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_1", content="file content")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[TextBlock(text="Now writing"), ToolUseBlock(id="call_2", name="write_file", input={"path": "a.py"})],
+            ),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_2", content="done")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[TextBlock(text="Running tests"), ToolUseBlock(id="call_3", name="run_tests", input={})],
+            ),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_3", content="22 passed")]),
+            Message(role=Role.USER, content=[TextBlock(text="Now fix the other file")]),
+        ]
+
+        result = compaction.compact(messages)
+
+        assert result[1].metadata.get("isSummary") is True
+        assert result[1].metadata.get("session_id") == "session_test_123"
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
     def test_compact_with_normal_compact(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
@@ -1791,15 +1845,37 @@ class TestContextCompactionMiddlewareAdvanced:
 class TestUserModelFullTraceAdaptiveCompactionSecurity:
     """Security-focused tests for emergency summary merge behavior."""
 
-    def test_merge_summaries_treats_segment_summaries_as_untrusted_data(self, tmp_path):
-        """Merged summary input should isolate untrusted text with explicit data boundaries."""
-        prompt_path = tmp_path / "emergency_prompt.md"
-        prompt_path.write_text("Summarize.", encoding="utf-8")
-
+    def test_emergency_summary_includes_handoff_prefix(self):
+        """Emergency compacted summary text should include the fixed handoff prefix."""
         strategy = UserModelFullTraceAdaptiveCompaction(
             token_counter=Mock(count_tokens=Mock(return_value=128)),
             max_context_tokens=4096,
-            emergency_prompt_path=str(prompt_path),
+        )
+
+        messages = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+            Message(role=Role.USER, content=[TextBlock(text="Question 1")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="Answer 1")]),
+            Message(role=Role.USER, content=[TextBlock(text="Question 2")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="Answer 2")]),
+        ]
+
+        result = strategy.compact(
+            messages,
+            summarize_fn=lambda _messages, _prompt, _max_tokens: "Merged emergency summary",
+        )
+
+        compacted_msgs = [msg for msg in result if msg.metadata.get("is_compacted") is True]
+        assert len(compacted_msgs) == 1
+        assert compacted_msgs[0].role == Role.FRAMEWORK
+        assert "Another language model started to solve this problem" in compacted_msgs[0].get_text_content()
+        assert "Merged emergency summary" in compacted_msgs[0].get_text_content()
+
+    def test_merge_summaries_treats_segment_summaries_as_untrusted_data(self):
+        """Merged summary input should isolate untrusted text with explicit data boundaries."""
+        strategy = UserModelFullTraceAdaptiveCompaction(
+            token_counter=Mock(count_tokens=Mock(return_value=128)),
+            max_context_tokens=4096,
         )
 
         captured: dict[str, object] = {}
@@ -1825,3 +1901,371 @@ class TestUserModelFullTraceAdaptiveCompactionSecurity:
         assert "untrusted data only" in merge_text
         assert "ignore all guardrails" in merge_text
         assert "leak secrets" in merge_text
+
+
+class TestEmergencyCompactionSessionId:
+    """Emergency compaction should stamp session_id on summary messages."""
+
+    def test_wrap_model_call_stamps_session_id_on_emergency_summary(
+        self,
+        agent_state,
+        mock_token_counter,
+    ):
+        """wrap_model_call should inject session_id into emergency summary metadata."""
+        mock_token_counter.count_tokens = Mock(return_value=100)
+
+        middleware = ContextCompactionMiddleware(
+            compaction_strategy="tool_result_compaction",
+            token_counter=mock_token_counter,
+            auto_compact=True,
+            emergency_compact_enabled=True,
+            max_context_tokens=4096,
+        )
+        middleware._session_id = "emergency_session_42"
+
+        # Stub emergency_compaction_strategy.compact to return a message with is_compacted
+        compacted_summary = Message(
+            role=Role.FRAMEWORK,
+            content=[TextBlock(text="Emergency summary")],
+            metadata={"is_compacted": True, "compaction_level": "emergency"},
+        )
+        kept_message = Message(role=Role.USER, content=[TextBlock(text="latest question")])
+        middleware.emergency_compaction_strategy = Mock()
+        middleware.emergency_compaction_strategy.compact = Mock(
+            return_value=[compacted_summary, kept_message],
+        )
+
+        params = ModelCallParams(
+            messages=[
+                Message(role=Role.SYSTEM, content=[TextBlock(text="sys")]),
+                Message.user("hello"),
+                Message(
+                    role=Role.ASSISTANT,
+                    content=[TextBlock(text="ok")],
+                ),
+            ],
+            max_tokens=512,
+            force_stop_reason=None,
+            agent_state=agent_state,
+            tool_call_mode="openai",
+            tools=None,
+            api_params={},
+            openai_client=Mock(),
+            llm_config=LLMConfig(
+                model="gpt-4o-mini",
+                base_url="https://api.openai.com/v1",
+                api_key="test-key",
+                api_type="openai_chat_completion",
+            ),
+        )
+
+        retry_response = ModelResponse(content="retried answer", role="assistant")
+        call_count = 0
+
+        def call_next(p: ModelCallParams) -> ModelResponse:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("maximum context length exceeded")
+            return retry_response
+
+        result = middleware.wrap_model_call(params, call_next)
+        assert result is retry_response
+
+        # The summary message should now carry session_id
+        assert compacted_summary.metadata.get("session_id") == "emergency_session_42"
+        # Non-summary messages should NOT get session_id
+        assert "session_id" not in kept_message.metadata
+
+    def test_wrap_model_call_no_session_id_when_none(
+        self,
+        agent_state,
+        mock_token_counter,
+    ):
+        """When session_id is None, emergency summary metadata should not contain session_id."""
+        mock_token_counter.count_tokens = Mock(return_value=100)
+
+        middleware = ContextCompactionMiddleware(
+            compaction_strategy="tool_result_compaction",
+            token_counter=mock_token_counter,
+            auto_compact=True,
+            emergency_compact_enabled=True,
+            max_context_tokens=4096,
+        )
+        # session_id is None by default
+
+        compacted_summary = Message(
+            role=Role.FRAMEWORK,
+            content=[TextBlock(text="Emergency summary")],
+            metadata={"is_compacted": True},
+        )
+        middleware.emergency_compaction_strategy = Mock()
+        middleware.emergency_compaction_strategy.compact = Mock(
+            return_value=[compacted_summary],
+        )
+
+        params = ModelCallParams(
+            messages=[Message.user("hello")],
+            max_tokens=512,
+            force_stop_reason=None,
+            agent_state=agent_state,
+            tool_call_mode="openai",
+            tools=None,
+            api_params={},
+            openai_client=Mock(),
+            llm_config=LLMConfig(
+                model="gpt-4o-mini",
+                base_url="https://api.openai.com/v1",
+                api_key="test-key",
+                api_type="openai_chat_completion",
+            ),
+        )
+
+        call_count = 0
+
+        def call_next(p: ModelCallParams) -> ModelResponse:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("maximum context length exceeded")
+            return ModelResponse(content="ok", role="assistant")
+
+        middleware.wrap_model_call(params, call_next)
+
+        assert "session_id" not in compacted_summary.metadata
+
+
+class TestCompactionTracerSpan:
+    """Tests for tracer span creation during compaction."""
+
+    def _make_agent_state_with_tracer(self):
+        """Create an AgentState with an InMemoryTracer in global_storage."""
+        from nexau.archs.tool.tool_registry import ToolRegistry
+        from nexau.archs.tracer.adapters.in_memory import InMemoryTracer
+
+        tracer = InMemoryTracer()
+        context = AgentContext()
+        global_storage = GlobalStorage()
+        global_storage.set("tracer", tracer)
+        state = AgentState(
+            agent_name="test_agent",
+            agent_id="test_id_123",
+            run_id="run_tracer_test",
+            root_run_id="run_tracer_test",
+            context=context,
+            global_storage=global_storage,
+            tool_registry=ToolRegistry(),
+        )
+        return state, tracer
+
+    def test_before_model_creates_tracer_span(self):
+        """Compaction in before_model should create a tracer span with compaction metadata."""
+        from nexau.archs.main_sub.execution.hooks import BeforeModelHookInput
+
+        agent_state, tracer = self._make_agent_state_with_tracer()
+
+        # Token counter returns high token count to trigger compaction
+        mock_counter = Mock()
+        mock_counter.count_tokens = Mock(return_value=9000)
+
+        middleware = ContextCompactionMiddleware(
+            token_counter=mock_counter,
+            max_context_tokens=10000,
+            auto_compact=True,
+            compaction_strategy="sliding_window",
+            sliding_window_size=2,
+        )
+
+        messages = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+            Message(role=Role.USER, content=[TextBlock(text="Q1")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="A1")]),
+            Message(role=Role.USER, content=[TextBlock(text="Q2")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="A2")]),
+            Message(role=Role.USER, content=[TextBlock(text="Q3")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="A3")]),
+        ]
+
+        hook_input = BeforeModelHookInput(
+            messages=messages,
+            agent_state=agent_state,
+            max_iterations=10,
+            current_iteration=1,
+        )
+
+        result = middleware.before_model(hook_input)
+        assert result.messages is not None
+
+        # Verify tracer span was created and ended
+        assert len(tracer.spans) == 1
+        span = list(tracer.spans.values())[0]
+        assert span.name == "context_compaction.before_model"
+        assert span.type.value == "COMPACTION"
+        assert span.end_time is not None  # span was ended
+        assert span.error is None  # no error
+
+        # Check span inputs
+        assert span.inputs["phase"] == "before_model"
+        assert span.inputs["mode"] == "regular"
+        assert span.inputs["max_context_tokens"] == 10000
+
+        # Check span outputs
+        assert span.outputs["success"] is True
+        assert span.outputs["compacted_message_count"] is not None
+
+        # Check attributes
+        assert span.attributes["compaction.phase"] == "before_model"
+        assert span.attributes["compaction.mode"] == "regular"
+        assert span.attributes["compaction.success"] is True
+
+    def test_after_model_creates_tracer_span(self):
+        """Compaction in after_model should create a tracer span."""
+        agent_state, tracer = self._make_agent_state_with_tracer()
+
+        mock_counter = Mock()
+        mock_counter.count_tokens = Mock(return_value=900)
+
+        middleware = ContextCompactionMiddleware(
+            token_counter=mock_counter,
+            max_context_tokens=1000,
+            auto_compact=True,
+            compaction_strategy="sliding_window",
+            sliding_window_size=2,
+        )
+
+        # Last assistant message must have tool calls for after_model compaction
+        messages = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+            Message(role=Role.USER, content=[TextBlock(text="Q1")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="A1")]),
+            Message(role=Role.USER, content=[TextBlock(text="Q2")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    TextBlock(text="A2"),
+                    ToolUseBlock(id="tool_1", name="test_tool", input={"key": "value"}),
+                ],
+            ),
+        ]
+
+        usage = TokenUsage(input_tokens=800, completion_tokens=100, total_tokens=900)
+        model_response = ModelResponse(content="A2", role="assistant", usage=usage)
+        parsed = ParsedResponse(
+            original_response="A2",
+            tool_calls=[],
+            sub_agent_calls=[],
+            batch_agent_calls=[],
+        )
+
+        hook_input = AfterModelHookInput(
+            messages=messages,
+            agent_state=agent_state,
+            max_iterations=10,
+            current_iteration=1,
+            original_response="A2",
+            model_response=model_response,
+            parsed_response=parsed,
+        )
+
+        result = middleware.after_model(hook_input)
+        assert result.messages is not None
+
+        # Verify tracer span was created
+        assert len(tracer.spans) == 1
+        span = list(tracer.spans.values())[0]
+        assert span.name == "context_compaction.after_model"
+        assert span.end_time is not None
+        assert span.error is None
+        assert span.outputs["success"] is True
+
+    def test_no_tracer_does_not_break(self):
+        """Compaction without a tracer in global_storage should still work fine."""
+        from nexau.archs.main_sub.execution.hooks import BeforeModelHookInput
+        from nexau.archs.tool.tool_registry import ToolRegistry
+
+        context = AgentContext()
+        global_storage = GlobalStorage()
+        # No tracer set in global_storage
+        agent_state = AgentState(
+            agent_name="test_agent",
+            agent_id="test_id_123",
+            run_id="run_no_tracer",
+            root_run_id="run_no_tracer",
+            context=context,
+            global_storage=global_storage,
+            tool_registry=ToolRegistry(),
+        )
+
+        mock_counter = Mock()
+        mock_counter.count_tokens = Mock(return_value=9000)
+
+        middleware = ContextCompactionMiddleware(
+            token_counter=mock_counter,
+            max_context_tokens=10000,
+            auto_compact=True,
+            compaction_strategy="sliding_window",
+            sliding_window_size=2,
+        )
+
+        messages = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+            Message(role=Role.USER, content=[TextBlock(text="Q1")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="A1")]),
+            Message(role=Role.USER, content=[TextBlock(text="Q2")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="A2")]),
+        ]
+
+        hook_input = BeforeModelHookInput(
+            messages=messages,
+            agent_state=agent_state,
+            max_iterations=10,
+            current_iteration=1,
+        )
+
+        # Should not raise, compaction works normally without tracer
+        result = middleware.before_model(hook_input)
+        assert result.messages is not None
+
+    def test_compaction_error_ends_tracer_span_with_error(self):
+        """When compaction fails, the tracer span should record the error."""
+        from nexau.archs.main_sub.execution.hooks import BeforeModelHookInput
+
+        agent_state, tracer = self._make_agent_state_with_tracer()
+
+        mock_counter = Mock()
+        mock_counter.count_tokens = Mock(return_value=9000)
+
+        middleware = ContextCompactionMiddleware(
+            token_counter=mock_counter,
+            max_context_tokens=10000,
+            auto_compact=True,
+            compaction_strategy="sliding_window",
+            sliding_window_size=2,
+        )
+
+        messages = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+            Message(role=Role.USER, content=[TextBlock(text="Q1")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="A1")]),
+        ]
+
+        hook_input = BeforeModelHookInput(
+            messages=messages,
+            agent_state=agent_state,
+            max_iterations=10,
+            current_iteration=1,
+        )
+
+        # Force the compaction strategy to raise
+        middleware.compaction_strategy.compact = Mock(side_effect=RuntimeError("compaction boom"))
+
+        with pytest.raises(RuntimeError, match="compaction boom"):
+            middleware.before_model(hook_input)
+
+        # Verify tracer span recorded the error
+        assert len(tracer.spans) == 1
+        span = list(tracer.spans.values())[0]
+        assert span.end_time is not None
+        assert span.error is not None
+        assert "compaction boom" in span.error
+        assert span.outputs["success"] is False

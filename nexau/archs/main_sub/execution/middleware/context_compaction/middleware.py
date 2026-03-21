@@ -28,6 +28,8 @@ import openai
 from nexau.archs.llm.llm_aggregators.events import CompactionFinishedEvent, CompactionStartedEvent
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.tool.tool import StructuredToolDefinitionLike
+from nexau.archs.tracer.context import get_current_span
+from nexau.archs.tracer.core import BaseTracer, Span, SpanType
 
 from ...hooks import AfterModelHookInput, BeforeModelHookInput, HookResult, Middleware, ModelCallFn, ModelCallParams
 from ...llm_caller import LLMCaller
@@ -94,6 +96,12 @@ class ContextCompactionMiddleware(Middleware):
         self._compact_count = 0
         self._total_messages_removed = 0
         self._event_emitter: Callable[[Any], None] | None = None
+        self._session_id: str | None = None
+        self._global_storage: Any | None = None
+
+        # Tracer span state for in-flight compaction (one compaction at a time)
+        self._active_compaction_span: Span | None = None
+        self._active_compaction_tracer: BaseTracer | None = None
 
         # Initialize token counter
         if token_counter is None:
@@ -149,11 +157,16 @@ class ContextCompactionMiddleware(Middleware):
         self,
         llm_config: LLMConfig,
         openai_client: Any | None = None,
+        *,
+        session_id: str | None = None,
+        global_storage: Any | None = None,
     ) -> None:
         """Inject the agent LLM runtime used when no standalone summary config is set."""
+        self._session_id = session_id
+        self._global_storage = global_storage
         configure_runtime = getattr(self.compaction_strategy, "configure_llm_runtime", None)
         if callable(configure_runtime):
-            configure_runtime(llm_config, openai_client)
+            configure_runtime(llm_config, openai_client, session_id=session_id, global_storage=global_storage)
 
     def _build_client(self, llm_config: LLMConfig) -> Any | None:
         if llm_config.api_type == "gemini_rest":
@@ -194,6 +207,103 @@ class ContextCompactionMiddleware(Middleware):
         run_id = getattr(agent_state, "run_id", None)
         return run_id if isinstance(run_id, str) and run_id else None
 
+    @staticmethod
+    def _resolve_tracer(agent_state: Any | None) -> BaseTracer | None:
+        """Extract tracer from agent_state.global_storage if available."""
+        if agent_state is None:
+            return None
+        gs = getattr(agent_state, "global_storage", None)
+        if gs is None:
+            return None
+        tracer = gs.get("tracer")
+        if isinstance(tracer, BaseTracer):
+            return tracer
+        return None
+
+    def _start_compaction_span(
+        self,
+        agent_state: Any | None,
+        phase: CompactionPhase,
+        mode: CompactionMode,
+        trigger_reason: str | None,
+        original_message_count: int,
+        original_token_count: int | None,
+    ) -> None:
+        """Start a tracer span for the compaction operation (sent to Langfuse)."""
+        tracer = self._resolve_tracer(agent_state)
+        if tracer is None:
+            return
+        try:
+            parent_span = get_current_span()
+            self._active_compaction_span = tracer.start_span(
+                name=f"context_compaction.{phase}",
+                span_type=SpanType.COMPACTION,
+                inputs={
+                    "phase": phase,
+                    "mode": mode,
+                    "trigger_reason": trigger_reason,
+                    "original_message_count": original_message_count,
+                    "original_token_count": original_token_count,
+                    "max_context_tokens": self.max_context_tokens,
+                },
+                parent_span=parent_span,
+                attributes={
+                    "compaction.phase": phase,
+                    "compaction.mode": mode,
+                },
+            )
+            self._active_compaction_tracer = tracer
+        except Exception as exc:
+            logger.debug("[ContextCompactionMiddleware] Failed to start compaction tracer span: %s", exc)
+            self._active_compaction_span = None
+            self._active_compaction_tracer = None
+
+    def _end_compaction_span(
+        self,
+        phase: CompactionPhase,
+        mode: CompactionMode,
+        success: bool,
+        trigger_reason: str | None,
+        original_message_count: int,
+        compacted_message_count: int | None,
+        original_token_count: int | None,
+        compacted_token_count: int | None,
+        error: str | None,
+    ) -> None:
+        """End the active compaction tracer span (sent to Langfuse)."""
+        tracer = self._active_compaction_tracer
+        span = self._active_compaction_span
+        self._active_compaction_span = None
+        self._active_compaction_tracer = None
+        if tracer is None or span is None:
+            return
+        try:
+            outputs: dict[str, object] = {
+                "success": success,
+                "compacted_message_count": compacted_message_count,
+                "compacted_token_count": compacted_token_count,
+            }
+            if error:
+                outputs["error"] = error
+            tracer.end_span(
+                span,
+                outputs=outputs,
+                error=Exception(error) if error else None,
+                attributes={
+                    "compaction.phase": phase,
+                    "compaction.mode": mode,
+                    "compaction.success": success,
+                    "compaction.trigger_reason": trigger_reason or "",
+                    "compaction.original_message_count": original_message_count,
+                    "compaction.compacted_message_count": compacted_message_count,
+                    "compaction.original_token_count": original_token_count,
+                    "compaction.compacted_token_count": compacted_token_count,
+                    "compaction.max_context_tokens": self.max_context_tokens,
+                },
+            )
+        except Exception as exc:
+            logger.debug("[ContextCompactionMiddleware] Failed to end compaction tracer span: %s", exc)
+
     def _emit_compaction_started(
         self,
         *,
@@ -204,6 +314,17 @@ class ContextCompactionMiddleware(Middleware):
         original_message_count: int,
         original_token_count: int | None,
     ) -> None:
+        # 1. 启动 tracer span（独立于 event emitter）
+        self._start_compaction_span(
+            agent_state,
+            phase,
+            mode,
+            trigger_reason,
+            original_message_count,
+            original_token_count,
+        )
+
+        # 2. 发射事件（可能因缺少 emitter 提前返回）
         if self._event_emitter is None:
             return
         run_id = self._resolve_run_id(agent_state)
@@ -236,6 +357,20 @@ class ContextCompactionMiddleware(Middleware):
         compacted_token_count: int | None,
         error: str | None = None,
     ) -> None:
+        # 1. 结束 tracer span（独立于 event emitter）
+        self._end_compaction_span(
+            phase,
+            mode,
+            success,
+            trigger_reason,
+            original_message_count,
+            compacted_message_count,
+            original_token_count,
+            compacted_token_count,
+            error,
+        )
+
+        # 2. 发射事件（可能因缺少 emitter 提前返回）
         if self._event_emitter is None:
             return
         run_id = self._resolve_run_id(agent_state)
@@ -378,6 +513,7 @@ class ContextCompactionMiddleware(Middleware):
             original_token_count=current_tokens,
         )
         try:
+            self._sync_strategy_global_storage(hook_input.agent_state)
             compacted_messages = self._compact_messages(messages)
         except Exception as exc:
             self._emit_compaction_finished(
@@ -423,11 +559,17 @@ class ContextCompactionMiddleware(Middleware):
         base_llm_config = cast(LLMConfig, params.llm_config)
         summary_llm_config, summary_client = self._resolve_summary_runtime(base_llm_config, params.openai_client)
 
+        # RFC-0009: 传递 global_storage 以支持 Langfuse 追踪
+        gs = getattr(self, "_global_storage", None)
+        if gs is None and params.agent_state is not None:
+            gs = getattr(params.agent_state, "global_storage", None)
         llm_caller = LLMCaller(
             summary_client,
             summary_llm_config,
             retry_attempts=1,
             middleware_manager=None,
+            session_id=self._session_id,
+            global_storage=gs,
         )
 
         def summarize_fn(messages: list[Message], prompt: str, max_tokens: int) -> str:
@@ -502,6 +644,14 @@ class ContextCompactionMiddleware(Middleware):
                     error=str(compact_exc),
                 )
                 raise
+
+            # Stamp session_id on emergency summary messages for traceability,
+            # matching the behaviour of SlidingWindowCompaction (regular path).
+            if self._session_id is not None:
+                for msg in compacted_messages:
+                    md = msg.metadata
+                    if md.get("is_compacted") is True or md.get("isSummary") is True:
+                        md.setdefault("session_id", self._session_id)
 
             self._compact_count += 1
             self._total_messages_removed += len(original_messages) - len(compacted_messages)
@@ -630,6 +780,7 @@ class ContextCompactionMiddleware(Middleware):
             original_token_count=current_tokens,
         )
         try:
+            self._sync_strategy_global_storage(hook_input.agent_state)
             compacted_messages = self._compact_messages(messages)
         except Exception as exc:
             self._emit_compaction_finished(
@@ -670,6 +821,32 @@ class ContextCompactionMiddleware(Middleware):
         )
 
         return HookResult.with_modifications(messages=compacted_messages)
+
+    def _sync_strategy_global_storage(self, agent_state: Any | None) -> None:
+        """Update the compaction strategy's global_storage from agent_state.
+
+        RFC-0009: 在运行时同步 global_storage 到 compaction strategy,
+        以支持 LLMCaller 的 Langfuse 追踪。
+        """
+        gs = self._global_storage
+        if gs is None and agent_state is not None:
+            gs = getattr(agent_state, "global_storage", None)  # noqa: B009
+        if gs is None:
+            return
+
+        # 1. 通过 SlidingWindowCompaction 的公开 API 同步
+        strategy = self.compaction_strategy
+        configure_fn = getattr(strategy, "configure_llm_runtime", None)  # noqa: B009 — duck-typing
+        if callable(configure_fn):
+            # configure_llm_runtime 会设置 _global_storage 并刷新 LLMCaller
+            base_cfg = getattr(strategy, "_base_llm_config", None)  # noqa: B009
+            base_client = getattr(strategy, "_base_openai_client", None)  # noqa: B009
+            session_id = getattr(strategy, "_session_id", None)  # noqa: B009
+            if base_cfg is not None:
+                configure_fn(base_cfg, base_client, session_id=session_id, global_storage=gs)
+            else:
+                # Strategy not yet configured with an LLM config — just store gs directly
+                object.__setattr__(strategy, "_global_storage", gs)
 
     def _compact_messages(
         self,
