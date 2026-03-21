@@ -137,6 +137,12 @@ class E2BSandbox(BaseSandbox):
     # heredocs / echo payloads to fail with exit-code 2.
     _LARGE_CMD_THRESHOLD: int = 65_536  # 64 KB
 
+    # Detect heredoc syntax: <<WORD, <<'WORD', <<"WORD", <<-WORD, etc.
+    # Heredoc commands must be scriptified because the compound-command wrapper
+    # ``{ cmd; } > ... 2> ...`` appends `; }` after the heredoc delimiter,
+    # violating bash's requirement that the delimiter occupy its own line.
+    _HEREDOC_PATTERN: re.Pattern[str] = re.compile(r"<<-?\s*['\"]?\w+['\"]?")
+
     def _prepare_output_dir(self, command: str, user: str = "user") -> str:
         """Create an output directory and write command.txt in the sandbox.
 
@@ -159,21 +165,31 @@ class E2BSandbox(BaseSandbox):
         return output_dir
 
     def _maybe_scriptify(self, command: str, output_dir: str, user: str = "user") -> str:
-        """If *command* exceeds the large-command threshold, write it to a
-        temporary bash script inside the sandbox and return a short command
-        that sources it.  Otherwise return *command* unchanged.
+        """If *command* exceeds the large-command threshold **or contains
+        heredoc syntax**, write it to a temporary bash script inside the
+        sandbox and return a short command that sources it.  Otherwise
+        return *command* unchanged.
 
-        This lets arbitrarily large commands (heredocs with big payloads,
-        long echo strings, etc.) work without hitting RPC or OS limits.
+        Heredoc commands must be scriptified because the compound-command
+        wrapper ``{ cmd; } > ... 2> ...`` appends ``; }`` after the heredoc
+        delimiter, violating bash's requirement that the delimiter occupy
+        its own line — causing a syntax error (exit_code=2).
+
+        This also lets arbitrarily large commands work without hitting RPC
+        or OS limits.
         """
-        if len(command.encode("utf-8", errors="replace")) <= self._LARGE_CMD_THRESHOLD:
+        has_heredoc = self._HEREDOC_PATTERN.search(command) is not None
+        is_large = len(command.encode("utf-8", errors="replace")) > self._LARGE_CMD_THRESHOLD
+
+        if not has_heredoc and not is_large:
             return command
 
         script_path = f"{output_dir}/run.sh"
         self._sandbox._filesystem.write(script_path, command)  # type: ignore[union-attr]
         logger.info(
-            "[e2b] Command too large (%d bytes) – wrote to %s for execution",
+            "[e2b] Command scriptified (%d bytes, heredoc=%s) – wrote to %s",
             len(command.encode("utf-8", errors="replace")),
+            has_heredoc,
             script_path,
         )
         return f"bash {script_path}"
