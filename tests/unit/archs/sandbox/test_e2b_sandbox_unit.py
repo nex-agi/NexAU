@@ -404,6 +404,71 @@ class TestExecuteBashDefensive:
             sandbox.execute_bash("echo hi")
 
 
+class TestMaybeScriptifyHeredoc:
+    """Verify that _maybe_scriptify detects heredoc syntax and forces
+    scriptification to avoid the ``{ cmd; }`` wrapper breaking the
+    heredoc delimiter line."""
+
+    def _make_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> tuple[E2BSandbox, _FakeSandbox]:
+        backend = _FakeSandbox()
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        return sandbox, backend
+
+    def test_heredoc_command_is_scriptified(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A command containing a heredoc must be written to a script file
+        even when below the size threshold."""
+        sandbox, backend = self._make_sandbox(monkeypatch)
+        output_dir = "/tmp/nexau_bash_tool_results/test"
+        cmd = "python3 - <<'PY'\nimport os\nprint(os.getcwd())\nPY"
+
+        result = sandbox._maybe_scriptify(cmd, output_dir)
+
+        assert result == f"bash {output_dir}/run.sh"
+        assert len(backend._filesystem.written) == 1
+        path, content = backend._filesystem.written[0]
+        assert path == f"{output_dir}/run.sh"
+        assert content == cmd
+
+    def test_plain_command_not_scriptified(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A short command without heredoc should be returned unchanged."""
+        sandbox, backend = self._make_sandbox(monkeypatch)
+        cmd = "echo hello"
+        result = sandbox._maybe_scriptify(cmd, "/tmp/out")
+        assert result == cmd
+        assert len(backend._filesystem.written) == 0
+
+    @pytest.mark.parametrize(
+        "heredoc_fragment",
+        [
+            "cat <<EOF",
+            "cat <<'EOF'",
+            'cat <<"EOF"',
+            "cat <<-EOF",
+            "cat <<-'MARKER'",
+            "python3 - <<PY",
+            "bash <<SCRIPT",
+        ],
+    )
+    def test_heredoc_pattern_variants(self, heredoc_fragment: str) -> None:
+        """The _HEREDOC_PATTERN should match common heredoc syntax variants."""
+        assert E2BSandbox._HEREDOC_PATTERN.search(heredoc_fragment) is not None
+
+    def test_heredoc_full_execute_bash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """End-to-end: execute_bash with a heredoc command should wrap
+        ``bash run.sh`` (not the raw heredoc) in the compound command."""
+        sandbox, backend = self._make_sandbox(monkeypatch)
+        result = sandbox.execute_bash("python3 - <<'PY'\nprint('hi')\nPY")
+        assert result.status == SandboxStatus.SUCCESS
+        # The second call should be the wrapped command containing "bash ... /run.sh"
+        # (first call is _prepare_output_dir)
+        wrapped_cmd = backend.commands.calls[1][0]
+        assert "run.sh" in wrapped_cmd
+        # Must NOT contain the raw heredoc delimiter in the wrapper
+        assert "<<" not in wrapped_cmd
+
+
 class TestExecuteCodeDefensive:
     def test_no_sandbox_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _enable_fake_e2b(monkeypatch)
