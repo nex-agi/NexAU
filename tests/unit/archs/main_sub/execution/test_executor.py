@@ -19,6 +19,8 @@ from __future__ import annotations
 import threading
 from unittest.mock import MagicMock
 
+import pytest
+
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.execution.executor import Executor
 from nexau.archs.tool.tool_registry import ToolRegistry
@@ -382,3 +384,102 @@ class TestTeamModeStopTools:
         executor._wait_for_messages.assert_not_called()
         assert executor._is_waiting_for_user is False
         assert response == '{"result": "done"}'
+
+
+# --- TestOriginHistorySyncOnError (#390) ---
+
+
+class TestOriginHistorySyncOnError:
+    """Verify intermediate messages are synced back to HistoryList on exception.
+
+    Issue #390: When execute() raises mid-run, the local ``messages`` copy
+    diverged from the original HistoryList.  The finally block now calls
+    ``_origin_history.replace_all(messages)`` to sync them back.
+    """
+
+    def test_historylist_receives_messages_on_api_error(self):
+        """HistoryList contains the executor's local messages after an API error."""
+        from nexau.archs.main_sub.history_list import HistoryList
+        from nexau.core.messages import Message, Role, TextBlock
+
+        executor = make_executor(team_mode=False)
+
+        history = HistoryList(
+            [
+                Message(role=Role.SYSTEM, content=[TextBlock(text="sys")]),
+                Message(role=Role.USER, content=[TextBlock(text="hello")]),
+            ],
+        )
+        assert len(history) == 2
+
+        # Make the LLM call raise immediately.
+        # The executor will have copied history into a local ``messages`` list
+        # (2 messages) but won't add any new ones before the error.
+        # The critical invariant: after the exception, the HistoryList should
+        # still reflect the executor's local copy (synced via replace_all).
+        executor.llm_caller = MagicMock()
+        executor.llm_caller.call_llm = MagicMock(side_effect=RuntimeError("API timeout"))
+
+        with pytest.raises(RuntimeError, match="Error in agent execution"):
+            executor.execute(history, agent_state=MagicMock())
+
+        # The HistoryList should have been updated via replace_all in the
+        # finally block – even though no new messages were added, the
+        # replace_all call should have run, keeping the 2 original messages.
+        assert len(history) == 2
+        assert history[0].role == Role.SYSTEM
+        assert history[1].role == Role.USER
+
+    def test_historylist_updated_after_partial_iteration_error(self):
+        """HistoryList receives intermediate assistant message when API fails on 2nd call.
+
+        Simulates: 1st call succeeds (assistant response appended to local
+        copy), then _process_xml_calls raises.  The HistoryList should contain
+        the intermediate assistant message after the exception.
+        """
+        from nexau.archs.main_sub.history_list import HistoryList
+        from nexau.core.messages import Message, Role, TextBlock
+
+        executor = make_executor(team_mode=False)
+
+        history = HistoryList(
+            [
+                Message(role=Role.SYSTEM, content=[TextBlock(text="sys")]),
+                Message(role=Role.USER, content=[TextBlock(text="do something")]),
+            ],
+        )
+        assert len(history) == 2
+
+        # Build a model response mock with all attributes the executor accesses.
+        model_response = MagicMock()
+        model_response.content = "I'll look into that."
+        model_response.to_ump_message.return_value = Message.assistant("I'll look into that.")
+        model_response.output_token_ids = None
+        model_response.tool_calls = []
+
+        executor.llm_caller = MagicMock()
+        executor.llm_caller.call_llm = MagicMock(return_value=model_response)
+
+        # Mock response parser so it doesn't try to parse the mock model_response.
+        executor.response_parser = MagicMock()
+        executor.response_parser.parse_response = MagicMock(return_value=MagicMock())
+
+        # After the assistant message is appended to the local messages copy
+        # (line 676), _process_xml_calls is called.  Raising here simulates
+        # a mid-iteration failure with intermediate messages already in the list.
+        executor._process_xml_calls = MagicMock(side_effect=RuntimeError("connection reset"))
+
+        with pytest.raises(RuntimeError, match="Error in agent execution"):
+            executor.execute(history, agent_state=MagicMock())
+
+        # After the exception the HistoryList should contain:
+        # [system, user, assistant_0]
+        # The assistant_0 came from the 1st iteration, synced back via
+        # replace_all in the finally block.
+        assert len(history) >= 3, (
+            f"Expected at least 3 messages (sys + user + assistant), got {len(history)}: {[m.role.value for m in history]}"
+        )
+        roles = [m.role for m in history]
+        assert roles[0] == Role.SYSTEM
+        assert roles[1] == Role.USER
+        assert roles[2] == Role.ASSISTANT

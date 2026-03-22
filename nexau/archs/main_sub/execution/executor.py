@@ -881,6 +881,10 @@ class Executor:
             raise RuntimeError(f"Error in agent execution: {e}") from e
 
         finally:
+            # Sync intermediate iteration messages back to HistoryList so that
+            # _run_inner's error/finally flush can persist them (fixes #390)
+            if isinstance(_origin_history, HistoryList):
+                _origin_history.replace_all(messages)
             self._store_token_trace(token_trace_session)
             # RFC-0009: 重置同步计数以匹配可能被压缩的 messages，确保下次 run 正确同步新消息
             if token_trace_session is not None:
