@@ -200,14 +200,28 @@ def main() -> None:
         user_id: str = Query(...),
         session_id: str = Query(...),
         after: int = Query(default=0),
-    ) -> list[dict[str, object]]:
-        """Return stored team events for history replay.
+        raw: bool = Query(default=False),
+    ) -> dict[str, object] | list[dict[str, object]]:
+        """Return team history as a compacted snapshot (default) or raw events.
 
-        前端刷新后调用此接口恢复之前的事件流。
+        RFC-0045: 快照模式历史 API（优化首次加载）
+
+        默认返回预压缩的快照状态 + event_count，前端可直接加载而无需重播。
+        传 ?raw=true 可获取原始事件列表（用于调试或向后兼容）。
         """
-        events = event_store.get_history(user_id, session_id, after=after)
-        logger.info("GET /team/history user_id=%s session_id=%s after=%d → %d events", user_id, session_id, after, len(events))
-        return events
+        if raw:
+            events = event_store.get_history(user_id, session_id, after=after)
+            logger.info("GET /team/history (raw) user_id=%s session_id=%s after=%d → %d events", user_id, session_id, after, len(events))
+            return events
+
+        result = event_store.get_snapshot(user_id, session_id)
+        logger.info(
+            "GET /team/history (snapshot) user_id=%s session_id=%s → %d agents, %d events",
+            user_id, session_id,
+            len(result["snapshot"]),
+            result["event_count"],
+        )
+        return result
 
     @history_router.get("/sessions")
     async def team_sessions(
