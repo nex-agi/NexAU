@@ -1905,15 +1905,16 @@ class AnthropicStreamAggregator:
         delta_type = delta.get("type")
         if delta_type == "text_delta":
             block["type"] = "text"
-            block["text"] = block.get("text", "") + delta.get("text", "")
+            # content_block_start 可能将 text 初始化为 None，.get() 的默认值不会覆盖已有的 None
+            block["text"] = (block.get("text") or "") + (delta.get("text") or "")
         elif delta_type == "thinking_delta":
             # Anthropic streams thinking in fragments; append like text.
             block["type"] = "thinking"
-            block["thinking"] = block.get("thinking", "") + delta.get("thinking", "")
+            block["thinking"] = (block.get("thinking") or "") + (delta.get("thinking") or "")
         elif delta_type == "input_json_delta":
             block.setdefault("type", "tool_use")
-            fragment = delta.get("partial_json", "")
-            block["_input_buffer"] = block.get("_input_buffer", "") + fragment
+            fragment = delta.get("partial_json") or ""
+            block["_input_buffer"] = (block.get("_input_buffer") or "") + fragment
         else:
             # For other delta types, merge raw structure
             for key, value in delta.items():
@@ -1932,7 +1933,18 @@ class AnthropicStreamAggregator:
             try:
                 block["input"] = json.loads(input_buffer)
             except json.JSONDecodeError:
-                block["input"] = input_buffer
+                # eager_input_streaming 跳过 JSON 验证，可能产生拼接或截断的 JSON；
+                # 用 raw_decode 提取第一个合法 JSON 对象。
+                try:
+                    first_obj, _ = json.JSONDecoder().raw_decode(input_buffer.lstrip())
+                    block["input"] = first_obj
+                    logger.warning(
+                        "⚠️ Anthropic tool input contained extra data after first JSON object "
+                        "(eager_input_streaming); used first object only. raw length=%d",
+                        len(input_buffer),
+                    )
+                except (json.JSONDecodeError, ValueError):
+                    block["input"] = input_buffer
         self._completed_blocks.append(block)
 
     def _flush_active_blocks(self) -> None:

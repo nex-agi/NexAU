@@ -221,6 +221,74 @@ def test_anthropic_stream_aggregator_thinking_delta_without_block_start():
     assert message["content"][0]["thinking"] == "hmm"
 
 
+def test_anthropic_stream_aggregator_handles_none_initial_fields():
+    """Regression: eager_input_streaming causes content_block_start to set text/thinking to None.
+
+    block.get("text", "") returns None when the key exists with a None value,
+    so accumulation via `None + str` raises TypeError.
+    """
+    aggregator = AnthropicStreamAggregator()
+
+    aggregator.consume({"type": "message_start", "message": {"role": "assistant", "model": "claude-4"}})
+    # content_block_start with text=None (observed with eager_input_streaming)
+    aggregator.consume({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": None}})
+    aggregator.consume({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}})
+    aggregator.consume({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " world"}})
+    aggregator.consume({"type": "content_block_stop", "index": 0})
+
+    # thinking block with thinking=None
+    aggregator.consume({"type": "content_block_start", "index": 1, "content_block": {"type": "thinking", "thinking": None}})
+    aggregator.consume({"type": "content_block_delta", "index": 1, "delta": {"type": "thinking_delta", "thinking": "Let me think"}})
+    aggregator.consume({"type": "content_block_stop", "index": 1})
+
+    message = aggregator.finalize()
+
+    assert message["content"][0]["type"] == "text"
+    assert message["content"][0]["text"] == "Hello world"
+    assert message["content"][1]["type"] == "thinking"
+    assert message["content"][1]["thinking"] == "Let me think"
+
+
+def test_anthropic_stream_aggregator_concatenated_tool_json():
+    """Regression: eager_input_streaming may produce concatenated JSON objects in tool input.
+
+    e.g. '{"pattern":"a"}{"pattern":"b"}' — json.loads fails on the whole
+    string, but raw_decode should extract the first valid JSON object.
+    """
+    aggregator = AnthropicStreamAggregator()
+
+    aggregator.consume({"type": "message_start", "message": {"role": "assistant", "model": "claude-4"}})
+    aggregator.consume(
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "tool_use", "id": "toolu_1", "name": "search", "input": {}},
+        },
+    )
+    # Simulate concatenated JSON from eager_input_streaming
+    aggregator.consume(
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": '{"pattern": "write_file", "dir_path": "/tmp"}'},
+        },
+    )
+    aggregator.consume(
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": '{"pattern": "other"}'}},
+    )
+    aggregator.consume({"type": "content_block_stop", "index": 0})
+
+    message = aggregator.finalize()
+
+    tool_block = message["content"][0]
+    assert tool_block["type"] == "tool_use"
+    assert tool_block["id"] == "toolu_1"
+    # Should extract the first valid JSON object, not fail or return raw string
+    assert isinstance(tool_block["input"], dict)
+    assert tool_block["input"]["pattern"] == "write_file"
+    assert tool_block["input"]["dir_path"] == "/tmp"
+
+
 def test_openai_responses_stream_aggregator_reconstructs_items():
     aggregator = OpenAIResponsesStreamAggregator()
 
