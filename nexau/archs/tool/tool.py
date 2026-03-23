@@ -182,6 +182,9 @@ def structured_tool_definition_to_anthropic(
         "name": normalized["name"],
         "description": normalized["description"],
         "input_schema": normalize_input_schema(normalized["input_schema"]),
+        # 启用 fine-grained tool streaming，减少大参数（如写入长文件）的首 token 延迟，
+        # 避免 SSE 超时断联。
+        "eager_input_streaming": True,
     }
 
 
