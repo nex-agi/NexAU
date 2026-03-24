@@ -937,6 +937,8 @@ class MCPTool(Tool):
 
     async def _execute_async(self, **kwargs: Any) -> dict[str, Any]:
         """Execute the MCP tool asynchronously."""
+        # Filter out agent_state and global_storage parameters (same as execute())
+        kwargs = {k: v for k, v in kwargs.items() if k not in ("agent_state", "global_storage")}
         try:
             # Create a thread-local session to avoid event loop conflicts
             session = await self._get_thread_local_session()
