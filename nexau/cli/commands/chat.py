@@ -71,7 +71,20 @@ def build_agent(config_path: Path, session_manager: SessionManager, user_id: str
         config_dict = load_yaml_with_vars(config_path)
         if not isinstance(config_dict, dict):
             raise ConfigError(f"Configuration file must be a YAML object/mapping, got {type(config_dict).__name__}")
-        agent_config = AgentConfigBuilder(config_dict, base_path=config_path.parent).build_system_prompt_path().get_agent_config()
+        agent_config = (
+            AgentConfigBuilder(config_dict, base_path=config_path.parent)
+            .build_core_properties()
+            .build_llm_config()
+            .build_mcp_servers()
+            .build_hooks()
+            .build_tracers()
+            .build_tools()
+            .build_sub_agents()
+            .build_skills()
+            .build_system_prompt_path()
+            .build_sandbox()
+            .get_agent_config()
+        )
 
         # Create agent with session support
         return Agent(

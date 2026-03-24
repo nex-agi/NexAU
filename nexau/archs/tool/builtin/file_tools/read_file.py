@@ -22,6 +22,11 @@ DEFAULT_LINE_LIMIT = 2000
 MAX_LINE_LENGTH = 2000  # Truncate lines longer than this with '... [truncated]'
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10MB
 
+# Total output budget — prevents 2000 lines × 2000 chars/line ≈ 4M chars from
+# blowing up the context window.  When exceeded, only the first lines that fit
+# within the budget are kept; the rest are truncated.
+MAX_TOTAL_OUTPUT_CHARS = 20_000
+
 # Audio extensions - returned as placeholder text (nexau has no AudioBlock)
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".aiff", ".aac", ".ogg", ".flac"}
 PDF_EXTENSION = ".pdf"
@@ -42,6 +47,43 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m
 
 # Binary extensions that cannot be read as text - return error without attempting read
 BINARY_SKIP_EXTENSIONS = {".db", ".sqlite", ".db-shm", ".db-wal", ".pyc", ".pyo"}
+
+
+def _head_truncate_lines(
+    lines: list[str],
+    max_chars: int = MAX_TOTAL_OUTPUT_CHARS,
+) -> tuple[list[str], int, int]:
+    """Keep only the first lines that fit within *max_chars*, drop the rest.
+
+    Returns:
+        (result_lines, omitted_line_count, omitted_char_count)
+        When no truncation is needed, omitted counts are both 0.
+    """
+    n = len(lines)
+    # +1 per line accounts for the joining newline
+    total_chars = sum(len(line) for line in lines) + max(n - 1, 0)
+    if total_chars <= max_chars:
+        return lines, 0, 0
+
+    # 从头部按行累加，保留能放进预算的行
+    head_count = 0
+    head_chars = 0
+    for line in lines:
+        cost = len(line) + (1 if head_count > 0 else 0)  # newline between lines
+        if head_chars + cost > max_chars:
+            break
+        head_chars += cost
+        head_count += 1
+
+    # 保证至少保留 1 行（单行超大时 head_count 可能为 0）
+    if head_count == 0 and n > 0:
+        head_count = 1
+        head_chars = len(lines[0])
+
+    omitted_count = n - head_count
+    omitted_chars = total_chars - head_chars
+
+    return lines[:head_count], omitted_count, omitted_chars
 
 
 def _add_line_numbers(content: str, start_line: int = 1) -> str:
@@ -281,33 +323,65 @@ def read_file(
             else:
                 formatted_lines.append(line)
 
-        content_with_lines = _add_line_numbers(
-            "\n".join(formatted_lines),
-            start_line=start_line + 1,
-        )
+        # ④ Head-only truncation — cap total output chars to protect context window
+        formatted_lines, omitted_count, omitted_chars = _head_truncate_lines(formatted_lines)
 
-        # Check if more content exists - add truncation notice
+        # Check if more content exists beyond the selected range
         actual_end = min(end_line, total_lines)
-        was_truncated = actual_end < total_lines
+        was_line_truncated = actual_end < total_lines
 
-        if was_truncated:
-            truncation_notice = (
-                f"\n\nIMPORTANT: The file content has been truncated.\n"
-                f"Status: Showing lines {start_line + 1}-{actual_end} of {total_lines} total lines.\n"
-                f"Action: To read more of the file, you can use the 'offset' and 'limit' parameters in a subsequent\n"
-                f"'read_file' call. For example, to read the next section of the file, use offset: {actual_end}.\n"
-                f"\n--- FILE CONTENT (truncated) ---\n"
+        # Build numbered content — when trailing lines were omitted, only
+        # show the kept head portion with a truncation marker.
+        if omitted_count > 0:
+            kept_count = len(formatted_lines)
+            head_text = _add_line_numbers(
+                "\n".join(formatted_lines),
+                start_line=start_line + 1,
             )
-            llm_content = truncation_notice + content_with_lines
+            first_omitted = start_line + kept_count + 1
+            last_omitted = start_line + kept_count + omitted_count
+            marker = (
+                f"\n\n... [{omitted_count} lines, ~{omitted_chars} chars truncated"
+                f" (lines {first_omitted}-{last_omitted})"
+                f" — use offset/limit to read further] ...\n"
+            )
+            content_with_lines = head_text + marker
+        else:
+            content_with_lines = _add_line_numbers(
+                "\n".join(formatted_lines),
+                start_line=start_line + 1,
+            )
 
-            return_display = f"Read lines {start_line + 1}-{actual_end} of {total_lines}"
-            if lines_were_truncated_in_length:
-                return_display += " (some lines were shortened)"
+        # Build truncation notice and return display string
+        notices: list[str] = []
+        display_parts: list[str] = []
+
+        if was_line_truncated:
+            notices.append(f"Status: Showing lines {start_line + 1}-{actual_end} of {total_lines} total lines.")
+            display_parts.append(f"Read lines {start_line + 1}-{actual_end} of {total_lines}")
+        else:
+            display_parts.append(f"Read {actual_end - start_line} lines")
+
+        if omitted_count > 0:
+            notices.append(
+                f"Note: {omitted_count} trailing lines"
+                f" (~{omitted_chars} chars) were truncated"
+                f" to fit the output budget ({MAX_TOTAL_OUTPUT_CHARS} chars)."
+            )
+            display_parts.append("(output truncated)")
+
+        if lines_were_truncated_in_length:
+            display_parts.append("(some lines were shortened)")
+
+        return_display = " ".join(display_parts)
+
+        if notices:
+            notices.insert(0, "IMPORTANT: The file content has been truncated.")
+            notices.append("Action: Use 'offset' and 'limit' parameters to read specific sections.")
+            truncation_notice = "\n\n" + "\n".join(notices) + "\n\n--- FILE CONTENT (truncated) ---\n"
+            llm_content = truncation_notice + content_with_lines
         else:
             llm_content = content_with_lines
-            return_display = f"Read {total_lines} lines"
-            if lines_were_truncated_in_length:
-                return_display += " (some lines were shortened)"
 
         return {
             "content": llm_content,
