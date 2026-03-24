@@ -1346,9 +1346,9 @@ class TestLLMCallerRetryLogic:
     def test_call_llm_empty_response_triggers_retry(self, mock_openai_client, mock_llm_config, agent_state):
         """Test that empty response content triggers retry."""
         # First call returns empty content, second succeeds
-        empty_response = Mock(choices=[Mock(message=Mock(content="", tool_calls=[]))])
+        empty_response = Mock(choices=[Mock(message=Mock(content="", tool_calls=[], reasoning_content=None))])
         empty_response.usage = {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10}
-        valid_response = Mock(choices=[Mock(message=Mock(content="Valid response", tool_calls=[]))])
+        valid_response = Mock(choices=[Mock(message=Mock(content="Valid response", tool_calls=[], reasoning_content=None))])
         valid_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.side_effect = [
             empty_response,
@@ -1604,9 +1604,9 @@ class TestLLMCallerEdgeCases:
     def test_call_llm_response_content_none_triggers_exception(self, mock_openai_client, mock_llm_config, agent_state):
         """Test that None response content triggers retry."""
         # First call returns None, second succeeds
-        none_response = Mock(choices=[Mock(message=Mock(content=None, tool_calls=[]))])
+        none_response = Mock(choices=[Mock(message=Mock(content=None, tool_calls=[], reasoning_content=None))])
         none_response.usage = {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10}
-        valid_response = Mock(choices=[Mock(message=Mock(content="Valid response", tool_calls=[]))])
+        valid_response = Mock(choices=[Mock(message=Mock(content="Valid response", tool_calls=[], reasoning_content=None))])
         valid_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         mock_openai_client.chat.completions.create.side_effect = [
             none_response,

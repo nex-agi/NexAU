@@ -649,7 +649,7 @@ class ModelResponse:
         )
 
     def has_content(self) -> bool:
-        return bool(self.content and self.content.strip())
+        return bool((self.content and self.content.strip()) or self.reasoning_content)
 
     def has_tool_calls(self) -> bool:
         return bool(self.tool_calls)

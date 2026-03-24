@@ -1822,6 +1822,7 @@ class AnthropicStreamAggregator:
         self.role: str = "assistant"
         self.model_name: str | None = None
         self.usage: dict[str, Any] | None = None
+        self.stop_reason: str | None = None
         self._active_blocks: dict[int, dict[str, Any]] = {}
         self._completed_blocks: list[dict[str, Any]] = []
 
@@ -1841,8 +1842,11 @@ class AnthropicStreamAggregator:
             if usage_data:
                 self.usage = _to_serializable_dict(usage_data)
         elif event_type == "message_delta":
-            # Update usage information from delta events
+            # Update usage and stop_reason from delta events
             delta = _to_serializable_dict(payload.get("delta", {}))
+            stop_reason = delta.get("stop_reason")
+            if isinstance(stop_reason, str) and stop_reason:
+                self.stop_reason = stop_reason
             usage_data = delta.get("usage") or payload.get("usage")
             if usage_data:
                 self.usage = _to_serializable_dict(usage_data)
@@ -1890,6 +1894,8 @@ class AnthropicStreamAggregator:
         }
         if self.model_name:
             message["model"] = self.model_name
+        if self.stop_reason:
+            message["stop_reason"] = self.stop_reason
         if self.usage is not None:
             message["usage"] = self.usage
         return message
