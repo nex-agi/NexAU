@@ -21,7 +21,11 @@ import pytest
 
 from nexau.archs.sandbox import SandboxStatus
 from nexau.archs.tool.builtin.file_tools import read_file, read_visual_file
-from nexau.archs.tool.builtin.file_tools.read_file import _read_text_lossy
+from nexau.archs.tool.builtin.file_tools.read_file import (
+    MAX_TOTAL_OUTPUT_CHARS,
+    _head_truncate_lines,
+    _read_text_lossy,
+)
 
 
 def _make_agent_state(sandbox):
@@ -58,7 +62,7 @@ class TestDetectEncoding:
     def test_ascii_head_chinese_tail_returns_utf8(self):
         """File with ASCII head and Chinese tail — the original bug scenario."""
         ascii_head = b"x = 1\n" * 2000
-        chinese_tail = "# 这是中文注释\n".encode()
+        chinese_tail = "# 这是中文注释\n".encode("utf-8")
         raw = ascii_head + chinese_tail
         assert len(ascii_head) > 10000
         sandbox = _make_sandbox_for_encoding(raw)
@@ -68,7 +72,7 @@ class TestDetectEncoding:
 
     def test_utf8_with_multibyte_returns_utf8(self):
         """UTF-8 file with multi-byte characters should decode correctly."""
-        raw = "こんにちは世界\n你好世界\n".encode()
+        raw = "こんにちは世界\n你好世界\n".encode("utf-8")
         sandbox = _make_sandbox_for_encoding(raw)
         result = _read_text_lossy("test.txt", sandbox)
         assert result == "こんにちは世界\n你好世界\n"
@@ -651,7 +655,7 @@ class TestReadFileEncoding:
 
     def test_single_read_call_no_double_io(self):
         """Verify sandbox.read_file is called exactly once (binary=True), no double I/O."""
-        raw = "test content\n".encode("utf-8")
+        raw = b"test content\n"
         sandbox = _make_sandbox_with_bytes(raw)
         agent_state = _make_agent_state(sandbox)
         read_file(file_path="test.txt", agent_state=agent_state)
@@ -909,3 +913,135 @@ class TestReadFileWithTempFiles:
         assert "error" not in result
         assert "标题" in result["content"]
         assert "列表项" in result["content"]
+
+
+class TestHeadTruncateLines:
+    """Unit tests for _head_truncate_lines helper."""
+
+    def test_no_truncation_when_under_budget(self):
+        """Lines that fit within budget should pass through unchanged."""
+        lines = ["short"] * 10
+        result, omitted, omitted_chars = _head_truncate_lines(lines)
+        assert result == lines
+        assert omitted == 0
+        assert omitted_chars == 0
+
+    def test_truncation_drops_trailing_lines(self):
+        """When over budget, trailing lines should be dropped."""
+        # 100 lines × 500 chars each = ~50K chars, over 30K budget
+        lines = ["x" * 500] * 100
+        result, omitted, omitted_chars = _head_truncate_lines(lines)
+        assert omitted > 0
+        assert len(result) == 100 - omitted
+        # Kept lines are from the beginning
+        assert result == lines[: len(result)]
+
+    def test_no_truncation_when_exactly_at_budget(self):
+        """Lines totaling exactly the budget should not be truncated."""
+        line_len = 299
+        n = 100
+        total = n * line_len + (n - 1)
+        assert total <= MAX_TOTAL_OUTPUT_CHARS
+        lines = ["b" * line_len] * n
+        result, omitted, _ = _head_truncate_lines(lines)
+        assert omitted == 0
+        assert result == lines
+
+    def test_single_very_long_line_kept(self):
+        """A single line (even if very long) is always kept (at least 1 line guard)."""
+        lines = ["z" * 100_000]
+        result, omitted, _ = _head_truncate_lines(lines)
+        assert result == lines
+        assert omitted == 0
+
+    def test_empty_input(self):
+        """Empty line list should pass through."""
+        result, omitted, _ = _head_truncate_lines([])
+        assert result == []
+        assert omitted == 0
+
+    def test_custom_budget(self):
+        """Custom max_chars should be respected."""
+        lines = ["hello world"] * 50  # 50 × 11 + 49 = 599 chars
+        result, omitted, _ = _head_truncate_lines(lines, max_chars=100)
+        assert omitted > 0
+        assert len(result) < 50
+
+
+class TestReadFileHeadTruncateIntegration:
+    """Integration tests: read_file with total output budget truncation."""
+
+    def _make_sandbox(self, content: str):
+        """Create a mock sandbox that returns the given text content."""
+        sandbox = Mock()
+        sandbox.work_dir = Path("/tmp/work")
+        sandbox.file_exists.return_value = True
+
+        raw_bytes = content.encode("utf-8")
+
+        info = Mock()
+        info.is_directory = False
+        info.size = len(raw_bytes)
+        sandbox.get_file_info.return_value = info
+
+        read_res = Mock()
+        read_res.status = SandboxStatus.SUCCESS
+        read_res.content = raw_bytes
+
+        sandbox.read_file.return_value = read_res
+        return sandbox
+
+    def test_small_file_no_truncation(self):
+        """Files under the output budget should not trigger truncation."""
+        content = "\n".join(f"line {i}" for i in range(100))
+        sandbox = self._make_sandbox(content)
+        result = read_file(file_path="small.txt", agent_state=_make_agent_state(sandbox))
+
+        assert "error" not in result or result.get("error") is None
+        assert "output truncated" not in result["returnDisplay"]
+        assert "100| " in result["content"] or "Read 100 lines" in result["returnDisplay"]
+
+    def test_large_file_triggers_truncation(self):
+        """Files exceeding the output budget should have trailing lines truncated."""
+        # 500 lines × 200 chars each ≈ 100K chars, well over 30K budget
+        content = "\n".join("y" * 200 for _ in range(500))
+        sandbox = self._make_sandbox(content)
+        result = read_file(file_path="big.txt", agent_state=_make_agent_state(sandbox))
+
+        assert "error" not in result or result.get("error") is None
+        llm_content = result["content"]
+        display = result["returnDisplay"]
+
+        # Should indicate output was truncated
+        assert "output truncated" in display
+        assert "chars truncated" in llm_content
+        assert "use offset/limit to read further" in llm_content
+
+        # First line should be present, last line should NOT (only head kept)
+        assert "1| " in llm_content
+        assert "500| " not in llm_content
+
+    def test_truncation_with_offset(self):
+        """Truncation should work correctly with offset parameter."""
+        content = "\n".join(f"{'z' * 199}{i:04d}" for i in range(600))
+        sandbox = self._make_sandbox(content)
+        result = read_file(
+            file_path="offset.txt",
+            offset=100,
+            limit=400,
+            agent_state=_make_agent_state(sandbox),
+        )
+
+        llm_content = result["content"]
+        assert "101| " in llm_content
+
+    def test_combined_per_line_and_head_truncation(self):
+        """Both per-line and head truncation can trigger together."""
+        # 300 lines, each 3000 chars → per-line truncates to 2000, total still ~600K
+        content = "\n".join("w" * 3000 for _ in range(300))
+        sandbox = self._make_sandbox(content)
+        result = read_file(file_path="combo.txt", agent_state=_make_agent_state(sandbox))
+
+        display = result["returnDisplay"]
+        assert "output truncated" in display
+        assert "some lines were shortened" in display
