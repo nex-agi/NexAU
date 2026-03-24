@@ -424,35 +424,35 @@ class TestReadTextLossy:
         assert _read_text_lossy("/f", sandbox) == "hello world\nline two\n"
 
     def test_utf8_chinese(self):
-        raw = "你好世界\n第二行\n".encode("utf-8")
+        raw = "你好世界\n第二行\n".encode()
         sandbox = _make_sandbox_with_bytes(raw)
         assert _read_text_lossy("/f", sandbox) == "你好世界\n第二行\n"
 
     def test_utf8_with_bom(self):
-        raw = b"\xef\xbb\xbf" + "BOM头文件\n".encode("utf-8")
+        raw = b"\xef\xbb\xbf" + "BOM头文件\n".encode()
         sandbox = _make_sandbox_with_bytes(raw)
         result = _read_text_lossy("/f", sandbox)
         assert "BOM头文件" in result
 
     def test_utf8_emoji(self):
-        raw = "hello 🚀🎉\nworld 🌍\n".encode("utf-8")
+        raw = "hello 🚀🎉\nworld 🌍\n".encode()
         sandbox = _make_sandbox_with_bytes(raw)
         result = _read_text_lossy("/f", sandbox)
         assert "🚀" in result
         assert "🌍" in result
 
     def test_utf8_japanese(self):
-        raw = "日本語テスト\n二行目\n".encode("utf-8")
+        raw = "日本語テスト\n二行目\n".encode()
         sandbox = _make_sandbox_with_bytes(raw)
         assert _read_text_lossy("/f", sandbox) == "日本語テスト\n二行目\n"
 
     def test_utf8_korean(self):
-        raw = "한국어 테스트\n두 번째 줄\n".encode("utf-8")
+        raw = "한국어 테스트\n두 번째 줄\n".encode()
         sandbox = _make_sandbox_with_bytes(raw)
         assert _read_text_lossy("/f", sandbox) == "한국어 테스트\n두 번째 줄\n"
 
     def test_utf8_mixed_scripts(self):
-        raw = "English 中文 日本語 한국어 العربية\n".encode("utf-8")
+        raw = "English 中文 日本語 한국어 العربية\n".encode()
         sandbox = _make_sandbox_with_bytes(raw)
         result = _read_text_lossy("/f", sandbox)
         assert "中文" in result
@@ -542,7 +542,7 @@ class TestReadTextLossy:
 
     def test_bytearray_content(self):
         """bytearray (not just bytes) should also work."""
-        raw = bytearray("你好\n".encode("utf-8"))
+        raw = bytearray("你好\n".encode())
         sandbox = Mock()
         read_res = Mock()
         read_res.status = SandboxStatus.SUCCESS
@@ -560,7 +560,7 @@ class TestReadFileEncoding:
     """End-to-end tests for read_file with various encodings."""
 
     def test_utf8_file_reads_correctly(self):
-        raw = "第一行\n第二行\n第三行\n".encode("utf-8")
+        raw = "第一行\n第二行\n第三行\n".encode()
         result = _call_read_file_with_bytes(raw)
         assert "error" not in result
         assert "第一行" in result["content"]
@@ -606,7 +606,7 @@ class TestReadFileEncoding:
 
     def test_utf8_bom_file(self):
         """UTF-8 BOM should pass through without issues."""
-        raw = b"\xef\xbb\xbf" + "带BOM的文件\n".encode("utf-8")
+        raw = b"\xef\xbb\xbf" + "带BOM的文件\n".encode()
         result = _call_read_file_with_bytes(raw)
         assert "error" not in result
         assert "带BOM的文件" in result["content"]
@@ -671,7 +671,7 @@ class TestReadFileWithTempFiles:
         assert "line two" in result["content"]
 
     def test_utf8_chinese_file(self, tmp_path: Path):
-        raw = "第一行\n第二行\n第三行\n".encode("utf-8")
+        raw = "第一行\n第二行\n第三行\n".encode()
         name = _write_tmp_file(tmp_path, "chinese.txt", raw)
         result = _read_file_e2e(tmp_path, name)
         assert "error" not in result
@@ -679,21 +679,21 @@ class TestReadFileWithTempFiles:
         assert "第三行" in result["content"]
 
     def test_utf8_japanese_file(self, tmp_path: Path):
-        raw = "こんにちは世界\n二行目です\n".encode("utf-8")
+        raw = "こんにちは世界\n二行目です\n".encode()
         name = _write_tmp_file(tmp_path, "jp.txt", raw)
         result = _read_file_e2e(tmp_path, name)
         assert "error" not in result
         assert "こんにちは世界" in result["content"]
 
     def test_utf8_korean_file(self, tmp_path: Path):
-        raw = "한국어 테스트\n두 번째 줄\n".encode("utf-8")
+        raw = "한국어 테스트\n두 번째 줄\n".encode()
         name = _write_tmp_file(tmp_path, "kr.txt", raw)
         result = _read_file_e2e(tmp_path, name)
         assert "error" not in result
         assert "한국어 테스트" in result["content"]
 
     def test_utf8_emoji_file(self, tmp_path: Path):
-        raw = "rocket 🚀\nearth 🌍\nparty 🎉\n".encode("utf-8")
+        raw = "rocket 🚀\nearth 🌍\nparty 🎉\n".encode()
         name = _write_tmp_file(tmp_path, "emoji.txt", raw)
         result = _read_file_e2e(tmp_path, name)
         assert "error" not in result
@@ -701,7 +701,7 @@ class TestReadFileWithTempFiles:
         assert "🌍" in result["content"]
 
     def test_utf8_mixed_scripts_file(self, tmp_path: Path):
-        raw = "English 中文 日本語 한국어 العربية\n".encode("utf-8")
+        raw = "English 中文 日本語 한국어 العربية\n".encode()
         name = _write_tmp_file(tmp_path, "mixed.txt", raw)
         result = _read_file_e2e(tmp_path, name)
         assert "error" not in result
@@ -709,7 +709,7 @@ class TestReadFileWithTempFiles:
         assert "العربية" in result["content"]
 
     def test_utf8_bom_file(self, tmp_path: Path):
-        raw = b"\xef\xbb\xbf" + "带BOM的UTF-8文件\n第二行\n".encode("utf-8")
+        raw = b"\xef\xbb\xbf" + "带BOM的UTF-8文件\n第二行\n".encode()
         name = _write_tmp_file(tmp_path, "bom.txt", raw)
         result = _read_file_e2e(tmp_path, name)
         assert "error" not in result
@@ -804,7 +804,7 @@ class TestReadFileWithTempFiles:
     def test_long_line_truncation(self, tmp_path: Path):
         """Lines > 2000 chars should be truncated."""
         long_line = "x" * 3000
-        raw = f"short\n{long_line}\nend\n".encode("utf-8")
+        raw = f"short\n{long_line}\nend\n".encode()
         name = _write_tmp_file(tmp_path, "longline.txt", raw)
         result = _read_file_e2e(tmp_path, name)
         assert "error" not in result
@@ -865,7 +865,7 @@ class TestReadFileWithTempFiles:
         assert "问候函数" in result["content"]
 
     def test_json_file(self, tmp_path: Path):
-        raw = '{"name": "测试", "values": [1, 2, 3], "emoji": "🎯"}\n'.encode("utf-8")
+        raw = '{"name": "测试", "values": [1, 2, 3], "emoji": "🎯"}\n'.encode()
         name = _write_tmp_file(tmp_path, "data.json", raw)
         result = _read_file_e2e(tmp_path, name)
         assert "error" not in result
@@ -873,7 +873,7 @@ class TestReadFileWithTempFiles:
         assert "🎯" in result["content"]
 
     def test_markdown_file_with_chinese(self, tmp_path: Path):
-        raw = "# 标题\n\n这是一段**中文** Markdown。\n\n- 列表项 1\n- 列表项 2\n".encode("utf-8")
+        raw = "# 标题\n\n这是一段**中文** Markdown。\n\n- 列表项 1\n- 列表项 2\n".encode()
         name = _write_tmp_file(tmp_path, "readme.md", raw)
         result = _read_file_e2e(tmp_path, name)
         assert "error" not in result
