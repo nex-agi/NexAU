@@ -23,6 +23,7 @@ from anthropic.types import (
     TextDelta,
     ThinkingDelta,
 )
+from anthropic.types import ServerToolUseBlock as AnthropicServerToolUseBlock
 from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
 from anthropic.types import ToolUseBlock as AnthropicToolUseBlock
 
@@ -46,8 +47,16 @@ _logger = logging.getLogger(__name__)
 class AnthropicEventAggregator(Aggregator[RawMessageStreamEvent, None]):
     """Aggregate raw Anthropic stream events and emit unified Event objects.
 
-    Handles text, thinking, and tool_use content blocks from the Anthropic
-    Messages API streaming response.
+    Handles text, thinking, tool_use, and server_tool_use content blocks
+    from the Anthropic Messages API streaming response.
+
+    With ``eager_input_streaming`` enabled, ``input_json_delta`` events may
+    arrive *before* the corresponding ``content_block_start``.  To guarantee
+    a consistent ``tool_call_id`` throughout the event stream we **buffer**
+    early fragments and only flush them once ``content_block_start`` provides
+    the real id/name.  If ``content_block_start`` never arrives (stop event
+    comes first), we fall back to a synthetic id so the stream still closes
+    cleanly.
     """
 
     def __init__(self, *, on_event: Callable[[Event], None], run_id: str) -> None:
@@ -65,6 +74,9 @@ class AnthropicEventAggregator(Aggregator[RawMessageStreamEvent, None]):
         self._tool_ended: dict[int, bool] = {}
         # Thinking state per index
         self._thinking_ids: dict[int, str] = {}
+        # Buffer for input_json_delta fragments that arrive before content_block_start.
+        # key = content-block index, value = list of non-empty partial_json strings.
+        self._pending_tool_deltas: dict[int, list[str]] = {}
 
     def aggregate(self, item: RawMessageStreamEvent) -> None:
         """Process a single raw stream event."""
@@ -97,6 +109,7 @@ class AnthropicEventAggregator(Aggregator[RawMessageStreamEvent, None]):
         self._tool_started.clear()
         self._tool_ended.clear()
         self._thinking_ids.clear()
+        self._pending_tool_deltas.clear()
 
     # ---- Internal handlers ----
 
@@ -116,6 +129,57 @@ class AnthropicEventAggregator(Aggregator[RawMessageStreamEvent, None]):
                 )
             )
 
+    # ---- Tool registration helpers ----
+
+    def _register_tool_and_flush(self, idx: int, tool_id: str, tool_name: str) -> None:
+        """Register a tool block, emit ToolCallStartEvent, then flush any buffered deltas.
+
+        Called from ``_handle_content_block_start`` (normal path) and from
+        ``_flush_pending_with_synthetic`` (fallback when start never arrived).
+        """
+        self._tool_ids[idx] = tool_id
+        self._tool_names[idx] = tool_name
+        self._tool_args.setdefault(idx, "")
+        self._tool_started[idx] = True
+        self._tool_ended.setdefault(idx, False)
+        self._on_event(
+            ToolCallStartEvent(
+                tool_call_id=tool_id,
+                tool_call_name=tool_name,
+                parent_message_id=self._message_id,
+                timestamp=self._ts(),
+            )
+        )
+        # Flush any buffered fragments that arrived before this start event
+        buffered = self._pending_tool_deltas.pop(idx, None)
+        if buffered:
+            for fragment in buffered:
+                self._tool_args[idx] = self._tool_args.get(idx, "") + fragment
+                self._on_event(
+                    ToolCallArgsEvent(
+                        tool_call_id=tool_id,
+                        delta=fragment,
+                        timestamp=self._ts(),
+                    )
+                )
+
+    def _flush_pending_with_synthetic(self, idx: int) -> str:
+        """Flush buffered deltas for *idx* using a synthetic tool id.
+
+        Returns the synthetic tool_call_id so callers can emit
+        ``ToolCallEndEvent`` with the same id.
+        """
+        synthetic_id = f"toolu_late_{uuid.uuid4().hex[:12]}"
+        _logger.debug(
+            "content_block_start never arrived for index %d; flushing buffered deltas with synthetic tool %s",
+            idx,
+            synthetic_id,
+        )
+        self._register_tool_and_flush(idx, synthetic_id, "")
+        return synthetic_id
+
+    # ---- Event dispatch ----
+
     def _handle_content_block_start(self, event: RawContentBlockStartEvent) -> None:
         idx = event.index
         block = event.content_block
@@ -123,19 +187,10 @@ class AnthropicEventAggregator(Aggregator[RawMessageStreamEvent, None]):
 
         match block:
             case AnthropicToolUseBlock():
-                self._tool_ids[idx] = block.id
-                self._tool_names[idx] = block.name
-                self._tool_args[idx] = ""
-                self._tool_started[idx] = True
-                self._tool_ended[idx] = False
-                self._on_event(
-                    ToolCallStartEvent(
-                        tool_call_id=block.id,
-                        tool_call_name=block.name,
-                        parent_message_id=self._message_id,
-                        timestamp=self._ts(),
-                    )
-                )
+                self._register_tool_and_flush(idx, block.id, block.name)
+            case AnthropicServerToolUseBlock():
+                # 服务端工具（web_search、code_execution 等）使用相同的 id/name 接口
+                self._register_tool_and_flush(idx, block.id, block.name)
             case AnthropicThinkingBlock():
                 thinking_id = str(uuid.uuid4())
                 self._thinking_ids[idx] = thinking_id
@@ -168,16 +223,20 @@ class AnthropicEventAggregator(Aggregator[RawMessageStreamEvent, None]):
                 if not fragment:
                     return
                 tool_id = self._tool_ids.get(idx, "")
-                if not tool_id:
-                    _logger.warning("Received input_json_delta for unknown tool at index %d", idx)
-                self._tool_args[idx] = self._tool_args.get(idx, "") + fragment
-                self._on_event(
-                    ToolCallArgsEvent(
-                        tool_call_id=tool_id,
-                        delta=fragment,
-                        timestamp=self._ts(),
+                if tool_id:
+                    # 正常路径：content_block_start 已到达，直接发射事件
+                    self._tool_args[idx] = self._tool_args.get(idx, "") + fragment
+                    self._on_event(
+                        ToolCallArgsEvent(
+                            tool_call_id=tool_id,
+                            delta=fragment,
+                            timestamp=self._ts(),
+                        )
                     )
-                )
+                else:
+                    # eager_input_streaming 下 delta 先于 content_block_start 到达，
+                    # 仅缓冲，等 start 带着真实 ID 到达后统一 flush。
+                    self._pending_tool_deltas.setdefault(idx, []).append(fragment)
             case ThinkingDelta(thinking=thinking):
                 if not thinking:
                     return
@@ -199,7 +258,14 @@ class AnthropicEventAggregator(Aggregator[RawMessageStreamEvent, None]):
         idx = event.index
         block_type = self._block_types.get(idx)
 
-        if block_type == "tool_use":
+        # 1. 有缓冲但 content_block_start 始终未到达 → 合成 ID 兜底后再关闭
+        if idx in self._pending_tool_deltas:
+            self._flush_pending_with_synthetic(idx)
+            # tool 已注册，直接走下面的关闭分支
+
+        if block_type in {"tool_use", "server_tool_use"} or (block_type is None and idx in self._tool_ids):
+            # tool_use / server_tool_use 共用同一收尾逻辑；
+            # block_type 为 None 说明 content_block_start 未到达但 delta 已注册了工具。
             tool_id = self._tool_ids.get(idx)
             if not tool_id:
                 _logger.warning("Received content_block_stop for unknown tool at index %d", idx)
@@ -225,6 +291,10 @@ class AnthropicEventAggregator(Aggregator[RawMessageStreamEvent, None]):
             )
 
     def _handle_message_stop(self) -> None:
+        # Flush any remaining buffered deltas that never received content_block_start
+        for idx in list(self._pending_tool_deltas):
+            self._flush_pending_with_synthetic(idx)
+
         # Ensure all tool calls are ended
         for idx, started in self._tool_started.items():
             if started and not self._tool_ended.get(idx, False):
