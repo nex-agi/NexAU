@@ -482,71 +482,6 @@ class TestContextCompactionPreCompactionCheck:
         assert result.messages is None
 
 
-class TestContextCompactionFullTrace:
-    """Tests for full trace recording in middleware."""
-
-    def _make_middleware(self, **kwargs):
-        defaults = {
-            "max_context_tokens": 100000,
-            "auto_compact": False,
-            "compaction_strategy": "tool_result_compaction",
-        }
-        defaults.update(kwargs)
-        return ContextCompactionMiddleware(**defaults)
-
-    def _make_hook_input(self, messages, agent_state):
-        mock_response = Mock()
-        mock_response.usage = {"total_tokens": 100}
-        return AfterModelHookInput(
-            messages=messages,
-            model_response=mock_response,
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=1,
-            original_response="",
-        )
-
-    def test_full_trace_records_messages(self, agent_state):
-        mw = self._make_middleware()
-        messages = [
-            Message(role=Role.USER, content=[TextBlock(text="hello")]),
-            Message(role=Role.ASSISTANT, content=[TextBlock(text="hi")]),
-        ]
-        hook_input = self._make_hook_input(messages, agent_state)
-        mw.after_model(hook_input)
-
-        full = agent_state.get_context_value("__nexau_full_trace_messages__", [])
-        assert isinstance(full, list)
-        assert len(full) == 2
-
-    def test_full_trace_deduplicates(self, agent_state):
-        mw = self._make_middleware()
-        msg1 = Message(role=Role.USER, content=[TextBlock(text="hello")])
-        msg2 = Message(role=Role.ASSISTANT, content=[TextBlock(text="hi")])
-        messages = [msg1, msg2]
-        hook_input = self._make_hook_input(messages, agent_state)
-        # Call twice with same messages
-        mw.after_model(hook_input)
-        mw.after_model(hook_input)
-
-        full = agent_state.get_context_value("__nexau_full_trace_messages__", [])
-        assert len(full) == 2  # Not 4
-
-    def test_full_trace_filters_compaction_artifacts(self, agent_state):
-        mw = self._make_middleware()
-        normal_msg = Message(role=Role.USER, content=[TextBlock(text="hello")])
-        compacted_msg = Message(
-            role=Role.TOOL,
-            content=[ToolResultBlock(tool_use_id="t1", content="Tool call result has been compacted")],
-        )
-        hook_input = self._make_hook_input([normal_msg, compacted_msg], agent_state)
-        mw.after_model(hook_input)
-
-        full = agent_state.get_context_value("__nexau_full_trace_messages__", [])
-        # Compacted message should be filtered out
-        assert len(full) == 1
-
-
 # ===========================================================================
 # 6. LLM caller encrypted_content summary fix
 # ===========================================================================
@@ -835,23 +770,4 @@ class TestCleanupManagerLoggingProtection:
 # ===========================================================================
 
 
-class TestIsCompactionArtifact:
-    """Tests for ContextCompactionMiddleware._is_compaction_artifact."""
-
-    def test_normal_message_not_artifact(self):
-        msg = Message(role=Role.USER, content=[TextBlock(text="hello")])
-        assert ContextCompactionMiddleware._is_compaction_artifact(msg) is False
-
-    def test_compacted_tool_result_is_artifact(self):
-        msg = Message(
-            role=Role.TOOL,
-            content=[ToolResultBlock(tool_use_id="t1", content="Tool call result has been compacted")],
-        )
-        assert ContextCompactionMiddleware._is_compaction_artifact(msg) is True
-
-    def test_normal_tool_result_not_artifact(self):
-        msg = Message(
-            role=Role.TOOL,
-            content=[ToolResultBlock(tool_use_id="t1", content="actual result")],
-        )
-        assert ContextCompactionMiddleware._is_compaction_artifact(msg) is False
+# ===========================================================================

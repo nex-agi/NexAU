@@ -451,7 +451,11 @@ class LangfuseTracer(BaseTracer):
             if self.debug:
                 duration = span.duration_ms()
                 logger.debug(f"Ended Langfuse span: {span.name} (duration={duration:.2f}ms)")
-            if self.client is not None:
+
+            # Only flush on root span completion. Non-root spans rely on the
+            # Langfuse SDK's automatic batch flush to avoid excessive I/O in
+            # long-running sessions with many nested spans.
+            if self.client is not None and span.parent_id is None:
                 self.client.flush()
 
         except Exception as e:

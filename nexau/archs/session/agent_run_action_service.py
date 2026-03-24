@@ -204,7 +204,26 @@ class AgentRunActionService:
             parent_run_id=parent_run_id,
             agent_name=agent_name,
         )
-        return await self._engine.create(record)
+        created = await self._engine.create(record)
+
+        # GC: REPLACE semantically supersedes all earlier actions for this agent.
+        # Remove them to prevent unbounded memory growth in in-memory engines.
+        try:
+            await self._engine.delete(
+                AgentRunActionModel,
+                filters=AndFilter(
+                    filters=[
+                        ComparisonFilter.eq("user_id", key.user_id),
+                        ComparisonFilter.eq("session_id", key.session_id),
+                        ComparisonFilter.eq("agent_id", key.agent_id),
+                        ComparisonFilter.lt("created_at_ns", created.created_at_ns),
+                    ]
+                ),
+            )
+        except Exception as exc:
+            logger.debug("Failed to GC old action records after REPLACE: %s", exc)
+
+        return created
 
     async def _scan_actions_desc(
         self,

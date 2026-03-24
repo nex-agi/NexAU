@@ -234,9 +234,6 @@ class Agent:
             agent_name=self.agent_name,
         )
 
-        # Full, uncompacted trace (for debugging/training only; not used for execution).
-        self._full_trace: list[Message] = []
-
         # RFC-0009: 跨 run 延续的 token trace session
         self._token_trace_session: TokenTraceSession | None = None
 
@@ -254,11 +251,6 @@ class Agent:
         # Register for cleanup
         cleanup_manager.register_agent(self)
         logger.info("Agent '%s' initialized (agent_id=%s, session_id=%s)", self.agent_name, self.agent_id, self._session_id)
-
-    @property
-    def full_trace(self) -> list[Message]:
-        """Get the full, uncompacted conversation trace (for debugging/training)."""
-        return self._full_trace
 
     @property
     def history(self) -> HistoryList:
@@ -1173,18 +1165,6 @@ class Agent:
                 [m.role.value for m in self.history],
             )
 
-            # Expose full trace captured by ContextCompactionMiddleware (best-effort).
-            try:
-                ft = agent_state.get_context_value("__nexau_full_trace_messages__", None)
-                if isinstance(ft, list) and ft:
-                    self._full_trace = ft
-                else:
-                    self._full_trace = list(self.history)
-            except Exception:
-                self._full_trace = list(self.history)
-
-            self._update_trace_memory()
-
             # Flush pending messages to persistence
             self.history.flush()
 
@@ -1202,8 +1182,6 @@ class Agent:
                 # HistoryList will automatically persist this message
                 self.history.append(assistant_error_message)
 
-                self._update_trace_memory()
-
                 # Flush pending messages to persistence
                 self.history.flush()
 
@@ -1211,8 +1189,6 @@ class Agent:
             else:
                 assistant_error = Message.assistant(f"Error: {str(e)}")
                 self.history.append(assistant_error)
-
-                self._update_trace_memory()
 
                 # Flush pending messages to persistence
                 self.history.flush()
@@ -1229,13 +1205,6 @@ class Agent:
                 self.history.flush()
             except Exception:
                 logger.warning("Failed to flush history in finally block")
-
-    def _update_trace_memory(self) -> None:
-        """Persist message trace while preserving any token trace already captured."""
-        trace_memory_raw = self.global_storage.get("trace_memory", {})
-        trace_memory = cast(dict[str, Any], trace_memory_raw) if isinstance(trace_memory_raw, dict) else {}
-        trace_memory["message_trace"] = [message.model_dump(mode="python", exclude_none=True) for message in self._full_trace]
-        self.global_storage.set("trace_memory", trace_memory)
 
     def add_tool(self, tool: Tool) -> None:
         """Add a tool to the agent."""

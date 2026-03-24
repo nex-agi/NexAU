@@ -242,6 +242,9 @@ class AgentEventsMiddleware(Middleware):
     def after_model(self, hook_input: AfterModelHookInput) -> HookResult:
         """Emit a usage update event after each completed LLM call."""
 
+        # GC: discard finished per-call aggregators to prevent unbounded dict growth.
+        self.openai_chat_completion_aggregators.clear()
+
         if hook_input.model_response is None:
             return HookResult.no_changes()
 

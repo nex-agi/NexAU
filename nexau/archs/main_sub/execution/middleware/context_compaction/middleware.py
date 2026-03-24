@@ -40,15 +40,13 @@ from .llm_config_utils import normalize_summary_llm_overrides, resolve_summary_l
 if TYPE_CHECKING:
     from ....utils.token_counter import TokenCounter
 
-from nexau.core.messages import Message, Role, ToolResultBlock, ToolUseBlock
+from nexau.core.messages import Message, Role, ToolUseBlock
 
 logger = logging.getLogger(__name__)
 
 OpenAI = openai.OpenAI
 Anthropic = anthropic.Anthropic
 
-_FULL_TRACE_MESSAGES_KEY = "__nexau_full_trace_messages__"
-_FULL_TRACE_SEEN_IDS_KEY = "__nexau_full_trace_seen_ids__"
 _CONTEXT_OVERFLOW_MARKERS = (
     "maximum context length",
     "context length exceeded",
@@ -497,11 +495,6 @@ class ContextCompactionMiddleware(Middleware):
         if not should_compact:
             return HookResult.no_changes()
 
-        try:
-            self._record_full_trace_messages(hook_input.agent_state, messages)
-        except Exception as exc:  # pragma: no cover - best effort
-            logger.debug("[ContextCompactionMiddleware] full-trace capture failed in before_model: %s", exc)
-
         logger.info("[ContextCompactionMiddleware] Pre-call compaction triggered: %s", trigger_reason)
         original_count = len(messages)
         self._emit_compaction_started(
@@ -607,13 +600,6 @@ class ContextCompactionMiddleware(Middleware):
                 "attempting fixed two-segment emergency compaction retry"
             )
 
-            # Keep full trace uncompacted even if compaction happens during fallback path.
-            if params.agent_state is not None:
-                try:
-                    self._record_full_trace_messages(params.agent_state, params.messages)
-                except Exception as trace_exc:  # pragma: no cover - best effort only
-                    logger.debug("[ContextCompactionMiddleware] full-trace capture failed in fallback: %s", trace_exc)
-
             original_messages = params.messages
             summarize_fn = self._build_emergency_summarize_fn(params)
             before_tokens = self._estimate_tokens(original_messages, params.tools)
@@ -705,14 +691,6 @@ class ContextCompactionMiddleware(Middleware):
 
     def after_model(self, hook_input: AfterModelHookInput) -> HookResult:
         """Check and compact messages after each model call if needed."""
-        # Best-effort "full trace" capture: context compaction mutates `messages` and therefore
-        # the final agent.history loses earlier dialogue. We maintain a separate append-only trace
-        # in agent context for debugging/training purposes.
-        try:
-            self._record_full_trace(hook_input)
-        except Exception as exc:  # pragma: no cover
-            logger.debug("[ContextCompactionMiddleware] full-trace capture failed: %s", exc)
-
         if not self.auto_compact:
             return HookResult.no_changes()
 
@@ -854,58 +832,3 @@ class ContextCompactionMiddleware(Middleware):
     ) -> list[Message]:
         """Compact messages using the configured strategy."""
         return self.compaction_strategy.compact(messages)
-
-    @staticmethod
-    def _is_compaction_artifact(msg: Message) -> bool:
-        """Detect synthetic messages produced by compaction strategies.
-
-        We want full_trace to reflect the uncompacted dialogue.
-        """
-        try:
-            md: dict[str, Any] = getattr(msg, "metadata", None) or {}
-            if md.get("isSummary") is True or md.get("is_compacted") is True or md.get("compacted") is True:
-                return True
-        except Exception:
-            pass
-
-        # ToolResultCompaction replaces old tool results with this placeholder string.
-        if msg.role == Role.TOOL:
-            try:
-                for block in msg.content or []:
-                    if isinstance(block, ToolResultBlock) and str(block.content) == "Tool call result has been compacted":
-                        return True
-            except Exception:
-                pass
-        return False
-
-    def _record_full_trace(self, hook_input: AfterModelHookInput) -> None:
-        """Append newly-seen messages to agent context full trace."""
-        self._record_full_trace_messages(hook_input.agent_state, hook_input.messages)
-
-    def _record_full_trace_messages(self, agent_state: Any, messages: list[Message]) -> None:
-        """Append newly-seen messages to full trace in agent context."""
-        full_raw: Any = agent_state.get_context_value(_FULL_TRACE_MESSAGES_KEY, [])
-        full: list[Message] = cast(list[Message], full_raw) if isinstance(full_raw, list) else []
-
-        seen: Any = agent_state.get_context_value(_FULL_TRACE_SEEN_IDS_KEY, set())
-        seen_ids: set[int] = set()
-        if isinstance(seen, set):
-            seen_ids = cast(set[int], seen)
-        elif isinstance(seen, list):
-            seen_ids = {int(x) for x in cast(list[Any], seen)}
-
-        # Use object identity within a single run to avoid duplicates.
-        for msg in messages:
-            if self._is_compaction_artifact(msg):
-                continue
-            mid = id(msg)
-            if mid in seen_ids:
-                continue
-            seen_ids.add(mid)
-            try:
-                full.append(msg.model_copy(deep=True))
-            except Exception:
-                full.append(msg)
-
-        agent_state.set_context_value(_FULL_TRACE_MESSAGES_KEY, full)
-        agent_state.set_context_value(_FULL_TRACE_SEEN_IDS_KEY, seen_ids)
