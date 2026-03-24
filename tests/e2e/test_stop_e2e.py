@@ -173,16 +173,21 @@ class TestForceStop:
 
         agent._run_async_inner = _wrapped_run_inner  # type: ignore[method-assign]
 
-        async def _force_stop_after_started() -> StopResult:
-            await run_started.wait()
-            await asyncio.sleep(0.5)
-            return await agent.stop(force=True)
+        # 1. 启动 run_async 作为独立 task
+        run_task = asyncio.create_task(agent.run_async(message=_SLOW_PROMPT))
 
-        _, result = await asyncio.gather(
-            agent.run_async(message=_SLOW_PROMPT),
-            _force_stop_after_started(),
-            return_exceptions=False,
-        )
+        # 2. 等待 run 开始后发送 force stop
+        await run_started.wait()
+        await asyncio.sleep(0.5)
+        result = await agent.stop(force=True)
+
+        # 3. Force stop 无法立即终止线程中阻塞的同步 HTTP 调用，
+        #    取消 run_task 以避免等待 LLM 响应完成
+        run_task.cancel()
+        try:
+            await run_task
+        except asyncio.CancelledError:
+            pass
 
         assert isinstance(result, StopResult)
         assert result.stop_reason == AgentStopReason.USER_INTERRUPTED
@@ -240,15 +245,21 @@ class TestNoPersistDoubling:
 
         agent._run_async_inner = _wrapped_run_inner  # type: ignore[method-assign]
 
-        async def _force_stop_after_started() -> StopResult:
-            await run_started.wait()
-            await asyncio.sleep(0.5)
-            return await agent.stop(force=True)
+        # 1. 启动 run_async 作为独立 task
+        run_task = asyncio.create_task(agent.run_async(message=_SLOW_PROMPT))
 
-        await asyncio.gather(
-            agent.run_async(message=_SLOW_PROMPT),
-            _force_stop_after_started(),
-        )
+        # 2. 等待 run 开始后发送 force stop
+        await run_started.wait()
+        await asyncio.sleep(0.5)
+        await agent.stop(force=True)
+
+        # 3. Force stop 无法立即终止线程中阻塞的同步 HTTP 调用，
+        #    取消 run_task 以避免等待 LLM 响应完成
+        run_task.cancel()
+        try:
+            await run_task
+        except asyncio.CancelledError:
+            pass
 
         assert sm.persist_call_count == 1, f"Expected exactly 1 persist call, got {sm.persist_call_count}"
 
@@ -363,16 +374,23 @@ class TestLockReleasedAfterStop:
 
         agent._run_async_inner = _wrapped_run_inner  # type: ignore[method-assign]
 
-        async def _force_stop_after_started() -> StopResult:
-            await run_started.wait()
-            await asyncio.sleep(0.5)
-            return await agent.stop(force=True)
+        # 1. 启动 run_async 作为独立 task
+        run_task = asyncio.create_task(agent.run_async(message=_SLOW_PROMPT))
 
-        await asyncio.gather(
-            agent.run_async(message=_SLOW_PROMPT),
-            _force_stop_after_started(),
-        )
+        # 2. 等待 run 开始后发送 force stop
+        await run_started.wait()
+        await asyncio.sleep(0.5)
+        await agent.stop(force=True)
 
+        # 3. Force stop 无法立即终止线程中阻塞的同步 HTTP 调用，
+        #    取消 run_task 以避免等待 LLM 响应完成
+        run_task.cancel()
+        try:
+            await run_task
+        except asyncio.CancelledError:
+            pass
+
+        # 4. 验证 lock 已释放
         is_locked = await sm.agent_lock.is_locked(
             session_id=agent._session_id,
             agent_id=agent.agent_id,
