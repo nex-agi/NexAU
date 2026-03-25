@@ -20,13 +20,15 @@ import warnings
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from .llm_config_utils import normalize_summary_llm_overrides
 
 
 class CompactionConfig(BaseModel):
     """Parses and validates the flat YAML configuration."""
+
+    model_config = ConfigDict(extra="forbid")
 
     # General Settings
     max_context_tokens: int = 128000

@@ -99,6 +99,13 @@ class SlidingWindowCompaction:
     # Reserved tokens for compact_prompt + LLM output overhead
     _SUMMARY_RESERVED_TOKENS = 4096
 
+    # Hard truncation fallback 的最大输出 token 数，避免 fallback "摘要"
+    # 与 context window 等大，导致压缩→失败→注入大文本→再压缩的死循环。
+    _HARD_TRUNCATION_MAX_TOKENS = 10240
+
+    # 连续 fallback 次数上限；超过后跳过压缩，避免无限循环。
+    _MAX_CONSECUTIVE_FALLBACKS = 3
+
     def __init__(
         self,
         keep_system: bool = True,
@@ -174,6 +181,9 @@ class SlidingWindowCompaction:
         self._summary_client: Any | None = None
         self._session_id: str | None = None
         self._global_storage: GlobalStorage | None = None
+
+        # 连续 hard truncation fallback 计数器
+        self._consecutive_fallback_count: int = 0
 
         # Load compact prompt using the resolved path.
         self.compact_prompt = _load_compact_prompt(compact_prompt_path)
@@ -332,13 +342,30 @@ class SlidingWindowCompaction:
         2. If input is too large → split into chunks by iteration boundaries,
            summarize each chunk, then merge summaries
         3. If all LLM calls fail → return a hard truncation placeholder
+        4. If fallback has been used consecutively too many times, raise to
+           signal the caller to skip compaction entirely.
 
         Args:
             messages: Messages to summarize.
 
         Returns:
-            Summary text (never raises, always returns something).
+            Summary text (never raises on recoverable failures).
+
+        Raises:
+            RuntimeError: If consecutive fallback count exceeds the limit,
+                indicating the summary LLM is persistently unavailable.
         """
+        # 连续 fallback 过多时中断，避免压缩→失败→注入大文本→再压缩的死循环
+        if self._consecutive_fallback_count >= self._MAX_CONSECUTIVE_FALLBACKS:
+            logger.error(
+                "[SlidingWindowCompaction] Summary LLM has failed %d consecutive times, "
+                "skipping compaction to prevent fallback accumulation loop",
+                self._consecutive_fallback_count,
+            )
+            raise RuntimeError(
+                f"Summary LLM persistently unavailable ({self._consecutive_fallback_count} consecutive failures), skipping compaction"
+            )
+
         input_tokens = self.token_counter.count_tokens(messages)
         input_limit = self._summary_input_limit
 
@@ -346,18 +373,32 @@ class SlidingWindowCompaction:
         if input_tokens <= input_limit:
             # Normal path: input fits, summarize directly
             try:
-                return self._generate_summary(messages)
+                summary = self._generate_summary(messages)
+                self._consecutive_fallback_count = 0
+                return summary
             except Exception as e:
                 logger.error(f"[SlidingWindowCompaction] Direct summary failed: {e}")
-                return self._hard_truncation_fallback(messages)
+                return self._record_fallback(messages)
 
         # Input too large: chunked summarization
         logger.info(f"[SlidingWindowCompaction] Input exceeds limit ({input_tokens} > {input_limit}), using chunked summarization")
         try:
-            return self._chunked_summary(messages, input_limit)
+            summary = self._chunked_summary(messages, input_limit)
+            self._consecutive_fallback_count = 0
+            return summary
         except Exception as e:
             logger.error(f"[SlidingWindowCompaction] Chunked summary failed: {e}")
-            return self._hard_truncation_fallback(messages)
+            return self._record_fallback(messages)
+
+    def _record_fallback(self, messages: list[Message]) -> str:
+        """Increment the consecutive fallback counter and return a truncated summary."""
+        self._consecutive_fallback_count += 1
+        logger.warning(
+            "[SlidingWindowCompaction] Using hard truncation fallback (consecutive fallback count: %d/%d)",
+            self._consecutive_fallback_count,
+            self._MAX_CONSECUTIVE_FALLBACKS,
+        )
+        return self._hard_truncation_fallback(messages)
 
     def _chunked_summary(self, messages: list[Message], chunk_token_limit: int) -> str:
         """Split messages into chunks, summarize each, then merge.
@@ -448,8 +489,13 @@ class SlidingWindowCompaction:
         return chunks
 
     def _hard_truncation_fallback(self, messages: list[Message]) -> str:
-        """Fallback by keeping the newest messages within token limit."""
-        max_tokens = self._summary_input_limit
+        """Fallback by keeping the newest messages within a compact token budget.
+
+        Uses _HARD_TRUNCATION_MAX_TOKENS (not _summary_input_limit) to ensure
+        the fallback output is genuinely compact and won't bloat the conversation
+        when summary LLM calls repeatedly fail.
+        """
+        max_tokens = self._HARD_TRUNCATION_MAX_TOKENS
         tokens_used = 0
         retained_messages: list[Message] = []
 
@@ -468,7 +514,15 @@ class SlidingWindowCompaction:
 
         # Convert retained messages to concatenated text
         context_snippets = [msg.get_text_content().strip() for msg in retained_messages if msg.get_text_content()]
-        return "\n".join(context_snippets)
+        fallback_text = "\n".join(context_snippets)
+        logger.info(
+            "[SlidingWindowCompaction] Hard truncation fallback: %d/%d messages retained (%d tokens, limit %d)",
+            len(retained_messages),
+            len(messages),
+            tokens_used,
+            max_tokens,
+        )
+        return fallback_text
 
     def _inject_summary(
         self,

@@ -2073,7 +2073,6 @@ class TestCompactionTracerSpan:
             max_context_tokens=10000,
             auto_compact=True,
             compaction_strategy="sliding_window",
-            sliding_window_size=2,
         )
 
         messages = [
@@ -2130,7 +2129,6 @@ class TestCompactionTracerSpan:
             max_context_tokens=1000,
             auto_compact=True,
             compaction_strategy="sliding_window",
-            sliding_window_size=2,
         )
 
         # Last assistant message must have tool calls for after_model compaction
@@ -2204,7 +2202,6 @@ class TestCompactionTracerSpan:
             max_context_tokens=10000,
             auto_compact=True,
             compaction_strategy="sliding_window",
-            sliding_window_size=2,
         )
 
         messages = [
@@ -2240,7 +2237,6 @@ class TestCompactionTracerSpan:
             max_context_tokens=10000,
             auto_compact=True,
             compaction_strategy="sliding_window",
-            sliding_window_size=2,
         )
 
         messages = [
