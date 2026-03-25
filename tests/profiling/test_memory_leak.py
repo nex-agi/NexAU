@@ -29,7 +29,6 @@ Usage::
 from __future__ import annotations
 
 import gc
-import sys
 import tracemalloc
 from typing import Any, cast
 from unittest.mock import Mock, patch
@@ -41,7 +40,6 @@ from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.execution.executor import Executor
 from nexau.archs.main_sub.execution.hooks import (
-    HookResult,
     Middleware,
 )
 from nexau.archs.main_sub.execution.middleware.context_compaction import (
@@ -55,7 +53,6 @@ from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
 from nexau.core.messages import Message, Role, TextBlock
 from nexau.core.usage import TokenUsage
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -375,6 +372,7 @@ class TestMemoryLeakRegression:
     def test_agent_run_action_gc_after_replace(self):
         """After persist_replace, old AgentRunActionModel records should be deleted."""
         import asyncio
+
         from nexau.archs.session import AgentRunActionKey
         from nexau.archs.session.models import AgentRunActionModel
 
@@ -398,7 +396,7 @@ class TestMemoryLeakRegression:
                 )
 
             # Count records before REPLACE
-            from nexau.archs.session.orm import ComparisonFilter, AndFilter
+            from nexau.archs.session.orm import AndFilter, ComparisonFilter
 
             all_records = await engine.find_many(
                 AgentRunActionModel,
@@ -441,8 +439,8 @@ class TestMemoryLeakRegression:
 
     def test_aggregators_cleared_after_model(self):
         """openai_chat_completion_aggregators should be cleared in after_model."""
-        from nexau.archs.main_sub.execution.middleware.agent_events_middleware import AgentEventsMiddleware
         from nexau.archs.main_sub.execution.hooks import AfterModelHookInput
+        from nexau.archs.main_sub.execution.middleware.agent_events_middleware import AgentEventsMiddleware
 
         mw = AgentEventsMiddleware(session_id="test")
 

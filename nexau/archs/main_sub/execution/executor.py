@@ -153,7 +153,7 @@ class Executor:
             after_tool_hooks or [],
             before_tool_hooks or [],
         )
-        self._wire_middleware_llm_runtime(llm_config, openai_client, session_id=session_id)
+        self._wire_middleware_llm_runtime(llm_config, openai_client, session_id=session_id, max_context_tokens=max_context_tokens)
         self._wire_middleware_event_emitters()
         self._tool_registry = tool_registry
         self._tool_registry_lock = threading.RLock()
@@ -276,6 +276,7 @@ class Executor:
         *,
         session_id: str | None = None,
         global_storage: Any | None = None,
+        max_context_tokens: int | None = None,
     ) -> None:
         """Inject base LLM runtime into middleware that needs inherited model settings."""
         if not self.middleware_manager:
@@ -286,13 +287,22 @@ class Executor:
             if not callable(setter):
                 continue
             try:
-                setter(llm_config, openai_client, session_id=session_id, global_storage=global_storage)
+                setter(
+                    llm_config,
+                    openai_client,
+                    session_id=session_id,
+                    global_storage=global_storage,
+                    max_context_tokens=max_context_tokens,
+                )
             except TypeError:
-                # Backward compatibility: middleware without global_storage/session_id parameter
+                # Backward compatibility: middleware without max_context_tokens/global_storage/session_id parameter
                 try:
-                    setter(llm_config, openai_client, session_id=session_id)
+                    setter(llm_config, openai_client, session_id=session_id, global_storage=global_storage)
                 except TypeError:
-                    setter(llm_config, openai_client)
+                    try:
+                        setter(llm_config, openai_client, session_id=session_id)
+                    except TypeError:
+                        setter(llm_config, openai_client)
             except Exception as exc:
                 logger.warning(
                     "⚠️ Failed to wire LLM runtime for middleware %s: %s",

@@ -31,7 +31,8 @@ class CompactionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # General Settings
-    max_context_tokens: int = 128000
+    # None = inherit from AgentConfig.max_context_tokens at runtime via set_llm_runtime
+    max_context_tokens: int | None = None
     auto_compact: bool = True
     emergency_compact_enabled: bool = True
     threshold: float = 0.75

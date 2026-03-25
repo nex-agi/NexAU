@@ -174,6 +174,7 @@ class TestSlidingWindowCompaction:
         compaction = SlidingWindowCompaction(
             keep_iterations=2,
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
 
         with pytest.raises(ValueError, match="LLM configuration is required"):
@@ -189,6 +190,7 @@ class TestSlidingWindowCompaction:
                 summary_base_url="https://api.openai.com/v1",
                 summary_api_key="test-key",
                 compact_prompt_path=temp_compact_prompt,
+                max_context_tokens=128000,
             )
             assert compaction.summary_model == "gpt-4o-mini"
             assert compaction.keep_iterations == 3
@@ -216,6 +218,7 @@ class TestSlidingWindowCompaction:
         compaction = SlidingWindowCompaction(
             keep_iterations=2,
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
 
         compaction.configure_llm_runtime(base_llm_config, mock_openai_client)
@@ -261,6 +264,7 @@ class TestSlidingWindowCompaction:
                 "api_type": "openai_chat_completion",
             },
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
         base_llm_config = LLMConfig(
             model="gpt-4o-mini",
@@ -298,6 +302,7 @@ class TestSlidingWindowCompaction:
                 "api_type": "openai_chat_completion",
             },
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
 
         compaction.configure_llm_runtime(base_llm_config, base_client)
@@ -341,6 +346,7 @@ class TestSlidingWindowCompaction:
             summary_base_url="https://summary.example.com/v1",
             summary_api_key="summary-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
 
         compaction.configure_llm_runtime(base_llm_config, mock_openai_client)
@@ -371,6 +377,7 @@ class TestSlidingWindowCompaction:
                 summary_base_url="https://api.openai.com/v1",
                 summary_api_key="test-key",
                 compact_prompt_path=temp_compact_prompt,
+                max_context_tokens=128000,
             )
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
@@ -383,6 +390,7 @@ class TestSlidingWindowCompaction:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
 
         # Create enough messages to trigger compaction
@@ -680,10 +688,130 @@ class TestContextCompactionMiddleware:
             compaction_strategy="tool_result_compaction",  # Specify strategy explicitly
         )
 
-        assert middleware.max_context_tokens == 128000
+        assert middleware.max_context_tokens is None
+        assert middleware.emergency_compaction_strategy is None
         assert middleware.auto_compact is True
         assert isinstance(middleware.trigger_strategy, TokenThresholdTrigger)
         assert isinstance(middleware.compaction_strategy, ToolResultCompaction)
+
+    def test_set_runtime_inherits_max_context_tokens(self, mock_token_counter):
+        """Test that set_llm_runtime injects agent-level max_context_tokens when not explicitly set."""
+        middleware = ContextCompactionMiddleware(
+            token_counter=mock_token_counter,
+            compaction_strategy="tool_result_compaction",
+        )
+        assert middleware.max_context_tokens is None
+        assert middleware.emergency_compaction_strategy is None
+
+        llm_config = LLMConfig(model="test-model", base_url="http://test", api_key="key")
+        middleware.set_llm_runtime(llm_config, None, max_context_tokens=200000)
+
+        assert middleware.max_context_tokens == 200000
+        assert middleware.emergency_compaction_strategy is not None
+        assert isinstance(middleware.emergency_compaction_strategy, UserModelFullTraceAdaptiveCompaction)
+
+    def test_set_runtime_does_not_override_explicit_max_context_tokens(self, mock_token_counter):
+        """Test that explicit max_context_tokens in config is preserved by set_llm_runtime."""
+        middleware = ContextCompactionMiddleware(
+            token_counter=mock_token_counter,
+            compaction_strategy="tool_result_compaction",
+            max_context_tokens=64000,
+        )
+        assert middleware.max_context_tokens == 64000
+
+        llm_config = LLMConfig(model="test-model", base_url="http://test", api_key="key")
+        middleware.set_llm_runtime(llm_config, None, max_context_tokens=200000)
+
+        # Explicit config value wins
+        assert middleware.max_context_tokens == 64000
+
+    @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
+    def test_set_runtime_passes_max_context_tokens_to_strategy(
+        self, mock_openai_class, mock_openai_client, mock_token_counter, temp_compact_prompt
+    ):
+        """Test that set_llm_runtime propagates max_context_tokens to compaction strategy."""
+        mock_openai_class.return_value = mock_openai_client
+        middleware = ContextCompactionMiddleware(
+            token_counter=mock_token_counter,
+            compaction_strategy="llm_summary",
+            compact_prompt_path=temp_compact_prompt,
+            summary_model="gpt-4o-mini",
+            summary_base_url="https://api.openai.com/v1",
+            summary_api_key="test-key",
+        )
+        assert middleware.max_context_tokens is None
+        assert isinstance(middleware.compaction_strategy, SlidingWindowCompaction)
+        assert middleware.compaction_strategy.max_context_tokens is None
+
+        llm_config = LLMConfig(model="test-model", base_url="http://test", api_key="key")
+        middleware.set_llm_runtime(llm_config, None, max_context_tokens=200000)
+
+        assert middleware.max_context_tokens == 200000
+        assert middleware.compaction_strategy.max_context_tokens == 200000
+
+    def test_before_model_skips_when_max_context_tokens_none(self, mock_token_counter, agent_state, sample_messages):
+        """Test that before_model returns no_changes when max_context_tokens is None."""
+        middleware = ContextCompactionMiddleware(
+            token_counter=mock_token_counter,
+            compaction_strategy="tool_result_compaction",
+        )
+        assert middleware.max_context_tokens is None
+
+        from nexau.archs.main_sub.execution.hooks import BeforeModelHookInput
+
+        hook_input = BeforeModelHookInput(
+            agent_state=agent_state,
+            messages=sample_messages,
+            max_iterations=10,
+            current_iteration=1,
+        )
+        result = middleware.before_model(hook_input)
+        assert result.messages is None  # no_changes
+
+    def test_after_model_skips_when_max_context_tokens_none(self, mock_token_counter, mock_model_response, agent_state, sample_messages):
+        """Test that after_model returns no_changes when max_context_tokens is None."""
+        middleware = ContextCompactionMiddleware(
+            token_counter=mock_token_counter,
+            compaction_strategy="tool_result_compaction",
+        )
+        assert middleware.max_context_tokens is None
+
+        hook_input = AfterModelHookInput(
+            agent_state=agent_state,
+            messages=sample_messages,
+            max_iterations=10,
+            current_iteration=1,
+            model_response=mock_model_response,
+            original_response="Test",
+            parsed_response=ParsedResponse(
+                original_response="Test",
+                tool_calls=[],
+                sub_agent_calls=[],
+                batch_agent_calls=[],
+            ),
+        )
+        result = middleware.after_model(hook_input)
+        assert result.messages is None  # no_changes
+
+    def test_wrap_model_call_raises_when_emergency_strategy_none(self, mock_token_counter):
+        """Test that wrap_model_call re-raises overflow when emergency strategy is None."""
+        middleware = ContextCompactionMiddleware(
+            token_counter=mock_token_counter,
+            compaction_strategy="tool_result_compaction",
+        )
+        assert middleware.emergency_compaction_strategy is None
+
+        overflow_error = Exception("maximum context length exceeded")
+        params = Mock(spec=ModelCallParams)
+        params.messages = []
+        params.tools = None
+        params.agent_state = None
+
+        def fail_call(p):
+            raise overflow_error
+
+        with pytest.raises(Exception, match="maximum context length"):
+            middleware.wrap_model_call(params, fail_call)
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
     def test_initialization_custom_threshold(self, mock_openai_class, mock_openai_client, mock_token_counter, temp_compact_prompt):
@@ -696,6 +824,7 @@ class TestContextCompactionMiddleware:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
 
         assert middleware.trigger_strategy.threshold == 0.80
@@ -767,6 +896,7 @@ class TestContextCompactionMiddleware:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
 
         hook_input = AfterModelHookInput(
@@ -810,6 +940,7 @@ class TestContextCompactionMiddleware:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
 
         assert isinstance(middleware.compaction_strategy, SlidingWindowCompaction)
@@ -828,6 +959,7 @@ class TestContextCompactionMiddleware:
                 summary_base_url="https://api.openai.com/v1",
                 summary_api_key="test-key",
                 compact_prompt_path=temp_compact_prompt,
+                max_context_tokens=128000,
             )
 
         assert isinstance(middleware.compaction_strategy, SlidingWindowCompaction)
@@ -847,6 +979,7 @@ class TestSlidingWindowCompactionKeepUserRounds:
                     summary_base_url="https://api.openai.com/v1",
                     summary_api_key="test-key",
                     compact_prompt_path=temp_compact_prompt,
+                    max_context_tokens=128000,
                 )
 
     def test_cannot_set_both_keep_iterations_and_keep_user_rounds(self, temp_compact_prompt):
@@ -860,6 +993,7 @@ class TestSlidingWindowCompactionKeepUserRounds:
                     summary_base_url="https://api.openai.com/v1",
                     summary_api_key="test-key",
                     compact_prompt_path=temp_compact_prompt,
+                    max_context_tokens=128000,
                 )
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
@@ -873,6 +1007,7 @@ class TestSlidingWindowCompactionKeepUserRounds:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
 
         messages = messages_from_legacy_openai_chat(
@@ -902,6 +1037,7 @@ class TestSlidingWindowCompactionKeepUserRounds:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
         compaction._llm_caller.call_llm = Mock(  # type: ignore[method-assign]
             return_value=ModelResponse(content="Summary of round 1.", role="assistant"),
@@ -953,6 +1089,7 @@ class TestSlidingWindowCompactionAdvanced:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
         compaction._llm_caller.call_llm = Mock(  # type: ignore[method-assign]
             return_value=ModelResponse(content="This is a comprehensive summary of the conversation.", role="assistant"),
@@ -994,6 +1131,7 @@ class TestSlidingWindowCompactionAdvanced:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
         compaction._llm_caller.call_llm = Mock(side_effect=Exception("LLM Error"))  # type: ignore[method-assign]
 
@@ -1036,6 +1174,7 @@ class TestSlidingWindowCompactionAdvanced:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
 
         messages = messages_from_legacy_openai_chat(
@@ -1082,6 +1221,7 @@ class TestSlidingWindowCompactionAdvanced:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
 
         messages = [
@@ -1123,6 +1263,7 @@ class TestSlidingWindowCompactionAdvanced:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
 
         messages = messages_from_legacy_openai_chat(
@@ -1150,6 +1291,7 @@ class TestSlidingWindowCompactionAdvanced:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
 
         messages = messages_from_legacy_openai_chat(
@@ -1201,6 +1343,7 @@ class TestSlidingWindowCompactionAdvanced:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
         compaction._llm_caller.call_llm = Mock(  # type: ignore[method-assign]
             return_value=ModelResponse(content="Summary of earlier conversation.", role="assistant"),
@@ -1253,6 +1396,7 @@ class TestSlidingWindowCompactionAdvanced:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
         compaction.configure_llm_runtime(
             LLMConfig(
@@ -1304,6 +1448,7 @@ class TestSlidingWindowCompactionAdvanced:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
         messages = messages_from_legacy_openai_chat(
             [
@@ -1338,6 +1483,7 @@ class TestSlidingWindowCompactionAdvanced:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
             token_counter=mock_token_counter_extreme,
         )
 
@@ -1379,6 +1525,7 @@ class TestSlidingWindowCompactionAdvanced:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
             token_counter=mock_token_counter_extreme,
             retry_attempts=1,
         )
@@ -1619,6 +1766,7 @@ class TestContextCompactionMiddlewareKeepUserRounds:
             summary_base_url="https://api.openai.com/v1",
             summary_api_key="test-key",
             compact_prompt_path=temp_compact_prompt,
+            max_context_tokens=128000,
         )
 
         assert isinstance(middleware.compaction_strategy, SlidingWindowCompaction)
@@ -1642,6 +1790,7 @@ class TestContextCompactionMiddlewareAdvanced:
                 summary_base_url="https://api.openai.com/v1",
                 summary_api_key="test-key",
                 compact_prompt_path=temp_compact_prompt,
+                max_context_tokens=128000,
             )
 
     def test_invalid_strategy_name(self, mock_token_counter):

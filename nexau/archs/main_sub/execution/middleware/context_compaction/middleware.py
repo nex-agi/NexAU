@@ -39,6 +39,7 @@ from .llm_config_utils import normalize_summary_llm_overrides, resolve_summary_l
 
 if TYPE_CHECKING:
     from ....utils.token_counter import TokenCounter
+    from .compact_stratigies.user_model_full_trace_adaptive import UserModelFullTraceAdaptiveCompaction
 
 from nexau.core.messages import Message, Role, ToolUseBlock
 
@@ -118,7 +119,8 @@ class ContextCompactionMiddleware(Middleware):
         # Pydantic validates the flat YAML/dict here
         config = CompactionConfig(**kwargs)
 
-        self.max_context_tokens = config.max_context_tokens
+        # None = inherit from AgentConfig at runtime via set_llm_runtime
+        self.max_context_tokens: int | None = config.max_context_tokens
         self.auto_compact = config.auto_compact
         self.emergency_compact_enabled = config.emergency_compact_enabled
         self.summary_llm_config_overrides = normalize_summary_llm_overrides(
@@ -136,11 +138,19 @@ class ContextCompactionMiddleware(Middleware):
         # Create strategies from config
         self.trigger_strategy = create_trigger_strategy(config)
         self.compaction_strategy = create_compaction_strategy(config)
-        self.emergency_compaction_strategy = create_emergency_compaction_strategy(
-            token_counter=self.token_counter,
-            max_context_tokens=self.max_context_tokens,
-        )
 
+        # Emergency strategy requires max_context_tokens; defer when None
+        if self.max_context_tokens is not None:
+            self.emergency_compaction_strategy: UserModelFullTraceAdaptiveCompaction | None = create_emergency_compaction_strategy(
+                token_counter=self.token_counter,
+                max_context_tokens=self.max_context_tokens,
+            )
+        else:
+            self.emergency_compaction_strategy = None
+
+        emergency_name = (
+            self.emergency_compaction_strategy.__class__.__name__ if self.emergency_compaction_strategy is not None else "deferred"
+        )
         logger.info(
             f"[ContextCompactionMiddleware] Initialized: "
             f"max_context_tokens={self.max_context_tokens}, "
@@ -148,7 +158,7 @@ class ContextCompactionMiddleware(Middleware):
             f"emergency_compact_enabled={self.emergency_compact_enabled}, "
             f"trigger={self.trigger_strategy.__class__.__name__}, "
             f"compaction={self.compaction_strategy.__class__.__name__}, "
-            f"emergency_compaction={self.emergency_compaction_strategy.__class__.__name__}"
+            f"emergency_compaction={emergency_name}"
         )
 
     def set_llm_runtime(
@@ -158,13 +168,36 @@ class ContextCompactionMiddleware(Middleware):
         *,
         session_id: str | None = None,
         global_storage: Any | None = None,
+        max_context_tokens: int | None = None,
     ) -> None:
         """Inject the agent LLM runtime used when no standalone summary config is set."""
         self._session_id = session_id
         self._global_storage = global_storage
+
+        # Resolve max_context_tokens: explicit config > agent-level fallback
+        if self.max_context_tokens is None and max_context_tokens is not None:
+            self.max_context_tokens = max_context_tokens
+            logger.info(
+                "[ContextCompactionMiddleware] Inherited max_context_tokens=%d from agent config",
+                max_context_tokens,
+            )
+
+        # Create emergency strategy now that max_context_tokens is resolved
+        if self.emergency_compaction_strategy is None and self.max_context_tokens is not None:
+            self.emergency_compaction_strategy = create_emergency_compaction_strategy(
+                token_counter=self.token_counter,
+                max_context_tokens=self.max_context_tokens,
+            )
+
         configure_runtime = getattr(self.compaction_strategy, "configure_llm_runtime", None)
         if callable(configure_runtime):
-            configure_runtime(llm_config, openai_client, session_id=session_id, global_storage=global_storage)
+            configure_runtime(
+                llm_config,
+                openai_client,
+                session_id=session_id,
+                global_storage=global_storage,
+                max_context_tokens=self.max_context_tokens,
+            )
 
     def _build_client(self, llm_config: LLMConfig) -> Any | None:
         if llm_config.api_type == "gemini_rest":
@@ -473,6 +506,10 @@ class ContextCompactionMiddleware(Middleware):
         if not self.auto_compact:
             return HookResult.no_changes()
 
+        if self.max_context_tokens is None:
+            logger.warning("[ContextCompactionMiddleware] max_context_tokens not resolved, skipping pre-call compaction")
+            return HookResult.no_changes()
+
         messages = hook_input.messages
         current_tokens = self._estimate_tokens(messages)
         if current_tokens is None:
@@ -595,6 +632,13 @@ class ContextCompactionMiddleware(Middleware):
             if not self.auto_compact or not self.emergency_compact_enabled or not self._is_context_overflow_error(exc):
                 raise
 
+            if self.emergency_compaction_strategy is None:
+                logger.error(
+                    "[ContextCompactionMiddleware] Emergency compaction unavailable: "
+                    "max_context_tokens was never resolved (set_llm_runtime not called?)"
+                )
+                raise
+
             logger.warning(
                 "[ContextCompactionMiddleware] Model call failed due to context overflow; "
                 "attempting fixed two-segment emergency compaction retry"
@@ -644,7 +688,7 @@ class ContextCompactionMiddleware(Middleware):
 
             after_tokens = self._estimate_tokens(compacted_messages, params.tools)
 
-            if after_tokens is not None and after_tokens >= self.max_context_tokens:
+            if after_tokens is not None and self.max_context_tokens is not None and after_tokens >= self.max_context_tokens:
                 logger.error(
                     "[ContextCompactionMiddleware] Emergency compaction result still exceeds context limit: %d/%d",
                     after_tokens,
@@ -692,6 +736,10 @@ class ContextCompactionMiddleware(Middleware):
     def after_model(self, hook_input: AfterModelHookInput) -> HookResult:
         """Check and compact messages after each model call if needed."""
         if not self.auto_compact:
+            return HookResult.no_changes()
+
+        if self.max_context_tokens is None:
+            logger.warning("[ContextCompactionMiddleware] max_context_tokens not resolved, skipping post-call compaction")
             return HookResult.no_changes()
 
         messages = hook_input.messages

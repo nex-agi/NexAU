@@ -116,7 +116,7 @@ class SlidingWindowCompaction:
         summary_base_url: str | None = None,
         summary_api_key: str | None = None,
         summary_api_type: str | None = None,
-        max_context_tokens: int = 128000,
+        max_context_tokens: int | None = None,
         compact_prompt_path: str | None = None,
         token_counter: TokenCounter | None = None,
         retry_attempts: int = 3,
@@ -134,7 +134,7 @@ class SlidingWindowCompaction:
             summary_api_key: Optional legacy API key override for summarization.
             summary_api_type: Optional legacy API type override for summarization.
             token_counter: Token counter instance for counting tokens. If None, a default TokenCounter is used.
-            max_context_tokens: Context window size of the summary LLM. Default: 128000.
+            max_context_tokens: Context window size of the summary LLM. None = inherit from agent config.
             retry_attempts: Number of retry attempts for summary LLM calls. Default: 3.
             compact_prompt_path: Path to compact prompt file (already resolved by config). Required.
 
@@ -202,6 +202,8 @@ class SlidingWindowCompaction:
     @property
     def _summary_input_limit(self) -> int:
         """Max input tokens allowed when calling the summary LLM."""
+        if self.max_context_tokens is None:
+            raise RuntimeError("max_context_tokens not resolved; configure_llm_runtime must be called first")
         return self.max_context_tokens - self._SUMMARY_RESERVED_TOKENS
 
     def configure_llm_runtime(
@@ -211,12 +213,16 @@ class SlidingWindowCompaction:
         *,
         session_id: str | None = None,
         global_storage: Any | None = None,
+        max_context_tokens: int | None = None,
     ) -> None:
         """Inject the agent/runtime LLM config used as the default summary model."""
         self._base_llm_config = llm_config.copy()
         self._base_openai_client = openai_client
         self._session_id = session_id
         self._global_storage = global_storage
+        # Inherit from agent config when not explicitly set
+        if self.max_context_tokens is None and max_context_tokens is not None:
+            self.max_context_tokens = max_context_tokens
         self._refresh_llm_runtime()
 
     def _resolve_summary_llm_config(self) -> LLMConfig:
