@@ -137,13 +137,82 @@ def create_team_router(
     router = APIRouter(prefix="/team", tags=["team"])
 
     # RFC-0002: Team SSE 流式输出
+    # RFC-0014: 运行中自动降级为 enqueue + subscribe
     @router.post("/stream")
     async def team_stream(request: TeamRunRequest) -> StreamingResponse:
         """Run team with SSE streaming output.
 
         RFC-0002: Team SSE 流式输出
+        RFC-0014: 运行中自动降级
+
+        若 team 已在运行，自动将消息 enqueue 到 leader 并返回 subscribe 风格的
+        SSE 重连流，避免重复调用 run() 导致 leader lock 冲突。
         """
         team = registry.get_or_create(request.user_id, request.session_id)
+
+        # RFC-0014: 若 team 已在运行，降级为 enqueue + subscribe
+        if team.is_running:
+            logger.info(
+                "Team already running for (%s, %s), redirecting to enqueue + subscribe",
+                request.user_id,
+                request.session_id,
+            )
+            team.enqueue_user_message("leader", request.message)
+
+            # 返回 subscribe 风格的 SSE 流，从当前事件位置开始
+            current_cursor = 0
+            if count_events is not None:
+                current_cursor = count_events(request.user_id, request.session_id)
+
+            async def subscribe_generator() -> AsyncGenerator[str, None]:
+                cursor = current_cursor
+                try:
+                    while True:
+                        if get_history is not None:
+                            new_events = get_history(request.user_id, request.session_id, cursor)
+                            for event in new_events:
+                                resp = TeamStreamEnvelopeResponse(
+                                    type="team_event",
+                                    envelope=event,
+                                    session_id=request.session_id,
+                                )
+                                yield f"data: {resp.model_dump_json()}\n\n"
+                                cursor += 1
+
+                        active_team = registry.get(request.user_id, request.session_id)
+                        if active_team is None or not active_team.is_running:
+                            if get_history is not None:
+                                for event in get_history(request.user_id, request.session_id, cursor):
+                                    resp = TeamStreamEnvelopeResponse(
+                                        type="team_event",
+                                        envelope=event,
+                                        session_id=request.session_id,
+                                    )
+                                    yield f"data: {resp.model_dump_json()}\n\n"
+                            break
+
+                        await asyncio.sleep(0.1)
+                except Exception as exc:
+                    logger.error("Team subscribe (redirected) error: %s", exc)
+                    err_resp = TeamStreamEnvelopeResponse(
+                        type="error",
+                        session_id=request.session_id,
+                        error=str(exc),
+                    )
+                    yield f"data: {err_resp.model_dump_json()}\n\n"
+                    return
+
+                yield f"data: {TeamStreamEnvelopeResponse(type='complete', session_id=request.session_id).model_dump_json()}\n\n"
+
+            return StreamingResponse(
+                subscribe_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
 
         # 创建 per-request on_envelope 回调，用于事件持久化
         def _on_envelope(envelope: TeamStreamEnvelope) -> None:
@@ -177,9 +246,7 @@ def create_team_router(
                 )
                 yield f"data: {error_response.model_dump_json()}\n\n"
                 return
-            # 注意：不在 finally 中移除 team，由 on_complete 回调负责清理
 
-            # 完成信号
             complete = TeamStreamEnvelopeResponse(
                 type="complete",
                 session_id=request.session_id,

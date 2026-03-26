@@ -857,6 +857,7 @@ class AgentTeam:
         """Run the team with the leader agent in forever-run mode.
 
         RFC-0002: 运行团队（永久运行模式）
+        RFC-0014: 并发调用保护
 
         Leader agent 在 team_mode 下持续运行，直到调用 finish_team stop tool。
         Teammate agents 通过 spawn_teammate 按需创建，各自独立运行。
@@ -875,7 +876,14 @@ class AgentTeam:
 
         Returns:
             Leader agent response string.
+
+        Raises:
+            RuntimeError: If team is already running (concurrent call protection).
         """
+        # RFC-0014: 防止并发调用 run()，避免 leader lock 冲突
+        if self._is_running:
+            raise RuntimeError("Team is already running. Use enqueue_user_message() for follow-up messages.")
+
         await self.initialize()
 
         # 保存主事件循环引用，供 spawn_teammate 跨线程调度使用
