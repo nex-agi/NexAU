@@ -379,13 +379,15 @@ class AgentTeam:
                 config.llm_config.stream = True
 
         # 6. 创建 teammate Agent 实例（独立 session，带 team_state）
+        #    使用 Agent.create() async factory 避免在 async context 中调用
+        #    sync Agent() 构造器（后者会因检测到 running event loop 而抛出 RuntimeError）。
         teammate_team_state = AgentTeamState(
             team=self,
             task_board=self.task_board,
             message_bus=self.message_bus,
             is_leader=False,
         )
-        agent = Agent(
+        agent = await Agent.create(
             agent_id=agent_id,
             config=config,
             session_manager=self._session_manager,
@@ -398,9 +400,9 @@ class AgentTeam:
         )
         self._teammate_agents[agent_id] = agent
 
-        # 6. 在主事件循环上启动 teammate 的永久运行协程
-        #    spawn_teammate 在 asyncio.run() 创建的临时事件循环中执行（tool executor），
-        #    必须通过 run_coroutine_threadsafe 调度到主循环，否则 task 会随临时循环销毁。
+        # 7. 在主事件循环上启动 teammate 的永久运行协程
+        #    spawn_teammate 是 async 方法，teammate 永久运行协程通过
+        #    run_coroutine_threadsafe 调度到主循环以保持独立的生命周期。
         if self._loop is None:
             raise RuntimeError("AgentTeam._loop not set. Call run() first.")
         teammate_future = asyncio.run_coroutine_threadsafe(
@@ -770,13 +772,15 @@ class AgentTeam:
                     config.llm_config.stream = True
 
             # 3. 创建 Agent 实例（session 恢复机制自动恢复对话历史）
+            #    使用 Agent.create() async factory 避免在 async context 中调用
+            #    sync Agent() 构造器（后者会因检测到 running event loop 而抛出 RuntimeError）。
             teammate_team_state = AgentTeamState(
                 team=self,
                 task_board=self.task_board,
                 message_bus=self.message_bus,
                 is_leader=False,
             )
-            agent = Agent(
+            agent = await Agent.create(
                 agent_id=agent_id,
                 config=config,
                 session_manager=self._session_manager,
@@ -961,13 +965,15 @@ class AgentTeam:
                 )
 
             # 5. 创建 team_state 并构建 leader agent（独立 session）
+            #    使用 Agent.create() async factory 避免在 async context 中调用
+            #    sync Agent() 构造器（后者会因检测到 running event loop 而抛出 RuntimeError）。
             leader_team_state = AgentTeamState(
                 team=self,
                 task_board=self.task_board,
                 message_bus=self.message_bus,
                 is_leader=True,
             )
-            leader = Agent(
+            leader = await Agent.create(
                 agent_id=self._leader_agent_id,
                 config=leader_config,
                 session_manager=self._session_manager,

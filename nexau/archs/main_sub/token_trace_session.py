@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+import httpx
 import requests
 
 from nexau.archs.llm.llm_config import LLMConfig
@@ -219,6 +220,47 @@ class TokenTraceSession:
             "token_ids": token_ids,
         }
         data = self._post_json(url, payload)
+        text = _coerce_text(data.get("text"))
+        if text is None:
+            raise ValueError("detokenize response missing text")
+        return text
+
+    async def _post_json_async(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Async version of _post_json using httpx.AsyncClient.
+
+        P2 async/sync 技术债修复: 异步 HTTP 请求
+
+        使用 httpx.AsyncClient 替代 sync requests.post，
+        在主事件循环上执行 HTTP 调用，避免阻塞 event loop。
+        """
+        async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout)) as client:
+            response = await client.post(
+                url,
+                json=payload,
+                headers=self._build_headers(),
+            )
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError(f"Expected JSON object from {url}, got {type(data).__name__}")
+            return cast(dict[str, Any], data)
+
+    async def detokenize_async(self, token_ids: list[int]) -> str:
+        """Async version of detokenize.
+
+        P2 async/sync 技术债修复: 异步 detokenize
+
+        使用 _post_json_async 做异步 HTTP 调用。
+        """
+        if not token_ids:
+            return ""
+
+        url = self._build_url("detokenize_path", "/detokenize")
+        payload = {
+            "model": self.model,
+            "token_ids": token_ids,
+        }
+        data = await self._post_json_async(url, payload)
         text = _coerce_text(data.get("text"))
         if text is None:
             raise ValueError("detokenize response missing text")

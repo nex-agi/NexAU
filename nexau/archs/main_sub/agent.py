@@ -25,6 +25,7 @@ import asyncio
 import inspect
 import logging
 import os
+import threading
 import traceback
 import uuid
 import warnings
@@ -39,7 +40,6 @@ import anthropic
 import dotenv
 import openai
 import yaml
-from asyncer import asyncify, syncify
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
@@ -79,7 +79,6 @@ from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock
-from nexau.core.utils import run_async_function_sync
 
 # Setup logger for agent execution
 logger = logging.getLogger(__name__)
@@ -137,11 +136,17 @@ class Agent:
             self._session_manager = SessionManager(engine=default_engine)
             logger.debug("Using shared in-memory SessionManager")
 
-        # Async initialization: load storage and register agent in one call
-        self.global_storage, self.agent_id = self._init_session_state(
-            provided_storage=global_storage,
-            proposed_agent_id=agent_id,
-        )
+        # Session initialization: load storage and register agent
+        if self.__class__._is_skip_sync_session_init():
+            # Agent.create() path: async init will be done after __init__ returns
+            self.global_storage = global_storage or GlobalStorage()
+            self.agent_id = agent_id or f"pending_{uuid.uuid4().hex[:8]}"
+        else:
+            # Sync path (CLI, scripts, ThreadPoolExecutor workers)
+            self.global_storage, self.agent_id = self._init_session_state(
+                provided_storage=global_storage,
+                proposed_agent_id=agent_id,
+            )
         self.agent_name = self.config.name or self.agent_id
 
         # Set tracer in global storage (with conflict check)
@@ -162,6 +167,7 @@ class Agent:
         # Initialize services
         logger.info("Initializing LLM client (api_type=%s)", self.config.llm_config.api_type if self.config.llm_config else "default")
         self.openai_client = openai_client if openai_client is not None else self._initialize_openai_client()
+        self._async_openai_client = self._initialize_async_openai_client()
 
         # 为 OpenAI Responses API 注入 prompt_cache_key，在代理上启用 prompt 缓存。
         # 每个 agent 生命周期使用固定的 key（跨轮次不变），不同 agent 使用不同 key。
@@ -252,6 +258,139 @@ class Agent:
         cleanup_manager.register_agent(self)
         logger.info("Agent '%s' initialized (agent_id=%s, session_id=%s)", self.agent_name, self.agent_id, self._session_id)
 
+    @classmethod
+    async def create(
+        cls,
+        *,
+        config: AgentConfig,
+        openai_client: Any | None = None,
+        agent_id: str | None = None,
+        global_storage: GlobalStorage | None = None,
+        session_manager: SessionManager | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        is_root: bool = True,
+        variables: ContextValue | None = None,
+        team_state: "AgentTeamState | None" = None,
+        sandbox_manager: "BaseSandboxManager[BaseSandbox] | None" = None,
+    ) -> "Agent":
+        """Async factory for Agent — the preferred way to create agents from async code.
+
+        Performs session initialization (DB models, agent registration, storage
+        restore) natively on the running event loop, avoiding nest_asyncio and
+        cross-loop issues.
+
+        Usage::
+
+            agent = await Agent.create(config=my_config, session_manager=sm)
+            response = await agent.run_async(message="Hello")
+
+        All parameters are identical to ``Agent.__init__``.
+        """
+        # 1. 暂存 session_manager，用 _DEFERRED_INIT sentinel 跳过 sync init
+        sm = session_manager
+        if sm is None:
+            default_engine = InMemoryDatabaseEngine.get_shared_instance()
+            sm = SessionManager(engine=default_engine)
+
+        # 2. 构造实例：传 _skip_sync_init=True 来跳过 __init__ 中的 sync session 初始化
+        #    由于 __init__ 不支持该参数，我们用 object.__new__ + 手动初始化
+        #    ... 这太脆弱了。更好的方式：在线程中构造 Agent（与 transport 现在做法一致）
+        #    然后在 create 中做 async session init。
+        #    但实际上，我们可以直接在无 running loop 的线程中构造 Agent。
+        #    不过更干净的方式是：在 __init__ 中检测到 async context 时跳过 session init，
+        #    然后在 create() 中做 async init。
+
+        # 为了避免侵入 __init__ 过深，使用 thread-local flag 作为信号
+        # (线程安全: 不同请求的 Agent.create() 不会互相干扰)
+        cls._create_flag.skip = True
+        try:
+            instance = cls(
+                config=config,
+                openai_client=openai_client,
+                agent_id=agent_id,
+                global_storage=global_storage,
+                session_manager=sm,
+                user_id=user_id,
+                session_id=session_id,
+                is_root=is_root,
+                variables=variables,
+                team_state=team_state,
+                sandbox_manager=sandbox_manager,
+            )
+        finally:
+            cls._create_flag.skip = False
+
+        # 3. 异步执行 session 初始化
+        storage, resolved_agent_id = await instance._init_session_state_async(
+            provided_storage=global_storage,
+            proposed_agent_id=agent_id,
+        )
+        instance.global_storage = storage
+        instance.agent_id = resolved_agent_id
+        instance.agent_name = instance.config.name or resolved_agent_id
+
+        # 3.5 P1 async/sync 技术债修复: async MCP 初始化
+        # __init__ 中 MCP 初始化被跳过（create_flag.skip=True），
+        # 在此异步完成 MCP 工具发现和注册。
+        if instance.config.mcp_servers:
+            mcp_tools = await instance._initialize_mcp_tools_async()
+            if mcp_tools:
+                instance._tool_registry.add_source("mcp", mcp_tools)
+                # 重建 structured tool payload 以包含 MCP 工具
+                instance.executor.update_structured_tools(instance._build_tool_call_payload())
+                logger.info(
+                    "Registered %d MCP tools via async init (total: %d eager, %d deferred)",
+                    len(mcp_tools),
+                    instance._tool_registry.eager_count,
+                    instance._tool_registry.deferred_count,
+                )
+
+        # 4. 重新设置依赖 agent_id/global_storage 的组件
+        instance._setup_tracer()
+        instance._rebuild_executor_with_resolved_id()
+
+        return instance
+
+    # Sentinel for create() to skip sync session init in __init__
+    # Use threading.local to isolate concurrent Agent.create() calls across
+    # different threads.  Within a SINGLE thread (the common single-threaded
+    # asyncio case), safety relies on the fact that there is NO await between
+    # `skip = True` and `cls(...)`, so no other coroutine can observe the flag.
+    # ⚠️  INVARIANT: Do NOT insert any `await` between setting skip and the
+    #     cls(...) call — that would allow another coroutine in the same thread
+    #     to see the stale flag and skip its own session init.
+    _create_flag: threading.local = threading.local()
+
+    @classmethod
+    def _is_skip_sync_session_init(cls) -> bool:
+        return getattr(cls._create_flag, "skip", False)
+
+    def _rebuild_executor_with_resolved_id(self) -> None:
+        """Update executor and HistoryList with resolved agent_id after async init.
+
+        Called by Agent.create() after _init_session_state_async() resolves the
+        real agent_id / global_storage. Updates:
+        - executor.agent_name / agent_id / global_storage
+        - executor.llm_caller.global_storage (for tracer access at LLM call time)
+        - executor.subagent_manager.global_storage (for sub-agent tracer propagation)
+        - HistoryList history_key (for persistence routing)
+        """
+        self.executor.agent_name = self.agent_name
+        self.executor.agent_id = self.agent_id
+        self.executor.global_storage = self.global_storage
+        self.executor.llm_caller.global_storage = self.global_storage
+        self.executor.subagent_manager.global_storage = self.global_storage
+
+        # HistoryList: update the history_key to match resolved agent_id
+        self._history.update_history_key(
+            AgentRunActionKey(
+                user_id=self._user_id,
+                session_id=self._session_id,
+                agent_id=self.agent_id,
+            )
+        )
+
     @property
     def history(self) -> HistoryList:
         """Get the conversation history."""
@@ -279,10 +418,36 @@ class Agent:
         provided_storage: GlobalStorage | None,
         proposed_agent_id: str | None,
     ) -> tuple[GlobalStorage, str]:
-        """Initialize session state: global_storage and agent_id.
+        """Initialize session state synchronously.
 
-        This method consolidates all async session operations into a single call
-        to avoid multiple run_sync overhead.
+        Uses asyncio.run() when no event loop is running (CLI, scripts, thread pool
+        workers). Raises RuntimeError if called from an async context — callers in
+        async code should use ``await Agent.create(...)`` instead.
+        """
+        from nexau.core.utils import get_running_loop_or_none
+
+        if get_running_loop_or_none() is not None:
+            raise RuntimeError(
+                "Agent() cannot be called directly from an async context "
+                "(this would require nest_asyncio). Use `await Agent.create(...)` "
+                "or wrap in `asyncio.to_thread(lambda: Agent(...))` instead."
+            )
+        return asyncio.run(
+            self._init_session_state_async(
+                provided_storage=provided_storage,
+                proposed_agent_id=proposed_agent_id,
+            )
+        )
+
+    async def _init_session_state_async(
+        self,
+        *,
+        provided_storage: GlobalStorage | None,
+        proposed_agent_id: str | None,
+    ) -> tuple[GlobalStorage, str]:
+        """Initialize session state: global_storage and agent_id (async).
+
+        This method consolidates all async session operations into a single call.
 
         Initialization logic:
         1. Initialize database models
@@ -298,47 +463,40 @@ class Agent:
         Returns:
             Tuple of (global_storage, agent_id)
         """
+        # Step 1: Initialize database models
+        await self._session_manager.setup_models()
+        logger.debug("Session models initialized")
 
-        async def _init() -> tuple[GlobalStorage, str]:
-            # Step 1: Initialize database models
-            await self._session_manager.setup_models()
-            logger.debug("Session models initialized")
+        # Step 2: Register agent - this also returns the session
+        agent_id, session = await self._session_manager.register_agent(
+            user_id=self._user_id,
+            session_id=self._session_id,
+            agent_id=proposed_agent_id,
+            agent_name=self.config.name or "",
+            is_root=self._is_root,
+        )
+        logger.debug("Agent registered with id='%s'", agent_id)
 
-            # Step 2: Register agent - this also returns the session
-            # No separate get_session call needed, avoiding overlay
-            agent_id, session = await self._session_manager.register_agent(
-                user_id=self._user_id,
-                session_id=self._session_id,
-                agent_id=proposed_agent_id,
-                agent_name=self.config.name or "",
-                is_root=self._is_root,
+        # Step 3: Determine global_storage
+        if provided_storage is not None:
+            storage = provided_storage
+            logger.info(
+                "Using user-provided global_storage (override mode, %d keys)",
+                len(storage.to_dict()),
             )
-            logger.debug("Agent registered with id='%s'", agent_id)
-
-            # Step 3: Determine global_storage
-            if provided_storage is not None:
-                # Override mode: user explicitly provides storage
-                storage = provided_storage
+        else:
+            storage = session.storage
+            storage_size = len(storage.to_dict())
+            if storage_size > 0:
                 logger.info(
-                    "Using user-provided global_storage (override mode, %d keys)",
-                    len(storage.to_dict()),
+                    "Restored global_storage from session '%s' (%d keys)",
+                    self._session_id,
+                    storage_size,
                 )
             else:
-                # Restore mode: use session.storage directly (already a GlobalStorage)
-                storage = session.storage
-                storage_size = len(storage.to_dict())
-                if storage_size > 0:
-                    logger.info(
-                        "Restored global_storage from session '%s' (%d keys)",
-                        self._session_id,
-                        storage_size,
-                    )
-                else:
-                    logger.debug("Using empty GlobalStorage from session")
+                logger.debug("Using empty GlobalStorage from session")
 
-            return storage, agent_id
-
-        return run_async_function_sync(_init, raise_sync_error=False)
+        return storage, agent_id
 
     def _setup_tracer(self) -> None:
         """Set up tracer in global_storage.
@@ -427,8 +585,44 @@ class Agent:
             logger.error(f"❌ Failed to initialize OpenAI client: {e}")
             return None
 
+    def _initialize_async_openai_client(self) -> Any:
+        """Initialize async OpenAI/Anthropic client for native async LLM calls.
+
+        async/sync 技术债修复: 创建 AsyncOpenAI / AsyncAnthropic 客户端，
+        使 call_llm_async 路径直接 await 而非 to_thread 桥接。
+        """
+        llm_config = self.config.llm_config or LLMConfig()
+
+        try:
+            if llm_config.api_type in {"gemini_rest", "generate_with_token"}:
+                return None
+            if llm_config.api_type == "anthropic_chat_completion":
+                client_kwargs = llm_config.to_client_kwargs()
+                return anthropic.AsyncAnthropic(**client_kwargs)
+            if llm_config.api_type in ["openai_responses", "openai_chat_completion"]:
+                client_kwargs = llm_config.to_client_kwargs()
+                return openai.AsyncOpenAI(**client_kwargs)
+            return None
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize async client: {e}")
+            return None
+
     def _initialize_mcp_tools(self) -> list[Tool]:
-        """Initialize tools from MCP servers."""
+        """Initialize tools from MCP servers.
+
+        P1 async/sync 技术债修复: async context 下跳过 sync MCP 初始化
+
+        当通过 Agent.create() 构造时（create_flag.skip=True），
+        跳过 sync MCP 初始化，返回空列表。Agent.create() 会在之后
+        通过 _initialize_mcp_tools_async() 异步完成 MCP 初始化。
+        """
+        # async factory path: defer MCP init to Agent.create()
+        if self.__class__._is_skip_sync_session_init():
+            logger.info(
+                f"Deferring MCP tools initialization to async Agent.create() path ({len(self.config.mcp_servers)} servers configured)"
+            )
+            return []
+
         try:
             # Import here to avoid circular imports and optional dependency
             from ..tool.builtin import sync_initialize_mcp_tools
@@ -447,6 +641,34 @@ class Agent:
             )
         except Exception as e:
             logger.error(f"Failed to initialize MCP tools: {e}")
+
+        return []
+
+    async def _initialize_mcp_tools_async(self) -> list[Tool]:
+        """Initialize tools from MCP servers asynchronously.
+
+        P1 async/sync 技术债修复: async MCP 初始化路径
+
+        由 Agent.create() 调用，直接使用 async initialize_mcp_tools()，
+        在主事件循环上执行 MCP 服务器连接和工具发现，避免创建临时 event loop。
+        """
+        try:
+            from ..tool.builtin import initialize_mcp_tools
+
+            logger.info(
+                f"Async initializing MCP tools from {len(self.config.mcp_servers)} servers",
+            )
+
+            mcp_tools = await initialize_mcp_tools(self.config.mcp_servers)
+            logger.info(f"Successfully initialized {len(mcp_tools)} MCP tools (async)")
+            return list(mcp_tools)
+
+        except ImportError:
+            logger.error(
+                "MCP client not available. Please install the mcp package.",
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize MCP tools (async): {e}")
 
         return []
 
@@ -538,6 +760,7 @@ class Agent:
             sub_agents=self.config.sub_agents or {},
             stop_tools=self.config.stop_tools or set(),
             openai_client=self.openai_client,
+            async_openai_client=self._async_openai_client,
             llm_config=self.config.llm_config or LLMConfig(),
             max_iterations=self.exec_config.max_iterations,
             max_context_tokens=self.exec_config.max_context_tokens,
@@ -794,6 +1017,11 @@ class Agent:
         """
         # RFC-0001: 标记 run 开始，interrupt() 会等待此事件
         self._run_complete.clear()
+
+        # async/sync 技术债修复: lazy re-init async client（上次 run 结束时已 close）
+        if self.executor.llm_caller.async_openai_client is None:
+            self.executor.llm_caller.async_openai_client = self._initialize_async_openai_client()
+
         logger.info(f"🤖 Agent '{self.config.name}' starting execution")
         message_text_for_logs = (
             message
@@ -989,6 +1217,7 @@ class Agent:
                 variables=effective_variables,
                 team_state=self._team_state,
                 token_trace_session=self._token_trace_session,
+                subagent_manager=self.executor.subagent_manager,
             )
 
             # Execute with or without tracing
@@ -1045,6 +1274,9 @@ class Agent:
                 raise
 
             finally:
+                # async/sync 技术债修复: 关闭 async LLM client 防止 event loop 关闭后
+                # httpx.AsyncClient.__del__ 崩溃。下次 run 时在下方 lazy re-init 重建。
+                await self._close_async_llm_client()
                 # RFC-0001: 标记 run 完成，唤醒 interrupt() 的等待
                 self._run_complete.set()
 
@@ -1060,9 +1292,13 @@ class Agent:
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         variables: ContextValue | None = None,
     ) -> str | tuple[str, dict[str, Any]]:
-        """Run agent with a message and return response.
+        """Run agent with a message and return response (sync entry point).
 
-        This is the sync version that wraps run_async().
+        P1 async/sync 技术债修复: 消除 syncify 依赖
+
+        仅在纯 sync 入口（CLI、脚本）中使用。async 场景一律用 run_async()。
+        内部使用 asyncio.run() 驱动 run_async()，避免 syncify 的额外线程开销
+        和 BlockingPortal 复杂性。
 
         Args:
             message: User message or list of messages
@@ -1078,11 +1314,16 @@ class Agent:
             Agent response string or tuple of (response, state)
 
         Raises:
+            RuntimeError: If called from within a running event loop
             TimeoutError: If agent is already running
         """
+        from nexau.core.utils import get_running_loop_or_none
 
-        async def _run() -> str | tuple[str, dict[str, Any]]:
-            return await self.run_async(
+        if get_running_loop_or_none() is not None:
+            raise RuntimeError("Agent.run() cannot be called from within a running event loop. Use `await agent.run_async(...)` instead.")
+
+        return asyncio.run(
+            self.run_async(
                 message=message,
                 history=history,
                 context=context,
@@ -1092,8 +1333,7 @@ class Agent:
                 custom_llm_client_provider=custom_llm_client_provider,
                 variables=variables,
             )
-
-        return syncify(_run, raise_sync_error=False)()
+        )
 
     async def _run_with_tracing(
         self,
@@ -1146,7 +1386,7 @@ class Agent:
         都会尝试 flush 未持久化的消息。
         """
         try:
-            response, updated_messages = await asyncify(self.executor.execute)(
+            response, updated_messages = await self.executor.execute_async(
                 self.history,
                 agent_state,
                 runtime_client=runtime_client,
@@ -1281,6 +1521,21 @@ class Agent:
         """
         return await self._interrupt(force=force, timeout=timeout)
 
+    async def _close_async_llm_client(self) -> None:
+        """Close the async LLM client to prevent httpx.__del__ crashes.
+
+        async/sync 技术债修复: 在 event loop 仍然活跃时关闭 AsyncOpenAI /
+        AsyncAnthropic 内部的 httpx.AsyncClient，避免 GC 在 event loop
+        关闭后触发 __del__ → RuntimeError('Event loop is closed')。
+        """
+        client = self.executor.llm_caller.async_openai_client
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
+            self.executor.llm_caller.async_openai_client = None
+
     async def _interrupt(self, *, force: bool = False, timeout: float = 30.0) -> StopResult:
         """Internal implementation of stop with state persistence.
 
@@ -1330,6 +1585,9 @@ class Agent:
             raise RuntimeError(f"stop persistence failed: {e}") from e
 
         logger.info(f"✅ Agent '{self.config.name}' stopped successfully")
+
+        # async/sync 技术债修复: stop 路径也需关闭 async client
+        await self._close_async_llm_client()
 
         return StopResult(
             messages=list(self.history),

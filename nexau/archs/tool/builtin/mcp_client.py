@@ -668,6 +668,10 @@ class MCPTool(Tool):
             disable_parallel=server_config.disable_parallel if server_config else False,
         )
 
+        # MCPTool 拥有原生 async execute_async() 实现（直接 await MCP RPC），
+        # executor 应走 async 路径而非 to_thread → _execute_sync → asyncio.run。
+        self._has_native_async_execute = True
+
     async def _get_thread_local_session(self) -> Any:
         """Get or create a thread-local session to avoid event loop conflicts."""
         # For HTTPMCPSession, we can safely create a new instance in each thread
@@ -901,25 +905,26 @@ class MCPTool(Tool):
         return self.client_session
 
     def _execute_sync(self, **kwargs: Any) -> dict[str, Any]:
-        """Execute the MCP tool synchronously."""
-        # Always create a new event loop to avoid "Future attached to a different loop" errors
-        # This is necessary when running in multi-threaded environments like ThreadPoolExecutor
-        loop = asyncio.new_event_loop()
+        """Execute the MCP tool synchronously (sync-only fallback).
+
+        P1 async/sync 技术债修复: sync-only 入口 + running-loop 保护
+
+        仅在无 running event loop 的 sync 入口（CLI、脚本）中使用。
+        async executor 应通过 has_native_async_execute 标记检测到 MCPTool
+        并直接 await execute_async()，不会到达此路径。
+
+        Raises:
+            RuntimeError: 在 async context 中调用时
+        """
         try:
-            asyncio.set_event_loop(loop)
-            return loop.run_until_complete(self._execute_async(**kwargs))
-        finally:
-            # Clean up the event loop
-            try:
-                loop.close()
-            except Exception:
-                pass
-            # Reset to previous loop if it exists
-            try:
-                asyncio.get_event_loop()
-            except RuntimeError:
-                # No existing loop, that's fine
-                pass
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass  # 无 running loop — 预期的 sync 调用方
+        else:
+            raise RuntimeError(
+                "MCPTool._execute_sync() cannot be called from an async context. Use `await tool.execute_async(...)` instead."
+            )
+        return asyncio.run(self._execute_async(**kwargs))
 
     def execute(self, **kwargs: Any) -> dict[str, Any]:
         """Execute the MCP tool synchronously (for backward compatibility)."""
@@ -934,6 +939,27 @@ class MCPTool(Tool):
             sorted(filtered_kwargs.items(), key=_sort_key),
         )
         return self._sync_executor(**filtered_kwargs)
+
+    async def execute_async(self, **kwargs: Any) -> dict[str, Any]:
+        """Execute the MCP tool asynchronously (preferred async path).
+
+        P1 async/sync 技术债修复: 消除 _execute_sync 中 new_event_loop
+
+        直接委托 _execute_async()，在主事件循环上执行 MCP RPC 调用，
+        避免 _execute_sync 中每次调用都创建新的 event loop 的开销和
+        跨 loop session 绑定问题。同步路径 execute() / _execute_sync()
+        保留给向后兼容的 sync 调用方。
+        """
+        # Filter same params as execute() and _execute_async()
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ("agent_state", "global_storage", "sandbox", "ctx")}
+
+        def _sort_key(item: tuple[str, Any]) -> str:
+            return item[0]
+
+        filtered_kwargs = dict(
+            sorted(filtered_kwargs.items(), key=_sort_key),
+        )
+        return await self._execute_async(**filtered_kwargs)
 
     async def _execute_async(self, **kwargs: Any) -> dict[str, Any]:
         """Execute the MCP tool asynchronously."""
@@ -1535,22 +1561,22 @@ async def initialize_mcp_tools(server_configs: list[dict[str, Any]]) -> Sequence
 
 
 def sync_initialize_mcp_tools(server_configs: list[dict[str, Any]]) -> Sequence[Tool]:
-    """Synchronous wrapper for initialize_mcp_tools."""
-    # Always create a new event loop to avoid "Future attached to a different loop" errors
-    # This matches the pattern used in MCPTool._execute_sync
-    loop = asyncio.new_event_loop()
+    """Synchronous wrapper for initialize_mcp_tools.
+
+    P1 async/sync 技术债修复: 消除手动 new_event_loop 管理
+
+    仅在无 running event loop 的 sync 入口（CLI、脚本、ThreadPoolExecutor worker）
+    中使用 asyncio.run()。async 调用方应直接使用 initialize_mcp_tools()。
+
+    Raises:
+        RuntimeError: 在 async context 中调用时（应使用 await initialize_mcp_tools()）
+    """
     try:
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(initialize_mcp_tools(server_configs))
-    finally:
-        # Clean up the event loop
-        try:
-            loop.close()
-        except Exception:
-            pass
-        # Reset to previous loop if it exists
-        try:
-            asyncio.get_event_loop()
-        except RuntimeError:
-            # No existing loop, that's fine
-            pass
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass  # No running loop — expected for sync callers
+    else:
+        raise RuntimeError(
+            "sync_initialize_mcp_tools() cannot be called from an async context. Use `await initialize_mcp_tools(...)` instead."
+        )
+    return asyncio.run(initialize_mcp_tools(server_configs))

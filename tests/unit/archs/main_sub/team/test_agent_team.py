@@ -108,6 +108,25 @@ def _rctf_side_effect(return_future: Future[None] | None = None):
     return _inner
 
 
+def _patch_agent_create(mock_agent: MagicMock | None = None):
+    """Patch ``Agent.create`` as an ``AsyncMock`` returning *mock_agent*.
+
+    Production code now uses ``await Agent.create(...)`` (async factory) instead
+    of ``Agent(...)`` (sync constructor).  Tests that previously patched the
+    ``Agent`` class need to patch ``Agent.create`` as an ``AsyncMock`` so the
+    ``await`` expression succeeds.
+
+    Returns a context-manager that also exposes the underlying ``AsyncMock``
+    via the ``as`` variable for assertions like ``mock_create.assert_called_once()``.
+    """
+    agent = mock_agent if mock_agent is not None else make_mock_agent()
+    return patch(
+        "nexau.archs.main_sub.team.agent_team.Agent.create",
+        new_callable=AsyncMock,
+        return_value=agent,
+    )
+
+
 # --- TestAgentTeamProperties ---
 
 
@@ -597,7 +616,7 @@ class TestAgentTeamSpawnTeammate:
             team = make_team(engine=engine)
             await team.initialize()
 
-            with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()):
+            with _patch_agent_create():
                 with pytest.raises(RuntimeError, match="loop not set"):
                     await team.spawn_teammate("worker")
 
@@ -641,14 +660,14 @@ class TestAgentTeamSpawnTeammate:
             team._loop = MagicMock()
 
             new_future: Future[None] = Future()
-            with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()):
+            with _patch_agent_create():
                 with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect(new_future)):
                     agent_id = await team.spawn_teammate("worker")
 
             assert agent_id == "worker-1"
             assert team._role_counters["worker"] == 1
 
-            with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()):
+            with _patch_agent_create():
                 with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect()):
                     agent_id2 = await team.spawn_teammate("worker")
 
@@ -665,7 +684,7 @@ class TestAgentTeamSpawnTeammate:
             await team.initialize()
             team._loop = MagicMock()
 
-            with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()):
+            with _patch_agent_create():
                 with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect()):
                     await team.spawn_teammate("worker")
 
@@ -705,7 +724,7 @@ class TestAgentTeamRestoreTeammates:
             )
             await engine.create(member)
 
-            with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()):
+            with _patch_agent_create():
                 await team._restore_teammates()
 
             assert "worker-1" not in team._teammate_agents
@@ -735,9 +754,9 @@ class TestAgentTeamRestoreTeammates:
             existing_agent = make_mock_agent()
             team._teammate_agents["worker-1"] = existing_agent
 
-            with patch("nexau.archs.main_sub.team.agent_team.Agent") as mock_agent_cls:
+            with _patch_agent_create() as mock_create:
                 await team._restore_teammates()
-                mock_agent_cls.assert_not_called()
+                mock_create.assert_not_called()
 
             # Still the original agent
             assert team._teammate_agents["worker-1"] is existing_agent
@@ -763,9 +782,9 @@ class TestAgentTeamRestoreTeammates:
             )
             await engine.create(member)
 
-            with patch("nexau.archs.main_sub.team.agent_team.Agent") as mock_agent_cls:
+            with _patch_agent_create() as mock_create:
                 await team._restore_teammates()
-                mock_agent_cls.assert_not_called()
+                mock_create.assert_not_called()
 
         asyncio.run(run())
 
@@ -788,7 +807,7 @@ class TestAgentTeamRestoreTeammates:
             )
             await engine.create(member)
 
-            with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()):
+            with _patch_agent_create():
                 with pytest.raises(RuntimeError, match="loop not set"):
                     await team._restore_teammates()
 
@@ -815,7 +834,7 @@ class TestAgentTeamRestoreTeammates:
 
             mock_agent = make_mock_agent()
             new_future: Future[None] = Future()
-            with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=mock_agent):
+            with _patch_agent_create(mock_agent):
                 with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect(new_future)):
                     await team._restore_teammates()
 
@@ -844,7 +863,7 @@ class TestAgentTeamRestoreTeammates:
                 )
                 await engine.create(member)
 
-            with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()):
+            with _patch_agent_create():
                 with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect()):
                     await team._restore_teammates()
 
@@ -1279,7 +1298,7 @@ class TestAgentTeamVariables:
             mock_leader.executor.force_stop = MagicMock()
 
             with patch("nexau.archs.main_sub.team.agent_team._safe_deepcopy_config", side_effect=lambda c: c):
-                with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=mock_leader):
+                with _patch_agent_create(mock_leader):
                     await team.run("hello", variables=variables)
 
             assert team._variables is variables
@@ -1302,7 +1321,7 @@ class TestAgentTeamVariables:
             mock_leader.executor.force_stop = MagicMock()
 
             with patch("nexau.archs.main_sub.team.agent_team._safe_deepcopy_config", side_effect=lambda c: c):
-                with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=mock_leader):
+                with _patch_agent_create(mock_leader):
                     await team.run("hello", variables=variables)
 
             mock_leader.run_async.assert_called_once()
@@ -1323,7 +1342,7 @@ class TestAgentTeamVariables:
             mock_leader.executor.force_stop = MagicMock()
 
             with patch("nexau.archs.main_sub.team.agent_team._safe_deepcopy_config", side_effect=lambda c: c):
-                with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=mock_leader):
+                with _patch_agent_create(mock_leader):
                     await team.run("hello")
 
             call_kwargs = mock_leader.run_async.call_args[1]
@@ -1346,12 +1365,12 @@ class TestAgentTeamVariables:
             team._variables = variables
 
             new_future: Future[None] = Future()
-            with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()) as mock_agent_cls:
+            with _patch_agent_create() as mock_create:
                 with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect(new_future)):
                     await team.spawn_teammate("worker")
 
-            mock_agent_cls.assert_called_once()
-            call_kwargs = mock_agent_cls.call_args[1]
+            mock_create.assert_called_once()
+            call_kwargs = mock_create.call_args[1]
             assert call_kwargs["variables"] is variables
 
         asyncio.run(_run())
@@ -1412,12 +1431,12 @@ class TestAgentTeamVariables:
             await engine.create(member)
 
             new_future: Future[None] = Future()
-            with patch("nexau.archs.main_sub.team.agent_team.Agent", return_value=make_mock_agent()) as mock_agent_cls:
+            with _patch_agent_create() as mock_create:
                 with patch("asyncio.run_coroutine_threadsafe", side_effect=_rctf_side_effect(new_future)):
                     await team._restore_teammates()
 
-            mock_agent_cls.assert_called_once()
-            call_kwargs = mock_agent_cls.call_args[1]
+            mock_create.assert_called_once()
+            call_kwargs = mock_create.call_args[1]
             assert call_kwargs["variables"] is variables
 
         asyncio.run(_run())

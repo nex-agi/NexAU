@@ -14,7 +14,7 @@
 
 """ORM layer for SQLModel."""
 
-from .engine import DatabaseEngine, get_pk_fields, get_table_name
+from .engine import DatabaseEngine, LoopSafeDatabaseEngine, get_pk_fields, get_table_name
 from .filters import (
     AndFilter,
     ComparisonFilter,
@@ -36,6 +36,7 @@ from .sql_engine import SQLDatabaseEngine
 __all__ = [
     # DatabaseEngine classes
     "DatabaseEngine",
+    "LoopSafeDatabaseEngine",
     "InMemoryDatabaseEngine",
     "SQLDatabaseEngine",
     "RemoteDatabaseEngine",

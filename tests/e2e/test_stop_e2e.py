@@ -93,7 +93,7 @@ class _CountingSessionManager(SessionManager):
         return await super().update_session_state(**kwargs)
 
 
-def _make_agent(
+async def _make_agent(
     session_manager: SessionManager | _CountingSessionManager,
     session_id: str | None = None,
 ) -> Agent:
@@ -103,7 +103,7 @@ def _make_agent(
         llm_config=_make_llm_config(),
         system_prompt="You are a helpful assistant.",
     )
-    return Agent(
+    return await Agent.create(
         config=config,
         session_manager=session_manager,
         user_id="test-user",
@@ -123,7 +123,7 @@ class TestGracefulStop:
         _skip_if_no_llm_key()
 
         sm = SessionManager(engine=InMemoryDatabaseEngine())
-        agent = _make_agent(sm)
+        agent = await _make_agent(sm)
 
         run_started = asyncio.Event()
         original_run_inner = agent._run_async_inner
@@ -162,7 +162,7 @@ class TestForceStop:
         _skip_if_no_llm_key()
 
         sm = SessionManager(engine=InMemoryDatabaseEngine())
-        agent = _make_agent(sm)
+        agent = await _make_agent(sm)
 
         run_started = asyncio.Event()
         original_run_inner = agent._run_async_inner
@@ -182,11 +182,11 @@ class TestForceStop:
         result = await agent.stop(force=True)
 
         # 3. Force stop 无法立即终止线程中阻塞的同步 HTTP 调用，
-        #    取消 run_task 以避免等待 LLM 响应完成
+        #    取消 run_task 并限时等待，避免 HTTP 线程不可取消导致无限挂死
         run_task.cancel()
         try:
-            await run_task
-        except asyncio.CancelledError:
+            await asyncio.wait_for(asyncio.shield(run_task), timeout=10.0)
+        except (TimeoutError, asyncio.CancelledError, Exception):
             pass
 
         assert isinstance(result, StopResult)
@@ -205,7 +205,7 @@ class TestNoPersistDoubling:
         _skip_if_no_llm_key()
 
         sm = _CountingSessionManager(InMemoryDatabaseEngine())
-        agent = _make_agent(sm)
+        agent = await _make_agent(sm)
 
         run_started = asyncio.Event()
         original_run_inner = agent._run_async_inner
@@ -234,7 +234,7 @@ class TestNoPersistDoubling:
         _skip_if_no_llm_key()
 
         sm = _CountingSessionManager(InMemoryDatabaseEngine())
-        agent = _make_agent(sm)
+        agent = await _make_agent(sm)
 
         run_started = asyncio.Event()
         original_run_inner = agent._run_async_inner
@@ -254,11 +254,11 @@ class TestNoPersistDoubling:
         await agent.stop(force=True)
 
         # 3. Force stop 无法立即终止线程中阻塞的同步 HTTP 调用，
-        #    取消 run_task 以避免等待 LLM 响应完成
+        #    取消 run_task 并限时等待，避免 HTTP 线程不可取消导致无限挂死
         run_task.cancel()
         try:
-            await run_task
-        except asyncio.CancelledError:
+            await asyncio.wait_for(asyncio.shield(run_task), timeout=10.0)
+        except (TimeoutError, asyncio.CancelledError, Exception):
             pass
 
         assert sm.persist_call_count == 1, f"Expected exactly 1 persist call, got {sm.persist_call_count}"
@@ -269,7 +269,7 @@ class TestNoPersistDoubling:
         _skip_if_no_llm_key()
 
         sm = _CountingSessionManager(InMemoryDatabaseEngine())
-        agent = _make_agent(sm)
+        agent = await _make_agent(sm)
 
         await agent.run_async(message=_FAST_PROMPT)
 
@@ -288,7 +288,7 @@ class TestStopDuringActiveExecution:
         _skip_if_no_llm_key()
 
         sm = SessionManager(engine=InMemoryDatabaseEngine())
-        agent = _make_agent(sm)
+        agent = await _make_agent(sm)
 
         run_started = asyncio.Event()
         original_run_inner = agent._run_async_inner
@@ -330,7 +330,7 @@ class TestLockReleasedAfterStop:
         _skip_if_no_llm_key()
 
         sm = SessionManager(engine=InMemoryDatabaseEngine())
-        agent = _make_agent(sm)
+        agent = await _make_agent(sm)
 
         run_started = asyncio.Event()
         original_run_inner = agent._run_async_inner
@@ -363,7 +363,7 @@ class TestLockReleasedAfterStop:
         _skip_if_no_llm_key()
 
         sm = SessionManager(engine=InMemoryDatabaseEngine())
-        agent = _make_agent(sm)
+        agent = await _make_agent(sm)
 
         run_started = asyncio.Event()
         original_run_inner = agent._run_async_inner
@@ -383,11 +383,11 @@ class TestLockReleasedAfterStop:
         await agent.stop(force=True)
 
         # 3. Force stop 无法立即终止线程中阻塞的同步 HTTP 调用，
-        #    取消 run_task 以避免等待 LLM 响应完成
+        #    取消 run_task 并限时等待，避免 HTTP 线程不可取消导致无限挂死
         run_task.cancel()
         try:
-            await run_task
-        except asyncio.CancelledError:
+            await asyncio.wait_for(asyncio.shield(run_task), timeout=10.0)
+        except (TimeoutError, asyncio.CancelledError, Exception):
             pass
 
         # 4. 验证 lock 已释放
@@ -403,7 +403,7 @@ class TestLockReleasedAfterStop:
         _skip_if_no_llm_key()
 
         sm = SessionManager(engine=InMemoryDatabaseEngine())
-        agent = _make_agent(sm)
+        agent = await _make_agent(sm)
 
         await agent.run_async(message=_FAST_PROMPT)
 

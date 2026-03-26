@@ -2217,12 +2217,13 @@ class TestCompactionTracerSpan:
         mock_counter = Mock()
         mock_counter.count_tokens = Mock(return_value=9000)
 
-        middleware = ContextCompactionMiddleware(
-            token_counter=mock_counter,
-            max_context_tokens=10000,
-            auto_compact=True,
-            compaction_strategy="sliding_window",
-        )
+        with pytest.warns(FutureWarning, match="sliding_window"):
+            middleware = ContextCompactionMiddleware(
+                token_counter=mock_counter,
+                max_context_tokens=10000,
+                auto_compact=True,
+                compaction_strategy="sliding_window",
+            )
 
         messages = [
             Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
@@ -2273,12 +2274,13 @@ class TestCompactionTracerSpan:
         mock_counter = Mock()
         mock_counter.count_tokens = Mock(return_value=900)
 
-        middleware = ContextCompactionMiddleware(
-            token_counter=mock_counter,
-            max_context_tokens=1000,
-            auto_compact=True,
-            compaction_strategy="sliding_window",
-        )
+        with pytest.warns(FutureWarning, match="sliding_window"):
+            middleware = ContextCompactionMiddleware(
+                token_counter=mock_counter,
+                max_context_tokens=1000,
+                auto_compact=True,
+                compaction_strategy="sliding_window",
+            )
 
         # Last assistant message must have tool calls for after_model compaction
         messages = [
@@ -2346,12 +2348,13 @@ class TestCompactionTracerSpan:
         mock_counter = Mock()
         mock_counter.count_tokens = Mock(return_value=9000)
 
-        middleware = ContextCompactionMiddleware(
-            token_counter=mock_counter,
-            max_context_tokens=10000,
-            auto_compact=True,
-            compaction_strategy="sliding_window",
-        )
+        with pytest.warns(FutureWarning, match="sliding_window"):
+            middleware = ContextCompactionMiddleware(
+                token_counter=mock_counter,
+                max_context_tokens=10000,
+                auto_compact=True,
+                compaction_strategy="sliding_window",
+            )
 
         messages = [
             Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
@@ -2381,12 +2384,13 @@ class TestCompactionTracerSpan:
         mock_counter = Mock()
         mock_counter.count_tokens = Mock(return_value=9000)
 
-        middleware = ContextCompactionMiddleware(
-            token_counter=mock_counter,
-            max_context_tokens=10000,
-            auto_compact=True,
-            compaction_strategy="sliding_window",
-        )
+        with pytest.warns(FutureWarning, match="sliding_window"):
+            middleware = ContextCompactionMiddleware(
+                token_counter=mock_counter,
+                max_context_tokens=10000,
+                auto_compact=True,
+                compaction_strategy="sliding_window",
+            )
 
         messages = [
             Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),

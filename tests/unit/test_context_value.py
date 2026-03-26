@@ -300,7 +300,7 @@ class TestTransportBaseVariables:
         with patch("nexau.archs.transports.base.Agent") as mock_agent_cls:
             mock_agent = Mock()
             mock_agent.run_async = AsyncMock(return_value="ok")
-            mock_agent_cls.return_value = mock_agent
+            mock_agent_cls.create = AsyncMock(return_value=mock_agent)
 
             asyncio.run(
                 transport.handle_request(
@@ -310,8 +310,8 @@ class TestTransportBaseVariables:
                 )
             )
 
-            # Agent constructor should receive variables
-            init_kwargs = mock_agent_cls.call_args[1]
+            # Agent.create() should receive variables
+            init_kwargs = mock_agent_cls.create.call_args[1]
             assert init_kwargs["variables"] is cv
 
             # run_async should also receive variables
@@ -326,7 +326,7 @@ class TestTransportBaseVariables:
         with patch("nexau.archs.transports.base.Agent") as mock_agent_cls:
             mock_agent = Mock()
             mock_agent.run_async = AsyncMock(return_value="ok")
-            mock_agent_cls.return_value = mock_agent
+            mock_agent_cls.create = AsyncMock(return_value=mock_agent)
 
             async def run():
                 collected = []
@@ -339,7 +339,7 @@ class TestTransportBaseVariables:
 
             asyncio.run(run())
 
-            init_kwargs = mock_agent_cls.call_args[1]
+            init_kwargs = mock_agent_cls.create.call_args[1]
             assert init_kwargs["variables"] is cv
 
             run_kwargs = mock_agent.run_async.call_args[1]

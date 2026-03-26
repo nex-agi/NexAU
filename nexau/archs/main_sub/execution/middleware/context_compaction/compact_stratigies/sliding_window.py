@@ -14,6 +14,7 @@
 
 """Sliding window compaction strategy."""
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -339,6 +340,170 @@ class SlidingWindowCompaction:
             f"({len(groups_to_compress)} {group_name} compressed, {len(groups_to_keep)} {group_name} kept)"
         )
         return result
+
+    async def compact_async(
+        self,
+        messages: list[Message],
+    ) -> list[Message]:
+        """Async version of compact().
+
+        P2 async/sync 技术债修复: 异步 compact 链
+
+        使用 LLMCaller.call_llm_async() 替代 sync call_llm，
+        在主事件循环上执行 LLM 摘要调用，避免阻塞 event loop。
+        分组和窗口逻辑与 sync 版本相同。
+        """
+        logger.info(f"[SlidingWindowCompaction] Starting async compaction on {len(messages)} messages")
+
+        result: list[Message] = []
+        start_idx = 0
+
+        if self.keep_system and messages and messages[0].role == Role.SYSTEM:
+            result.append(messages[0])
+            start_idx = 1
+
+        if self.keep_user_rounds > 0:
+            groups = self._group_into_user_rounds(messages[start_idx:])
+            keep_count = self.keep_user_rounds
+            group_name = "user_rounds"
+        else:
+            groups = self._group_into_iterations(messages[start_idx:])
+            keep_count = self.keep_iterations
+            group_name = "iterations"
+
+        if len(groups) <= keep_count:
+            logger.info(f"[SlidingWindowCompaction] Skipping async: {len(groups)} {group_name} <= {keep_count}")
+            return messages.copy()
+
+        groups_to_compress = groups[:-keep_count]
+        groups_to_keep = groups[-keep_count:]
+
+        all_compressed_messages: list[Message] = []
+        if self.keep_system and messages and messages[0].role == Role.SYSTEM:
+            all_compressed_messages.append(messages[0])
+        for group_msgs in groups_to_compress:
+            all_compressed_messages.extend(group_msgs)
+
+        summary = await self._generate_summary_safe_async(all_compressed_messages)
+
+        self._inject_summary(result, groups_to_keep, summary)
+        input_tokens = self.token_counter.count_tokens(messages)
+        summary_tokens = self.token_counter.count_tokens(result)
+        logger.info(
+            f"[SlidingWindowCompaction] Async compaction complete: "
+            f"{input_tokens} tokens -> {summary_tokens} tokens "
+            f"({len(groups_to_compress)} {group_name} compressed, {len(groups_to_keep)} {group_name} kept)"
+        )
+        return result
+
+    async def _generate_summary_safe_async(self, messages: list[Message]) -> str:
+        """Async version of _generate_summary_safe."""
+        if self._consecutive_fallback_count >= self._MAX_CONSECUTIVE_FALLBACKS:
+            logger.error(
+                "[SlidingWindowCompaction] Summary LLM has failed %d consecutive times (async), "
+                "skipping compaction to prevent fallback accumulation loop",
+                self._consecutive_fallback_count,
+            )
+            raise RuntimeError(
+                f"Summary LLM persistently unavailable ({self._consecutive_fallback_count} consecutive failures), skipping compaction"
+            )
+
+        input_tokens = self.token_counter.count_tokens(messages)
+        input_limit = self._summary_input_limit
+
+        logger.info(f"[SlidingWindowCompaction] Async summary input: {input_tokens} tokens, limit: {input_limit} tokens")
+        if input_tokens <= input_limit:
+            try:
+                summary = await self._generate_summary_async(messages)
+                self._consecutive_fallback_count = 0
+                return summary
+            except Exception as e:
+                logger.error(f"[SlidingWindowCompaction] Async direct summary failed: {e}")
+                return self._record_fallback(messages)
+
+        logger.info(f"[SlidingWindowCompaction] Input exceeds limit ({input_tokens} > {input_limit}), using async chunked summarization")
+        try:
+            summary = await self._chunked_summary_async(messages, input_limit)
+            self._consecutive_fallback_count = 0
+            return summary
+        except Exception as e:
+            logger.error(f"[SlidingWindowCompaction] Async chunked summary failed: {e}")
+            return self._record_fallback(messages)
+
+    async def _chunked_summary_async(self, messages: list[Message], chunk_token_limit: int) -> str:
+        """Async version of _chunked_summary."""
+        chunks = self._split_into_chunks(messages, chunk_token_limit)
+        logger.info(f"[SlidingWindowCompaction] Async split into {len(chunks)} chunks")
+
+        chunk_summaries: list[str] = []
+        for i, chunk in enumerate(chunks):
+            try:
+                summary = await self._generate_summary_async(chunk)
+                chunk_summaries.append(summary)
+                logger.info(f"[SlidingWindowCompaction] Async chunk {i + 1}/{len(chunks)} summarized")
+            except Exception as e:
+                logger.warning(f"[SlidingWindowCompaction] Async chunk {i + 1}/{len(chunks)} failed: {e}, skipping")
+
+        if not chunk_summaries:
+            raise RuntimeError("All async chunk summaries failed")
+
+        if len(chunk_summaries) == 1:
+            return chunk_summaries[0]
+
+        merged_text = "\n\n".join(f"[Part {i + 1}]: {s}" for i, s in enumerate(chunk_summaries))
+        merged_msg = Message(role=Role.USER, content=[TextBlock(text=merged_text)])
+        merged_tokens = self.token_counter.count_tokens([merged_msg])
+
+        if merged_tokens <= chunk_token_limit:
+            try:
+                return await self._generate_summary_async([merged_msg])
+            except Exception:
+                logger.warning("[SlidingWindowCompaction] Async final merge summary failed, using concatenated summaries")
+                return merged_text
+        else:
+            logger.info("[SlidingWindowCompaction] Async merged summaries still too large, recursing")
+            return await self._chunked_summary_async([merged_msg], chunk_token_limit)
+
+    async def _generate_summary_async(self, messages: list[Message]) -> str:
+        """Async version of _generate_summary using LLMCaller.call_llm_async.
+
+        P2 async/sync 技术债修复: 异步 LLM 摘要生成
+
+        使用 LLMCaller.call_llm_async() 调用 LLM 生成摘要，
+        在主事件循环上执行，避免阻塞 event loop。
+        """
+        llm_caller = self._ensure_llm_caller()
+        summary_model_name = self.summary_llm_config.model if self.summary_llm_config is not None else self.summary_model
+        logger.info(f"[SlidingWindowCompaction] Async calling LLM to generate summary (model: {summary_model_name})")
+
+        llm_messages = messages.copy()
+        llm_messages.append(Message(role=Role.USER, content=[TextBlock(text=self.compact_prompt)]))
+
+        summary_api_type = (
+            self.summary_llm_config.api_type if self.summary_llm_config is not None else (self.summary_api_type or "openai_chat_completion")
+        )
+        tool_call_mode = "structured"
+
+        try:
+            model_response = await llm_caller.call_llm_async(
+                llm_messages,
+                tool_call_mode=tool_call_mode,
+            )
+            summary = (model_response.content or "").strip() if model_response else ""
+            logger.info("[SlidingWindowCompaction] Async LLM summary generated successfully")
+            return summary
+        except Exception as exc:
+            if summary_api_type != "openai_chat_completion":
+                raise
+
+            logger.warning(
+                "[SlidingWindowCompaction] LLMCaller async summary generation failed; falling back to sync direct client call: %s",
+                exc,
+            )
+            # 回退到 sync direct client call（在线程中执行）
+            summary = await asyncio.to_thread(self._generate_summary_direct_fallback, llm_messages)
+            logger.info("[SlidingWindowCompaction] Async LLM summary generated successfully via sync fallback")
+            return summary
 
     def _generate_summary_safe(self, messages: list[Message]) -> str:
         """Generate summary with automatic chunking for oversized inputs.

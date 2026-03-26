@@ -104,7 +104,7 @@ class TestAgentRegistry:
                 return "response"
 
             mock_agent.run_async = fake_run_async
-            mock_agent_cls.return_value = mock_agent
+            mock_agent_cls.create = AsyncMock(return_value=mock_agent)
 
             asyncio.run(
                 transport.handle_request(
@@ -125,7 +125,7 @@ class TestAgentRegistry:
             mock_agent = Mock()
             mock_agent.agent_id = "agent_123"
             mock_agent.run_async = AsyncMock(side_effect=RuntimeError("test error"))
-            mock_agent_cls.return_value = mock_agent
+            mock_agent_cls.create = AsyncMock(return_value=mock_agent)
 
             with pytest.raises(RuntimeError):
                 asyncio.run(

@@ -16,11 +16,12 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from nexau.archs.sandbox.base_sandbox import BaseSandbox
 from nexau.archs.tool.tool import StructuredToolDefinitionLike
@@ -286,6 +287,62 @@ class Middleware:
         """Inspect or mutate a streaming model chunk before aggregation."""
 
         return chunk
+
+    # ------------------------------------------------------------------
+    # Optional lifecycle hooks (override in subclasses that need them)
+    # ------------------------------------------------------------------
+
+    # NOTE: on_event is intentionally NOT defined here as a method.
+    # AgentEventsMiddleware stores on_event as a callable instance attribute
+    # (self.on_event = on_event), which would conflict with a base method
+    # definition (mypy: "Cannot assign to a method").
+    # The executor uses supports_on_event to detect the attribute at runtime.
+
+    def set_event_emitter(self, emitter: Callable[[Any], None]) -> None:
+        """Receive the unified event emitter callback. Override to accept it."""
+
+    def set_llm_runtime(
+        self,
+        llm_config: Any,
+        openai_client: Any,
+        *,
+        session_id: str | None = None,
+        global_storage: Any | None = None,
+        max_context_tokens: int | None = None,
+    ) -> None:
+        """Receive base LLM runtime settings. Override to accept them."""
+
+    @property
+    def supports_on_event(self) -> bool:
+        """True if this middleware provides an on_event callback.
+
+        Detects both:
+        - Instance attribute pattern: self.on_event = some_callable (AgentEventsMiddleware)
+        - Method override pattern: subclass defines def on_event(...)
+        """
+        on_event_attr = getattr(self, "on_event", None)  # noqa: B009 — intentional duck-typing for on_event
+        return callable(on_event_attr)
+
+    def get_event_handler(self) -> Callable[[Any], None] | None:
+        """Return the on_event callback if this middleware provides one, else None.
+
+        Typed accessor for the executor — avoids direct attribute access on a
+        field that only some subclasses define.
+        """
+        on_event_attr = getattr(self, "on_event", None)  # noqa: B009
+        if callable(on_event_attr):
+            return cast(Callable[[Any], None], on_event_attr)
+        return None
+
+    @property
+    def supports_set_event_emitter(self) -> bool:
+        """True if the subclass overrides set_event_emitter."""
+        return type(self).set_event_emitter is not Middleware.set_event_emitter
+
+    @property
+    def supports_set_llm_runtime(self) -> bool:
+        """True if the subclass overrides set_llm_runtime."""
+        return type(self).set_llm_runtime is not Middleware.set_llm_runtime
 
 
 class FunctionMiddleware(Middleware):
@@ -701,4 +758,20 @@ class MiddlewareManager:
     def _normalize_result(result: HookResult | None) -> HookResult:
         if result is None:
             return HookResult.no_changes()
+
+        # 检测开发者误将 middleware hook 声明为 async def 的情况。
+        # 此时 result 是一个未 await 的 coroutine 而非 HookResult，
+        # 如果不检测会被静默忽略（既不报错也不生效）。
+        if inspect.iscoroutine(result):
+            # 关闭未 await 的 coroutine 以避免 RuntimeWarning
+            result.close()
+            raise TypeError(
+                "Middleware hook returned a coroutine — middleware hooks must be "
+                "synchronous (def), not async (async def). The executor runs "
+                "sync hooks via asyncio.to_thread(); if you need async I/O "
+                "inside a hook, use asyncio.run() (only safe from a non-async "
+                "worker thread, NOT from the event loop thread) or refactor to "
+                "a sync wrapper."
+            )
+
         return result

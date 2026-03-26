@@ -227,9 +227,9 @@ class ContextCompactionMiddleware(Middleware):
         summary_client = openai_client if reuse_base_client else self._build_client(summary_llm_config)
         return summary_llm_config, summary_client
 
-    def set_event_emitter(self, event_emitter: Callable[[Any], None]) -> None:
+    def set_event_emitter(self, emitter: Callable[[Any], None]) -> None:
         """Inject a unified event emitter (typically from AgentEventsMiddleware)."""
-        self._event_emitter = event_emitter
+        self._event_emitter = emitter
 
     @staticmethod
     def _resolve_run_id(agent_state: Any | None) -> str | None:

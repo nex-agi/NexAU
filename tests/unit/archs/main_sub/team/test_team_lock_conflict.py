@@ -172,13 +172,17 @@ class TestTeamLockConflictReproduction:
             mock_agent.run_async = AsyncMock(side_effect=fake_run_async_blocking)
             mock_agent.executor.force_stop = MagicMock()
 
+            # team.run() 调用 await Agent.create(...)，需要 create 是 AsyncMock
+            mock_agent_cls = MagicMock()
+            mock_agent_cls.create = AsyncMock(return_value=mock_agent)
+
             with patch(
                 "nexau.archs.main_sub.team.agent_team._safe_deepcopy_config",
                 side_effect=lambda c: c,
             ):
                 with patch(
                     "nexau.archs.main_sub.team.agent_team.Agent",
-                    return_value=mock_agent,
+                    mock_agent_cls,
                 ):
                     # 1. 启动第一次 team.run()（在后台运行）
                     first_task = asyncio.create_task(team.run("开始工作"))
@@ -306,13 +310,17 @@ class TestTeamLockConflictFix:
             mock_leader.run_async = AsyncMock(return_value="done")
             mock_leader.executor.force_stop = MagicMock()
 
+            # team.run() 调用 await Agent.create(...)，需要 create 是 AsyncMock
+            mock_agent_cls = MagicMock()
+            mock_agent_cls.create = AsyncMock(return_value=mock_leader)
+
             with patch(
                 "nexau.archs.main_sub.team.agent_team._safe_deepcopy_config",
                 side_effect=lambda c: c,
             ):
                 with patch(
                     "nexau.archs.main_sub.team.agent_team.Agent",
-                    return_value=mock_leader,
+                    mock_agent_cls,
                 ):
                     result = await team.run("hello")
 

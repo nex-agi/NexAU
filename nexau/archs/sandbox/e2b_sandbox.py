@@ -2057,6 +2057,9 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
     def stop(self) -> bool:
         """
         Stop the E2B sandbox for a session.
+
+        Kills the sandbox and clears ``_instance`` so that subsequent
+        calls to ``start_sync()`` / ``instance`` will create a new one.
         """
         self._stop_keepalive()
         assert E2B_AVAILABLE, "E2B SDK not installed. Install it with: pip install e2b"
@@ -2071,6 +2074,8 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
             if instance.sandbox:
                 instance.sandbox.kill(api_key=self.api_key, api_url=self.api_url)
                 logger.info(f"E2B sandbox {instance.sandbox_id} destroyed")
+            # 清除 _instance，沙箱已销毁，无法重连
+            self._instance = None
             return True
         except Exception as e:
             logger.error(f"Failed to destroy E2B sandbox: {e}")
@@ -2080,6 +2085,12 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
     def pause(self) -> bool:
         """
         Pause the E2B sandbox for a session.
+
+        After pausing, clears ``_instance`` so that subsequent calls to
+        ``start_sync()`` / ``instance`` detect the sandbox is gone and
+        re-create via ``start()``.  The current ``sandbox_id`` is written
+        into ``_session_context`` so ``start()`` can reconnect to the
+        paused sandbox instead of creating a brand-new one.
         """
         self._stop_keepalive()
         try:
@@ -2087,10 +2098,23 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
             if not instance or not instance.sandbox:
                 logger.warning("No E2B sandbox instance to pause; skipping pause")
                 return False
+            sandbox_id = instance.sandbox_id
+
             # Pass api_key/api_url explicitly — E2B SDK's beta_pause() does not
             # inherit the key used at creation time, so without this the call
             # fails when E2B_API_KEY env var is not set (e.g. self-hosted).
             instance.sandbox.beta_pause(api_key=self.api_key, api_url=self.api_url)
+
+            # 1. 将 sandbox_id 写入 session_context，使下次 start() 能通过
+            #    Priority 1 (config.sandbox_id) 重新连接到暂停的沙箱
+            if sandbox_id and self._session_context:
+                cfg = self._session_context.get("sandbox_config")
+                if isinstance(cfg, E2BSandboxConfig):
+                    self._session_context["sandbox_config"] = cfg.model_copy(update={"sandbox_id": sandbox_id})
+
+            # 2. 清除 _instance，防止后续 start_sync() 返回已暂停的陈旧引用
+            self._instance = None
+            logger.info(f"E2B sandbox {sandbox_id} paused and instance cleared")
             return True
         except Exception as e:
             logger.error(f"Failed to pause E2B sandbox: {e}")

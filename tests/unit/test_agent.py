@@ -18,7 +18,7 @@ Unit tests for agent components.
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -419,11 +419,11 @@ class TestAgent:
 
             captured_client = {}
 
-            def fake_execute(history, agent_state, *, runtime_client, custom_llm_client_provider=None):
+            async def fake_execute(history, agent_state, *, runtime_client, custom_llm_client_provider=None):
                 captured_client["client"] = runtime_client
                 return "ok", history or []
 
-            agent.executor.execute = fake_execute  # type: ignore[method-assign]
+            agent.executor.execute_async = fake_execute  # type: ignore[method-assign]
 
             response = agent.run(message="hello", custom_llm_client_provider=bad_provider)
 
@@ -439,11 +439,11 @@ class TestAgent:
 
             captured_history: dict[str, list[Message]] = {}
 
-            def fake_execute(history, agent_state, *, runtime_client, custom_llm_client_provider=None):
+            async def fake_execute(history, agent_state, *, runtime_client, custom_llm_client_provider=None):
                 captured_history["history"] = list(history) if history else []
                 return "ok", history or []
 
-            agent.executor.execute = fake_execute  # type: ignore[method-assign]
+            agent.executor.execute_async = fake_execute  # type: ignore[method-assign]
 
             input_messages = [
                 Message.user("hello"),
@@ -583,8 +583,8 @@ class TestAgent:
 
             agent = Agent(config=agent_config, global_storage=global_storage)
 
-            # Mock executor.execute
-            with patch.object(agent.executor, "execute") as mock_execute:
+            # Mock executor.execute_async
+            with patch.object(agent.executor, "execute_async", new_callable=AsyncMock) as mock_execute:
                 mock_execute.return_value = (
                     "Test response",
                     [
@@ -645,7 +645,9 @@ class TestAgent:
             )
 
             # Stop tool should terminate after the first tool execution; there should be no second LLM call.
-            with patch.object(agent.executor.llm_caller, "call_llm", side_effect=[first_response]) as mock_call_llm:
+            with patch.object(
+                agent.executor.llm_caller, "call_llm_async", new_callable=AsyncMock, side_effect=[first_response]
+            ) as mock_call_llm:
                 response = agent.run(message="do stop")
 
             mock_call_llm.assert_called_once()
@@ -689,7 +691,7 @@ class TestAgent:
 
             existing_history = [{"role": "user", "content": "Previous message"}, {"role": "assistant", "content": "Previous response"}]
 
-            with patch.object(agent.executor, "execute") as mock_execute:
+            with patch.object(agent.executor, "execute_async", new_callable=AsyncMock) as mock_execute:
                 mock_execute.return_value = (
                     "New response",
                     [
@@ -720,7 +722,7 @@ class TestAgent:
 
             agent = Agent(config=agent_config, global_storage=global_storage)
 
-            with patch.object(agent.executor, "execute") as mock_execute:
+            with patch.object(agent.executor, "execute_async", new_callable=AsyncMock) as mock_execute:
                 mock_execute.return_value = (
                     "Response",
                     [
@@ -758,7 +760,7 @@ class TestAgent:
                 captured_kwargs["custom_llm_client_provider"] = custom_llm_client_provider
                 return "Test response", messages + [Message(role=Role.ASSISTANT, content=[TextBlock(text="Test response")])]
 
-            with patch.object(agent.executor, "execute", side_effect=fake_execute) as mock_execute:
+            with patch.object(agent.executor, "execute_async", new_callable=AsyncMock, side_effect=fake_execute) as mock_execute:
                 response = agent.run(message="Test message", custom_llm_client_provider=provider)
 
             assert response == "Test response"
@@ -788,7 +790,10 @@ class TestAgent:
                 captured_kwargs["custom_llm_client_provider"] = custom_llm_client_provider
                 return "Test response", messages + [Message(role=Role.ASSISTANT, content=[TextBlock(text="Test response")])]
 
-            with caplog.at_level("WARNING"), patch.object(agent.executor, "execute", side_effect=fake_execute):
+            with (
+                caplog.at_level("WARNING"),
+                patch.object(agent.executor, "execute_async", new_callable=AsyncMock, side_effect=fake_execute),
+            ):
                 response = agent.run(message="Test message", custom_llm_client_provider=provider)
 
             assert response == "Test response"
@@ -940,7 +945,7 @@ class TestAgent:
             agent_config.error_handler = custom_error_handler
             agent = Agent(config=agent_config, global_storage=global_storage)
 
-            with patch.object(agent.executor, "execute", side_effect=Exception("Test error")):
+            with patch.object(agent.executor, "execute_async", new_callable=AsyncMock, side_effect=Exception("Test error")):
                 response = agent.run(message="Message")
 
                 assert "Error handled: Test error" in response
@@ -954,7 +959,7 @@ class TestAgent:
 
             agent = Agent(config=agent_config, global_storage=global_storage)
 
-            with patch.object(agent.executor, "execute", side_effect=Exception("Test error")):
+            with patch.object(agent.executor, "execute_async", new_callable=AsyncMock, side_effect=Exception("Test error")):
                 with pytest.raises(Exception, match="Test error"):
                     agent.run(message="Message")
 
@@ -975,7 +980,7 @@ class TestAgent:
                 tool_registry=ToolRegistry(),
             )
 
-            with patch.object(agent.executor, "execute") as mock_execute:
+            with patch.object(agent.executor, "execute_async", new_callable=AsyncMock) as mock_execute:
                 mock_execute.return_value = (
                     "Response",
                     [
@@ -1545,7 +1550,7 @@ class TestAgentHistoryManagement:
                 Message.assistant("Previous answer"),
             ]
 
-            with patch.object(agent.executor, "execute") as mock_execute:
+            with patch.object(agent.executor, "execute_async", new_callable=AsyncMock) as mock_execute:
                 mock_execute.return_value = (
                     "New response",
                     [

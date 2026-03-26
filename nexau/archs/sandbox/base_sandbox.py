@@ -892,10 +892,15 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
             )
 
         try:
-            return run_async_function_sync(_persist_sandbox_state, raise_sync_error=False)
+            return run_async_function_sync(_persist_sandbox_state)
         except RuntimeError as e:
             # Event loop conflict — silently fail (persisting state is non-critical)
-            if "bound to a different event loop" in str(e) or "Event loop is closed" in str(e):
+            err_msg = str(e)
+            if (
+                "bound to a different event loop" in err_msg
+                or "Event loop is closed" in err_msg
+                or "cannot be called from within a running event loop" in err_msg
+            ):
                 logger.warning(f"Event loop conflict persisting sandbox state: {e}. State not saved.")
                 return None
             raise
@@ -925,10 +930,15 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
             return None
 
         try:
-            return run_async_function_sync(_load_sandbox_state, raise_sync_error=False)
+            return run_async_function_sync(_load_sandbox_state)
         except RuntimeError as e:
             # Event loop conflict — return None so the caller creates a new sandbox
-            if "bound to a different event loop" in str(e) or "Event loop is closed" in str(e):
+            err_msg = str(e)
+            if (
+                "bound to a different event loop" in err_msg
+                or "Event loop is closed" in err_msg
+                or "cannot be called from within a running event loop" in err_msg
+            ):
                 logger.warning(f"Event loop conflict loading sandbox state: {e}. Will create new sandbox.")
                 return None
             raise
@@ -993,9 +1003,15 @@ class BaseSandboxManager[TSandbox: "BaseSandbox"](ABC):
         Ensures the sandbox and the code using it share the same event loop context.
         Solves cross-thread/event-loop access to asyncio primitives.
         """
-        # 快速路径：已初始化则直接返回（无锁）
-        if self._instance is not None:
-            return self._instance
+        # 快速路径：已初始化且仍在运行则直接返回（无锁）
+        inst = self._instance
+        if inst is not None:
+            if self.is_running():
+                return inst
+            # _instance 存在但沙箱已不在运行（pause/stop 与 start_sync 竞争时的
+            # 安全网）：清除陈旧引用，下方锁内将重新创建。
+            logger.warning("Sandbox instance exists but is not running; will re-create.")
+            self._instance = None
 
         with self._start_lock:
             # Double-check：获取锁后再次检查，避免重复创建

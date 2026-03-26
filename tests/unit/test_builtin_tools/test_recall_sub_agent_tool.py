@@ -27,19 +27,10 @@ def test_recall_sub_agent_requires_agent_state():
     assert "Agent state not available" in result["error"]
 
 
-def test_recall_sub_agent_requires_executor(agent_state):
-    """AgentState must expose an executor reference."""
-    agent_state._executor = None
-
-    result = recall_sub_agent("sub_agent", "message", "agent-id", agent_state=agent_state)
-
-    assert result["status"] == "error"
-    assert "Executor not available" in result["error"]
-
-
 def test_recall_sub_agent_requires_subagent_manager(agent_state):
-    """Executor must expose a subagent_manager."""
-    agent_state._executor = Mock(subagent_manager=None)
+    """AgentState must expose a _subagent_manager reference."""
+    # subagent_manager defaults to None (not passed in fixture), no override needed
+    assert agent_state.subagent_manager is None
 
     result = recall_sub_agent("sub_agent", "message", "agent-id", agent_state=agent_state)
 
@@ -51,8 +42,7 @@ def test_recall_sub_agent_calls_subagent_manager(agent_state):
     """Successful recall delegates to SubAgentManager.call_sub_agent."""
     subagent_manager = Mock()
     subagent_manager.call_sub_agent.return_value = "result text"
-    executor = Mock(subagent_manager=subagent_manager)
-    agent_state._executor = executor
+    agent_state._subagent_manager = subagent_manager
 
     result = recall_sub_agent("sub_agent", "message", "agent-id", agent_state=agent_state)
 
@@ -70,8 +60,7 @@ def test_recall_sub_agent_handles_subagent_exception(agent_state):
     """Errors from SubAgentManager are captured in the payload."""
     subagent_manager = Mock()
     subagent_manager.call_sub_agent.side_effect = ValueError("bad sub-agent id")
-    executor = Mock(subagent_manager=subagent_manager)
-    agent_state._executor = executor
+    agent_state._subagent_manager = subagent_manager
 
     result = recall_sub_agent("sub_agent", "message", "agent-id", agent_state=agent_state)
 

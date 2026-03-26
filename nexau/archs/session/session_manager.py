@@ -26,7 +26,7 @@ from .agent_run_action_service import AgentRunActionService
 from .agent_service import AgentService
 from .models import AgentModel, AgentRunActionModel, SessionModel
 from .models.agent_lock import AgentLockModel
-from .orm import AndFilter, ComparisonFilter, DatabaseEngine
+from .orm import AndFilter, ComparisonFilter, DatabaseEngine, LoopSafeDatabaseEngine
 from .task_lock_service import TaskLockService
 
 
@@ -67,15 +67,18 @@ class SessionManager:
             lock_ttl: Lock time-to-live in seconds (default: 30s)
             heartbeat_interval: Heartbeat interval in seconds (default: 10s)
         """
-        self._engine: DatabaseEngine = engine
-        self._agent_service = AgentService(engine=engine)
-        self._agent_run_action = AgentRunActionService(engine=engine)
+        # 包装 engine 以确保所有 DB 操作在 owner event loop 上执行，
+        # 防止 worker 线程的临时 loop 访问 loop-bound 的 async DB 驱动
+        safe_engine: DatabaseEngine = LoopSafeDatabaseEngine(engine)
+        self._engine: DatabaseEngine = safe_engine
+        self._agent_service = AgentService(engine=safe_engine)
+        self._agent_run_action = AgentRunActionService(engine=safe_engine)
         self._agent_lock = AgentLockService(
-            engine=engine,
+            engine=safe_engine,
             lock_ttl=lock_ttl,
             heartbeat_interval=heartbeat_interval,
         )
-        self._task_lock = TaskLockService(engine=engine)
+        self._task_lock = TaskLockService(engine=safe_engine)
         self._models_initialized = False
 
     # Public services (exposed for direct use)

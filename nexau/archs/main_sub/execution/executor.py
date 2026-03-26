@@ -20,6 +20,8 @@ RFC-0006: 中性 Structured Tool Definitions 在执行器中的持有与分发
 OpenAI / Anthropic / Gemini provider schema 由 LLMCaller 在请求边界延迟适配。
 """
 
+import asyncio
+import inspect
 import json
 import logging
 import threading
@@ -29,6 +31,8 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import copy_context
 from copy import deepcopy
+from dataclasses import dataclass
+from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
 
 from nexau.archs.llm.llm_config import LLMConfig
@@ -79,9 +83,37 @@ from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, coerce_tool_result_content
 
 if TYPE_CHECKING:
+    from nexau.archs.sandbox.base_sandbox import BaseSandbox
     from nexau.archs.session import SessionManager
 
 logger = logging.getLogger(__name__)
+
+
+class _IterationOutcome(Enum):
+    """Signal returned by _execute_iteration_async to control the main loop.
+
+    CONTINUE — advance to the next iteration.
+    BREAK    — exit the while loop (final_response / force_stop_reason already set on state).
+    """
+
+    CONTINUE = auto()
+    BREAK = auto()
+
+
+@dataclass
+class _AsyncIterationState:
+    """Mutable context shared across helpers during one execute_async() invocation."""
+
+    messages: list[Message]
+    final_response: str
+    force_stop_reason: AgentStopReason
+    iteration: int
+    agent_state: "AgentState"
+    token_trace_session: TokenTraceSession | None
+    framework_context: FrameworkContext
+    runtime_client: object | None
+    custom_llm_client_provider: Callable[[str], object] | None
+    origin_history: list[Message] | list[dict[str, object]]
 
 
 class Executor:
@@ -96,6 +128,7 @@ class Executor:
         stop_tools: set[str],
         openai_client: Any,
         llm_config: LLMConfig,
+        async_openai_client: Any | None = None,
         max_iterations: int = 100,
         max_context_tokens: int = 128000,
         max_running_subagents: int = 5,
@@ -183,6 +216,7 @@ class Executor:
             middleware_manager=self.middleware_manager,
             global_storage=global_storage,
             session_id=session_id,
+            async_openai_client=async_openai_client,
         )
 
         # Execution parameters
@@ -248,20 +282,19 @@ class Executor:
 
         event_emitter: Callable[[Any], None] | None = None
         for middleware in self.middleware_manager.middlewares:
-            maybe_emitter = getattr(middleware, "on_event", None)
-            if callable(maybe_emitter):
-                event_emitter = cast(Callable[[Any], None], maybe_emitter)
+            handler = middleware.get_event_handler()
+            if handler is not None:
+                event_emitter = handler
                 break
 
         if event_emitter is None:
             return
 
         for middleware in self.middleware_manager.middlewares:
-            setter = getattr(middleware, "set_event_emitter", None)
-            if not callable(setter):
+            if not middleware.supports_set_event_emitter:
                 continue
             try:
-                setter(event_emitter)
+                middleware.set_event_emitter(event_emitter)
             except Exception as exc:
                 logger.warning(
                     "⚠️ Failed to wire event emitter for middleware %s: %s",
@@ -283,11 +316,10 @@ class Executor:
             return
 
         for middleware in self.middleware_manager.middlewares:
-            setter = getattr(middleware, "set_llm_runtime", None)
-            if not callable(setter):
+            if not middleware.supports_set_llm_runtime:
                 continue
             try:
-                setter(
+                middleware.set_llm_runtime(
                     llm_config,
                     openai_client,
                     session_id=session_id,
@@ -297,12 +329,12 @@ class Executor:
             except TypeError:
                 # Backward compatibility: middleware without max_context_tokens/global_storage/session_id parameter
                 try:
-                    setter(llm_config, openai_client, session_id=session_id, global_storage=global_storage)
+                    middleware.set_llm_runtime(llm_config, openai_client, session_id=session_id, global_storage=global_storage)
                 except TypeError:
                     try:
-                        setter(llm_config, openai_client, session_id=session_id)
+                        middleware.set_llm_runtime(llm_config, openai_client, session_id=session_id)
                     except TypeError:
-                        setter(llm_config, openai_client)
+                        middleware.set_llm_runtime(llm_config, openai_client)
             except Exception as exc:
                 logger.warning(
                     "⚠️ Failed to wire LLM runtime for middleware %s: %s",
@@ -402,6 +434,17 @@ class Executor:
     def structured_tool_payload(self) -> list[StructuredToolDefinition]:
         """Return a snapshot of neutral structured tool definitions."""
         return self._snapshot_structured_tool_definitions()
+
+    def update_structured_tools(self, definitions: list[StructuredToolDefinition]) -> None:
+        """Replace the structured tool definitions.
+
+        P1 async/sync 技术债修复: 支持 async MCP 初始化后更新工具定义
+
+        由 Agent.create() 在异步 MCP 工具初始化完成后调用，
+        将新发现的 MCP 工具定义注入到 executor 的 structured tool payload 中。
+        """
+        with self._tool_registry_lock:
+            self.structured_tool_definitions = deepcopy(list(definitions))
 
     def _wait_for_messages(self) -> bool:
         """Enter idle wait until new messages arrive or stop signal is received.
@@ -732,14 +775,13 @@ class Executor:
                     tool_result_messages: list[Message] = []
                     for feedback in execution_feedbacks:
                         call_obj = feedback.get("call")
-                        call_type = feedback.get("call_type")
                         content = feedback.get("content") or ""
                         output = feedback.get("output")
 
-                        if call_type == "tool":
-                            call_id = getattr(call_obj, "tool_call_id", None)
-                        elif call_type == "sub_agent":
-                            call_id = getattr(call_obj, "tool_call_id", None) or getattr(call_obj, "sub_agent_call_id", None)
+                        if isinstance(call_obj, ToolCall):
+                            call_id = call_obj.tool_call_id
+                        elif isinstance(call_obj, SubAgentCall):
+                            call_id = call_obj.tool_call_id or call_obj.sub_agent_call_id
                         else:
                             call_id = None
 
@@ -901,6 +943,758 @@ class Executor:
                 token_trace_session.synced_message_count = len(messages)
             # RFC-0001: 标记 execute() 已结束，唤醒 interrupt() 的等待
             self._execution_done.set()
+
+    async def execute_async(
+        self,
+        history: list[Message] | list[dict[str, Any]],
+        agent_state: "AgentState",
+        *,
+        runtime_client: Any | None = None,
+        custom_llm_client_provider: Callable[[str], Any] | None = None,
+    ) -> tuple[str, list[Message]]:
+        """Fully async execution — runs on the main event loop.
+
+        async/sync 技术债修复: 理想状态的 async 执行器
+
+        - LLM 调用: await call_llm_async() (Gemini 走 httpx.AsyncClient，其余走 to_thread 桥接)
+        - Tool 执行: asyncio.gather + tool.execute_async() (async tool 直接 await，sync tool to_thread)
+        - Middleware hooks: asyncio.to_thread (用户 hooks 是 sync API)
+        - Team mode 等待: asyncio.to_thread(_wait_for_messages)
+        - History flush: 直接 create_task 或 await flush_async()
+
+        sync execute() 保留给向后兼容的 sync 调用方和测试。
+        """
+
+        # 1. 初始化执行状态
+        self.stop_signal = False
+        self._shutdown_event.clear()
+        self._execution_done.clear()
+
+        state = _AsyncIterationState(
+            messages=[],
+            final_response="",
+            force_stop_reason=AgentStopReason.SUCCESS,
+            iteration=0,
+            agent_state=agent_state,
+            token_trace_session=agent_state.token_trace_session,
+            framework_context=FrameworkContext(
+                agent_name=self.agent_name,
+                agent_id=self.agent_id,
+                run_id=agent_state.run_id,
+                root_run_id=agent_state.root_run_id,
+                _tool_registry=self._tool_registry,
+                _shutdown_event=self._shutdown_event,
+            ),
+            runtime_client=runtime_client,
+            custom_llm_client_provider=custom_llm_client_provider,
+            origin_history=history,
+        )
+
+        try:
+            # 2. 准备 messages、token trace session 和 before-agent hooks
+            await self._prepare_async_execution(state)
+
+            # 3. 主迭代循环
+            while state.iteration < self.max_iterations:
+                if self.stop_signal:
+                    stop_response = "Stop signal received."
+                    stop_response, state.messages = await asyncio.to_thread(
+                        self._apply_after_agent_hooks,
+                        agent_state=agent_state,
+                        messages=state.messages,
+                        final_response=stop_response,
+                        stop_reason=AgentStopReason.USER_INTERRUPTED,
+                    )
+                    return stop_response, state.messages
+
+                outcome = await self._execute_iteration_async(state)
+                if outcome == _IterationOutcome.BREAK:
+                    break
+
+            # 4. 循环结束后处理
+            if state.iteration >= self.max_iterations:
+                state.force_stop_reason = AgentStopReason.MAX_ITERATIONS_REACHED
+                state.final_response += "\\n\\n[Note: Maximum iteration limit reached]"
+
+            state.final_response, state.messages = await asyncio.to_thread(
+                self._apply_after_agent_hooks,
+                agent_state=agent_state,
+                messages=state.messages,
+                final_response=state.final_response,
+                stop_reason=state.force_stop_reason,
+            )
+
+            self._store_token_trace(state.token_trace_session)
+            return state.final_response, state.messages
+
+        except TokenTraceContextOverflowError as e:
+            state.force_stop_reason = AgentStopReason.CONTEXT_TOKEN_LIMIT
+            state.final_response = f"Error: {e}"
+            state.final_response, state.messages = await asyncio.to_thread(
+                self._apply_after_agent_hooks,
+                agent_state=agent_state,
+                messages=state.messages,
+                final_response=state.final_response,
+                stop_reason=state.force_stop_reason,
+            )
+            self._store_token_trace(state.token_trace_session)
+            return state.final_response, state.messages
+
+        except Exception as e:
+            state.force_stop_reason = AgentStopReason.ERROR_OCCURRED
+            state.final_response = f"Error: {str(e)}"
+            state.final_response, state.messages = await asyncio.to_thread(
+                self._apply_after_agent_hooks,
+                agent_state=agent_state,
+                messages=state.messages,
+                final_response=state.final_response,
+                stop_reason=state.force_stop_reason,
+            )
+            self._store_token_trace(state.token_trace_session)
+            raise RuntimeError(f"Error in agent execution: {e}") from e
+
+        finally:
+            if isinstance(state.origin_history, HistoryList):
+                state.origin_history.replace_all(state.messages)
+            self._store_token_trace(state.token_trace_session)
+            if state.token_trace_session is not None:
+                state.token_trace_session.synced_message_count = len(state.messages)
+            self._execution_done.set()
+
+    # ------------------------------------------------------------------
+    # execute_async 辅助方法
+    # ------------------------------------------------------------------
+
+    async def _prepare_async_execution(self, state: _AsyncIterationState) -> None:
+        """Prepare messages, token trace session and run before-agent hooks.
+
+        历史格式转换 → token trace 初始化 → before-agent middleware
+
+        Mutates *state* in-place.
+        """
+
+        history = state.origin_history
+        if history and isinstance(history[0], dict):
+            state.messages = messages_from_legacy_openai_chat(cast(list[dict[str, Any]], history))
+        else:
+            state.messages = cast(list[Message], history).copy()
+
+        # Token trace session 初始化
+        tools_payload = None
+        if self.use_structured_tool_calls:
+            with self._tool_registry_lock:
+                tools_payload = deepcopy(self.structured_tool_payload)
+
+        if self.llm_config.api_type == "generate_with_token":
+            if state.token_trace_session is None:
+                state.token_trace_session = TokenTraceSession(
+                    self.llm_config,
+                    max_context_tokens=self.max_context_tokens,
+                )
+            state.token_trace_session.initialize_from_messages(
+                state.messages,
+                tools=cast(list[dict[str, Any]] | None, tools_payload),
+            )
+            state.token_trace_session.sync_external_messages(state.messages)
+
+        # Before-agent middleware hooks
+        if self.middleware_manager:
+            before_agent_hook_input = BeforeAgentHookInput(
+                agent_state=state.agent_state,
+                messages=state.messages,
+            )
+            try:
+                state.messages = await asyncio.to_thread(
+                    self.middleware_manager.run_before_agent,
+                    before_agent_hook_input,
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Before-agent middleware execution failed: {e}")
+
+    async def _execute_iteration_async(self, state: _AsyncIterationState) -> _IterationOutcome:
+        """Execute one iteration of the main async loop.
+
+        async 主循环单次迭代：排队消息 → team_mode 跳过检查 → LLM 调用 →
+        工具执行 → 工具结果构建 → 停止条件判断。
+
+        Mutates *state* in-place and returns the loop control signal.
+        """
+
+        # 1. 处理排队消息
+        if self.queued_messages:
+            state.messages.extend(self.queued_messages)
+            self.queued_messages = []
+
+        # 2. team_mode: 跳过无用户内容的 LLM 调用
+        if self.team_mode and not any(m.role != Role.SYSTEM for m in state.messages):
+            if isinstance(state.origin_history, HistoryList):
+                state.origin_history.replace_all(state.messages)
+            if not await asyncio.to_thread(self._wait_for_messages):
+                return _IterationOutcome.BREAK
+            state.iteration += 1
+            return _IterationOutcome.CONTINUE
+
+        # 3. team_mode: assistant 结尾时跳过 LLM 调用
+        if self.team_mode:
+            last_non_system: Message | None = None
+            for m in reversed(state.messages):
+                if m.role != Role.SYSTEM:
+                    last_non_system = m
+                    break
+            if last_non_system is not None and last_non_system.role == Role.ASSISTANT:
+                if isinstance(state.origin_history, HistoryList):
+                    state.origin_history.replace_all(state.messages)
+                if not await asyncio.to_thread(self._wait_for_messages):
+                    return _IterationOutcome.BREAK
+                state.iteration += 1
+                return _IterationOutcome.CONTINUE
+
+        # 4. Before-model middleware hooks
+        before_model_hook_input = BeforeModelHookInput(
+            agent_state=state.agent_state,
+            max_iterations=self.max_iterations,
+            current_iteration=state.iteration,
+            messages=state.messages,
+        )
+
+        if self.middleware_manager:
+            try:
+                state.messages = await asyncio.to_thread(
+                    self.middleware_manager.run_before_model,
+                    before_model_hook_input,
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Before-model middleware execution failed: {e}")
+
+        # 5. 快照工具定义 & token 计算
+        tools_payload = None
+        if self.use_structured_tool_calls:
+            tools_payload = self._snapshot_structured_tool_definitions()
+
+        current_prompt_tokens = self.token_counter.count_tokens(
+            state.messages,
+            tools=tools_payload,
+        )
+
+        state.force_stop_reason = AgentStopReason.SUCCESS
+        if current_prompt_tokens > self.max_context_tokens:
+            logger.warning(
+                "⚠️ Prompt tokens (%d) exceed max_context_tokens (%d). Continuing.",
+                current_prompt_tokens,
+                self.max_context_tokens,
+            )
+
+        available_tokens = self.max_context_tokens - current_prompt_tokens
+        desired_max_tokens = 16384
+        _ = max(1, min(desired_max_tokens, available_tokens))  # calculated_max_tokens (reserved for future use)
+
+        if state.iteration == self.max_iterations - 1:
+            state.final_response += "\\n\\n[Error: Maximum iteration limit reached.]"
+            state.force_stop_reason = AgentStopReason.MAX_ITERATIONS_REACHED
+
+        # 6. 异步 LLM 调用 — 直接 await，不再走 to_thread
+        model_response = await self.llm_caller.call_llm_async(
+            state.messages,
+            openai_client=state.runtime_client,
+            force_stop_reason=state.force_stop_reason,
+            agent_state=state.agent_state,
+            tool_call_mode=self.tool_call_mode,
+            tools=tools_payload,
+            shutdown_event=self._shutdown_event,
+            token_trace_session=state.token_trace_session,
+        )
+        if model_response is None:
+            return _IterationOutcome.BREAK
+
+        # 7. 解析响应并追加 assistant 消息
+        assistant_content = model_response.content or ""
+        state.final_response = assistant_content
+
+        parsed_response = self.response_parser.parse_response(model_response)
+        assistant_message = model_response.to_ump_message()
+        state.messages.append(assistant_message)
+        if state.token_trace_session is not None:
+            state.token_trace_session.append_model_response(
+                output_token_ids=model_response.output_token_ids,
+                fallback_messages=[assistant_message],
+            )
+
+        # 8. 执行工具/子代理调用（含 after-model middleware）
+        after_model_hook_input = AfterModelHookInput(
+            agent_state=state.agent_state,
+            max_iterations=self.max_iterations,
+            current_iteration=state.iteration,
+            original_response=assistant_content,
+            parsed_response=parsed_response,
+            messages=state.messages,
+            model_response=model_response,
+        )
+
+        (
+            processed_response,
+            should_stop,
+            stop_tool_result,
+            updated_messages,
+            execution_feedbacks,
+        ) = await self._process_xml_calls_async(
+            after_model_hook_input,
+            custom_llm_client_provider=state.custom_llm_client_provider,
+            framework_context=state.framework_context,
+        )
+
+        state.messages = updated_messages
+
+        # 9. 构建工具结果消息
+        self._append_tool_result_messages(
+            state=state,
+            execution_feedbacks=execution_feedbacks,
+            processed_parsed_response=after_model_hook_input.parsed_response,
+            assistant_content=assistant_content,
+            processed_response=processed_response,
+        )
+
+        # 10. 停止条件判断
+        if should_stop and len(self.queued_messages) == 0:
+            return await self._handle_stop_condition_async(
+                state,
+                stop_tool_result=stop_tool_result,
+                processed_response=processed_response,
+            )
+
+        state.iteration += 1
+        return _IterationOutcome.CONTINUE
+
+    def _append_tool_result_messages(
+        self,
+        *,
+        state: _AsyncIterationState,
+        execution_feedbacks: list[dict[str, Any]],
+        processed_parsed_response: ParsedResponse | None,
+        assistant_content: str,
+        processed_response: str,
+    ) -> None:
+        """Build tool result messages from execution feedbacks and append to state.
+
+        构建工具结果消息：structured tool 模式生成 TOOL 角色消息，
+        XML 模式生成 USER 角色文本反馈。
+
+        Mutates *state.messages* in-place. Also appends to token trace session
+        when present.
+        """
+
+        openai_tool_mode = bool(
+            processed_parsed_response and processed_parsed_response.model_response and processed_parsed_response.model_response.tool_calls
+        )
+
+        if openai_tool_mode:
+            tool_result_messages: list[Message] = []
+            for feedback in execution_feedbacks:
+                call_obj = feedback.get("call")
+                content = feedback.get("content") or ""
+                output = feedback.get("output")
+
+                if isinstance(call_obj, ToolCall):
+                    call_id = call_obj.tool_call_id
+                elif isinstance(call_obj, SubAgentCall):
+                    call_id = call_obj.tool_call_id or call_obj.sub_agent_call_id
+                else:
+                    call_id = None
+
+                if not call_id:
+                    continue
+
+                tool_result_block = ToolResultBlock(
+                    tool_use_id=str(call_id),
+                    content=coerce_tool_result_content(output if output is not None else content, fallback_text=str(content)),
+                    is_error=bool(feedback.get("is_error")),
+                )
+                tool_result_message = Message(role=Role.TOOL, content=[tool_result_block])
+                state.messages.append(tool_result_message)
+                tool_result_messages.append(tool_result_message)
+
+            tool_results = ""
+            if state.token_trace_session is not None and tool_result_messages:
+                state.token_trace_session.append_messages(tool_result_messages, mask_value=0)
+        else:
+            tool_results = processed_response.replace(assistant_content, "", 1).strip()
+
+        if tool_results:
+            tool_result_feedback_message = Message(role=Role.USER, content=[TextBlock(text=f"Tool execution results:\n{tool_results}")])
+            state.messages.append(tool_result_feedback_message)
+            if state.token_trace_session is not None:
+                state.token_trace_session.append_messages([tool_result_feedback_message], mask_value=0)
+
+    async def _handle_stop_condition_async(
+        self,
+        state: _AsyncIterationState,
+        *,
+        stop_tool_result: str | None,
+        processed_response: str,
+    ) -> _IterationOutcome:
+        """Determine whether to break or continue when should_stop is True.
+
+        停止条件处理：team_mode 区分 finish_team（退出）和其他 stop tool（等待新消息），
+        普通模式直接退出循环。
+
+        Mutates *state.final_response* and *state.force_stop_reason* when breaking.
+        """
+
+        if self.team_mode:
+            if stop_tool_result is not None and self._last_stop_tool_name == "finish_team":
+                state.force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
+                state.final_response = stop_tool_result
+                return _IterationOutcome.BREAK
+            self._mark_waiting_for_user()
+            if isinstance(state.origin_history, HistoryList):
+                state.origin_history.replace_all(state.messages)
+            if not await asyncio.to_thread(self._wait_for_messages):
+                state.force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
+                state.final_response = processed_response
+                return _IterationOutcome.BREAK
+            state.iteration += 1
+            return _IterationOutcome.CONTINUE
+
+        if stop_tool_result is not None:
+            state.force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
+            state.final_response = stop_tool_result
+            return _IterationOutcome.BREAK
+
+        state.force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
+        state.final_response = processed_response
+        return _IterationOutcome.BREAK
+
+    async def _process_xml_calls_async(
+        self,
+        hook_input: AfterModelHookInput,
+        *,
+        custom_llm_client_provider: Callable[[str], Any] | None = None,
+        framework_context: FrameworkContext,
+    ) -> tuple[str, bool, str | None, list[Message], list[dict[str, Any]]]:
+        """Async version of _process_xml_calls.
+
+        Middleware hooks 通过 to_thread 调用（sync API），
+        tool/sub-agent 通过 _execute_parsed_calls_async 异步执行。
+        """
+
+        response_payload: str | ModelResponse = hook_input.model_response or hook_input.original_response
+        parsed_response: ParsedResponse | None = hook_input.parsed_response or self.response_parser.parse_response(
+            response_payload,
+        )
+        hook_input.parsed_response = parsed_response
+        current_messages = hook_input.messages.copy()
+        force_continue = False
+
+        if self.middleware_manager:
+            try:
+                parsed_response, current_messages, force_continue = await asyncio.to_thread(
+                    self.middleware_manager.run_after_model, hook_input
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ After-model middleware execution failed: {e}")
+
+        if not parsed_response or not parsed_response.has_calls():
+            if force_continue:
+                return hook_input.original_response, False, None, current_messages, []
+            else:
+                return hook_input.original_response, True, None, current_messages, []
+
+        assert parsed_response is not None
+        processed_response, should_stop, stop_tool_result, execution_feedbacks = await self._execute_parsed_calls_async(
+            parsed_response,
+            hook_input.agent_state,
+            custom_llm_client_provider=custom_llm_client_provider,
+            framework_context=framework_context,
+        )
+        return processed_response, should_stop, stop_tool_result, current_messages, execution_feedbacks
+
+    async def _execute_parsed_calls_async(
+        self,
+        parsed_response: ParsedResponse,
+        agent_state: "AgentState",
+        *,
+        custom_llm_client_provider: Callable[[str], Any] | None = None,
+        framework_context: FrameworkContext,
+    ) -> tuple[str, bool, str | None, list[dict[str, Any]]]:
+        """Async parallel tool/sub-agent execution via asyncio.gather.
+
+        async tool → 直接 await tool.execute_async()
+        sync tool / sub-agent → asyncio.to_thread 在线程池执行
+        """
+
+        processed_response = parsed_response.original_response
+
+        if self._shutdown_event.is_set():
+            return processed_response, False, None, []
+
+        # Batch agent calls (sync, not parallelized)
+        if parsed_response.batch_agent_calls:
+            for batch_call in parsed_response.batch_agent_calls:
+                try:
+                    batch_result = await asyncio.to_thread(self._execute_batch_call, batch_call)
+                    processed_response += (
+                        f"\n<tool_result>\n<tool_name>batch_agent</tool_name>\n<result>{batch_result}</result>\n</tool_result>\n"
+                    )
+                except Exception as e:
+                    processed_response += f"\n<tool_result>\n<tool_name>batch_agent</tool_name>\n<error>{str(e)}</error>\n</tool_result>\n"
+            return processed_response, False, None, []
+
+        if not parsed_response.tool_calls and not parsed_response.sub_agent_calls:
+            return processed_response, False, None, []
+
+        from ..agent_context import get_context
+
+        current_context = get_context()
+        context_dict = current_context.context.copy() if current_context else None
+
+        parallel_execution_id = str(uuid.uuid4())
+
+        # Deduplicate tool_call_ids
+        seen_tool_call_ids: defaultdict[str, int] = defaultdict(int)
+        for idx, tool_call in enumerate(parsed_response.tool_calls):
+            base_id = tool_call.tool_call_id or f"tool_call_{idx}"
+            count = seen_tool_call_ids[base_id]
+            tool_call.tool_call_id = f"{base_id}_{count}" if count else base_id
+            seen_tool_call_ids[base_id] += 1
+            tool_call.parallel_execution_id = parallel_execution_id
+
+        seen_sub_agent_call_ids: defaultdict[str, int] = defaultdict(int)
+        for idx, sub_agent_call in enumerate(parsed_response.sub_agent_calls):
+            base_id = sub_agent_call.sub_agent_call_id or f"sub_agent_call_{idx}"
+            count = seen_sub_agent_call_ids[base_id]
+            sub_agent_call.sub_agent_call_id = f"{base_id}_{count}" if count else base_id
+            seen_sub_agent_call_ids[base_id] += 1
+            sub_agent_call.parallel_execution_id = parallel_execution_id
+
+        serial_tool_names = set(self._tool_registry.compute_serial_tool_names())
+
+        # 构建 async tasks
+        async def _run_tool(tc: ToolCall) -> tuple[str, ToolCall, tuple[str, Any, bool]]:
+            """Dispatch tool execution based on sync/async implementation type.
+
+            - Sync tool: 复用 _execute_tool_call_safe 在 worker 线程中执行。
+              整条链（get_sandbox → before_tool → tool.execute → after_tool）
+              都在同一个 worker 线程中运行，没有 running event loop，
+              与改造前 ThreadPoolExecutor 行为完全一致。
+              用户 sync tool 可以安全调用 agent_state.get_sandbox()、
+              run_async_function_sync() 等 sync framework API。
+
+            - Async tool: 在 event loop 上直接 await tool.execute_async()。
+              Async tool 应使用 async-native API，不应调用 sync-only 的
+              run_async_function_sync()。
+            """
+            if self._shutdown_event.is_set():
+                return ("tool", tc, (tc.tool_name, "Shutdown in progress", True))
+
+            tool_obj = self._tool_registry.get_tool(tc.tool_name)
+            if tool_obj is None:
+                return ("tool", tc, (tc.tool_name, f"Tool '{tc.tool_name}' not found", True))
+
+            # 检测 async tool: implementation 是 async def，
+            # 或子类（如 MCPTool）声明了原生 async execute_async() 覆盖。
+            is_async_impl = (
+                tool_obj.implementation is not None and inspect.iscoroutinefunction(tool_obj.implementation)
+            ) or tool_obj.has_native_async_execute
+
+            if not is_async_impl:
+                # ── Sync tool: 整条链在 worker 线程中执行 ──
+                # 与改造前 ThreadPoolExecutor.submit(_execute_tool_call_safe) 行为一致
+                return (
+                    "tool",
+                    tc,
+                    await asyncio.to_thread(
+                        self._execute_tool_call_safe,
+                        tc,
+                        agent_state,
+                        framework_context,
+                    ),
+                )
+
+            # ── Async tool: event loop 原生路径 ──
+            try:
+                converted_params: dict[str, Any] = {}
+                for pn, pv in tc.parameters.items():
+                    converted_params[pn] = self.tool_executor.convert_parameter_type(tc.tool_name, pn, pv)
+
+                # get_sandbox 内部可能调用 sync session API，放到 to_thread 避免阻塞
+                sandbox: BaseSandbox | None = None
+                if tc.tool_name not in {"LoadSkill"}:
+                    sandbox = await asyncio.to_thread(agent_state.get_sandbox)
+
+                # before_tool middleware hook (sync hook → to_thread)
+                tool_parameters = converted_params.copy()
+                if self.middleware_manager:
+                    from nexau.archs.main_sub.execution.hooks import BeforeToolHookInput
+
+                    before_input = BeforeToolHookInput(
+                        agent_state=agent_state,
+                        sandbox=sandbox,
+                        tool_name=tc.tool_name,
+                        tool_call_id=tc.tool_call_id or "",
+                        tool_input=tool_parameters,
+                        parallel_execution_id=tc.parallel_execution_id,
+                    )
+                    tool_parameters = await asyncio.to_thread(self.middleware_manager.run_before_tool, before_input)
+
+                exec_params: dict[str, Any] = dict(tool_parameters)
+                exec_params["agent_state"] = agent_state
+                exec_params["sandbox"] = sandbox
+                exec_params["ctx"] = framework_context
+
+                # Async tool: 直接 await（不经过 to_thread）
+                result = await tool_obj.execute_async(**exec_params)
+
+                result_dict: dict[str, Any] = dict(result)
+
+                # 注入 _is_stop_tool 标记
+                if tc.tool_name in self.tool_executor.stop_tools:
+                    result_dict["_is_stop_tool"] = True
+
+                # after_tool middleware hook (sync hook → to_thread)
+                if self.middleware_manager:
+                    from nexau.archs.main_sub.execution.hooks import AfterToolHookInput
+
+                    hook_input = AfterToolHookInput(
+                        agent_state=agent_state,
+                        sandbox=sandbox,
+                        tool_name=tc.tool_name,
+                        tool_input=tool_parameters,
+                        tool_output=result_dict,
+                        tool_call_id=tc.tool_call_id or "",
+                    )
+                    after_result = await asyncio.to_thread(self.middleware_manager.run_after_tool, hook_input, result_dict)
+                    after_dict: dict[str, Any] = (
+                        cast(dict[str, Any], after_result) if isinstance(after_result, dict) else {"result": after_result}
+                    )
+                    result_dict = after_dict
+
+                    if result_dict.get("status") == "error" and result_dict.get("_is_stop_tool", False):
+                        result_dict["_is_stop_tool"] = False
+
+                return ("tool", tc, (tc.tool_name, result_dict, False))
+            except Exception as e:
+                return ("tool", tc, (tc.tool_name, str(e), True))
+
+        async def _run_sub_agent(sac: SubAgentCall) -> tuple[str, SubAgentCall, tuple[str, str, bool]]:
+            try:
+                # P1 async/sync 修复: 直接 await async 路径，
+                # 避免 to_thread → Agent() → asyncio.run() 的间接 event loop 创建
+                result = await self.subagent_manager.call_sub_agent_async(
+                    sac.agent_name,
+                    sac.message,
+                    context=context_dict,
+                    parent_agent_state=agent_state,
+                    custom_llm_client_provider=custom_llm_client_provider,
+                    parallel_execution_id=sac.parallel_execution_id,
+                )
+                return ("sub_agent", sac, (sac.agent_name, result, False))
+            except Exception as e:
+                return ("sub_agent", sac, (sac.agent_name, str(e), True))
+
+        # serial tools 需要顺序执行，其余并行
+        serial_tasks: list[ToolCall] = []
+        parallel_tool_tasks: list[ToolCall] = []
+        for tc in parsed_response.tool_calls:
+            if tc.tool_name in serial_tool_names:
+                serial_tasks.append(tc)
+            else:
+                parallel_tool_tasks.append(tc)
+
+        # 结果类型: (call_type, call_obj, (name, result, is_error))
+        all_results: list[tuple[str, ToolCall, tuple[str, Any, bool]] | tuple[str, SubAgentCall, tuple[str, str, bool]]] = []
+
+        # 先执行 serial tools（顺序）
+        for tc in serial_tasks:
+            all_results.append(await _run_tool(tc))
+
+        # 再并行执行剩余 tools + sub-agents
+        # 维护 call_origins 与 parallel_coros 索引一一对应，gather 异常时保留调用上下文
+        parallel_coros: list[Any] = []
+        call_origins: list[tuple[str, ToolCall] | tuple[str, SubAgentCall]] = []
+        for tc in parallel_tool_tasks:
+            parallel_coros.append(_run_tool(tc))
+            call_origins.append(("tool", tc))
+        for sac in parsed_response.sub_agent_calls:
+            parallel_coros.append(_run_sub_agent(sac))
+            call_origins.append(("sub_agent", sac))
+
+        if parallel_coros:
+            parallel_results = await asyncio.gather(*parallel_coros, return_exceptions=True)
+            for idx, r in enumerate(parallel_results):
+                if isinstance(r, BaseException):
+                    _, origin_call = call_origins[idx]
+                    if isinstance(origin_call, SubAgentCall):
+                        all_results.append(("sub_agent", origin_call, (origin_call.agent_name, str(r), True)))
+                    else:
+                        all_results.append(("tool", origin_call, (origin_call.tool_name, str(r), True)))
+                elif isinstance(r, tuple):
+                    all_results.append(r)  # type: ignore[arg-type]
+
+        # 收集结果
+        tool_results: list[str] = []
+        execution_feedbacks: list[dict[str, Any]] = []
+        stop_tool_detected = False
+        stop_tool_result: str | None = None
+
+        for entry in all_results:
+            call_type: str = entry[0]
+            call_obj: ToolCall | SubAgentCall = entry[1]
+            result_data: tuple[str, Any, bool] = entry[2]
+            if call_type == "sub_agent":
+                agent_name, result, is_error = result_data
+                execution_feedbacks.append(
+                    {"call_type": "sub_agent", "call": call_obj, "content": result, "output": result, "is_error": is_error}
+                )
+                # SubAgentCall.tool_call_id is set for OpenAI structured calls; absent means XML mode
+                should_append_xml = not (isinstance(call_obj, SubAgentCall) and call_obj.tool_call_id)
+                if is_error:
+                    if should_append_xml:
+                        tool_results.append(
+                            f"\n<tool_result>\n<tool_name>{agent_name}_sub_agent</tool_name>\n<error>{result}</error>\n</tool_result>\n"
+                        )
+                else:
+                    if should_append_xml:
+                        tool_results.append(
+                            f"\n<tool_result>\n<tool_name>{agent_name}_sub_agent</tool_name>\n<result>{result}</result>\n</tool_result>\n"
+                        )
+            elif call_type == "tool":
+                tool_name, result, is_error = result_data
+                result_str = result if isinstance(result, str) else json.dumps(result, indent=2, ensure_ascii=False)
+                execution_feedbacks.append(
+                    {"call_type": "tool", "call": call_obj, "content": result_str, "output": result, "is_error": is_error}
+                )
+
+                # ToolCall.source indicates origin; "openai" means structured tool call (no XML append)
+                should_append_xml = not (isinstance(call_obj, ToolCall) and call_obj.source == "openai")
+                if is_error:
+                    if should_append_xml:
+                        tool_results.append(
+                            f"\n<tool_result>\n<tool_name>{tool_name}</tool_name>\n<error>{result_str}</error>\n</tool_result>\n"
+                        )
+                else:
+                    if should_append_xml:
+                        tool_results.append(
+                            f"\n<tool_result>\n<tool_name>{tool_name}</tool_name>\n<result>{result_str}</result>\n</tool_result>\n"
+                        )
+                    # 检查 stop tool
+                    try:
+                        parsed_result = json.loads(result_str)
+                        if isinstance(parsed_result, dict):
+                            parsed_result_dict = cast(dict[str, Any], parsed_result)
+                            if parsed_result_dict.get("_is_stop_tool"):
+                                stop_tool_detected = True
+                                self._last_stop_tool_name = tool_name
+                                actual_result: dict[str, Any] = {k: v for k, v in parsed_result_dict.items() if k != "_is_stop_tool"}
+                                if "result" in actual_result and len(actual_result) == 1:
+                                    stop_tool_result = json.dumps(actual_result["result"], ensure_ascii=False, indent=4)
+                                else:
+                                    stop_tool_result = json.dumps(actual_result or parsed_result, ensure_ascii=False, indent=4)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+        if tool_results:
+            processed_response += "\n\n" + "\n\n".join(tool_results)
+
+        return processed_response, stop_tool_detected, stop_tool_result, execution_feedbacks
 
     def _store_token_trace(self, token_trace_session: TokenTraceSession | None) -> None:
         """Persist token trace data into shared trace memory."""
@@ -1215,7 +2009,7 @@ class Executor:
                             logger.error(
                                 f"❌ Sub-agent '{agent_name}' error: {result}",
                             )
-                            should_append_xml = not getattr(call_obj, "tool_call_id", None)
+                            should_append_xml = not call_obj.tool_call_id
                             if should_append_xml:
                                 tool_results.append(
                                     f"""
@@ -1229,7 +2023,7 @@ class Executor:
                             logger.info(
                                 f"📤 Sub-agent '{agent_name}' result: {result}",
                             )
-                            should_append_xml = not getattr(call_obj, "tool_call_id", None)
+                            should_append_xml = not call_obj.tool_call_id
                             if should_append_xml:
                                 tool_results.append(
                                     f"""
@@ -1260,7 +2054,7 @@ class Executor:
                             logger.error(
                                 f"❌ Tool '{tool_name}' error: {result_str}",
                             )
-                            should_append_xml = getattr(call_obj, "source", "xml") != "openai"
+                            should_append_xml = call_obj.source != "openai"
                             if should_append_xml:
                                 tool_results.append(
                                     f"""
@@ -1274,7 +2068,7 @@ class Executor:
                             logger.info(
                                 f"📤 Tool '{tool_name}' result: {result_str[:100]}",
                             )
-                            should_append_xml = getattr(call_obj, "source", "xml") != "openai"
+                            should_append_xml = call_obj.source != "openai"
                             tool_result_xml = f"""
 <tool_result>
 <tool_name>{tool_name}</tool_name>
@@ -1441,6 +2235,27 @@ class Executor:
 
         # Signal shutdown to prevent new tasks
         self._shutdown_event.set()
+
+        # RFC-0001: 释放 LLM 资源
+        # 1. shutdown(wait=False) 释放 middleware 路径的专用线程池
+        # 2. close() 关闭 sync/async HTTP client 连接池
+        try:
+            self.llm_caller.shutdown_thread_pool()
+        except Exception as e:
+            logger.warning(f"⚠️ Error shutting down LLM thread pool: {e}")
+
+        client = self.llm_caller.openai_client
+        if client is not None:
+            try:
+                client.close()
+            except Exception as e:
+                logger.warning(f"⚠️ Error closing sync LLM client during cleanup: {e}")
+
+        async_client = self.llm_caller.async_openai_client
+        if async_client is not None:
+            # AsyncOpenAI/AsyncAnthropic.close() 是 coroutine，sync cleanup 无法 await。
+            # 释放引用让 GC 回收即可；async client 的连接会在析构时自动关闭。
+            self.llm_caller.async_openai_client = None
 
         # Shutdown subagent manager
         self.subagent_manager.shutdown()

@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING, Any, SupportsIndex
 from nexau.core.messages import Message, Role
 
 if TYPE_CHECKING:
+    from concurrent.futures import Future as ConcurrentFuture
+
     from nexau.archs.session import AgentRunActionKey, SessionManager
 
 logger = logging.getLogger(__name__)
@@ -79,12 +81,33 @@ class HistoryList(list[Message]):
         self._parent_run_id = parent_run_id
         self._agent_name = agent_name
 
+        # Capture the owning event loop for cross-thread async scheduling.
+        # When flush() is called from a worker thread (e.g. executor via
+        # asyncio.to_thread), we use run_coroutine_threadsafe to dispatch
+        # persistence I/O to the main loop instead of creating a nested loop.
+        try:
+            self._owner_loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            self._owner_loop = None
+
         # Flag to enable/disable persistence
         self._persistence_enabled = session_manager is not None and history_key is not None
 
         # Accumulate messages added in current run (for batch persistence)
         self._pending_messages: list[Message] = []
         self._baseline_fingerprints: list[str] = self._compute_fingerprints([m for m in self if m.role != Role.SYSTEM])
+
+        # 保持对 fire-and-forget persistence tasks 的引用，防止 GC 在
+        # task 完成前回收它们（回收后 done-callback 不会触发）。
+        self._background_tasks: set[asyncio.Task[None]] = set()
+
+    def update_history_key(self, history_key: AgentRunActionKey) -> None:
+        """Update the persistence routing key.
+
+        Called by Agent.create() after async init resolves the real agent_id.
+        """
+        self._history_key = history_key
+        self._persistence_enabled = self._session_manager is not None
 
     @property
     def has_pending_messages(self) -> bool:
@@ -180,18 +203,67 @@ class HistoryList(list[Message]):
         return [cls._fingerprint_message(m) for m in messages]
 
     def _schedule_async(self, coro: Coroutine[Any, Any, Any]) -> None:
-        """Schedule an async coroutine to run.
+        """Schedule an async coroutine to run (thread-safe).
+
+        Uses the event loop captured at construction time to safely dispatch
+        persistence I/O regardless of which thread calls flush().
+
+        - Same thread as owner loop → asyncio.create_task (fastest path)
+        - Different thread (e.g. executor worker) → run_coroutine_threadsafe
+        - No owner loop → best-effort asyncio.run (sync-only entry points)
+
+        所有 create_task / run_coroutine_threadsafe 返回的 task/future 都通过
+        done-callback 记录错误，避免持久化失败被静默吞掉。
 
         Args:
             coro: Coroutine to schedule
         """
+        owner = self._owner_loop
+
+        # 1. 尝试获取当前线程的 running loop
         try:
-            asyncio.get_running_loop()
-            # We're in an async context, create a task
-            asyncio.create_task(coro)  # type: ignore[arg-type]
+            running = asyncio.get_running_loop()
         except RuntimeError:
-            # No running loop, run synchronously
-            asyncio.run(coro)  # type: ignore[arg-type]
+            running = None
+
+        if running is not None and running is owner:
+            # 同一事件循环线程，直接 create_task（最快路径）
+            task = asyncio.create_task(coro)  # type: ignore[arg-type]
+            task.add_done_callback(self._on_task_done)
+            self._background_tasks.add(task)
+        elif owner is not None and owner.is_running():
+            # 跨线程：通过 run_coroutine_threadsafe 调度到主循环
+            future = asyncio.run_coroutine_threadsafe(coro, owner)  # type: ignore[arg-type]
+            future.add_done_callback(self._on_task_done)
+        elif running is not None:
+            # 在不同的事件循环线程上（不是 owner），用当前循环的 create_task
+            task = asyncio.create_task(coro)  # type: ignore[arg-type]
+            task.add_done_callback(self._on_task_done)
+            self._background_tasks.add(task)
+        else:
+            # 无任何 running loop（纯 sync 入口，如 CLI 脚本）
+            # asyncio.run() 创建临时 loop 执行一次性持久化
+            try:
+                asyncio.run(coro)  # type: ignore[arg-type]
+            except RuntimeError:
+                logger.error(
+                    "HistoryList: failed to schedule persistence — no event loop available. "
+                    "Messages added in this run may not be persisted to storage."
+                )
+
+    def _on_task_done(self, task: asyncio.Task[object] | asyncio.Future[object] | ConcurrentFuture[object]) -> None:
+        """Done-callback for fire-and-forget persistence tasks.
+
+        记录持久化失败，避免异常被静默吞掉（Python 仅在 Task 被 GC 时
+        打印 'Task exception was never retrieved' 警告，很容易遗漏）。
+        """
+        self._background_tasks.discard(task)  # type: ignore[arg-type]
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            logger.error("❌ HistoryList background persistence failed: %s", exc, exc_info=exc)
 
     async def _persist_flush_async(
         self,

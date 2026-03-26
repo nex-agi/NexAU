@@ -194,18 +194,14 @@ class TransportBase[TTransportConfig](ABC):
             events_mw,
         )
 
-        # Create agent in thread pool (Agent.__init__ does blocking/sync session init
-        # via asyncio.run in that thread; avoids event-loop nesting in async handler)
-        def create_agent() -> Agent:
-            return Agent(
-                config=config_with_middlewares,
-                session_manager=self._session_manager,
-                user_id=user_id,
-                session_id=session_id,
-                variables=variables,
-            )
-
-        agent: Agent = await asyncio.to_thread(create_agent)
+        # Create agent natively on the event loop via async factory
+        agent: Agent = await Agent.create(
+            config=config_with_middlewares,
+            session_manager=self._session_manager,
+            user_id=user_id,
+            session_id=session_id,
+            variables=variables,
+        )
 
         # RFC-0001 Phase 4: 注册 agent 到运行表
         agent_key = (user_id, session_id, agent.agent_id)
@@ -270,18 +266,14 @@ class TransportBase[TTransportConfig](ABC):
             enable_stream=True,
         )
 
-        # Create agent in thread pool (Agent.__init__ does blocking/sync session init
-        # via asyncio.run in that thread; avoids event-loop nesting in async handler)
-        def create_agent() -> Agent:
-            return Agent(
-                config=config_with_middlewares,
-                session_manager=self._session_manager,
-                user_id=user_id,
-                session_id=session_id,
-                variables=variables,
-            )
-
-        agent: Agent = await asyncio.to_thread(create_agent)
+        # Create agent natively on the event loop via async factory
+        agent: Agent = await Agent.create(
+            config=config_with_middlewares,
+            session_manager=self._session_manager,
+            user_id=user_id,
+            session_id=session_id,
+            variables=variables,
+        )
 
         # RFC-0001 Phase 4: 注册 agent 到运行表
         agent_key = (user_id, session_id, agent.agent_id)

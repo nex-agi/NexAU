@@ -17,6 +17,7 @@
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
+    from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
     from nexau.archs.main_sub.team.state import AgentTeamState
     from nexau.archs.main_sub.token_trace_session import TokenTraceSession
     from nexau.archs.sandbox.base_sandbox import BaseSandbox, BaseSandboxManager
@@ -53,6 +54,7 @@ class AgentState:
         variables: ContextValue | None = None,
         team_state: Optional["AgentTeamState"] = None,
         token_trace_session: Optional["TokenTraceSession"] = None,
+        subagent_manager: Optional["SubAgentManager"] = None,
     ):
         """Initialize agent state.
 
@@ -69,6 +71,7 @@ class AgentState:
             sandbox_manager: Optional sandbox manager for lazy sandbox access
             variables: Optional ContextValue with runtime variables
             token_trace_session: Optional token trace session for generate_with_token providers (RFC-0009)
+            subagent_manager: Optional SubAgentManager for RecallSubAgent tool access
         """
         self.agent_name = agent_name
         self.agent_id = agent_id
@@ -83,6 +86,12 @@ class AgentState:
         self._variables = variables or ContextValue()
         self.team_state = team_state
         self.token_trace_session = token_trace_session
+        self._subagent_manager = subagent_manager
+
+    @property
+    def subagent_manager(self) -> Optional["SubAgentManager"]:
+        """SubAgentManager instance for RecallSubAgent tool access."""
+        return self._subagent_manager
 
     def get_context_value(self, key: str, default: Any = None) -> Any:
         """Get a value from the context.

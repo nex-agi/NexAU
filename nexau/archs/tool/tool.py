@@ -266,6 +266,11 @@ class Tool:
             )
         self.extra_kwargs = extra_kwargs
 
+        # 子类（如 MCPTool）可重写此属性为 True，表示其 execute_async()
+        # 有独立的原生 async 实现，executor 应直接 await 而非走
+        # to_thread → sync execute → asyncio.run 的间接路径。
+        self._has_native_async_execute: bool = False
+
         # Validate schema
         self._validate_schema()
         self._validate_reserved_param_annotations()
@@ -425,6 +430,17 @@ class Tool:
 
         return False
 
+    @property
+    def has_native_async_execute(self) -> bool:
+        """Whether this tool has a native async execute_async() override.
+
+        子类（如 MCPTool）重写 execute_async() 为原生 async 实现时，
+        应在 __init__ 中设置 ``_has_native_async_execute = True``。
+        executor 据此决定直接 await execute_async() 还是走
+        to_thread → sync execute 路径。
+        """
+        return self._has_native_async_execute
+
     def execute(self, **params: Any) -> dict[str, Any]:
         """Execute the tool with given parameters."""
 
@@ -476,10 +492,121 @@ class Tool:
             raw_result: Any = impl(**filtered_params)
 
             # Support async tool implementations.
-            # Tools run in ThreadPoolExecutor workers (no running event loop),
-            # so asyncio.run() is safe here.
+            # 当 impl 返回 coroutine 时，根据调用上下文分发：
+            # - 无 running loop（ThreadPoolExecutor worker / CLI / 脚本）→ asyncio.run() 安全
+            # - 有 running loop（async context 误调 execute()）→ 报错，引导用 execute_async()
             if inspect.iscoroutine(raw_result):
-                raw_result = asyncio.run(raw_result)
+                try:
+                    asyncio.get_running_loop()
+                except RuntimeError:
+                    # 无 running loop — sync 入口（ThreadPoolExecutor worker / CLI）
+                    # 警告开发者: async tool 将在隔离的 event loop 中执行，
+                    # 无法访问主 loop 的共享 async 状态（如 task group、shared lock 等）。
+                    # 如需复用主 loop，应通过 executor async 路径调用 execute_async()。
+                    logger.warning(
+                        "Tool '%s' is async but invoked via sync execute() — running in an "
+                        "isolated event loop. Use execute_async() to run on the main loop.",
+                        self.name,
+                    )
+                    raw_result = asyncio.run(raw_result)
+                else:
+                    # 关闭未 await 的 coroutine 以避免 RuntimeWarning
+                    raw_result.close()
+                    raise RuntimeError(
+                        f"Tool '{self.name}' returned a coroutine but execute() was called "
+                        "from an async context. Use `await tool.execute_async(...)` instead."
+                    )
+
+            # Ensure result is a dictionary
+            final_result: dict[str, Any]
+            if isinstance(raw_result, dict):
+                final_result = cast(dict[str, Any], raw_result)
+            elif dataclasses.is_dataclass(raw_result) and not isinstance(raw_result, type):
+                final_result = dataclasses.asdict(raw_result)
+            elif isinstance(raw_result, list):
+                result_list = cast(list[object], raw_result)
+                final_result = {
+                    "result": [
+                        dataclasses.asdict(item) if (dataclasses.is_dataclass(item) and not isinstance(item, type)) else item
+                        for item in result_list
+                    ]
+                }
+            else:
+                final_result = {"result": raw_result}
+
+            return final_result
+
+        except Exception as e:
+            # Return error information
+            return {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "traceback": traceback.format_exc(),
+                "tool_name": self.name,
+            }
+
+    async def execute_async(self, **params: Any) -> dict[str, Any]:
+        """Execute the tool asynchronously.
+
+        P1 async/sync 技术债修复: 消除 asyncio.run() 嵌套
+
+        对 async tool 实现直接 await（避免 asyncio.run() 创建嵌套 event loop），
+        对 sync tool 实现通过 asyncio.to_thread() 在线程池中执行（避免阻塞 event loop）。
+        现有 execute() 方法保持不变，供 sync 调用方（如 ThreadPoolExecutor workers）使用。
+        """
+        if self.implementation is None:
+            if self.implementation_import_path:
+                logger.info(f"Dynamic importing tool implementation '{self.name}': {self.implementation_import_path}")
+
+                from ..main_sub.utils import import_from_string
+
+                func = import_from_string(str(self.implementation_import_path))
+                self.implementation = func
+                self._validate_reserved_param_annotations()
+            else:
+                raise ValueError(f"Tool '{self.name}' has no implementation")
+
+        # RFC-0006: 参数注入 — ctx 优先，agent_state 向后兼容
+        merged_params = {**self.extra_kwargs, **params}
+        filtered_params = merged_params.copy()
+
+        impl = self.implementation
+        if impl is not None:
+            sig = inspect.signature(impl)
+
+            # RFC-0006: ctx (FrameworkContext) 注入
+            if "ctx" not in sig.parameters:
+                filtered_params.pop("ctx", None)
+
+            # 向后兼容: agent_state 注入
+            if "agent_state" in merged_params:
+                if "agent_state" not in sig.parameters:
+                    filtered_params.pop("agent_state", None)
+
+                    # For backwards compatibility, check if function accepts global_storage
+                    if "global_storage" in sig.parameters:
+                        agent_state = merged_params["agent_state"]
+                        filtered_params["global_storage"] = agent_state.global_storage
+                if "sandbox" not in sig.parameters:
+                    filtered_params.pop("sandbox", None)
+
+        # Validate parameters (excluding framework-injected params for schema validation)
+        _injected_keys = {"agent_state", "global_storage", "sandbox", "ctx"}
+        validation_params = {k: v for k, v in filtered_params.items() if k not in _injected_keys}
+        self.validate_params(validation_params)
+
+        try:
+            if impl is None:
+                raise ValueError(f"Tool '{self.name}' has no implementation")
+
+            # 根据实现类型分发：async 直接 await，sync 走 to_thread
+            if inspect.iscoroutinefunction(impl):
+                raw_result: Any = await impl(**filtered_params)
+            else:
+                # asyncio.to_thread (Python 3.12+) 会自动将当前 contextvars
+                # 复制到 worker 线程，因此 TraceContext 等 contextvar 能正确传播。
+                # 无需手动 copy_context()。
+                raw_result = await asyncio.to_thread(impl, **filtered_params)
 
             # Ensure result is a dictionary
             final_result: dict[str, Any]

@@ -81,9 +81,11 @@ class TeamSSEMultiplexer:
 
         当调用线程不是事件循环所在线程时（如 ThreadPoolExecutor 中的 tool
         通过 asyncio.run() 执行），使用 call_soon_threadsafe 调度到主循环。
+        如果 owner loop 已关闭，回退到直接 put_nowait（尽力而为）。
         """
         loop = self._loop
-        if loop is None:
+        if loop is None or loop.is_closed():
+            # 无 owner loop 或 loop 已关闭 — 直接入队（尽力而为）
             self._queue.put_nowait(item)
             return
 
@@ -97,7 +99,12 @@ class TeamSSEMultiplexer:
             self._queue.put_nowait(item)
         else:
             # 跨线程，调度到主事件循环
-            loop.call_soon_threadsafe(self._queue.put_nowait, item)
+            try:
+                loop.call_soon_threadsafe(self._queue.put_nowait, item)
+            except RuntimeError:
+                # loop 在竞态中被关闭，回退到直接入队
+                logger.warning("TeamSSEMultiplexer: owner loop closed during _put, using fallback")
+                self._queue.put_nowait(item)
 
     # ------------------------------------------------------------------
 

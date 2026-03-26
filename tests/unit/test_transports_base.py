@@ -140,7 +140,7 @@ class TestTransportBase:
         with patch("nexau.archs.transports.base.Agent") as mock_agent_cls:
             mock_agent = Mock()
             mock_agent.run_async = AsyncMock(return_value="Test response")
-            mock_agent_cls.return_value = mock_agent
+            mock_agent_cls.create = AsyncMock(return_value=mock_agent)
 
             response = asyncio.run(
                 transport.handle_request(
@@ -157,7 +157,7 @@ class TestTransportBase:
         with patch("nexau.archs.transports.base.Agent") as mock_agent_cls:
             mock_agent = Mock()
             mock_agent.run_async = AsyncMock(return_value="Test response")
-            mock_agent_cls.return_value = mock_agent
+            mock_agent_cls.create = AsyncMock(return_value=mock_agent)
 
             response = asyncio.run(
                 transport.handle_request(
@@ -174,7 +174,7 @@ class TestTransportBase:
         with patch("nexau.archs.transports.base.Agent") as mock_agent_cls:
             mock_agent = Mock()
             mock_agent.run_async = AsyncMock(return_value="Test response")
-            mock_agent_cls.return_value = mock_agent
+            mock_agent_cls.create = AsyncMock(return_value=mock_agent)
 
             response = asyncio.run(
                 transport.handle_request(
@@ -193,7 +193,7 @@ class TestTransportBase:
         with patch("nexau.archs.transports.base.Agent") as mock_agent_cls:
             mock_agent = Mock()
             mock_agent.run_async = AsyncMock(return_value="Test response")
-            mock_agent_cls.return_value = mock_agent
+            mock_agent_cls.create = AsyncMock(return_value=mock_agent)
 
             async def run_test():
                 collected = []
@@ -209,12 +209,12 @@ class TestTransportBase:
             # Agent should have been called
             mock_agent.run_async.assert_called_once()
 
-    def test_async_loop_nesting_problem_direct_agent_in_async(self, engine, agent_config):
-        """Creating Agent() directly in async context succeeds with nest_asyncio."""
+    def test_async_agent_create_in_async_context(self, engine, agent_config):
+        """Creating Agent via Agent.create() in async context works natively."""
         session_manager = SessionManager(engine=engine)
 
         async def create_agent_in_async_context():
-            return Agent(
+            return await Agent.create(
                 config=agent_config,
                 session_manager=session_manager,
                 user_id="user_1",

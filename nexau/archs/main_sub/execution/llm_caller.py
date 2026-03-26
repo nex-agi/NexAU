@@ -20,16 +20,21 @@ RFC-0006: structured tool calling 的 provider 延迟适配
 tool definitions 适配成 OpenAI / Anthropic / Gemini 所需的 provider schema。
 """
 
+import asyncio
+import contextvars
+import functools
 import json
 import logging
 import threading
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal, cast
 
+import httpx
 import openai
 import requests
-from openai import Stream
+from openai import AsyncStream, Stream
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
 from nexau.archs.llm.llm_config import LLMConfig
@@ -222,24 +227,36 @@ class LLMCaller:
         middleware_manager: MiddlewareManager | None = None,
         global_storage: Any = None,
         session_id: str | None = None,
+        async_openai_client: Any | None = None,
     ):
         """Initialize LLM caller.
 
         Args:
-            openai_client: OpenAI client instance
+            openai_client: OpenAI/Anthropic sync client instance
             llm_config: LLM configuration
             retry_attempts: Number of retry attempts for API calls
             middleware_manager: Optional middleware manager for wrapping calls
             global_storage: Optional global storage to retrieve tracer at call time
             session_id: Optional session ID injected into provider payloads
                 (OpenAI ``user``, Anthropic ``metadata.user_id``; Gemini skipped)
+            async_openai_client: AsyncOpenAI/AsyncAnthropic client for native async calls.
+                When provided, ``_call_with_retry_async`` uses direct ``await``
+                instead of ``to_thread`` bridging.
         """
         self.openai_client = openai_client
+        self.async_openai_client = async_openai_client
         self.llm_config = llm_config
         self.retry_attempts = retry_attempts
         self.middleware_manager = middleware_manager
         self.global_storage = global_storage
         self.session_id = session_id
+
+        # RFC-0001: 专用线程池执行 sync LLM SDK 调用，避免使用 event loop 的 default executor
+        # force stop 时可通过 shutdown(wait=False) 立即释放，不阻塞 event loop 关闭
+        self._llm_thread_pool: ThreadPoolExecutor = ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix="llm-call",
+        )
 
     def _get_tracer(self) -> BaseTracer | None:
         """Get tracer from global storage at call time."""
@@ -384,6 +401,147 @@ class LLMCaller:
 
         return model_response
 
+    def _call_once_sync(
+        self,
+        params: ModelCallParams,
+    ) -> ModelResponse | None:
+        """Execute a single LLM call attempt (no retry loop).
+
+        P2 async/sync 技术债修复: _call_with_retry_async 的单次调用桥接
+
+        从 _call_with_retry 提取的核心调用逻辑，不含重试循环。
+        用于 _call_with_retry_async 的 asyncio.to_thread 桥接，
+        外层的 async retry 循环负责重试和退避。
+
+        包含: 参数准备、session_id 注入、message 转换、tracer 传递。
+        """
+        from .executor import AgentStopReason
+
+        force_stop_reason = params.force_stop_reason
+        if force_stop_reason and force_stop_reason != AgentStopReason.SUCCESS:
+            return None
+
+        kwargs = dict(params.api_params)
+
+        # session_id → provider-specific user tracking field
+        if self.session_id is not None:
+            if self.llm_config.api_type == "openai_chat_completion":
+                kwargs.setdefault("user", self.session_id)
+            elif self.llm_config.api_type == "openai_responses":
+                kwargs.setdefault("safety_identifier", self.session_id)
+                kwargs.setdefault("prompt_cache_key", self.session_id)
+            elif self.llm_config.api_type == "anthropic_chat_completion":
+                existing_metadata: dict[str, str] = kwargs.get("metadata") or {}
+                existing_metadata.setdefault("user_id", self.session_id)
+                kwargs["metadata"] = existing_metadata
+
+        tool_image_policy: Literal["inject_user_message", "embed_in_tool_message"] = "inject_user_message"
+        if self.llm_config.api_type in {"openai_chat_completion", "openai_responses"}:
+            tool_image_policy = "embed_in_tool_message" if self.llm_config.api_type == "openai_responses" else "inject_user_message"
+        if self.llm_config.api_type != "generate_with_token":
+            kwargs["messages"] = messages_to_legacy_openai_chat(params.messages, tool_image_policy=tool_image_policy)
+
+        client = params.openai_client if params.openai_client is not None else self.openai_client
+        response_content = call_llm_with_different_client(
+            client,
+            self.llm_config,
+            kwargs,
+            middleware_manager=self.middleware_manager,
+            model_call_params=params,
+            tracer=self._get_tracer(),
+        )
+
+        stop = kwargs.get("stop", [])
+        if isinstance(stop, str):
+            stop = [stop]
+        if stop and response_content.content:
+            for s in stop:
+                response_content.content = response_content.content.split(s)[0]
+
+        if response_content.has_content() or response_content.has_tool_calls():
+            return response_content
+        else:
+            raw_message_meta = _raw_message_metadata(response_content.raw_message)
+            finish_reason = raw_message_meta.get("finish_reason") or raw_message_meta.get("choice_finish_reason")
+            logger.error(
+                "❌ Empty model response received: finish_reason=%s, role=%s, content_len=%d, tool_calls=%d, usage=%s",
+                finish_reason if finish_reason is not None else "unknown",
+                response_content.role,
+                len(response_content.content or ""),
+                len(response_content.tool_calls),
+                response_content.usage.to_dict(),
+            )
+            raise RuntimeError("No response content or tool calls from LLM")
+
+    async def _call_once_async(
+        self,
+        params: ModelCallParams,
+    ) -> ModelResponse | None:
+        """Execute a single async LLM call attempt (no retry loop).
+
+        async/sync 技术债修复: 使用 AsyncOpenAI / AsyncAnthropic 原生 await，
+        彻底消除 to_thread 桥接。force stop 时 asyncio cancellation 直接生效。
+
+        包含: 参数准备、session_id 注入、message 转换、tracer 传递。
+        """
+        from .executor import AgentStopReason
+
+        force_stop_reason = params.force_stop_reason
+        if force_stop_reason and force_stop_reason != AgentStopReason.SUCCESS:
+            return None
+
+        kwargs = dict(params.api_params)
+
+        # session_id → provider-specific user tracking field
+        if self.session_id is not None:
+            if self.llm_config.api_type == "openai_chat_completion":
+                kwargs.setdefault("user", self.session_id)
+            elif self.llm_config.api_type == "openai_responses":
+                kwargs.setdefault("safety_identifier", self.session_id)
+                kwargs.setdefault("prompt_cache_key", self.session_id)
+            elif self.llm_config.api_type == "anthropic_chat_completion":
+                existing_metadata: dict[str, str] = kwargs.get("metadata") or {}
+                existing_metadata.setdefault("user_id", self.session_id)
+                kwargs["metadata"] = existing_metadata
+
+        tool_image_policy: Literal["inject_user_message", "embed_in_tool_message"] = "inject_user_message"
+        if self.llm_config.api_type in {"openai_chat_completion", "openai_responses"}:
+            tool_image_policy = "embed_in_tool_message" if self.llm_config.api_type == "openai_responses" else "inject_user_message"
+        if self.llm_config.api_type != "generate_with_token":
+            kwargs["messages"] = messages_to_legacy_openai_chat(params.messages, tool_image_policy=tool_image_policy)
+
+        async_client = self.async_openai_client
+        response_content = await call_llm_with_different_client_async(
+            async_client,
+            self.llm_config,
+            kwargs,
+            middleware_manager=self.middleware_manager,
+            model_call_params=params,
+            tracer=self._get_tracer(),
+        )
+
+        stop = kwargs.get("stop", [])
+        if isinstance(stop, str):
+            stop = [stop]
+        if stop and response_content.content:
+            for s in stop:
+                response_content.content = response_content.content.split(s)[0]
+
+        if response_content.has_content() or response_content.has_tool_calls():
+            return response_content
+        else:
+            raw_message_meta = _raw_message_metadata(response_content.raw_message)
+            finish_reason = raw_message_meta.get("finish_reason") or raw_message_meta.get("choice_finish_reason")
+            logger.error(
+                "❌ Empty model response received: finish_reason=%s, role=%s, content_len=%d, tool_calls=%d, usage=%s",
+                finish_reason if finish_reason is not None else "unknown",
+                response_content.role,
+                len(response_content.content or ""),
+                len(response_content.tool_calls),
+                response_content.usage.to_dict(),
+            )
+            raise RuntimeError("No response content or tool calls from LLM")
+
     def _call_with_retry(
         self,
         params: ModelCallParams,
@@ -482,7 +640,250 @@ class LLMCaller:
                 if i == self.retry_attempts - 1:
                     raise e
                 time.sleep(backoff)
-                backoff *= 2
+                backoff = min(backoff * 2, 16)  # Cap at 16s to limit thread pool slot occupation
+        return None
+
+    async def call_llm_async(
+        self,
+        messages: list[Message],
+        max_tokens: int | None = None,
+        force_stop_reason: AgentStopReason | None = None,
+        agent_state: AgentState | None = None,
+        tool_call_mode: str = "xml",
+        tools: Sequence[StructuredToolDefinitionLike] | None = None,
+        openai_client: Any | None = None,
+        shutdown_event: threading.Event | None = None,
+        token_trace_session: TokenTraceSession | None = None,
+    ) -> ModelResponse | None:
+        """Async version of call_llm.
+
+        P2 async/sync 技术债修复: 异步 LLM 调用路径
+
+        使用 asyncio.sleep 替代 time.sleep 做退避重试，
+        Gemini REST 使用 httpx.AsyncClient 做真正的异步 HTTP 调用，
+        其他 provider (OpenAI/Anthropic) 通过 asyncio.to_thread 桥接 sync SDK。
+        """
+        # 参数准备逻辑与 call_llm 相同
+        runtime_client = openai_client if openai_client is not None else self.openai_client
+
+        if not runtime_client and not self.middleware_manager and self.llm_config.api_type != "gemini_rest":
+            raise RuntimeError(
+                "OpenAI client is not available. Please check your API configuration.",
+            )
+
+        normalized_mode = normalize_tool_call_mode(tool_call_mode)
+        use_structured_tools = normalized_mode in STRUCTURED_TOOL_CALL_MODES
+        adapted_tools: list[Mapping[str, object]] | None = None
+        if use_structured_tools:
+            structured_provider_target = resolve_structured_provider_target(self.llm_config.api_type)
+            adapted_tools = _adapt_structured_tools_for_provider(tools, structured_provider_target)
+
+        api_params = self.llm_config.to_openai_params()
+        if max_tokens is not None:
+            api_params["max_tokens"] = max_tokens
+
+        if use_structured_tools:
+            sp_target = resolve_structured_provider_target(self.llm_config.api_type)
+            if adapted_tools and sp_target == "anthropic":
+                api_params["tools"] = adapted_tools
+                api_params.setdefault("tool_choice", {"type": "auto"})
+            elif adapted_tools and sp_target == "openai":
+                api_params["tools"] = adapted_tools
+                api_params.setdefault("tool_choice", "auto")
+            elif adapted_tools and sp_target == "gemini":
+                api_params["tools"] = adapted_tools
+
+        if not use_structured_tools:
+            xml_stop_sequences = ["</tool_use>", "</use_parallel_tool_calls>", "</use_batch_agent>"]
+            existing_stop = api_params.get("stop", [])
+            if isinstance(existing_stop, str):
+                existing_stop = [existing_stop]
+            elif existing_stop is None:
+                existing_stop = []
+            api_params["stop"] = existing_stop + xml_stop_sequences
+
+        dropper = getattr(self.llm_config, "apply_param_drops", None)
+        if callable(dropper):
+            api_params = cast(dict[str, Any], dropper(api_params))
+
+        messages = _ensure_tool_results(messages)
+
+        model_call_params = ModelCallParams(
+            messages=messages,
+            max_tokens=max_tokens,
+            force_stop_reason=force_stop_reason,
+            agent_state=agent_state,
+            tool_call_mode=tool_call_mode,
+            tools=tools,
+            api_params=api_params,
+            openai_client=runtime_client,
+            llm_config=self.llm_config,
+            retry_attempts=self.retry_attempts,
+            shutdown_event=shutdown_event,
+            token_trace_session=token_trace_session,
+        )
+
+        # 使用 async retry wrapper
+        response_payload: ModelResponse | None
+        if self.middleware_manager:
+            # Middleware wrapping 仍走 sync (在 to_thread 中)
+            # 使用 _call_once_sync 而非 _call_with_retry，避免嵌套重试
+            def _wrapped(params: ModelCallParams) -> ModelResponse | None:
+                return self.middleware_manager.wrap_model_call(params, lambda p: self._call_once_sync(p))  # type: ignore[union-attr]
+
+            response_payload = await self._call_with_retry_async(model_call_params, _wrapped)
+        else:
+            response_payload = await self._call_with_retry_async(model_call_params)
+
+        if response_payload is None:
+            return None
+
+        if response_payload.content:
+            from ..utils.xml_utils import XMLUtils
+
+            response_payload.content = XMLUtils.restore_closing_tags(response_payload.content)
+        return response_payload
+
+    async def _call_with_retry_async(
+        self,
+        params: ModelCallParams,
+        sync_call_fn: Any | None = None,
+    ) -> ModelResponse | None:
+        """Async retry wrapper with asyncio.sleep for backoff.
+
+        async/sync 技术债修复: 原生 async SDK 调用 + asyncio.sleep 退避
+
+        - Gemini REST: httpx.AsyncClient 原生异步
+        - OpenAI / Anthropic (无 middleware): AsyncOpenAI / AsyncAnthropic
+          原生 await，asyncio cancellation 直接生效
+        - Middleware-wrapped: sync hook 需通过 _llm_thread_pool 桥接，
+          cleanup() 可 shutdown(wait=False) 释放
+
+        重要: 对非 Gemini provider，直接桥接 _call_once_sync() (单次调用)，
+        而不是 _call_with_retry() (自带重试循环)，避免 retry_attempts² 的
+        嵌套重试和重复 tracing span。
+        """
+        from .executor import AgentStopReason
+
+        force_stop_reason = params.force_stop_reason
+        if force_stop_reason and force_stop_reason != AgentStopReason.SUCCESS:
+            return None
+
+        backoff = 1
+        for i in range(self.retry_attempts):
+            try:
+                if params.shutdown_event and params.shutdown_event.is_set():
+                    logger.info("🛑 LLM call interrupted by shutdown_event (async), skipping retry")
+                    return None
+
+                if sync_call_fn is not None:
+                    # Middleware-wrapped path: sync hook 需线程桥接
+                    # 使用专用 _llm_thread_pool 而非 default executor，
+                    # 避免 force stop 时阻塞 event loop shutdown
+                    return await self._run_sync_in_llm_pool(sync_call_fn, params)
+
+                # Gemini REST: native async path (httpx.AsyncClient)
+                if self.llm_config.api_type == "gemini_rest":
+                    kwargs = dict(params.api_params)
+                    return await call_llm_with_gemini_rest_async(
+                        kwargs,
+                        middleware_manager=self.middleware_manager,
+                        model_call_params=params,
+                        llm_config=self.llm_config,
+                        tracer=self._get_tracer(),
+                    )
+
+                # OpenAI / Anthropic: 原生 async SDK，直接 await
+                # 通过 shutdown_event 监控实现可取消：stop() 设置 event 后
+                # 立即 cancel 正在 await 的 LLM 调用
+                if self.async_openai_client is not None:
+                    return await self._call_once_async_cancellable(params)
+
+                # Fallback: 无 async client 时仍走线程桥接
+                return await self._run_sync_in_llm_pool(self._call_once_sync, params)
+
+            except Exception as e:
+                if params.shutdown_event and params.shutdown_event.is_set():
+                    logger.info("🛑 LLM call interrupted by shutdown_event (async), skipping retry")
+                    return None
+                logger.error(
+                    f"❌ LLM call failed (attempt {i + 1}/{self.retry_attempts}, async): {e}",
+                    exc_info=True,
+                )
+                if i == self.retry_attempts - 1:
+                    raise e
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 16)  # Cap at 16s to match sync retry
+        return None
+
+    async def _run_sync_in_llm_pool(
+        self,
+        func: Any,
+        *args: Any,
+    ) -> ModelResponse | None:
+        """Run a sync function in the dedicated LLM thread pool.
+
+        RFC-0001: 替代 asyncio.to_thread 以使用专用线程池
+
+        与 asyncio.to_thread 相同语义（含 contextvars 传播），
+        但使用 _llm_thread_pool 而非 event loop 的 default executor，
+        确保 force stop 时 cleanup() 可通过 shutdown(wait=False) 释放。
+        """
+        loop = asyncio.get_running_loop()
+        ctx = contextvars.copy_context()
+        func_call = functools.partial(ctx.run, func, *args)
+        return await loop.run_in_executor(self._llm_thread_pool, func_call)
+
+    def shutdown_thread_pool(self) -> None:
+        """Shut down the dedicated LLM thread pool without waiting.
+
+        Called by Executor.cleanup() during force stop to release
+        middleware-path worker threads immediately.
+        """
+        self._llm_thread_pool.shutdown(wait=False, cancel_futures=True)
+
+    async def _call_once_async_cancellable(
+        self,
+        params: ModelCallParams,
+    ) -> ModelResponse | None:
+        """Run _call_once_async but cancel if shutdown_event is set.
+
+        async/sync 技术债修复: 让 async LLM 调用可被 graceful stop 取消。
+        stop() 设置 shutdown_event 后，此方法 cancel 正在 await 的 HTTP 请求，
+        使 execute_async 的主循环能及时退出，asyncio.gather 不再无限等待。
+        """
+        shutdown_ev = params.shutdown_event
+        if shutdown_ev is not None and shutdown_ev.is_set():
+            return None
+
+        llm_task = asyncio.ensure_future(self._call_once_async(params))
+
+        if shutdown_ev is None:
+            return await llm_task
+
+        # 轮询 shutdown_event（不使用 to_thread 避免 default executor 问题）
+        async def _poll_shutdown() -> None:
+            while not shutdown_ev.is_set():
+                await asyncio.sleep(0.1)
+
+        shutdown_task = asyncio.ensure_future(_poll_shutdown())
+
+        done, pending = await asyncio.wait(
+            {llm_task, shutdown_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        for p in pending:
+            p.cancel()
+            try:
+                await p
+            except asyncio.CancelledError:
+                pass
+
+        if llm_task in done:
+            return llm_task.result()
+
+        logger.info("🛑 Async LLM call cancelled by shutdown_event")
         return None
 
 
@@ -1238,6 +1639,357 @@ def call_llm_with_openai_responses(
 
     response_payload = call_llm_stream(request_payload)
     return ModelResponse.from_openai_response(response_payload)
+
+
+# ── Async LLM call functions ────────────────────────────────────────
+#
+# async/sync 技术债修复: 使用 AsyncOpenAI / AsyncAnthropic / httpx.AsyncClient
+# 实现原生 async 调用，消除 to_thread 桥接。
+# force stop 时 asyncio cancellation 直接传播，不再阻塞线程。
+
+
+async def call_llm_with_different_client_async(
+    client: Any,
+    llm_config: LLMConfig,
+    kwargs: dict[str, Any],
+    *,
+    middleware_manager: MiddlewareManager | None = None,
+    model_call_params: ModelCallParams | None = None,
+    tracer: BaseTracer | None = None,
+) -> ModelResponse:
+    """Async dispatcher — routes to the correct async provider function."""
+    if llm_config.api_type == "anthropic_chat_completion":
+        return await call_llm_with_anthropic_chat_completion_async(
+            client,
+            kwargs,
+            middleware_manager=middleware_manager,
+            model_call_params=model_call_params,
+            tracer=tracer,
+            cache_control_ttl=llm_config.cache_control_ttl,
+        )
+    elif llm_config.api_type == "openai_responses":
+        return await call_llm_with_openai_responses_async(
+            client,
+            kwargs,
+            middleware_manager=middleware_manager,
+            model_call_params=model_call_params,
+            llm_config=llm_config,
+            tracer=tracer,
+        )
+    elif llm_config.api_type == "openai_chat_completion":
+        return await call_llm_with_openai_chat_completion_async(
+            client,
+            kwargs,
+            middleware_manager=middleware_manager,
+            model_call_params=model_call_params,
+            llm_config=llm_config,
+            tracer=tracer,
+        )
+    elif llm_config.api_type == "gemini_rest":
+        return await call_llm_with_gemini_rest_async(
+            kwargs,
+            middleware_manager=middleware_manager,
+            model_call_params=model_call_params,
+            llm_config=llm_config,
+            tracer=tracer,
+        )
+    else:
+        raise ValueError(f"Invalid API type for async call: {llm_config.api_type}")
+
+
+async def call_llm_with_openai_chat_completion_async(
+    client: openai.AsyncOpenAI,
+    kwargs: dict[str, Any],
+    *,
+    middleware_manager: MiddlewareManager | None = None,
+    model_call_params: ModelCallParams | None = None,
+    llm_config: LLMConfig | None = None,
+    tracer: BaseTracer | None = None,
+) -> ModelResponse:
+    """Async OpenAI chat completion — mirrors sync version with await."""
+
+    messages = _strip_responses_api_artifacts(kwargs.get("messages", []))
+    for msg in messages:
+        if isinstance(msg, dict):
+            typed_msg = cast(dict[str, object], msg)
+            if typed_msg.get("role") == "assistant" and typed_msg.get("content") == "" and typed_msg.get("tool_calls"):
+                del typed_msg["content"]
+    kwargs["messages"] = messages
+    stream_requested = bool(kwargs.pop("stream", False) or getattr(llm_config, "stream", False))
+
+    should_trace = tracer is not None and get_current_span() is not None
+
+    if stream_requested:
+        # 1. 异步流式路径
+        payload = kwargs.copy()
+        payload.pop("stream", None)
+        stream_options = {"include_usage": True}
+        payload["stream_options"] = stream_options
+        aggregator = OpenAIChatStreamAggregator()
+
+        _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
+
+        if should_trace and tracer is not None:
+            trace_ctx = TraceContext(tracer, "OpenAI chat.completions.create (async stream)", SpanType.LLM, inputs=payload)
+            with trace_ctx:
+                start_time = time.time()
+                first_token_time = None
+                stream_ctx: AsyncStream[ChatCompletionChunk] = await client.chat.completions.create(
+                    stream=True,
+                    **payload,
+                )
+                async with stream_ctx:
+                    async for chunk in stream_ctx:
+                        if _shutdown_ev is not None and _shutdown_ev.is_set():
+                            logger.info("🛑 Shutdown event detected during async OpenAI streaming")
+                            break
+                        if first_token_time is None:
+                            first_token_time = time.time()
+                        processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
+                        if processed_chunk is None:
+                            continue
+                        aggregator.consume(processed_chunk)
+                message_payload = aggregator.finalize()
+                trace_ctx.set_outputs(message_payload)
+                if first_token_time is not None:
+                    trace_ctx.set_attributes({"time_to_first_token_ms": (first_token_time - start_time) * 1000})
+        else:
+            stream_ctx = await client.chat.completions.create(stream=True, **payload)
+            async with stream_ctx:
+                async for chunk in stream_ctx:
+                    if _shutdown_ev is not None and _shutdown_ev.is_set():
+                        logger.info("🛑 Shutdown event detected during async OpenAI streaming")
+                        break
+                    processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
+                    if processed_chunk is None:
+                        continue
+                    aggregator.consume(processed_chunk)
+            message_payload = aggregator.finalize()
+
+        return ModelResponse.from_openai_message(message_payload)
+
+    # 2. 非流式路径
+    async def _invoke(api_kwargs: dict[str, Any]) -> ChatCompletion:
+        return cast(ChatCompletion, await client.chat.completions.create(**api_kwargs))
+
+    if should_trace and tracer is not None:
+        trace_ctx_nr = TraceContext(tracer, "OpenAI chat.completions.create (async)", SpanType.LLM, inputs=kwargs)
+        with trace_ctx_nr:
+            chat_response = await _invoke(kwargs)
+            trace_ctx_nr.set_outputs(_to_serializable_dict(chat_response))
+    else:
+        chat_response = await _invoke(kwargs)
+
+    response_message: Any = chat_response.choices[0].message
+    usage = None
+    if chat_response.usage is not None:
+        usage = _to_serializable_dict(chat_response.usage)
+    return ModelResponse.from_openai_message(response_message, usage=usage)
+
+
+async def call_llm_with_anthropic_chat_completion_async(
+    client: Any,
+    kwargs: dict[str, Any],
+    *,
+    middleware_manager: MiddlewareManager | None = None,
+    model_call_params: ModelCallParams | None = None,
+    tracer: BaseTracer | None = None,
+    cache_control_ttl: str | None = None,
+) -> ModelResponse:
+    """Async Anthropic chat completion — mirrors sync version with await."""
+    stream_requested = bool(kwargs.pop("stream", False))
+    should_trace = tracer is not None and get_current_span() is not None
+
+    def _build_cache_control() -> dict[str, str]:
+        cc: dict[str, str] = {"type": "ephemeral"}
+        if cache_control_ttl:
+            cc["ttl"] = cache_control_ttl
+        return cc
+
+    def _apply_cache_control(
+        system_messages: list[dict[str, Any]],
+        user_messages: list[dict[str, Any]],
+    ) -> None:
+        for sys_block in system_messages:
+            should_cache = sys_block.pop("_cache", True)
+            if should_cache:
+                sys_block["cache_control"] = _build_cache_control()
+        if user_messages and user_messages[-1].get("content"):
+            content = cast(list[dict[str, Any]] | str | None, user_messages[-1].get("content"))
+            if isinstance(content, list) and content:
+                content[0]["cache_control"] = _build_cache_control()
+
+    def _build_anthropic_messages() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if type(model_call_params) is ModelCallParams:
+            from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
+
+            return AnthropicMessagesAdapter().to_vendor_format(model_call_params.messages)
+        legacy_messages = _strip_responses_api_artifacts(kwargs.get("messages", []))
+        return openai_to_anthropic_message(cast(list[dict[str, Any]], legacy_messages))
+
+    # 1. 组装参数（与 sync 版完全相同）
+    system_messages, user_messages = _build_anthropic_messages()
+    _apply_cache_control(system_messages, user_messages)
+
+    new_kwargs = kwargs.copy()
+    new_kwargs.pop("messages", None)
+    new_kwargs.pop("anthropic_cache_control_ttl", None)
+    api_kwargs: dict[str, Any] = {"system": system_messages, "messages": user_messages, **new_kwargs}
+
+    if not stream_requested:
+        # 2. 非流式路径
+        if should_trace and tracer is not None:
+            trace_ctx = TraceContext(tracer, "Anthropic messages.create (async)", SpanType.LLM, inputs=api_kwargs)
+            with trace_ctx:
+                resp = await client.messages.create(**api_kwargs)
+                trace_ctx.set_outputs(_to_serializable_dict(resp))
+        else:
+            resp = await client.messages.create(**api_kwargs)
+        return ModelResponse.from_anthropic_message(resp)
+
+    # 3. 流式路径
+    aggregator = AnthropicStreamAggregator()
+    _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
+
+    if should_trace and tracer is not None:
+        trace_ctx_s = TraceContext(tracer, "Anthropic messages.stream (async)", SpanType.LLM, inputs=api_kwargs)
+        with trace_ctx_s:
+            start_time = time.time()
+            first_token_time = None
+            async with client.messages.stream(**api_kwargs) as stream:
+                async for event in stream:
+                    if _shutdown_ev is not None and _shutdown_ev.is_set():
+                        logger.info("🛑 Shutdown event detected during async Anthropic streaming")
+                        break
+                    if first_token_time is None:
+                        first_token_time = time.time()
+                    processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
+                    if processed_event is None:
+                        continue
+                    aggregator.consume(processed_event)
+            message_payload = aggregator.finalize()
+            trace_ctx_s.set_outputs(message_payload)
+            if first_token_time is not None:
+                trace_ctx_s.set_attributes({"time_to_first_token_ms": (first_token_time - start_time) * 1000})
+    else:
+        async with client.messages.stream(**api_kwargs) as stream:
+            async for event in stream:
+                if _shutdown_ev is not None and _shutdown_ev.is_set():
+                    logger.info("🛑 Shutdown event detected during async Anthropic streaming")
+                    break
+                processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
+                if processed_event is None:
+                    continue
+                aggregator.consume(processed_event)
+        message_payload = aggregator.finalize()
+
+    return ModelResponse.from_anthropic_message(message_payload)
+
+
+async def call_llm_with_openai_responses_async(
+    client: Any,
+    kwargs: dict[str, Any],
+    *,
+    middleware_manager: MiddlewareManager | None = None,
+    model_call_params: ModelCallParams | None = None,
+    llm_config: LLMConfig | None = None,
+    tracer: BaseTracer | None = None,
+) -> ModelResponse:
+    """Async OpenAI Responses API — mirrors sync version with await."""
+
+    request_payload = kwargs.copy()
+
+    messages = request_payload.pop("messages", None)
+    if messages is not None:
+        response_items, instructions = _prepare_responses_api_input(messages)
+        if response_items:
+            request_payload.setdefault("input", response_items)
+        if instructions:
+            existing_instructions = request_payload.get("instructions")
+            if existing_instructions:
+                combined_instructions = f"{existing_instructions.rstrip()}\n\n{instructions}"
+            else:
+                combined_instructions = instructions
+            request_payload["instructions"] = combined_instructions.strip()
+
+    max_tokens = request_payload.pop("max_tokens", None)
+    if max_tokens is not None:
+        request_payload.setdefault("max_output_tokens", max_tokens)
+
+    tools = request_payload.get("tools")
+    if tools:
+        request_payload["tools"] = _normalize_responses_api_tools(tools)
+
+    stream_requested = bool(request_payload.pop("stream", False) or getattr(llm_config, "stream", False))
+
+    request_payload.pop("store", None)
+
+    include_value = request_payload.get("include")
+    include_list: list[str] = []
+    if isinstance(include_value, (list, tuple)):
+        include_items = cast(list[object] | tuple[object, ...], include_value)
+        include_list = [item for item in include_items if isinstance(item, str)]
+    request_payload["include"] = include_list
+    if "reasoning.encrypted_content" not in include_list:
+        include_list.append("reasoning.encrypted_content")
+
+    extra_body: dict[str, Any] = request_payload.pop("extra_body", None) or {}
+    prompt_cache_key = request_payload.pop("prompt_cache_key", None)
+    if prompt_cache_key is not None:
+        extra_body["prompt_cache_key"] = prompt_cache_key
+    if extra_body:
+        request_payload["extra_body"] = extra_body
+
+    should_trace = tracer is not None and get_current_span() is not None
+
+    if not stream_requested:
+        # 非流式路径
+        if should_trace and tracer is not None:
+            trace_ctx = TraceContext(tracer, "OpenAI responses.create (async)", SpanType.LLM, inputs=request_payload)
+            with trace_ctx:
+                response = await client.responses.create(**request_payload)
+                trace_ctx.set_outputs(_to_serializable_dict(response))
+        else:
+            response = await client.responses.create(**request_payload)
+        return ModelResponse.from_openai_response(response)
+
+    # 流式路径
+    aggregator = OpenAIResponsesStreamAggregator()
+    _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
+
+    if should_trace and tracer is not None:
+        trace_ctx_s = TraceContext(tracer, "OpenAI responses.stream (async)", SpanType.LLM, inputs=request_payload)
+        start_time = time.time()
+        first_token_time = None
+        with trace_ctx_s:
+            async with client.responses.stream(**request_payload) as stream:
+                async for event in stream:
+                    if _shutdown_ev is not None and _shutdown_ev.is_set():
+                        logger.info("🛑 Shutdown event detected during async OpenAI Responses streaming")
+                        break
+                    if first_token_time is None:
+                        first_token_time = time.time()
+                    processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
+                    if processed_event is None:
+                        continue
+                    aggregator.consume(processed_event)
+            response_payload_s = aggregator.finalize()
+            trace_ctx_s.set_outputs(response_payload_s)
+            if first_token_time is not None:
+                trace_ctx_s.set_attributes({"time_to_first_token_ms": (first_token_time - start_time) * 1000})
+    else:
+        async with client.responses.stream(**request_payload) as stream:
+            async for event in stream:
+                if _shutdown_ev is not None and _shutdown_ev.is_set():
+                    logger.info("🛑 Shutdown event detected during async OpenAI Responses streaming")
+                    break
+                processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
+                if processed_event is None:
+                    continue
+                aggregator.consume(processed_event)
+        response_payload_s = aggregator.finalize()
+
+    return ModelResponse.from_openai_response(response_payload_s)
 
 
 def _parse_image_url_part(part_map: Mapping[str, object]) -> dict[str, object] | None:
@@ -2707,3 +3459,223 @@ def call_llm_with_gemini_rest(
     except Exception as e:
         logger.error(f"Gemini REST API call failed: {e}")
         raise
+
+
+async def _iter_gemini_sse_chunks_async(response: httpx.Response) -> AsyncIterator[dict[str, Any]]:
+    """Async version of _iter_gemini_sse_chunks using httpx.Response.
+
+    P2 async/sync 技术债修复: 异步解析 Gemini 流式响应
+
+    与 sync 版本相同的解析逻辑（SSE 格式 + JSON 数组回退），
+    但使用 httpx.Response.aiter_lines() 异步迭代。
+    """
+    raw_lines: list[str] = []
+    yielded_any = False
+
+    async for line in response.aiter_lines():
+        if not line:
+            continue
+
+        # 1. SSE 格式: 处理 "data:" 前缀行
+        if line.startswith("data:"):
+            json_str = line[5:].lstrip()
+            if not json_str:
+                continue
+            try:
+                chunk = json.loads(json_str)
+                yielded_any = True
+                yield chunk
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse Gemini SSE chunk (async): %s", json_str[:200])
+            continue
+
+        # 2. 非 SSE 行: 收集用于 JSON 数组回退解析
+        raw_lines.append(line)
+
+    # 3. 回退: 如果没有 SSE 数据，尝试将收集的行解析为 JSON 数组
+    if not yielded_any and raw_lines:
+        body = "\n".join(raw_lines)
+        try:
+            parsed = json.loads(body)
+            if isinstance(parsed, list):
+                for item_obj in cast(list[object], parsed):
+                    if isinstance(item_obj, dict):
+                        yield cast(dict[str, object], item_obj)
+            elif isinstance(parsed, dict):
+                yield parsed
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse Gemini streaming response as JSON (async): %s", body[:500])
+
+
+async def call_llm_with_gemini_rest_async(
+    kwargs: dict[str, Any],
+    *,
+    middleware_manager: MiddlewareManager | None = None,
+    model_call_params: ModelCallParams | None = None,
+    llm_config: LLMConfig,
+    tracer: BaseTracer | None = None,
+) -> ModelResponse:
+    """Async version of call_llm_with_gemini_rest using httpx.AsyncClient.
+
+    P2 async/sync 技术债修复: 异步 Gemini REST API 调用
+
+    使用 httpx.AsyncClient 替代 requests.post，在主事件循环上执行
+    Gemini REST API 调用（含流式和非流式），避免阻塞 event loop。
+    """
+    from nexau.core.messages import ImageBlock
+
+    # 与 sync 版本相同的参数验证
+    if model_call_params is not None:
+        for msg in model_call_params.messages:
+            for block in msg.content:
+                if isinstance(block, ImageBlock):
+                    raise ValueError("Image input is not supported for Gemini REST API")
+
+    stream_requested = bool(kwargs.pop("stream", False) or getattr(llm_config, "stream", False))
+    messages = kwargs.get("messages", [])
+    tools = kwargs.get("tools")
+
+    # 消息转换
+    if model_call_params is not None:
+        from nexau.core.adapters.gemini_messages import GeminiMessagesAdapter
+
+        contents, system_instruction = GeminiMessagesAdapter().to_vendor_format(model_call_params.messages)
+    else:
+        contents, system_instruction = openai_to_gemini_rest_messages(cast(list[dict[str, Any]], messages))
+
+    # URL 构建
+    base_url = llm_config.base_url.rstrip("/") if llm_config.base_url else ""
+    model_name = llm_config.model
+    api_key = llm_config.api_key
+
+    if not api_key:
+        raise ValueError("API key is required for Gemini REST API")
+
+    endpoint = "streamGenerateContent" if stream_requested else "generateContent"
+
+    if not base_url or "generativelanguage.googleapis.com" in base_url:
+        if not base_url:
+            base_url = "https://generativelanguage.googleapis.com"
+        url = f"{base_url}/v1beta/models/{model_name}:{endpoint}?key={api_key}"
+    else:
+        url = f"{base_url}/models/{model_name}:{endpoint}?key={api_key}"
+
+    if stream_requested:
+        url += "&alt=sse"
+
+    # 请求体构建
+    generation_config: dict[str, Any] = {
+        "temperature": llm_config.temperature if llm_config.temperature is not None else 0.7,
+    }
+    if llm_config.max_tokens is not None:
+        generation_config["maxOutputTokens"] = llm_config.max_tokens
+    if llm_config.top_p is not None:
+        generation_config["topP"] = llm_config.top_p
+
+    top_k = llm_config.extra_params.get("top_k")
+    if top_k is not None:
+        try:
+            generation_config["topK"] = int(top_k)
+        except (TypeError, ValueError):
+            pass
+
+    request_body: dict[str, Any] = {
+        "contents": contents,
+        "generationConfig": generation_config,
+    }
+    if system_instruction:
+        request_body["systemInstruction"] = system_instruction
+    if tools:
+        gemini_tools = convert_tools_to_gemini(tools)
+        if gemini_tools:
+            request_body["tools"] = [{"functionDeclarations": gemini_tools}]
+
+    thinking_config = llm_config.extra_params.get("thinkingConfig")
+    if thinking_config:
+        generation_config["thinkingConfig"] = thinking_config
+
+    should_trace = tracer is not None and get_current_span() is not None
+    timeout_value = float(llm_config.timeout or 120)
+
+    if stream_requested:
+        aggregator = GeminiRestStreamAggregator()
+        _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_value)) as client:
+            if should_trace and tracer is not None:
+                trace_ctx = TraceContext(
+                    tracer,
+                    "Gemini REST streamGenerateContent (async)",
+                    SpanType.LLM,
+                    inputs=request_body,
+                )
+                with trace_ctx:
+                    start_time = time.time()
+                    first_token_time = None
+                    async with client.stream("POST", url, json=request_body) as resp:
+                        resp.raise_for_status()
+                        async for chunk_json in _iter_gemini_sse_chunks_async(resp):
+                            if _shutdown_ev is not None and _shutdown_ev.is_set():
+                                logger.info(
+                                    "🛑 Shutdown event detected during Gemini REST streaming (async), finalizing partial response",
+                                )
+                                break
+                            if first_token_time is None:
+                                first_token_time = time.time()
+                            processed_chunk = _process_stream_chunk(
+                                chunk_json,
+                                middleware_manager,
+                                model_call_params,
+                            )
+                            if processed_chunk is None:
+                                continue
+                            aggregator.consume(processed_chunk)
+                    result = aggregator.finalize()
+                    trace_ctx.set_outputs(result)
+                    if first_token_time is not None:
+                        trace_ctx.set_attributes(
+                            {"time_to_first_token_ms": (first_token_time - start_time) * 1000},
+                        )
+                    return ModelResponse.from_gemini_rest(result)
+            else:
+                async with client.stream("POST", url, json=request_body) as resp:
+                    resp.raise_for_status()
+                    async for chunk_json in _iter_gemini_sse_chunks_async(resp):
+                        if _shutdown_ev is not None and _shutdown_ev.is_set():
+                            logger.info(
+                                "🛑 Shutdown event detected during Gemini REST streaming (async), finalizing partial response",
+                            )
+                            break
+                        processed_chunk = _process_stream_chunk(
+                            chunk_json,
+                            middleware_manager,
+                            model_call_params,
+                        )
+                        if processed_chunk is None:
+                            continue
+                        aggregator.consume(processed_chunk)
+                return ModelResponse.from_gemini_rest(aggregator.finalize())
+
+    # Non-streaming async request
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_value)) as client:
+        try:
+            if should_trace and tracer is not None:
+                trace_ctx = TraceContext(tracer, "Gemini REST generateContent (async)", SpanType.LLM, inputs=request_body)
+                with trace_ctx:
+                    response = await client.post(url, json=request_body)
+                    response.raise_for_status()
+                    response_json = response.json()
+                    trace_ctx.set_outputs(_to_serializable_dict(response_json))
+            else:
+                response = await client.post(url, json=request_body)
+                response.raise_for_status()
+                response_json = response.json()
+
+            return ModelResponse.from_gemini_rest(response_json)
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Gemini REST API call failed (async): {e}")
+            logger.error(f"Response content: {e.response.text}")
+            raise
+        except Exception as e:
+            logger.error(f"Gemini REST API call failed (async): {e}")
+            raise

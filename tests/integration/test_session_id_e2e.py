@@ -95,15 +95,16 @@ class TestOpenAIChatCompletionSessionIdE2E:
     def test_session_id_in_user_field(self) -> None:
         agent = _make_agent("openai_chat_completion")
 
-        # spy: 拦截真实 client.chat.completions.create，捕获 kwargs
+        # spy: 拦截 async client.chat.completions.create，捕获 kwargs
+        # async/sync 技术债修复后 Agent.run() → execute_async → AsyncOpenAI
         captured_kwargs: dict[str, Any] = {}
-        original_create = agent.openai_client.chat.completions.create
+        original_create = agent._async_openai_client.chat.completions.create
 
-        def spy_create(**kwargs: Any) -> Any:
+        async def spy_create(**kwargs: Any) -> Any:
             captured_kwargs.update(kwargs)
-            return original_create(**kwargs)
+            return await original_create(**kwargs)
 
-        with patch.object(agent.openai_client.chat.completions, "create", side_effect=spy_create):
+        with patch.object(agent._async_openai_client.chat.completions, "create", side_effect=spy_create):
             response = agent.run(message="Say hi")
 
         # 1. 验证 Agent 调用成功
@@ -128,13 +129,13 @@ class TestOpenAIResponsesSessionIdE2E:
         agent = _make_agent("openai_responses", stream=True)
 
         captured_kwargs: dict[str, Any] = {}
-        original_stream = agent.openai_client.responses.stream
+        original_stream = agent._async_openai_client.responses.stream
 
         def spy_stream(**kwargs: Any) -> Any:
             captured_kwargs.update(kwargs)
             return original_stream(**kwargs)
 
-        with patch.object(agent.openai_client.responses, "stream", side_effect=spy_stream):
+        with patch.object(agent._async_openai_client.responses, "stream", side_effect=spy_stream):
             # 某些代理可能不支持全部字段，允许 API 层面失败
             try:
                 response = agent.run(message="Say hi")
@@ -175,13 +176,13 @@ class TestAnthropicSessionIdE2E:
         agent = _make_agent("anthropic_chat_completion")
 
         captured_kwargs: dict[str, Any] = {}
-        original_create = agent.openai_client.messages.create
+        original_create = agent._async_openai_client.messages.create
 
-        def spy_create(**kwargs: Any) -> Any:
+        async def spy_create(**kwargs: Any) -> Any:
             captured_kwargs.update(kwargs)
-            return original_create(**kwargs)
+            return await original_create(**kwargs)
 
-        with patch.object(agent.openai_client.messages, "create", side_effect=spy_create):
+        with patch.object(agent._async_openai_client.messages, "create", side_effect=spy_create):
             response = agent.run(message="Say hi")
 
         # 1. 验证 Agent 调用成功

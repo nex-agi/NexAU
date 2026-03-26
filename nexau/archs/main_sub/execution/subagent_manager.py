@@ -189,6 +189,94 @@ class SubAgentManager:
                     f"❌ Error shutting down sub-agent {sub_agent_id}: {e}",
                 )
 
+    async def call_sub_agent_async(
+        self,
+        sub_agent_name: str,
+        message: str,
+        sub_agent_id: str | None = None,
+        context: dict[str, Any] | None = None,
+        parent_agent_state: AgentState | None = None,
+        custom_llm_client_provider: Callable[[str], Any] | None = None,
+        parallel_execution_id: str | None = None,
+    ) -> str:
+        """Async version of call_sub_agent — runs on the main event loop.
+
+        P1 async/sync 技术债修复: 消除 sub-agent 每次调用创建一次性 event loop
+
+        使用 Agent.create()（async factory）+ run_async() 替代
+        Agent()（sync __init__ → asyncio.run()）+ run()（sync → asyncio.run()），
+        复用主事件循环而非每次调用创建两个临时 loop。
+
+        同步路径 call_sub_agent() 保留给向后兼容的 sync 调用方。
+        """
+        from ...main_sub.agent import Agent
+        from ..agent_context import get_context
+
+        if self._shutdown_event.is_set():
+            logger.warning(
+                f"⚠️ Agent '{self.agent_name}' is shutting down, cannot call sub-agent '{sub_agent_name}'",
+            )
+            raise RuntimeError(f"Agent '{self.agent_name}' is shutting down")
+
+        logger.info(
+            f"🤖➡️🤖 Agent '{self.agent_name}' calling sub-agent '{sub_agent_name}' (async) with message: {message}",
+        )
+
+        if sub_agent_name not in self.sub_agents:
+            error_msg = f"Sub-agent '{sub_agent_name}' not found"
+            logger.error(f"❌ {error_msg}")
+            raise ValueError(error_msg)
+
+        sub_agent_config = self.sub_agents[sub_agent_name]
+
+        # 使用 Agent.create() async factory 创建 sub-agent，复用主事件循环
+        sub_agent = await Agent.create(
+            config=sub_agent_config,
+            agent_id=sub_agent_id,
+            global_storage=self.global_storage,
+            session_manager=self.session_manager,
+            user_id=self.user_id,
+            session_id=self.session_id,
+            is_root=False,
+        )
+
+        self.running_sub_agents[sub_agent.agent_id] = sub_agent
+
+        try:
+            effective_context = None
+            if context:
+                effective_context = context
+            else:
+                current_context = get_context()
+                if current_context:
+                    effective_context = current_context.context.copy()
+
+            if parallel_execution_id and parent_agent_state:
+                parent_agent_state.set_global_value("parallel_execution_id", parallel_execution_id)
+
+            result = await sub_agent.run_async(
+                message=message,
+                context=effective_context,
+                parent_agent_state=parent_agent_state,
+                custom_llm_client_provider=custom_llm_client_provider,
+            )
+            result = (
+                f"{result}\n"
+                f"Sub-agent finished (sub_agent_name: {sub_agent.agent_name}, "
+                f"sub_agent_id: {sub_agent.agent_id}. Recall this agent if needed)."
+            )
+
+            logger.info(
+                f"✅ Sub-agent '{sub_agent_name}' returned result to agent '{self.agent_name}' (async)",
+            )
+            return str(result)
+
+        except Exception as e:
+            logger.error(f"❌ Sub-agent '{sub_agent_name}' failed (async): {e}")
+            raise
+        finally:
+            self.running_sub_agents.pop(sub_agent.agent_id, None)
+
     def add_sub_agent(self, name: str, agent_config: AgentConfig) -> None:
         """Add a sub-agent config.
 

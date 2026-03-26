@@ -129,24 +129,23 @@ class TestRunInnerFinallyFlush:
                 name="test_agent",
                 llm_config=LLMConfig(model="gpt-4o-mini"),
             )
-            agent = Agent(config=config)
+            agent = await asyncio.to_thread(Agent, config=config)
 
             # Set up history mock with _pending_messages
             agent.history = MagicMock()
             agent.history._pending_messages = [Message.user("test")]
             agent.history.flush = Mock()
 
-            # Mock asyncify to raise CancelledError (simulating stop during LLM call)
-            with patch("nexau.archs.main_sub.agent.asyncify") as mock_asyncify:
-                mock_asyncify.return_value = AsyncMock(side_effect=asyncio.CancelledError())
+            # Mock executor.execute_async to raise CancelledError (simulating stop during LLM call)
+            agent.executor.execute_async = AsyncMock(side_effect=asyncio.CancelledError())  # type: ignore[method-assign]
 
-                with pytest.raises(asyncio.CancelledError):
-                    await agent._run_inner(
-                        agent_state=Mock(),
-                        merged_context={},
-                        runtime_client=None,
-                        custom_llm_client_provider=None,
-                    )
+            with pytest.raises(asyncio.CancelledError):
+                await agent._run_inner(
+                    agent_state=Mock(),
+                    merged_context={},
+                    runtime_client=None,
+                    custom_llm_client_provider=None,
+                )
 
             # finally block should have called flush
             assert agent.history.flush.called
@@ -169,7 +168,7 @@ class TestRunInnerFinallyFlush:
                 name="test_agent",
                 llm_config=LLMConfig(model="gpt-4o-mini"),
             )
-            agent = Agent(config=config)
+            agent = await asyncio.to_thread(Agent, config=config)
 
             # Mock executor.execute to return normally
             mock_response = ("response", [])
@@ -177,15 +176,14 @@ class TestRunInnerFinallyFlush:
             agent.history._pending_messages = []  # No pending messages
             agent.history.flush = Mock()
 
-            with patch("nexau.archs.main_sub.agent.asyncify") as mock_asyncify:
-                mock_asyncify.return_value = AsyncMock(return_value=mock_response)
+            agent.executor.execute_async = AsyncMock(return_value=mock_response)  # type: ignore[method-assign]
 
-                result = await agent._run_inner(
-                    agent_state=Mock(),
-                    merged_context={},
-                    runtime_client=None,
-                    custom_llm_client_provider=None,
-                )
+            result = await agent._run_inner(
+                agent_state=Mock(),
+                merged_context={},
+                runtime_client=None,
+                custom_llm_client_provider=None,
+            )
 
             assert result == "response"
             # flush is called once in the try block (normal path) and once in finally

@@ -19,8 +19,8 @@ def recall_sub_agent(
     Args:
         sub_agent_name: Name of the sub-agent as configured on the parent agent.
         message: Task/question for the sub-agent.
-        context: Optional context override for the sub-agent run.
-        agent_state: Injected by the framework; provides access to the executor.
+        sub_agent_id: Identifier to recover a previously finished sub-agent run.
+        agent_state: Injected by the framework; provides access to the sub-agent manager.
 
     Returns:
         Dict with `status` and either `result` or `error`.
@@ -28,20 +28,11 @@ def recall_sub_agent(
     if agent_state is None:
         return {"status": "error", "error": "Agent state not available"}
 
-    # AgentState stores a reference to the runtime Executor; it isn't part of the
-    # public interface today, so we access it defensively.
-    executor = getattr(agent_state, "_executor", None)
-    if executor is None:
-        return {
-            "status": "error",
-            "error": "Executor not available on agent_state",
-        }
-
-    subagent_manager: SubAgentManager | None = getattr(executor, "subagent_manager", None)
+    subagent_manager: SubAgentManager | None = agent_state.subagent_manager
     if subagent_manager is None:
         return {
             "status": "error",
-            "error": "Sub-agent manager not available on executor",
+            "error": "Sub-agent manager not available on agent_state",
         }
 
     try:

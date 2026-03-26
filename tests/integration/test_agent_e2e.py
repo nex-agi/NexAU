@@ -73,7 +73,7 @@ class TestAgentMultiTurnConversation:
 
         async def _run() -> str:
             # Turn 1: Tell the agent something
-            agent1 = Agent(
+            agent1 = await Agent.create(
                 config=agent_config,
                 session_manager=session_manager,
                 user_id=user_id,
@@ -88,7 +88,7 @@ class TestAgentMultiTurnConversation:
             await asyncio.sleep(0.1)
 
             # Turn 2: Ask the agent to recall (new Agent instance, same session)
-            agent2 = Agent(
+            agent2 = await Agent.create(
                 config=agent_config,
                 session_manager=session_manager,
                 user_id=user_id,

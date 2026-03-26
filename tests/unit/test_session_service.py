@@ -43,8 +43,10 @@ class TestSessionManagerInitialization:
         service = SessionManager(engine=engine)
 
         assert service is not None
-        # SessionManager stores engine internally
-        assert service._engine is engine
+        # SessionManager wraps engine with LoopSafeDatabaseEngine for cross-loop safety
+        from nexau.archs.session.orm.engine import LoopSafeDatabaseEngine
+
+        assert isinstance(service._engine, LoopSafeDatabaseEngine)
 
 
 class TestSessionManagerPropertyAccess:
