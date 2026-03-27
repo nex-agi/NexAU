@@ -916,7 +916,10 @@ class AgentTeam:
                 "Available candidate roles for `spawn_teammate`:\n"
                 + "\n".join(candidate_lines)
                 + "\n\nYou MUST call `finish_team` when done."
-                + "For simple messages that don't need team work, respond and call `finish_team` immediately."
+                + "\nFor simple messages that don't need team work,"
+                + " first output a text reply to the user, then call `finish_team`."
+                + "\nIMPORTANT: Always output a text response BEFORE calling `finish_team`."
+                + " The `finish_team` summary is internal only and will NOT be shown to the user."
             )
             if leader_config.system_prompt:
                 leader_config.system_prompt_suffix = team_context
