@@ -81,6 +81,18 @@ def _anthropic_thinking_only_events(
 
     Returns events for: message_start → thinking block → text block (near-empty) → message_delta(stop_reason) → message_stop
     """
+    thinking_events: list[dict[str, Any]] = [
+        # 1. thinking block
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": thinking_text}},
+    ]
+    # signature_delta 在流式正常完成时到达；流式中断时缺失
+    if signature:
+        thinking_events.append(
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": signature}},
+        )
+    thinking_events.append({"type": "content_block_stop", "index": 0})
+
     return [
         {
             "type": "message_start",
@@ -90,10 +102,7 @@ def _anthropic_thinking_only_events(
                 "usage": {"input_tokens": 100, "output_tokens": 0},
             },
         },
-        # 1. thinking block
-        {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
-        {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": thinking_text}},
-        {"type": "content_block_stop", "index": 0},
+        *thinking_events,
         # 2. near-empty text block
         {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}},
         {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": text_content}},
@@ -322,3 +331,48 @@ class TestAnthropicThinkingOnlyStreamingIntegration:
 
         assert len(thinking_blocks) >= 1
         assert thinking_blocks[0]["thinking"] == "Very long thinking..."
+        assert thinking_blocks[0]["signature"] == "EpybBQ_test_signature"
+
+    def test_ump_roundtrip_demotes_thinking_without_signature(self) -> None:
+        """When stream is interrupted (no signature), thinking should be demoted to text block.
+
+        Anthropic requires 'signature' on thinking blocks. If streaming was interrupted before
+        the signature_delta arrives, the adapter should demote thinking to text to avoid 400 error.
+        """
+        from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
+        from nexau.core.messages import Message, ReasoningBlock, TextBlock
+
+        # 模拟流式中断：不发送 signature_delta
+        events = _anthropic_thinking_only_events(
+            thinking_text="Interrupted thinking...",
+            text_content="\n",
+            signature="",  # 空 signature 表示流式中断
+            stop_reason="max_tokens",
+        )
+        client = _make_anthropic_client(events)
+        kwargs: dict[str, Any] = {
+            "model": "claude-opus-4-6",
+            "messages": [{"role": "user", "content": "q"}],
+            "stream": True,
+        }
+
+        resp = llm_caller.call_llm_with_anthropic_chat_completion(client, kwargs, tracer=None)
+        ump_msg = resp.to_ump_message()
+
+        messages = [
+            Message.user("original question"),
+            ump_msg,
+            Message.user("follow-up"),
+        ]
+
+        _system, convo = AnthropicMessagesAdapter().to_vendor_format(messages)
+
+        assistant_msg = next(m for m in convo if m["role"] == "assistant")
+        content_blocks = assistant_msg["content"]
+
+        # 无签名的 thinking block 应被降级为 text block，避免 Anthropic 400 错误
+        thinking_blocks = [b for b in content_blocks if b.get("type") == "thinking"]
+        assert len(thinking_blocks) == 0
+
+        text_blocks = [b for b in content_blocks if b.get("type") == "text"]
+        assert any(b["text"] == "Interrupted thinking..." for b in text_blocks)

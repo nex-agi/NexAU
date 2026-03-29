@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, cast
 
 from nexau.core.adapters.base import LLMAdapter
 from nexau.core.messages import ImageBlock, Message, ReasoningBlock, Role, TextBlock, ToolResultBlock, ToolUseBlock
+
+_logger = logging.getLogger(__name__)
 
 
 class AnthropicMessagesAdapter(LLMAdapter):
@@ -62,11 +65,17 @@ class AnthropicMessagesAdapter(LLMAdapter):
                 elif isinstance(block, ReasoningBlock):
                     if block.redacted_data:
                         content_blocks.append({"type": "redacted_thinking", "data": block.redacted_data})
+                    elif block.signature:
+                        # 正常路径：签名完整，发送 thinking block
+                        content_blocks.append({"type": "thinking", "thinking": block.text, "signature": block.signature})
                     else:
-                        reasoning_block: dict[str, Any] = {"type": "thinking", "thinking": block.text}
-                        if block.signature:
-                            reasoning_block["signature"] = block.signature
-                        content_blocks.append(reasoning_block)
+                        # 兜底：流式中断导致 signature 缺失，降级为 text block 避免 400 错误
+                        _logger.warning(
+                            "ReasoningBlock missing signature (stream may have been interrupted); "
+                            "demoting to text block to avoid Anthropic API rejection"
+                        )
+                        if block.text:
+                            content_blocks.append({"type": "text", "text": block.text})
                 elif isinstance(block, ToolUseBlock):
                     content_blocks.append(
                         {

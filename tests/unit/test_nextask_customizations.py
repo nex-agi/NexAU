@@ -240,6 +240,72 @@ class TestAnthropicAdapterReasoningBlock:
         assert len(redacted) == 1
         assert redacted[0]["data"] == "encrypted_blob"
 
+    def test_reasoning_block_without_signature_demoted_to_text(self):
+        """ReasoningBlock with no signature should fall back to a text block.
+
+        Anthropic requires 'signature' on thinking blocks. If streaming was
+        interrupted, the signature may be None. The adapter should demote to
+        a text block to avoid a 400 error.
+        """
+        adapter = AnthropicMessagesAdapter()
+        messages = [
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ReasoningBlock(text="interrupted thinking", signature=None),
+                    TextBlock(text="answer"),
+                ],
+            ),
+        ]
+        _, convo = adapter.to_vendor_format(messages)
+        blocks = convo[0]["content"]
+        # No thinking blocks should be emitted
+        thinking_blocks = [b for b in blocks if b.get("type") == "thinking"]
+        assert len(thinking_blocks) == 0
+        # The reasoning text should be demoted to a text block
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        assert len(text_blocks) == 2
+        assert text_blocks[0]["text"] == "interrupted thinking"
+        assert text_blocks[1]["text"] == "answer"
+
+    def test_reasoning_block_with_empty_signature_demoted_to_text(self):
+        """ReasoningBlock with empty string signature should also be demoted."""
+        adapter = AnthropicMessagesAdapter()
+        messages = [
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ReasoningBlock(text="thinking cut off", signature=""),
+                    TextBlock(text="response"),
+                ],
+            ),
+        ]
+        _, convo = adapter.to_vendor_format(messages)
+        blocks = convo[0]["content"]
+        thinking_blocks = [b for b in blocks if b.get("type") == "thinking"]
+        assert len(thinking_blocks) == 0
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        assert len(text_blocks) == 2
+        assert text_blocks[0]["text"] == "thinking cut off"
+
+    def test_reasoning_block_empty_text_and_no_signature_dropped(self):
+        """ReasoningBlock with empty text and no signature should be silently dropped."""
+        adapter = AnthropicMessagesAdapter()
+        messages = [
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ReasoningBlock(text="", signature=None),
+                    TextBlock(text="answer"),
+                ],
+            ),
+        ]
+        _, convo = adapter.to_vendor_format(messages)
+        blocks = convo[0]["content"]
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "text"
+        assert blocks[0]["text"] == "answer"
+
     def test_tool_result_batching(self):
         """Consecutive TOOL messages should be merged into a single user message."""
         adapter = AnthropicMessagesAdapter()
