@@ -17,6 +17,7 @@
 from typing import TYPE_CHECKING
 
 from .base_sandbox import (
+    HEREDOC_PATTERN,
     BaseSandbox,
     BaseSandboxConfig,
     BaseSandboxManager,
@@ -33,6 +34,7 @@ from .base_sandbox import (
     SandboxFileError,
     SandboxStatus,
     SandboxTimeoutError,
+    contains_heredoc,
     extract_dataclass_init_kwargs,
     parse_sandbox_config,
 )
@@ -78,4 +80,6 @@ __all__ = [
     "E2BSandboxManager",
     "BaseSandboxManager",
     "extract_dataclass_init_kwargs",
+    "HEREDOC_PATTERN",
+    "contains_heredoc",
 ]

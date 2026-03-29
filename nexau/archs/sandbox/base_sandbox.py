@@ -22,6 +22,7 @@ deployment in production environments.
 
 import logging
 import os
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -40,6 +41,24 @@ from nexau.core.utils import run_async_function_sync
 logger = logging.getLogger(__name__)
 
 BASH_TOOL_RESULTS_BASE_PATH = "/tmp/nexau_bash_tool_results"
+
+HEREDOC_PATTERN: re.Pattern[str] = re.compile(r"<<-?\s*['\"]?\w+['\"]?")
+"""Detect heredoc syntax: ``<<WORD``, ``<<'WORD'``, ``<<"WORD"``, ``<<-WORD``, etc.
+
+Heredoc commands break when the enclosing shell wrapper (``{ cmd; }``,
+``(cmd)``, etc.) appends characters after the heredoc delimiter.  Bash
+requires the delimiter to appear on a line by itself.
+
+This pattern is intentionally broad – a false positive just causes the
+command to be written to a temp script file (harmless), while a false
+negative causes a syntax error.
+"""
+
+
+def contains_heredoc(command: str) -> bool:
+    """Return True if *command* contains bash heredoc syntax (``<<WORD``)."""
+    return HEREDOC_PATTERN.search(command) is not None
+
 
 DEFAULT_OUTPUT_CHAR_THRESHOLD = 10_000
 """Combined stdout+stderr character count above which smart truncation activates."""
@@ -355,6 +374,45 @@ class BaseSandbox(ABC):
         return merged or None
 
     # Bash command execution methods
+
+    def scriptify_heredoc(self, command: str, script_dir: str = "/tmp") -> str:
+        """Write *command* to a temp script file and return ``bash <path>``.
+
+        If *command* does not contain heredoc syntax (``<<WORD``), it is
+        returned unchanged.
+
+        Heredoc commands break when the caller wraps them in shell
+        constructs like ``(cmd)``, ``{ cmd; }``, or ``cmd > file 2> file``
+        that append tokens after the heredoc delimiter.  Writing the
+        command to a file first isolates the heredoc so any outer wrapper
+        is safe.
+
+        This is a **public API** intended for use by external executors
+        (e.g. NexTask / NexQ) that cannot rely on ``execute_bash()``
+        doing the scriptification internally.
+
+        Args:
+            command: The shell command string to inspect / rewrite.
+            script_dir: Directory inside the sandbox to write the temp
+                script.  Defaults to ``/tmp``.
+
+        Returns:
+            Either the original *command* (no heredoc) or
+            ``bash <script_path>`` after writing the command to a file.
+        """
+        if not contains_heredoc(command):
+            return command
+
+        import uuid as _uuid
+
+        script_path = f"{script_dir}/_nexau_heredoc_{_uuid.uuid4().hex[:8]}.sh"
+        self.write_file(script_path, command, create_directories=True)
+        logger.info(
+            "[sandbox] Heredoc command scriptified (%d bytes) – wrote to %s",
+            len(command.encode("utf-8", errors="replace")),
+            script_path,
+        )
+        return f"bash {script_path}"
 
     @abstractmethod
     def execute_bash(

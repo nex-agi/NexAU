@@ -263,7 +263,10 @@ def run_shell_command(
         # RFC-0006: 通过 ctx.execution 获取停止信号
         execution = ctx.execution
 
-        # Execute command through sandbox, optionally scoping to directory via `cd`.
+        # Scriptify heredoc commands before wrapping with `cd ... &&` so that
+        # the delimiter stays on its own line regardless of outer shell wrappers.
+        command = sandbox.scriptify_heredoc(command)
+
         cmd_to_run = command
         if cwd:
             cmd_to_run = f"cd {shlex.quote(cwd)} && {command}"
