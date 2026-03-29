@@ -5,6 +5,7 @@ from typing import cast
 import pytest
 
 from nexau.archs.sandbox.base_sandbox import (
+    HEREDOC_PATTERN,
     BaseSandbox,
     BaseSandboxManager,
     CodeExecutionResult,
@@ -17,6 +18,7 @@ from nexau.archs.sandbox.base_sandbox import (
     SandboxError,
     SandboxFileError,
     SandboxStatus,
+    contains_heredoc,
     extract_dataclass_init_kwargs,
 )
 from nexau.archs.session.session_manager import SessionManager
@@ -712,3 +714,47 @@ class TestBaseSandboxManager:
         assert thread is not None
         assert hasattr(thread, "start")
         thread.join(timeout=2)
+
+
+# =============================================================================
+# Public heredoc detection API
+# =============================================================================
+
+
+class TestContainsHeredoc:
+    """Tests for the public ``contains_heredoc`` utility and ``HEREDOC_PATTERN``."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat <<EOF\nhello\nEOF",
+            "cat <<'EOF'\nhello\nEOF",
+            'cat <<"EOF"\nhello\nEOF',
+            "cat <<-EOF\n\thello\nEOF",
+            "cat <<-'MARKER'\nhello\nMARKER",
+            "python3 - <<PY\nprint('hi')\nPY",
+            "bash <<SCRIPT\necho ok\nSCRIPT",
+            "cd /tmp && python3 - <<'PY'\nimport json\nPY",
+        ],
+    )
+    def test_detects_heredoc(self, command: str) -> None:
+        assert contains_heredoc(command) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo hello",
+            "python3 -c 'print(1)'",
+            "ls -la",
+            "echo 'no heredoc here'",
+            "cat file.txt",
+        ],
+    )
+    def test_rejects_non_heredoc(self, command: str) -> None:
+        assert contains_heredoc(command) is False
+
+    def test_pattern_is_same_as_e2b_sandbox(self) -> None:
+        """Ensure the canonical HEREDOC_PATTERN is the one E2BSandbox uses."""
+        from nexau.archs.sandbox.e2b_sandbox import E2BSandbox
+
+        assert E2BSandbox._HEREDOC_PATTERN is HEREDOC_PATTERN

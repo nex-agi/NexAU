@@ -50,6 +50,7 @@ from packaging.version import Version
 from .base_sandbox import (
     BASH_TOOL_RESULTS_BASE_PATH,
     E2B_DEFAULT_WORK_DIR,
+    HEREDOC_PATTERN,
     BaseSandbox,
     BaseSandboxManager,
     CodeExecutionResult,
@@ -62,6 +63,7 @@ from .base_sandbox import (
     SandboxError,
     SandboxFileError,
     SandboxStatus,
+    contains_heredoc,
     extract_dataclass_init_kwargs,
     smart_truncate_output,
 )
@@ -137,11 +139,8 @@ class E2BSandbox(BaseSandbox):
     # heredocs / echo payloads to fail with exit-code 2.
     _LARGE_CMD_THRESHOLD: int = 65_536  # 64 KB
 
-    # Detect heredoc syntax: <<WORD, <<'WORD', <<"WORD", <<-WORD, etc.
-    # Heredoc commands must be scriptified because the compound-command wrapper
-    # ``{ cmd; } > ... 2> ...`` appends `; }` after the heredoc delimiter,
-    # violating bash's requirement that the delimiter occupy its own line.
-    _HEREDOC_PATTERN: re.Pattern[str] = re.compile(r"<<-?\s*['\"]?\w+['\"]?")
+    # Re-export for backward compatibility; canonical definition lives in base_sandbox.
+    _HEREDOC_PATTERN: re.Pattern[str] = HEREDOC_PATTERN
 
     def _prepare_output_dir(self, command: str, user: str = "user") -> str:
         """Create an output directory and write command.txt in the sandbox.
@@ -178,7 +177,7 @@ class E2BSandbox(BaseSandbox):
         This also lets arbitrarily large commands work without hitting RPC
         or OS limits.
         """
-        has_heredoc = self._HEREDOC_PATTERN.search(command) is not None
+        has_heredoc = contains_heredoc(command)
         is_large = len(command.encode("utf-8", errors="replace")) > self._LARGE_CMD_THRESHOLD
 
         if not has_heredoc and not is_large:
