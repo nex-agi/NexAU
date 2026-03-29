@@ -31,9 +31,6 @@ tools: # Builtin tools (nexau.archs.tool.builtin)
   - name: search_file_content
     yaml_path: ./tools/search_file_content.tool.yaml
     binding: nexau.archs.tool.builtin.file_tools:search_file_content
-  - name: glob
-    yaml_path: ./tools/Glob.tool.yaml
-    binding: nexau.archs.tool.builtin.file_tools:glob
   - name: list_directory
     yaml_path: ./tools/list_directory.tool.yaml
     binding: nexau.archs.tool.builtin.file_tools:list_directory
