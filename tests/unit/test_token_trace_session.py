@@ -326,6 +326,87 @@ def test_no_overflow_when_max_context_tokens_is_none():
     assert len(session.token_ids) == 1000
 
 
+def test_chat_template_kwargs_forwarded_to_apply_chat_template():
+    """chat_template_kwargs 透传给 apply_chat_template，如 enable_thinking。"""
+    llm_config = LLMConfig(
+        model="token-model",
+        base_url="http://token-gateway",
+        api_key="test-key",
+        api_type="generate_with_token",
+        chat_template_kwargs={"enable_thinking": True},
+    )
+    session = TokenTraceSession(llm_config=llm_config)
+
+    with patch.object(session, "_get_hf_tokenizer") as mock_get_tokenizer:
+        mock_tokenizer = mock_get_tokenizer.return_value
+        mock_tokenizer.apply_chat_template.return_value = {"input_ids": [1, 2, 3]}
+
+        session.initialize_from_messages([Message.user("Hello")])
+
+    mock_tokenizer.apply_chat_template.assert_called_once_with(
+        conversation=[{"role": "user", "content": "Hello"}],
+        tokenize=True,
+        return_dict=True,
+        add_generation_prompt=True,
+        tools=None,
+        enable_thinking=True,
+    )
+    assert session.token_ids == [1, 2, 3]
+
+
+def test_chat_template_kwargs_absent_does_not_break():
+    """未设置 chat_template_kwargs 时 apply_chat_template 不传额外参数。"""
+    llm_config = LLMConfig(
+        model="token-model",
+        base_url="http://token-gateway",
+        api_key="test-key",
+        api_type="generate_with_token",
+    )
+    session = TokenTraceSession(llm_config=llm_config)
+
+    with patch.object(session, "_get_hf_tokenizer") as mock_get_tokenizer:
+        mock_tokenizer = mock_get_tokenizer.return_value
+        mock_tokenizer.apply_chat_template.return_value = {"input_ids": [1, 2]}
+
+        session.initialize_from_messages([Message.user("Hello")])
+
+    mock_tokenizer.apply_chat_template.assert_called_once_with(
+        conversation=[{"role": "user", "content": "Hello"}],
+        tokenize=True,
+        return_dict=True,
+        add_generation_prompt=True,
+        tools=None,
+    )
+
+
+def test_chat_template_kwargs_with_multiple_params():
+    """chat_template_kwargs 可以透传多个参数。"""
+    llm_config = LLMConfig(
+        model="token-model",
+        base_url="http://token-gateway",
+        api_key="test-key",
+        api_type="generate_with_token",
+        chat_template_kwargs={"enable_thinking": True, "thinking_budget": 4096},
+    )
+    session = TokenTraceSession(llm_config=llm_config)
+
+    with patch.object(session, "_get_hf_tokenizer") as mock_get_tokenizer:
+        mock_tokenizer = mock_get_tokenizer.return_value
+        mock_tokenizer.apply_chat_template.return_value = {"input_ids": [10, 20]}
+
+        session.tokenize_messages([Message.user("Think")], add_generation_prompt=True)
+
+    mock_tokenizer.apply_chat_template.assert_called_once_with(
+        conversation=[{"role": "user", "content": "Think"}],
+        tokenize=True,
+        return_dict=True,
+        add_generation_prompt=True,
+        tools=None,
+        enable_thinking=True,
+        thinking_budget=4096,
+    )
+
+
 def test_overflow_on_append_messages():
     """append_messages 路径同样触发溢出检查。"""
     llm_config = LLMConfig(

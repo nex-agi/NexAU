@@ -40,6 +40,7 @@ class _ChatTemplateTokenizer(Protocol):
         return_dict: bool,
         add_generation_prompt: bool = False,
         tools: list[dict[str, object]] | None = None,
+        **kwargs: object,
     ) -> object: ...
 
 
@@ -176,6 +177,18 @@ class TokenTraceSession:
         self._hf_tokenizer = cast("PreTrainedTokenizerBase", loaded_tokenizer)
         return self._hf_tokenizer
 
+    @property
+    def _chat_template_kwargs(self) -> dict[str, object]:
+        """Extra kwargs forwarded to ``apply_chat_template``.
+
+        从 ``llm_config.extra_params["chat_template_kwargs"]`` 读取，
+        支持透传 ``enable_thinking`` 等模型特有的 chat template 参数。
+        """
+        raw = self.llm_config.extra_params.get("chat_template_kwargs")
+        if isinstance(raw, dict):
+            return cast(dict[str, object], raw)
+        return {}
+
     def tokenize_messages(
         self,
         messages: list[Message],
@@ -187,6 +200,10 @@ class TokenTraceSession:
 
         使用 llm_config.tokenizer_path 指定的 HF 模型路径加载 tokenizer，
         通过 apply_chat_template 将 Message 列表编码为 token id 列表。
+
+        ``llm_config.extra_params["chat_template_kwargs"]`` 中的键值对
+        会作为额外 kwargs 透传给 ``apply_chat_template``，例如
+        ``{"enable_thinking": True}``。
         """
         if not messages:
             return []
@@ -200,6 +217,7 @@ class TokenTraceSession:
             return_dict=True,
             add_generation_prompt=add_generation_prompt,
             tools=cast(list[dict[str, object]] | None, openai_tools),
+            **self._chat_template_kwargs,
         )
         if not isinstance(result, Mapping):
             raise TypeError(f"Expected mapping from apply_chat_template, got {type(result).__name__}")

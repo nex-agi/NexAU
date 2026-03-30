@@ -53,8 +53,28 @@
 - `tokenizer_path` 为必填项，用于本地加载 HuggingFace tokenizer
 - `base_url` / `api_key` 仍用于 detokenize HTTP 请求及下游 client 初始化
 - 额外参数仍通过 `LLMConfig.extra_params` 透传
+- `chat_template_kwargs`（可选 dict）会作为额外 kwargs 透传给 `apply_chat_template`，
+  用于控制模型特有的 chat template 行为（如 `enable_thinking`、`thinking_budget` 等）
 
 当前实现不再依赖远端 `/tokenize` 接口。消息到 token 的转换在本地通过 `AutoTokenizer.apply_chat_template(...)` 完成。
+
+##### chat_template_kwargs 透传
+
+部分模型（如 Qwen3、DeepSeek-R1）的 chat template 支持 `enable_thinking` 等额外参数。
+通过 `LLMConfig.extra_params["chat_template_kwargs"]` 可以把这些参数透传给 `apply_chat_template`：
+
+```python
+LLMConfig(
+    model="Qwen3-32B",
+    api_type="generate_with_token",
+    tokenizer_path="Qwen/Qwen3-32B",
+    chat_template_kwargs={"enable_thinking": True},
+)
+```
+
+`TokenTraceSession.tokenize_messages(...)` 在每次调用 `apply_chat_template` 时，
+会从 `llm_config.extra_params["chat_template_kwargs"]` 读取该字典并展开为 `**kwargs` 传入。
+未配置时等价于不传额外参数，保持向后兼容。
 
 #### 2. Generate 调用协议
 
