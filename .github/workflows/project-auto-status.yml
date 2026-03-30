@@ -1,4 +1,4 @@
-name: "Project: Auto Backlog ↔ Todo based on Iteration"
+name: "Project: Auto Backlog ↔ Todo + close open Done issues"
 
 on:
   schedule:
@@ -7,14 +7,16 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   auto-status:
     runs-on: ubuntu-latest
     steps:
-      - name: Move Backlog items with Iteration to Todo
+      - name: Sync project status and issue state
         env:
           GH_TOKEN: ${{ secrets.PROJECT_PAT }}
+          REPO_GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -22,12 +24,15 @@ jobs:
           STATUS_FIELD_ID="PVTSSF_lADOCmnEdM4BQARnzg-P8lI"
           BACKLOG_OPTION_ID="676b1ff9"
           TODO_OPTION_ID="0bfee3fe"
+          DONE_OPTION_ID="1113ce28"
+          REPO_NAME="${{ github.repository }}"
 
-          echo "Fetching project items with Status=Backlog..."
+          echo "Fetching project items for $REPO_NAME ..."
 
           HAS_NEXT=true
           CURSOR=""
           MOVED=0
+          CLOSED=0
 
           while [ "$HAS_NEXT" = "true" ]; do
             if [ -z "$CURSOR" ]; then
@@ -63,6 +68,7 @@ jobs:
                         ... on Issue {
                           title
                           number
+                          state
                           repository { nameWithOwner }
                         }
                       }
@@ -83,9 +89,11 @@ jobs:
               ITEM_ID=$(echo "$ITEM" | jq -r '.id')
               STATUS_OPT=$(echo "$ITEM" | jq -r '.statusVal.optionId // ""')
               ITER_ID=$(echo "$ITEM" | jq -r '.iterVal.iterationId // ""')
+              ITER_TITLE=$(echo "$ITEM" | jq -r '.iterVal.title // ""')
               TITLE=$(echo "$ITEM" | jq -r '.content.title // "Draft"')
               NUM=$(echo "$ITEM" | jq -r '.content.number // ""')
-              ITER_TITLE=$(echo "$ITEM" | jq -r '.iterVal.title // ""')
+              CONTENT_STATE=$(echo "$ITEM" | jq -r '.content.state // ""')
+              CONTENT_REPO=$(echo "$ITEM" | jq -r '.content.repository.nameWithOwner // ""')
 
               # Backlog + has Iteration → Todo
               if [ "$STATUS_OPT" = "$BACKLOG_OPTION_ID" ] && [ -n "$ITER_ID" ]; then
@@ -120,7 +128,21 @@ jobs:
                 }" > /dev/null
                 MOVED=$((MOVED + 1))
               fi
+
+              # Status=Done but issue still OPEN in this repo → close as completed
+              if [ "$STATUS_OPT" = "$DONE_OPTION_ID" ] \
+                && [ "$CONTENT_STATE" = "OPEN" ] \
+                && [ "$CONTENT_REPO" = "$REPO_NAME" ] \
+                && [ -n "$NUM" ]; then
+                echo "Closing issue: #$NUM $TITLE (Status=Done but issue still open)"
+                GH_TOKEN="$REPO_GITHUB_TOKEN" gh api \
+                  "repos/$REPO_NAME/issues/$NUM" \
+                  -X PATCH \
+                  -f state=closed \
+                  -f state_reason=completed > /dev/null
+                CLOSED=$((CLOSED + 1))
+              fi
             done <<< "$ITEMS"
           done
 
-          echo "Done. Moved $MOVED item(s) from Backlog to Todo."
+          echo "Done. Moved $MOVED item(s); closed $CLOSED open issue(s) whose Status was Done."

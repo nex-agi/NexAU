@@ -1,4 +1,4 @@
-name: "Project: Auto set Cancelled on issue close (not planned / duplicate)"
+name: "Project: Auto set status on issue close"
 
 on:
   issues:
@@ -8,11 +8,10 @@ permissions:
   contents: read
 
 jobs:
-  auto-cancelled:
-    if: github.event.issue.state_reason == 'not_planned' || github.event.issue.state_reason == 'duplicate'
+  auto-status-on-close:
     runs-on: ubuntu-latest
     steps:
-      - name: Set project status to Cancelled
+      - name: Set project status based on close reason
         env:
           GH_TOKEN: ${{ secrets.PROJECT_PAT }}
         run: |
@@ -20,6 +19,7 @@ jobs:
 
           PROJECT_ID="PVT_kwDOCmnEdM4BQARn"
           STATUS_FIELD_ID="PVTSSF_lADOCmnEdM4BQARnzg-P8lI"
+          DONE_OPTION_ID="1113ce28"
           CANCELLED_OPTION_ID="e25879b3"
 
           ISSUE_NODE_ID="${{ github.event.issue.node_id }}"
@@ -29,6 +29,17 @@ jobs:
           REASON="${{ github.event.issue.state_reason }}"
 
           echo "Issue #$ISSUE_NUM in $REPO_NAME closed as '$REASON': $ISSUE_TITLE"
+
+          # Determine target status
+          if [ "$REASON" = "not_planned" ] || [ "$REASON" = "duplicate" ]; then
+            TARGET_STATUS="Cancelled"
+            TARGET_OPTION_ID="$CANCELLED_OPTION_ID"
+          else
+            TARGET_STATUS="Done"
+            TARGET_OPTION_ID="$DONE_OPTION_ID"
+          fi
+
+          echo "Target status: $TARGET_STATUS"
 
           find_item_via_issue() {
             gh api graphql -f query="
@@ -113,11 +124,11 @@ jobs:
           done
 
           if [ -z "$ITEM_ID" ]; then
-            echo "Issue not found in project after retries."
-            exit 1
+            echo "Issue not found in project after retries — skipping."
+            exit 0
           fi
 
-          echo "Found project item: $ITEM_ID — setting Status to Cancelled"
+          echo "Found project item: $ITEM_ID — setting Status to $TARGET_STATUS"
 
           gh api graphql -f query="
           mutation {
@@ -125,10 +136,10 @@ jobs:
               projectId: \"$PROJECT_ID\"
               itemId: \"$ITEM_ID\"
               fieldId: \"$STATUS_FIELD_ID\"
-              value: { singleSelectOptionId: \"$CANCELLED_OPTION_ID\" }
+              value: { singleSelectOptionId: \"$TARGET_OPTION_ID\" }
             }) {
               projectV2Item { id }
             }
           }" > /dev/null
 
-          echo "Done. Issue #$ISSUE_NUM status set to Cancelled."
+          echo "Done. Issue #$ISSUE_NUM status set to $TARGET_STATUS."
