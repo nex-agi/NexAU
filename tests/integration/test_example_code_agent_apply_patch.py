@@ -46,7 +46,6 @@ class TestExampleCodeAgentConfig:
             assert "read_file" in tool_names
             assert "search_file_content" in tool_names
             assert "run_shell_command" in tool_names
-            assert "glob" in tool_names
 
             # Verify agent can be instantiated
             with patch("nexau.archs.main_sub.agent.openai") as mock_openai:

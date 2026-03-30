@@ -347,7 +347,8 @@ class Agent:
                 )
 
         # 4. 重新设置依赖 agent_id/global_storage 的组件
-        instance._setup_tracer()
+        # Issue #431: 统一重新注入所有瞬态状态（tracer + skill_registry 等）
+        instance._reinject_transient_state()
         instance._rebuild_executor_with_resolved_id()
 
         return instance
@@ -511,6 +512,21 @@ class Agent:
             # the correct session instead of a random UUID.
             self.config.resolved_tracer.set_session_id(self._session_id)
             logger.debug("Tracer set from config.resolved_tracer (session_id=%s)", self._session_id)
+
+    def _reinject_transient_state(self) -> None:
+        """Re-inject non-serializable runtime state after storage swap.
+
+        Issue #431: Agent.create() 用 session 恢复的 storage 替换 __init__ 中的
+        临时 storage，导致 skill_registry 等非序列化状态丢失。
+        此方法将所有瞬态状态统一重新注入，未来新增瞬态 key 只需在此维护。
+        """
+        # 1. 重新注入 tracer（已有逻辑）
+        self._setup_tracer()
+
+        # 2. 重新注入 skill_registry（非序列化，不会被 DB 恢复）
+        if self.skill_registry:
+            self.global_storage.set("skill_registry", self.skill_registry)
+            logger.debug("Re-injected skill_registry with %d skills", len(self.skill_registry))
 
     @classmethod
     def from_yaml(
