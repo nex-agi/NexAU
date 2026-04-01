@@ -291,6 +291,7 @@ class ExecutionConfig:
     max_context_tokens: int = 128000
     max_running_subagents: int = 5
     retry_attempts: int = 5
+    retry_backoff_max_seconds: int = 30
     timeout: int = 300
     tool_call_mode: str = "structured"
 
@@ -307,6 +308,7 @@ class ExecutionConfig:
             max_context_tokens=agent_config.max_context_tokens,
             max_running_subagents=agent_config.max_running_subagents,
             retry_attempts=agent_config.retry_attempts,
+            retry_backoff_max_seconds=agent_config.retry_backoff_max_seconds,
             timeout=agent_config.timeout,
             tool_call_mode=agent_config.tool_call_mode,
         )
@@ -434,6 +436,7 @@ class AgentConfigBuilder:
         self.agent_params["max_iterations"] = self.config.get("max_iterations", 100)
         self.agent_params["tool_call_mode"] = self.config.get("tool_call_mode", "structured")
         self.agent_params["retry_attempts"] = self.config.get("retry_attempts", 5)
+        self.agent_params["retry_backoff_max_seconds"] = self.config.get("retry_backoff_max_seconds", 30)
         self.agent_params["timeout"] = self.config.get("timeout", 300)
 
         return self

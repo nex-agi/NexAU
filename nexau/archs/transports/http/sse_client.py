@@ -21,6 +21,7 @@ from nexau.archs.llm.llm_aggregators.events import (
     ImageMessageContentEvent,
     ImageMessageEndEvent,
     ImageMessageStartEvent,
+    RetryEvent,
     RunErrorEvent,
     RunFinishedEvent,
     RunStartedEvent,
@@ -83,6 +84,8 @@ def _parse_event_dict(event_data: dict[str, Any]) -> Event:
         return CompactionStartedEvent(**event_data)
     elif event_type == "COMPACTION_FINISHED":
         return CompactionFinishedEvent(**event_data)
+    elif event_type == "RETRY":
+        return RetryEvent(**event_data)
     elif event_type == "IMAGE_MESSAGE_START":
         return ImageMessageStartEvent(**event_data)
     elif event_type == "IMAGE_MESSAGE_CONTENT":

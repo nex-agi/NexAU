@@ -26,6 +26,7 @@ stop_signal, team_mode behavior, _apply_after_agent_hooks, _build_middleware_man
 from unittest.mock import Mock, patch
 
 from nexau.archs.llm.llm_config import LLMConfig
+from nexau.archs.llm.llm_aggregators.events import RetryEvent
 from nexau.archs.main_sub.config import AgentConfig
 from nexau.archs.main_sub.execution.executor import Executor
 from nexau.archs.main_sub.execution.hooks import (
@@ -121,6 +122,43 @@ class TestWireMiddlewareEventEmitters:
             middlewares=[mw],
         )
         assert executor is not None
+
+    def test_executor_builds_retry_event_callback(self):
+        captured_events = []
+
+        class EventMiddleware(Middleware):
+            def __init__(self):
+                self.on_event = lambda evt: captured_events.append(evt)  # noqa: E731 - test stub
+
+            @property
+            def supports_set_event_emitter(self) -> bool:
+                return True
+
+            def set_event_emitter(self, emitter):
+                self._emitter = emitter
+
+        executor = Executor(
+            agent_name="test",
+            agent_id="id",
+            tool_registry=make_tool_registry(),
+            sub_agents={},
+            stop_tools=set(),
+            openai_client=Mock(),
+            llm_config=make_config(),
+            middlewares=[EventMiddleware()],
+        )
+
+        assert executor.llm_caller.on_retry is not None
+        executor.llm_caller.on_retry(2, 5, 3.0, "temporary failure")
+
+        assert len(captured_events) == 1
+        retry_event = captured_events[0]
+        assert isinstance(retry_event, RetryEvent)
+        assert retry_event.api_type == "openai_chat_completion"
+        assert retry_event.attempt == 2
+        assert retry_event.max_attempts == 5
+        assert retry_event.backoff_seconds == 3.0
+        assert retry_event.error_message == "temporary failure"
 
 
 # ---------------------------------------------------------------------------

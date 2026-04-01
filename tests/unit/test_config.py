@@ -770,13 +770,22 @@ class TestExecutionConfig:
         assert cfg.tool_call_mode == "structured"
 
     def test_execution_config_from_agent_config_copies_values(self):
-        agent_cfg = AgentConfig(name="agent", max_iterations=5, max_context_tokens=10, max_running_subagents=1, retry_attempts=2, timeout=3)
+        agent_cfg = AgentConfig(
+            name="agent",
+            max_iterations=5,
+            max_context_tokens=10,
+            max_running_subagents=1,
+            retry_attempts=2,
+            retry_backoff_max_seconds=9,
+            timeout=3,
+        )
         exec_cfg = ExecutionConfig.from_agent_config(agent_cfg)
 
         assert exec_cfg.max_iterations == 5
         assert exec_cfg.max_context_tokens == 10
         assert exec_cfg.max_running_subagents == 1
         assert exec_cfg.retry_attempts == 2
+        assert exec_cfg.retry_backoff_max_seconds == 9
         assert exec_cfg.timeout == 3
 
 

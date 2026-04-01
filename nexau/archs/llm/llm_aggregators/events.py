@@ -325,6 +325,18 @@ class UsageUpdateEvent(BaseEvent):
     usage: TokenUsage
 
 
+class RetryEvent(BaseEvent):
+    """Event emitted when an LLM request is about to retry after a transient failure."""
+
+    type: Literal["RETRY"] = "RETRY"  # type: ignore[assignment]
+    run_id: str | None = None
+    api_type: str
+    attempt: int
+    max_attempts: int
+    backoff_seconds: float
+    error_message: str
+
+
 # ============= UNION TYPES =============
 
 # Unified Event type that includes all AG UI core events and multimodal events
@@ -358,6 +370,7 @@ Event = (
     | UserMessageEvent
     | TeamMessageEvent
     | UsageUpdateEvent
+    | RetryEvent
 )
 
 __all__ = [
@@ -371,6 +384,7 @@ __all__ = [
     "CompactionFinishedEvent",
     "TransportErrorEvent",
     "UsageUpdateEvent",
+    "RetryEvent",
     # Text message events
     "TextMessageStartEvent",
     "TextMessageContentEvent",

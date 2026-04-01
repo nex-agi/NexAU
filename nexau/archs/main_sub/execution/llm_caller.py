@@ -27,7 +27,7 @@ import json
 import logging
 import threading
 import time
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal, cast
 
@@ -64,6 +64,48 @@ from .stop_reason import AgentStopReason
 logger = logging.getLogger(__name__)
 
 _MISSING_TOOL_RESULT_CONTENT = "no tool result (canceled, compacted or failed)"
+
+# 流式 idle 超时异常，区别于一般网络/API 错误，让重试逻辑可针对性处理
+OnRetryCallback = Callable[[int, int, float, str], None]
+"""(attempt, max_attempts, backoff_seconds, error_message) → None"""
+
+
+class StreamIdleTimeoutError(Exception):
+    """Raised when no stream chunk is received within the configured idle timeout.
+
+    与 Codex 的 "idle timeout waiting for SSE/websocket" 语义对齐。
+    是每帧（per-chunk）超时，不是整个请求的总超时，因此 LLM 长推理
+    不会因总时间长而超时，只会在"长时间没有任何数据返回"时才触发。
+    """
+
+
+def _get_stream_idle_timeout_seconds(llm_config: LLMConfig | None) -> float:
+    """Return resolved stream idle timeout in seconds."""
+    if llm_config is None:
+        return LLMConfig.DEFAULT_STREAM_IDLE_TIMEOUT_MS / 1000.0
+    return llm_config.get_stream_idle_timeout()
+
+
+def _is_stream_timeout_exception(exc: Exception) -> bool:
+    """Best-effort detection for provider/transport stream read timeouts."""
+    if isinstance(exc, (httpx.ReadTimeout, requests.exceptions.ReadTimeout, TimeoutError)):
+        return True
+    return exc.__class__.__name__ in {"ReadTimeout", "APITimeoutError"}
+
+
+def _maybe_wrap_stream_idle_timeout(
+    exc: Exception,
+    *,
+    transport_name: str,
+    llm_config: LLMConfig | None,
+) -> StreamIdleTimeoutError | None:
+    """Normalize SDK/provider timeout exceptions into StreamIdleTimeoutError."""
+    if not _is_stream_timeout_exception(exc):
+        return None
+    idle_timeout_seconds = _get_stream_idle_timeout_seconds(llm_config)
+    return StreamIdleTimeoutError(
+        f"idle timeout waiting for {transport_name} ({idle_timeout_seconds}s): {exc}",
+    )
 
 
 def _normalize_token_ids(value: object, *, context: str) -> list[int]:
@@ -224,6 +266,9 @@ class LLMCaller:
         openai_client: Any,
         llm_config: LLMConfig,
         retry_attempts: int = 5,
+        *,
+        retry_backoff_max_seconds: int = 30,
+        on_retry: OnRetryCallback | None = None,
         middleware_manager: MiddlewareManager | None = None,
         global_storage: Any = None,
         session_id: str | None = None,
@@ -235,6 +280,10 @@ class LLMCaller:
             openai_client: OpenAI/Anthropic sync client instance
             llm_config: LLM configuration
             retry_attempts: Number of retry attempts for API calls
+            retry_backoff_max_seconds: 指数退避上限（秒），默认 30s。
+                避免长时间占用线程池 slot 或让用户等待过久。
+            on_retry: 每次重试前的回调，签名见 ``OnRetryCallback``。
+                用于 UI 展示「正在重试第 N 次…」等信息。
             middleware_manager: Optional middleware manager for wrapping calls
             global_storage: Optional global storage to retrieve tracer at call time
             session_id: Optional session ID injected into provider payloads
@@ -247,6 +296,8 @@ class LLMCaller:
         self.async_openai_client = async_openai_client
         self.llm_config = llm_config
         self.retry_attempts = retry_attempts
+        self.retry_backoff_max_seconds = retry_backoff_max_seconds
+        self.on_retry = on_retry
         self.middleware_manager = middleware_manager
         self.global_storage = global_storage
         self.session_id = session_id
@@ -639,8 +690,11 @@ class LLMCaller:
                 )
                 if i == self.retry_attempts - 1:
                     raise e
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 16)  # Cap at 16s to limit thread pool slot occupation
+                capped_backoff = min(backoff, self.retry_backoff_max_seconds)
+                if self.on_retry is not None:
+                    self.on_retry(i + 1, self.retry_attempts, capped_backoff, str(e))
+                time.sleep(capped_backoff)
+                backoff = min(backoff * 2, self.retry_backoff_max_seconds)
         return None
 
     async def call_llm_async(
@@ -812,8 +866,11 @@ class LLMCaller:
                 )
                 if i == self.retry_attempts - 1:
                     raise e
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 16)  # Cap at 16s to match sync retry
+                capped_backoff = min(backoff, self.retry_backoff_max_seconds)
+                if self.on_retry is not None:
+                    self.on_retry(i + 1, self.retry_attempts, capped_backoff, str(e))
+                await asyncio.sleep(capped_backoff)
+                backoff = min(backoff * 2, self.retry_backoff_max_seconds)
         return None
 
     async def _run_sync_in_llm_pool(
@@ -903,6 +960,7 @@ def call_llm_with_different_client(
             kwargs,
             middleware_manager=middleware_manager,
             model_call_params=model_call_params,
+            llm_config=llm_config,
             tracer=tracer,
             cache_control_ttl=llm_config.cache_control_ttl,
         )
@@ -1264,6 +1322,7 @@ def call_llm_with_anthropic_chat_completion(
     *,
     middleware_manager: MiddlewareManager | None = None,
     model_call_params: ModelCallParams | None = None,
+    llm_config: LLMConfig | None = None,
     tracer: BaseTracer | None = None,
     cache_control_ttl: str | None = None,
 ) -> ModelResponse:
@@ -1346,34 +1405,35 @@ def call_llm_with_anthropic_chat_completion(
 
         aggregator = AnthropicStreamAggregator()
 
-        if should_trace and tracer is not None:
-            trace_ctx = TraceContext(tracer, "Anthropic messages.stream", SpanType.LLM, inputs=api_kwargs)
-            with trace_ctx:
-                start_time = time.time()
-                first_token_time = None
-                # RFC-0001: shutdown_event 检测
-                _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
-                with client.messages.create(**api_kwargs, stream=True) as stream:
-                    for event in stream:
-                        if _shutdown_ev is not None and _shutdown_ev.is_set():
-                            logger.info("🛑 Shutdown event detected during Anthropic streaming, finalizing partial response")
-                            break
-                        if first_token_time is None:
-                            first_token_time = time.time()
-                        processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
-                        if processed_event is None:
-                            continue
-                        aggregator.consume(processed_event)
-                message_payload = aggregator.finalize()
-                trace_ctx.set_outputs(message_payload)
-                if first_token_time is not None:
-                    trace_ctx.set_attributes(
-                        {
-                            "time_to_first_token_ms": (first_token_time - start_time) * 1000,
-                        }
-                    )
-                return message_payload, aggregator.model_name
-        else:
+        try:
+            if should_trace and tracer is not None:
+                trace_ctx = TraceContext(tracer, "Anthropic messages.stream", SpanType.LLM, inputs=api_kwargs)
+                with trace_ctx:
+                    start_time = time.time()
+                    first_token_time = None
+                    # RFC-0001: shutdown_event 检测
+                    _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
+                    with client.messages.create(**api_kwargs, stream=True) as stream:
+                        for event in stream:
+                            if _shutdown_ev is not None and _shutdown_ev.is_set():
+                                logger.info("🛑 Shutdown event detected during Anthropic streaming, finalizing partial response")
+                                break
+                            if first_token_time is None:
+                                first_token_time = time.time()
+                            processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
+                            if processed_event is None:
+                                continue
+                            aggregator.consume(processed_event)
+                    message_payload = aggregator.finalize()
+                    trace_ctx.set_outputs(message_payload)
+                    if first_token_time is not None:
+                        trace_ctx.set_attributes(
+                            {
+                                "time_to_first_token_ms": (first_token_time - start_time) * 1000,
+                            }
+                        )
+                    return message_payload, aggregator.model_name
+
             # RFC-0001: shutdown_event 检测
             _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
             with client.messages.create(**api_kwargs, stream=True) as stream:
@@ -1387,6 +1447,15 @@ def call_llm_with_anthropic_chat_completion(
                     aggregator.consume(processed_event)
             message_payload = aggregator.finalize()
             return message_payload, aggregator.model_name
+        except Exception as exc:
+            wrapped_error = _maybe_wrap_stream_idle_timeout(
+                exc,
+                transport_name="anthropic stream",
+                llm_config=llm_config,
+            )
+            if wrapped_error is not None:
+                raise wrapped_error from exc
+            raise
 
     response_payload, _ = llm_stream_call()
 
@@ -1428,39 +1497,40 @@ def call_llm_with_openai_chat_completion(
             aggregator = OpenAIChatStreamAggregator()
             last_chunk: ChatCompletionChunk | None = None
 
-            if should_trace and tracer is not None:
-                trace_ctx: TraceContext = TraceContext(tracer, "OpenAI chat.completions.create (stream)", SpanType.LLM, inputs=payload)
-                with trace_ctx:
-                    start_time = time.time()
-                    first_token_time = None
-                    stream_ctx: Stream[ChatCompletionChunk] = client.chat.completions.create(
-                        stream=True,
-                        **payload,
-                    )
-                    # RFC-0001: shutdown_event 检测，流式中断时提前终止
-                    _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
-                    with stream_ctx:
-                        for chunk in stream_ctx:
-                            if _shutdown_ev is not None and _shutdown_ev.is_set():
-                                logger.info("🛑 Shutdown event detected during OpenAI streaming, finalizing partial response")
-                                break
-                            if first_token_time is None:
-                                first_token_time = time.time()
-                            last_chunk = chunk
-                            processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
-                            if processed_chunk is None:
-                                continue
-                            aggregator.consume(processed_chunk)
-                    message_payload = aggregator.finalize()
-                    trace_ctx.set_outputs(message_payload)
-                    if first_token_time is not None:
-                        trace_ctx.set_attributes(
-                            {
-                                "time_to_first_token_ms": (first_token_time - start_time) * 1000,
-                            }
+            try:
+                if should_trace and tracer is not None:
+                    trace_ctx: TraceContext = TraceContext(tracer, "OpenAI chat.completions.create (stream)", SpanType.LLM, inputs=payload)
+                    with trace_ctx:
+                        start_time = time.time()
+                        first_token_time = None
+                        stream_ctx: Stream[ChatCompletionChunk] = client.chat.completions.create(
+                            stream=True,
+                            **payload,
                         )
-                    return message_payload, last_chunk, aggregator.model_name
-            else:
+                        # RFC-0001: shutdown_event 检测，流式中断时提前终止
+                        _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
+                        with stream_ctx:
+                            for chunk in stream_ctx:
+                                if _shutdown_ev is not None and _shutdown_ev.is_set():
+                                    logger.info("🛑 Shutdown event detected during OpenAI streaming, finalizing partial response")
+                                    break
+                                if first_token_time is None:
+                                    first_token_time = time.time()
+                                last_chunk = chunk
+                                processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
+                                if processed_chunk is None:
+                                    continue
+                                aggregator.consume(processed_chunk)
+                        message_payload = aggregator.finalize()
+                        trace_ctx.set_outputs(message_payload)
+                        if first_token_time is not None:
+                            trace_ctx.set_attributes(
+                                {
+                                    "time_to_first_token_ms": (first_token_time - start_time) * 1000,
+                                }
+                            )
+                        return message_payload, last_chunk, aggregator.model_name
+
                 stream_ctx = client.chat.completions.create(
                     stream=True,
                     **payload,
@@ -1479,6 +1549,15 @@ def call_llm_with_openai_chat_completion(
                         aggregator.consume(processed_chunk)
                 message_payload_untraced = aggregator.finalize()
                 return message_payload_untraced, last_chunk, aggregator.model_name
+            except Exception as exc:
+                wrapped_error = _maybe_wrap_stream_idle_timeout(
+                    exc,
+                    transport_name="openai chat stream",
+                    llm_config=llm_config,
+                )
+                if wrapped_error is not None:
+                    raise wrapped_error from exc
+                raise
 
         message, _, _ = call_llm_stream(kwargs)
 
@@ -1600,32 +1679,33 @@ def call_llm_with_openai_responses(
         # RFC-0001: shutdown_event 检测
         _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
 
-        if should_trace and tracer is not None:
-            trace_ctx = TraceContext(tracer, "OpenAI responses.stream", SpanType.LLM, inputs=payload)
-            start_time = time.time()
-            first_token_time = None
-            with trace_ctx:
-                with client.responses.stream(**payload) as stream:
-                    for event in stream:
-                        if _shutdown_ev is not None and _shutdown_ev.is_set():
-                            logger.info("🛑 Shutdown event detected during OpenAI Responses streaming, finalizing partial response")
-                            break
-                        if first_token_time is None:
-                            first_token_time = time.time()
-                        processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
-                        if processed_event is None:
-                            continue
-                        aggregator.consume(processed_event)
-                response_payload = aggregator.finalize()
-                trace_ctx.set_outputs(response_payload)
-                if first_token_time is not None:
-                    trace_ctx.set_attributes(
-                        {
-                            "time_to_first_token_ms": (first_token_time - start_time) * 1000,
-                        }
-                    )
-                return response_payload
-        else:
+        try:
+            if should_trace and tracer is not None:
+                trace_ctx = TraceContext(tracer, "OpenAI responses.stream", SpanType.LLM, inputs=payload)
+                start_time = time.time()
+                first_token_time = None
+                with trace_ctx:
+                    with client.responses.stream(**payload) as stream:
+                        for event in stream:
+                            if _shutdown_ev is not None and _shutdown_ev.is_set():
+                                logger.info("🛑 Shutdown event detected during OpenAI Responses streaming, finalizing partial response")
+                                break
+                            if first_token_time is None:
+                                first_token_time = time.time()
+                            processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
+                            if processed_event is None:
+                                continue
+                            aggregator.consume(processed_event)
+                    response_payload = aggregator.finalize()
+                    trace_ctx.set_outputs(response_payload)
+                    if first_token_time is not None:
+                        trace_ctx.set_attributes(
+                            {
+                                "time_to_first_token_ms": (first_token_time - start_time) * 1000,
+                            }
+                        )
+                    return response_payload
+
             with client.responses.stream(**payload) as stream:
                 for event in stream:
                     if _shutdown_ev is not None and _shutdown_ev.is_set():
@@ -1636,6 +1716,15 @@ def call_llm_with_openai_responses(
                         continue
                     aggregator.consume(processed_event)
             return aggregator.finalize()
+        except Exception as exc:
+            wrapped_error = _maybe_wrap_stream_idle_timeout(
+                exc,
+                transport_name="openai responses stream",
+                llm_config=llm_config,
+            )
+            if wrapped_error is not None:
+                raise wrapped_error from exc
+            raise
 
     response_payload = call_llm_stream(request_payload)
     return ModelResponse.from_openai_response(response_payload)
@@ -1664,6 +1753,7 @@ async def call_llm_with_different_client_async(
             kwargs,
             middleware_manager=middleware_manager,
             model_call_params=model_call_params,
+            llm_config=llm_config,
             tracer=tracer,
             cache_control_ttl=llm_config.cache_control_ttl,
         )
@@ -1729,42 +1819,52 @@ async def call_llm_with_openai_chat_completion_async(
 
         _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
 
-        if should_trace and tracer is not None:
-            trace_ctx = TraceContext(tracer, "OpenAI chat.completions.create (async stream)", SpanType.LLM, inputs=payload)
-            with trace_ctx:
-                start_time = time.time()
-                first_token_time = None
-                stream_ctx: AsyncStream[ChatCompletionChunk] = await client.chat.completions.create(
-                    stream=True,
-                    **payload,
-                )
+        try:
+            if should_trace and tracer is not None:
+                trace_ctx = TraceContext(tracer, "OpenAI chat.completions.create (async stream)", SpanType.LLM, inputs=payload)
+                with trace_ctx:
+                    start_time = time.time()
+                    first_token_time = None
+                    stream_ctx: AsyncStream[ChatCompletionChunk] = await client.chat.completions.create(
+                        stream=True,
+                        **payload,
+                    )
+                    async with stream_ctx:
+                        async for chunk in stream_ctx:
+                            if _shutdown_ev is not None and _shutdown_ev.is_set():
+                                logger.info("🛑 Shutdown event detected during async OpenAI streaming")
+                                break
+                            if first_token_time is None:
+                                first_token_time = time.time()
+                            processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
+                            if processed_chunk is None:
+                                continue
+                            aggregator.consume(processed_chunk)
+                    message_payload = aggregator.finalize()
+                    trace_ctx.set_outputs(message_payload)
+                    if first_token_time is not None:
+                        trace_ctx.set_attributes({"time_to_first_token_ms": (first_token_time - start_time) * 1000})
+            else:
+                stream_ctx = await client.chat.completions.create(stream=True, **payload)
                 async with stream_ctx:
                     async for chunk in stream_ctx:
                         if _shutdown_ev is not None and _shutdown_ev.is_set():
                             logger.info("🛑 Shutdown event detected during async OpenAI streaming")
                             break
-                        if first_token_time is None:
-                            first_token_time = time.time()
                         processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
                         if processed_chunk is None:
                             continue
                         aggregator.consume(processed_chunk)
                 message_payload = aggregator.finalize()
-                trace_ctx.set_outputs(message_payload)
-                if first_token_time is not None:
-                    trace_ctx.set_attributes({"time_to_first_token_ms": (first_token_time - start_time) * 1000})
-        else:
-            stream_ctx = await client.chat.completions.create(stream=True, **payload)
-            async with stream_ctx:
-                async for chunk in stream_ctx:
-                    if _shutdown_ev is not None and _shutdown_ev.is_set():
-                        logger.info("🛑 Shutdown event detected during async OpenAI streaming")
-                        break
-                    processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
-                    if processed_chunk is None:
-                        continue
-                    aggregator.consume(processed_chunk)
-            message_payload = aggregator.finalize()
+        except Exception as exc:
+            wrapped_error = _maybe_wrap_stream_idle_timeout(
+                exc,
+                transport_name="openai chat stream",
+                llm_config=llm_config,
+            )
+            if wrapped_error is not None:
+                raise wrapped_error from exc
+            raise
 
         return ModelResponse.from_openai_message(message_payload)
 
@@ -1793,6 +1893,7 @@ async def call_llm_with_anthropic_chat_completion_async(
     *,
     middleware_manager: MiddlewareManager | None = None,
     model_call_params: ModelCallParams | None = None,
+    llm_config: LLMConfig | None = None,
     tracer: BaseTracer | None = None,
     cache_control_ttl: str | None = None,
 ) -> ModelResponse:
@@ -1851,37 +1952,47 @@ async def call_llm_with_anthropic_chat_completion_async(
     aggregator = AnthropicStreamAggregator()
     _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
 
-    if should_trace and tracer is not None:
-        trace_ctx_s = TraceContext(tracer, "Anthropic messages.stream (async)", SpanType.LLM, inputs=api_kwargs)
-        with trace_ctx_s:
-            start_time = time.time()
-            first_token_time = None
+    try:
+        if should_trace and tracer is not None:
+            trace_ctx_s = TraceContext(tracer, "Anthropic messages.stream (async)", SpanType.LLM, inputs=api_kwargs)
+            with trace_ctx_s:
+                start_time = time.time()
+                first_token_time = None
+                async with client.messages.stream(**api_kwargs) as stream:
+                    async for event in stream:
+                        if _shutdown_ev is not None and _shutdown_ev.is_set():
+                            logger.info("🛑 Shutdown event detected during async Anthropic streaming")
+                            break
+                        if first_token_time is None:
+                            first_token_time = time.time()
+                        processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
+                        if processed_event is None:
+                            continue
+                        aggregator.consume(processed_event)
+                message_payload = aggregator.finalize()
+                trace_ctx_s.set_outputs(message_payload)
+                if first_token_time is not None:
+                    trace_ctx_s.set_attributes({"time_to_first_token_ms": (first_token_time - start_time) * 1000})
+        else:
             async with client.messages.stream(**api_kwargs) as stream:
                 async for event in stream:
                     if _shutdown_ev is not None and _shutdown_ev.is_set():
                         logger.info("🛑 Shutdown event detected during async Anthropic streaming")
                         break
-                    if first_token_time is None:
-                        first_token_time = time.time()
                     processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
                     if processed_event is None:
                         continue
                     aggregator.consume(processed_event)
             message_payload = aggregator.finalize()
-            trace_ctx_s.set_outputs(message_payload)
-            if first_token_time is not None:
-                trace_ctx_s.set_attributes({"time_to_first_token_ms": (first_token_time - start_time) * 1000})
-    else:
-        async with client.messages.stream(**api_kwargs) as stream:
-            async for event in stream:
-                if _shutdown_ev is not None and _shutdown_ev.is_set():
-                    logger.info("🛑 Shutdown event detected during async Anthropic streaming")
-                    break
-                processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
-                if processed_event is None:
-                    continue
-                aggregator.consume(processed_event)
-        message_payload = aggregator.finalize()
+    except Exception as exc:
+        wrapped_error = _maybe_wrap_stream_idle_timeout(
+            exc,
+            transport_name="anthropic stream",
+            llm_config=llm_config,
+        )
+        if wrapped_error is not None:
+            raise wrapped_error from exc
+        raise
 
     return ModelResponse.from_anthropic_message(message_payload)
 
@@ -1957,37 +2068,47 @@ async def call_llm_with_openai_responses_async(
     aggregator = OpenAIResponsesStreamAggregator()
     _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
 
-    if should_trace and tracer is not None:
-        trace_ctx_s = TraceContext(tracer, "OpenAI responses.stream (async)", SpanType.LLM, inputs=request_payload)
-        start_time = time.time()
-        first_token_time = None
-        with trace_ctx_s:
+    try:
+        if should_trace and tracer is not None:
+            trace_ctx_s = TraceContext(tracer, "OpenAI responses.stream (async)", SpanType.LLM, inputs=request_payload)
+            start_time = time.time()
+            first_token_time = None
+            with trace_ctx_s:
+                async with client.responses.stream(**request_payload) as stream:
+                    async for event in stream:
+                        if _shutdown_ev is not None and _shutdown_ev.is_set():
+                            logger.info("🛑 Shutdown event detected during async OpenAI Responses streaming")
+                            break
+                        if first_token_time is None:
+                            first_token_time = time.time()
+                        processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
+                        if processed_event is None:
+                            continue
+                        aggregator.consume(processed_event)
+                response_payload_s = aggregator.finalize()
+                trace_ctx_s.set_outputs(response_payload_s)
+                if first_token_time is not None:
+                    trace_ctx_s.set_attributes({"time_to_first_token_ms": (first_token_time - start_time) * 1000})
+        else:
             async with client.responses.stream(**request_payload) as stream:
                 async for event in stream:
                     if _shutdown_ev is not None and _shutdown_ev.is_set():
                         logger.info("🛑 Shutdown event detected during async OpenAI Responses streaming")
                         break
-                    if first_token_time is None:
-                        first_token_time = time.time()
                     processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
                     if processed_event is None:
                         continue
                     aggregator.consume(processed_event)
             response_payload_s = aggregator.finalize()
-            trace_ctx_s.set_outputs(response_payload_s)
-            if first_token_time is not None:
-                trace_ctx_s.set_attributes({"time_to_first_token_ms": (first_token_time - start_time) * 1000})
-    else:
-        async with client.responses.stream(**request_payload) as stream:
-            async for event in stream:
-                if _shutdown_ev is not None and _shutdown_ev.is_set():
-                    logger.info("🛑 Shutdown event detected during async OpenAI Responses streaming")
-                    break
-                processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
-                if processed_event is None:
-                    continue
-                aggregator.consume(processed_event)
-        response_payload_s = aggregator.finalize()
+    except Exception as exc:
+        wrapped_error = _maybe_wrap_stream_idle_timeout(
+            exc,
+            transport_name="openai responses stream",
+            llm_config=llm_config,
+        )
+        if wrapped_error is not None:
+            raise wrapped_error from exc
+        raise
 
     return ModelResponse.from_openai_response(response_payload_s)
 
@@ -3368,10 +3489,52 @@ def call_llm_with_gemini_rest(
                 with trace_ctx:
                     start_time = time.time()
                     first_token_time = None
+                    # stream_idle_timeout → requests read timeout (每帧超时)
+                    _read_timeout = llm_config.get_stream_idle_timeout()
+                    _connect_timeout = llm_config.get_connect_timeout()
+                    try:
+                        resp = requests.post(
+                            url,
+                            json=request_body,
+                            timeout=(_connect_timeout, _read_timeout),
+                            stream=True,
+                        )
+                        resp.raise_for_status()
+                        for chunk_json in _iter_gemini_sse_chunks(resp):
+                            if _shutdown_ev is not None and _shutdown_ev.is_set():
+                                logger.info(
+                                    "🛑 Shutdown event detected during Gemini REST streaming, finalizing partial response",
+                                )
+                                break
+                            if first_token_time is None:
+                                first_token_time = time.time()
+                            processed_chunk = _process_stream_chunk(
+                                chunk_json,
+                                middleware_manager,
+                                model_call_params,
+                            )
+                            if processed_chunk is None:
+                                continue
+                            aggregator.consume(processed_chunk)
+                    except requests.exceptions.ReadTimeout as exc:
+                        raise StreamIdleTimeoutError(
+                            f"Gemini REST stream idle timeout ({_read_timeout}s): {exc}",
+                        ) from exc
+                    result = aggregator.finalize()
+                    trace_ctx.set_outputs(result)
+                    if first_token_time is not None:
+                        trace_ctx.set_attributes(
+                            {"time_to_first_token_ms": (first_token_time - start_time) * 1000},
+                        )
+                    return result
+            else:
+                _read_timeout = llm_config.get_stream_idle_timeout()
+                _connect_timeout = llm_config.get_connect_timeout()
+                try:
                     resp = requests.post(
                         url,
                         json=request_body,
-                        timeout=llm_config.timeout or 120,
+                        timeout=(_connect_timeout, _read_timeout),
                         stream=True,
                     )
                     resp.raise_for_status()
@@ -3381,8 +3544,6 @@ def call_llm_with_gemini_rest(
                                 "🛑 Shutdown event detected during Gemini REST streaming, finalizing partial response",
                             )
                             break
-                        if first_token_time is None:
-                            first_token_time = time.time()
                         processed_chunk = _process_stream_chunk(
                             chunk_json,
                             middleware_manager,
@@ -3391,35 +3552,10 @@ def call_llm_with_gemini_rest(
                         if processed_chunk is None:
                             continue
                         aggregator.consume(processed_chunk)
-                    result = aggregator.finalize()
-                    trace_ctx.set_outputs(result)
-                    if first_token_time is not None:
-                        trace_ctx.set_attributes(
-                            {"time_to_first_token_ms": (first_token_time - start_time) * 1000},
-                        )
-                    return result
-            else:
-                resp = requests.post(
-                    url,
-                    json=request_body,
-                    timeout=llm_config.timeout or 120,
-                    stream=True,
-                )
-                resp.raise_for_status()
-                for chunk_json in _iter_gemini_sse_chunks(resp):
-                    if _shutdown_ev is not None and _shutdown_ev.is_set():
-                        logger.info(
-                            "🛑 Shutdown event detected during Gemini REST streaming, finalizing partial response",
-                        )
-                        break
-                    processed_chunk = _process_stream_chunk(
-                        chunk_json,
-                        middleware_manager,
-                        model_call_params,
-                    )
-                    if processed_chunk is None:
-                        continue
-                    aggregator.consume(processed_chunk)
+                except requests.exceptions.ReadTimeout as exc:
+                    raise StreamIdleTimeoutError(
+                        f"Gemini REST stream idle timeout ({_read_timeout}s): {exc}",
+                    ) from exc
                 return aggregator.finalize()
 
         try:
@@ -3436,7 +3572,11 @@ def call_llm_with_gemini_rest(
 
     # Non-streaming request path
     def do_request() -> dict[str, Any]:
-        response = requests.post(url, json=request_body, timeout=llm_config.timeout or 120)
+        response = requests.post(
+            url,
+            json=request_body,
+            timeout=(llm_config.get_connect_timeout(), float(llm_config.timeout or 120)),
+        )
         response.raise_for_status()
         return response.json()
 
@@ -3595,23 +3735,52 @@ async def call_llm_with_gemini_rest_async(
         generation_config["thinkingConfig"] = thinking_config
 
     should_trace = tracer is not None and get_current_span() is not None
-    timeout_value = float(llm_config.timeout or 120)
+    # stream_idle_timeout → httpx read timeout (每帧超时)
+    _read_timeout = llm_config.get_stream_idle_timeout()
+    _connect_timeout = llm_config.get_connect_timeout()
 
     if stream_requested:
         aggregator = GeminiRestStreamAggregator()
         _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_value)) as client:
-            if should_trace and tracer is not None:
-                trace_ctx = TraceContext(
-                    tracer,
-                    "Gemini REST streamGenerateContent (async)",
-                    SpanType.LLM,
-                    inputs=request_body,
-                )
-                with trace_ctx:
-                    start_time = time.time()
-                    first_token_time = None
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout=None, connect=_connect_timeout, read=_read_timeout)) as client:
+                if should_trace and tracer is not None:
+                    trace_ctx = TraceContext(
+                        tracer,
+                        "Gemini REST streamGenerateContent (async)",
+                        SpanType.LLM,
+                        inputs=request_body,
+                    )
+                    with trace_ctx:
+                        start_time = time.time()
+                        first_token_time = None
+                        async with client.stream("POST", url, json=request_body) as resp:
+                            resp.raise_for_status()
+                            async for chunk_json in _iter_gemini_sse_chunks_async(resp):
+                                if _shutdown_ev is not None and _shutdown_ev.is_set():
+                                    logger.info(
+                                        "🛑 Shutdown event detected during Gemini REST streaming (async), finalizing partial response",
+                                    )
+                                    break
+                                if first_token_time is None:
+                                    first_token_time = time.time()
+                                processed_chunk = _process_stream_chunk(
+                                    chunk_json,
+                                    middleware_manager,
+                                    model_call_params,
+                                )
+                                if processed_chunk is None:
+                                    continue
+                                aggregator.consume(processed_chunk)
+                        result = aggregator.finalize()
+                        trace_ctx.set_outputs(result)
+                        if first_token_time is not None:
+                            trace_ctx.set_attributes(
+                                {"time_to_first_token_ms": (first_token_time - start_time) * 1000},
+                            )
+                        return ModelResponse.from_gemini_rest(result)
+                else:
                     async with client.stream("POST", url, json=request_body) as resp:
                         resp.raise_for_status()
                         async for chunk_json in _iter_gemini_sse_chunks_async(resp):
@@ -3620,8 +3789,6 @@ async def call_llm_with_gemini_rest_async(
                                     "🛑 Shutdown event detected during Gemini REST streaming (async), finalizing partial response",
                                 )
                                 break
-                            if first_token_time is None:
-                                first_token_time = time.time()
                             processed_chunk = _process_stream_chunk(
                                 chunk_json,
                                 middleware_manager,
@@ -3630,34 +3797,16 @@ async def call_llm_with_gemini_rest_async(
                             if processed_chunk is None:
                                 continue
                             aggregator.consume(processed_chunk)
-                    result = aggregator.finalize()
-                    trace_ctx.set_outputs(result)
-                    if first_token_time is not None:
-                        trace_ctx.set_attributes(
-                            {"time_to_first_token_ms": (first_token_time - start_time) * 1000},
-                        )
-                    return ModelResponse.from_gemini_rest(result)
-            else:
-                async with client.stream("POST", url, json=request_body) as resp:
-                    resp.raise_for_status()
-                    async for chunk_json in _iter_gemini_sse_chunks_async(resp):
-                        if _shutdown_ev is not None and _shutdown_ev.is_set():
-                            logger.info(
-                                "🛑 Shutdown event detected during Gemini REST streaming (async), finalizing partial response",
-                            )
-                            break
-                        processed_chunk = _process_stream_chunk(
-                            chunk_json,
-                            middleware_manager,
-                            model_call_params,
-                        )
-                        if processed_chunk is None:
-                            continue
-                        aggregator.consume(processed_chunk)
-                return ModelResponse.from_gemini_rest(aggregator.finalize())
+                    return ModelResponse.from_gemini_rest(aggregator.finalize())
+        except httpx.ReadTimeout as exc:
+            raise StreamIdleTimeoutError(
+                f"Gemini REST stream idle timeout ({_read_timeout}s, async): {exc}",
+            ) from exc
 
     # Non-streaming async request
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_value)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout=float(llm_config.timeout or 120), connect=_connect_timeout),
+    ) as client:
         try:
             if should_trace and tracer is not None:
                 trace_ctx = TraceContext(tracer, "Gemini REST generateContent (async)", SpanType.LLM, inputs=request_body)

@@ -20,6 +20,7 @@ from nexau.archs.llm.llm_aggregators.events import (
     ImageMessageContentEvent,
     ImageMessageEndEvent,
     ImageMessageStartEvent,
+    RetryEvent,
     RunErrorEvent,
     RunFinishedEvent,
     RunStartedEvent,
@@ -121,6 +122,21 @@ class TestParseEventDict:
         event = _parse_event_dict(event_data)
         assert isinstance(event, RunErrorEvent)
         assert event.message == "Something went wrong"
+
+    def test_parse_retry_event(self):
+        """Test parsing RETRY event."""
+        event_data = {
+            "type": "RETRY",
+            "api_type": "openai_chat_completion",
+            "attempt": 2,
+            "max_attempts": 5,
+            "backoff_seconds": 3.0,
+            "error_message": "temporary failure",
+        }
+        event = _parse_event_dict(event_data)
+        assert isinstance(event, RetryEvent)
+        assert event.attempt == 2
+        assert event.backoff_seconds == 3.0
 
     def test_parse_unknown_event_raises(self):
         """Test parsing unknown event type raises ValueError."""

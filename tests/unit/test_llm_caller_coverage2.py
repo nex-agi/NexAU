@@ -22,7 +22,7 @@ _adapt_structured_tools_for_provider, _raw_message_metadata object with choices.
 
 import threading
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 
@@ -289,6 +289,43 @@ class TestCallWithRetry:
         ):
             caller._call_with_retry(params)
 
+    def test_retry_callback_uses_capped_backoff(self, openai_config):
+        on_retry = Mock()
+        caller = LLMCaller(
+            Mock(),
+            openai_config,
+            retry_attempts=3,
+            retry_backoff_max_seconds=3,
+            on_retry=on_retry,
+        )
+        good_resp = _make_model_response()
+        params = ModelCallParams(
+            messages=[Message(role=Role.USER, content=[TextBlock(text="Hi")])],
+            max_tokens=100,
+            force_stop_reason=None,
+            agent_state=None,
+            tool_call_mode="xml",
+            tools=None,
+            api_params={"model": "gpt-4o-mini"},
+            openai_client=Mock(),
+        )
+
+        with (
+            patch(
+                "nexau.archs.main_sub.execution.llm_caller.call_llm_with_different_client",
+                side_effect=[RuntimeError("try 1"), RuntimeError("try 2"), good_resp],
+            ),
+            patch("time.sleep") as sleep_mock,
+        ):
+            result = caller._call_with_retry(params)
+
+        assert result is good_resp
+        assert sleep_mock.call_args_list == [call(1), call(2)]
+        assert on_retry.call_args_list == [
+            call(1, 3, 1, "try 1"),
+            call(2, 3, 2, "try 2"),
+        ]
+
 
 # ---------------------------------------------------------------------------
 # call_llm_async — full flow
@@ -401,6 +438,51 @@ class TestCallWithRetryAsync:
         )
         with pytest.raises(RuntimeError, match="fail"):
             await caller._call_with_retry_async(params, sync_call_fn=Mock(side_effect=RuntimeError("fail")))
+
+    @pytest.mark.anyio
+    async def test_retry_callback_uses_capped_backoff_async(self, openai_config):
+        on_retry = Mock()
+        caller = LLMCaller(
+            Mock(),
+            openai_config,
+            retry_attempts=4,
+            retry_backoff_max_seconds=3,
+            on_retry=on_retry,
+        )
+        good_resp = _make_model_response()
+        params = ModelCallParams(
+            messages=[Message(role=Role.USER, content=[TextBlock(text="Hi")])],
+            max_tokens=100,
+            force_stop_reason=None,
+            agent_state=None,
+            tool_call_mode="xml",
+            tools=None,
+            api_params={"model": "gpt-4o-mini"},
+            openai_client=Mock(),
+        )
+
+        call_count = {"value": 0}
+
+        def flaky(_: ModelCallParams) -> ModelResponse:
+            call_count["value"] += 1
+            if call_count["value"] == 1:
+                raise RuntimeError("try 1")
+            if call_count["value"] == 2:
+                raise RuntimeError("try 2")
+            if call_count["value"] == 3:
+                raise RuntimeError("try 3")
+            return good_resp
+
+        with patch("asyncio.sleep") as sleep_mock:
+            result = await caller._call_with_retry_async(params, sync_call_fn=flaky)
+
+        assert result is good_resp
+        assert sleep_mock.await_args_list == [call(1), call(2), call(3)]
+        assert on_retry.call_args_list == [
+            call(1, 4, 1, "try 1"),
+            call(2, 4, 2, "try 2"),
+            call(3, 4, 3, "try 3"),
+        ]
 
 
 # ---------------------------------------------------------------------------

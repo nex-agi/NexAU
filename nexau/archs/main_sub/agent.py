@@ -782,6 +782,7 @@ class Agent:
             max_context_tokens=self.exec_config.max_context_tokens,
             max_running_subagents=self.exec_config.max_running_subagents,
             retry_attempts=self.exec_config.retry_attempts,
+            retry_backoff_max_seconds=self.exec_config.retry_backoff_max_seconds,
             token_counter=token_counter,
             after_model_hooks=self.config.after_model_hooks,
             after_tool_hooks=self.config.after_tool_hooks,

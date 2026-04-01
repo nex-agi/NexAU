@@ -16,6 +16,7 @@
 
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 
 from nexau.archs.llm.llm_config import LLMConfig
@@ -318,11 +319,11 @@ class TestSlidingWindowCompaction:
         assert compaction.summary_llm_config.max_retries == 3
         assert compaction._llm_caller is not None
         assert compaction._llm_caller.openai_client is replacement_client
-        assert mock_openai_class.call_args_list[-1].kwargs == {
-            "api_key": "summary-key",
-            "base_url": "https://summary.example.com/v1",
-            "max_retries": 3,
-        }
+        client_kwargs = mock_openai_class.call_args_list[-1].kwargs
+        assert client_kwargs["api_key"] == "summary-key"
+        assert client_kwargs["base_url"] == "https://summary.example.com/v1"
+        assert client_kwargs["max_retries"] == 3
+        assert isinstance(client_kwargs["timeout"], httpx.Timeout)
 
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
     def test_runtime_llm_config_legacy_summary_fields_are_standalone(self, mock_openai_class, mock_openai_client, temp_compact_prompt):
@@ -362,11 +363,11 @@ class TestSlidingWindowCompaction:
         assert compaction.summary_llm_config.max_retries == 3
         assert compaction._llm_caller is not None
         assert compaction._llm_caller.openai_client is replacement_client
-        assert mock_openai_class.call_args_list[-1].kwargs == {
-            "api_key": "summary-key",
-            "base_url": "https://summary.example.com/v1",
-            "max_retries": 3,
-        }
+        client_kwargs = mock_openai_class.call_args_list[-1].kwargs
+        assert client_kwargs["api_key"] == "summary-key"
+        assert client_kwargs["base_url"] == "https://summary.example.com/v1"
+        assert client_kwargs["max_retries"] == 3
+        assert isinstance(client_kwargs["timeout"], httpx.Timeout)
 
     def test_keep_iterations_validation(self, temp_compact_prompt):
         """Test that keep_iterations must be >= 1."""
@@ -547,11 +548,11 @@ class TestEmergencySummaryRuntime:
         assert resolved.timeout is None
         assert resolved.max_retries == 3
         assert captured["client"] is replacement_client
-        assert mock_openai.call_args_list[-1].kwargs == {
-            "api_key": "summary-key",
-            "base_url": "https://summary.example.com/v1",
-            "max_retries": 3,
-        }
+        client_kwargs = mock_openai.call_args_list[-1].kwargs
+        assert client_kwargs["api_key"] == "summary-key"
+        assert client_kwargs["base_url"] == "https://summary.example.com/v1"
+        assert client_kwargs["max_retries"] == 3
+        assert isinstance(client_kwargs["timeout"], httpx.Timeout)
 
     def test_emergency_summary_legacy_summary_fields_are_standalone(
         self,
@@ -626,11 +627,12 @@ class TestEmergencySummaryRuntime:
         assert resolved.timeout is None
         assert resolved.max_retries == 3
         assert captured["client"] is replacement_client
-        mock_openai.assert_called_once_with(
-            api_key="summary-key",
-            base_url="https://summary.example.com/v1",
-            max_retries=3,
-        )
+        mock_openai.assert_called_once()
+        client_kwargs = mock_openai.call_args.kwargs
+        assert client_kwargs["api_key"] == "summary-key"
+        assert client_kwargs["base_url"] == "https://summary.example.com/v1"
+        assert client_kwargs["max_retries"] == 3
+        assert isinstance(client_kwargs["timeout"], httpx.Timeout)
 
 
 class TestToolResultCompaction:

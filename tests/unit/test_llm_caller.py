@@ -76,6 +76,19 @@ class TestLLMCallerInitialization:
 
         assert caller.retry_attempts == 10
 
+    def test_initialization_with_retry_backoff_cap_and_callback(self, mock_openai_client, mock_llm_config):
+        """Test LLMCaller stores retry backoff cap and retry callback."""
+        callback = Mock()
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=mock_llm_config,
+            retry_backoff_max_seconds=7,
+            on_retry=callback,
+        )
+
+        assert caller.retry_backoff_max_seconds == 7
+        assert caller.on_retry is callback
+
     def test_initialization_with_middleware_manager(self, mock_openai_client, mock_llm_config):
         """LLMCaller can be initialized with a middleware manager."""
 

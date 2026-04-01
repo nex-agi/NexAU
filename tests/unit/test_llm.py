@@ -19,6 +19,7 @@ Unit tests for LLM configuration components.
 import os
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from nexau.archs.llm.llm_config import LLMConfig
@@ -132,6 +133,8 @@ class TestLLMConfig:
             api_key="test-key",
             base_url="https://api.example.com/v1",
             timeout=45.0,
+            connect_timeout_ms=12_000,
+            stream_idle_timeout_ms=34_000,
             max_retries=5,
         )
 
@@ -139,8 +142,17 @@ class TestLLMConfig:
 
         assert kwargs["api_key"] == "test-key"
         assert kwargs["base_url"] == "https://api.example.com/v1"
-        assert kwargs["timeout"] == 45.0
+        assert isinstance(kwargs["timeout"], httpx.Timeout)
+        assert kwargs["timeout"].connect == 12.0
+        assert kwargs["timeout"].read == 34.0
         assert kwargs["max_retries"] == 5
+
+    def test_timeout_defaults(self):
+        """Test Codex-style connect and stream idle timeout defaults."""
+        config = LLMConfig(model="gpt-4o-mini")
+
+        assert config.get_connect_timeout() == 15.0
+        assert config.get_stream_idle_timeout() == 300.0
 
     def test_get_set_param(self):
         """Test getting and setting parameters."""
@@ -177,6 +189,8 @@ class TestLLMConfig:
             temperature=0.5,
             api_type="openai_responses",
             cache_control_ttl="1h",
+            connect_timeout_ms=11_000,
+            stream_idle_timeout_ms=22_000,
             custom_param="value",
             reasoning={"effort": "high", "summary": "detailed"},
             additional_drop_params=["stop"],
@@ -191,6 +205,8 @@ class TestLLMConfig:
         assert copied.additional_drop_params == original.additional_drop_params
         assert copied.cache_control_ttl == original.cache_control_ttl
         assert copied.api_type == original.api_type
+        assert copied.get_connect_timeout() == 11.0
+        assert copied.get_stream_idle_timeout() == 22.0
         assert copied is not original
 
     def test_repr_and_str(self):

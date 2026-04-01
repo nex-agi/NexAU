@@ -63,16 +63,25 @@ class TestExecutionConfig:
         assert config.max_context_tokens == 128000
         assert config.max_running_subagents == 5
         assert config.retry_attempts == 5
+        assert config.retry_backoff_max_seconds == 30
         assert config.timeout == 300
 
     def test_execution_config_custom_values(self):
         """Test ExecutionConfig with custom values."""
-        config = ExecutionConfig(max_iterations=50, max_context_tokens=64000, max_running_subagents=3, retry_attempts=3, timeout=180)
+        config = ExecutionConfig(
+            max_iterations=50,
+            max_context_tokens=64000,
+            max_running_subagents=3,
+            retry_attempts=3,
+            retry_backoff_max_seconds=12,
+            timeout=180,
+        )
 
         assert config.max_iterations == 50
         assert config.max_context_tokens == 64000
         assert config.max_running_subagents == 3
         assert config.retry_attempts == 3
+        assert config.retry_backoff_max_seconds == 12
         assert config.timeout == 180
         assert config.tool_call_mode == "structured"
 

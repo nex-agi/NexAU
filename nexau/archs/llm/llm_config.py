@@ -22,6 +22,11 @@ from typing import Any
 class LLMConfig:
     """Configuration class for LLM-related parameters."""
 
+    # 默认流式 idle 超时 5 分钟（与 Codex stream_idle_timeout 一致）
+    DEFAULT_STREAM_IDLE_TIMEOUT_MS: int = 300_000
+    # 默认连接超时 15 秒（与 Codex websocket_connect_timeout 一致）
+    DEFAULT_CONNECT_TIMEOUT_MS: int = 15_000
+
     def __init__(
         self,
         model: str | None = None,
@@ -40,6 +45,8 @@ class LLMConfig:
         api_type: str = "openai_chat_completion",
         cache_control_ttl: str | None = None,
         tokenizer_path: str | None = None,
+        stream_idle_timeout_ms: int | None = None,
+        connect_timeout_ms: int | None = None,
         **kwargs: Any,
     ):
         """
@@ -61,6 +68,12 @@ class LLMConfig:
             api_type: API type
             tokenizer_path: HuggingFace tokenizer 路径或模型名称，如 "meta-llama/Llama-3.1-8B-Instruct"。
                 仅在 api_type="generate_with_token" 时生效，通过 AutoTokenizer.from_pretrained 加载。
+            stream_idle_timeout_ms: Per-chunk idle timeout in ms for streaming responses.
+                If no chunk arrives within this duration, the stream is aborted.
+                None → DEFAULT_STREAM_IDLE_TIMEOUT_MS (300_000ms = 5 min).
+            connect_timeout_ms: Connection-phase timeout in ms.
+                Applied to the initial HTTP/WS handshake before any data flows.
+                None → DEFAULT_CONNECT_TIMEOUT_MS (15_000ms = 15 s).
             **kwargs: Additional model-specific parameters
         """
         self.model = model or self._get_model_from_env()
@@ -80,9 +93,21 @@ class LLMConfig:
         self.api_type = api_type
         self.cache_control_ttl = cache_control_ttl
         self.tokenizer_path: str | None = tokenizer_path
+        self.stream_idle_timeout_ms: int | None = stream_idle_timeout_ms
+        self.connect_timeout_ms: int | None = connect_timeout_ms
 
         # Store additional parameters
         self.extra_params = kwargs
+
+    def get_stream_idle_timeout(self) -> float:
+        """Resolved stream idle timeout in seconds (default 300s = 5 min)."""
+        ms = self.stream_idle_timeout_ms if self.stream_idle_timeout_ms is not None else self.DEFAULT_STREAM_IDLE_TIMEOUT_MS
+        return ms / 1000.0
+
+    def get_connect_timeout(self) -> float:
+        """Resolved connection-phase timeout in seconds (default 15s)."""
+        ms = self.connect_timeout_ms if self.connect_timeout_ms is not None else self.DEFAULT_CONNECT_TIMEOUT_MS
+        return ms / 1000.0
 
     def _get_model_from_env(self) -> str:
         """Get model from environment variables."""
@@ -166,17 +191,32 @@ class LLMConfig:
         return self.apply_param_drops(params)
 
     def to_client_kwargs(self) -> dict[str, Any]:
-        """Convert to OpenAI client initialization kwargs."""
+        """Convert to OpenAI/Anthropic client initialization kwargs.
+
+        stream_idle_timeout_ms → httpx read timeout，实现每帧超时而非总超时。
+        connect_timeout_ms → httpx connect timeout。
+        两者通过 httpx.Timeout 组合传入 SDK。
+        """
+        import httpx as _httpx
+
         kwargs: dict[str, Any] = {}
 
         if self.api_key:
             kwargs["api_key"] = self.api_key
         if self.base_url:
             kwargs["base_url"] = self.base_url
-        if self.timeout:
-            kwargs["timeout"] = self.timeout
         if self.max_retries:
             kwargs["max_retries"] = self.max_retries
+
+        # 构建 httpx.Timeout：read 对应 stream_idle_timeout，connect 对应 connect_timeout
+        connect = self.get_connect_timeout()
+        read = self.get_stream_idle_timeout()
+        total = self.timeout if self.timeout else None
+        kwargs["timeout"] = _httpx.Timeout(
+            timeout=total,
+            connect=connect,
+            read=read,
+        )
 
         return kwargs
 
@@ -227,6 +267,8 @@ class LLMConfig:
             api_type=self.api_type,
             cache_control_ttl=self.cache_control_ttl,
             tokenizer_path=self.tokenizer_path,
+            stream_idle_timeout_ms=self.stream_idle_timeout_ms,
+            connect_timeout_ms=self.connect_timeout_ms,
             **self.extra_params,
         )
 

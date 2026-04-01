@@ -36,6 +36,7 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
 
 from nexau.archs.llm.llm_config import LLMConfig
+from nexau.archs.llm.llm_aggregators.events import RetryEvent
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import AgentConfig
 from nexau.archs.main_sub.execution.batch_processor import BatchProcessor
@@ -133,6 +134,7 @@ class Executor:
         max_context_tokens: int = 128000,
         max_running_subagents: int = 5,
         retry_attempts: int = 5,
+        retry_backoff_max_seconds: int = 30,
         token_counter: TokenCounter | None = None,
         after_model_hooks: list[AfterModelHook] | None = None,
         before_model_hooks: list[BeforeModelHook] | None = None,
@@ -186,6 +188,7 @@ class Executor:
             after_tool_hooks or [],
             before_tool_hooks or [],
         )
+        self._event_emitter: Callable[[Any], None] | None = None
         self._wire_middleware_llm_runtime(llm_config, openai_client, session_id=session_id, max_context_tokens=max_context_tokens)
         self._wire_middleware_event_emitters()
         self._tool_registry = tool_registry
@@ -213,6 +216,8 @@ class Executor:
             openai_client,
             llm_config,
             retry_attempts,
+            retry_backoff_max_seconds=retry_backoff_max_seconds,
+            on_retry=self._build_retry_callback(llm_config),
             middleware_manager=self.middleware_manager,
             global_storage=global_storage,
             session_id=session_id,
@@ -290,6 +295,8 @@ class Executor:
         if event_emitter is None:
             return
 
+        self._event_emitter = event_emitter
+
         for middleware in self.middleware_manager.middlewares:
             if not middleware.supports_set_event_emitter:
                 continue
@@ -301,6 +308,24 @@ class Executor:
                     middleware.__class__.__name__,
                     exc,
                 )
+
+    def _build_retry_callback(self, llm_config: LLMConfig) -> Callable[[int, int, float, str], None] | None:
+        """Build retry event callback when middleware exposes an event emitter."""
+        event_emitter = self._event_emitter
+        if event_emitter is None:
+            return None
+
+        def emit_retry_event(attempt: int, max_attempts: int, backoff_seconds: float, error_message: str) -> None:
+            retry_event = RetryEvent(
+                api_type=llm_config.api_type,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                backoff_seconds=backoff_seconds,
+                error_message=error_message,
+            )
+            event_emitter(retry_event)
+
+        return emit_retry_event
 
     def _wire_middleware_llm_runtime(
         self,

@@ -67,6 +67,31 @@ def _skip_if_no_llm_key() -> None:
         pytest.skip("LLM API key not set (NEXAU_SCHEDULER_SIDECAR_LLM_API_KEY or LLM_API_KEY)")
 
 
+def _looks_like_transient_upstream_error(exc: BaseException) -> bool:
+    """Best-effort detection for flaky live-provider failures."""
+    message = str(exc).lower()
+    return any(
+        needle in message
+        for needle in (
+            "502",
+            "503",
+            "504",
+            "bad gateway",
+            "gateway timeout",
+            "temporarily unavailable",
+            "connection reset",
+            "read timed out",
+            "timeout error",
+        )
+    )
+
+
+def _skip_if_transient_upstream_error(exc: BaseException) -> None:
+    """Skip live e2e tests when the upstream provider is temporarily unavailable."""
+    if _looks_like_transient_upstream_error(exc):
+        pytest.skip(f"Transient upstream LLM failure: {exc}")
+
+
 def _make_llm_config() -> LLMConfig:
     """Create LLMConfig for real LLM calls."""
     return LLMConfig(
@@ -140,11 +165,15 @@ class TestGracefulStop:
             await asyncio.sleep(0.5)
             return await agent.stop(force=False, timeout=30.0)
 
-        _, result = await asyncio.gather(
-            agent.run_async(message=_SLOW_PROMPT),
-            _stop_after_started(),
-            return_exceptions=False,
-        )
+        try:
+            _, result = await asyncio.gather(
+                agent.run_async(message=_SLOW_PROMPT),
+                _stop_after_started(),
+                return_exceptions=False,
+            )
+        except Exception as exc:
+            _skip_if_transient_upstream_error(exc)
+            raise
 
         assert isinstance(result, StopResult)
         assert result.stop_reason == AgentStopReason.USER_INTERRUPTED
@@ -188,6 +217,11 @@ class TestForceStop:
             await asyncio.wait_for(asyncio.shield(run_task), timeout=10.0)
         except (TimeoutError, asyncio.CancelledError, Exception):
             pass
+        if run_task.done() and not run_task.cancelled():
+            exc = run_task.exception()
+            if exc is not None:
+                _skip_if_transient_upstream_error(exc)
+                raise exc
 
         assert isinstance(result, StopResult)
         assert result.stop_reason == AgentStopReason.USER_INTERRUPTED
@@ -221,10 +255,14 @@ class TestNoPersistDoubling:
             await asyncio.sleep(0.5)
             return await agent.stop(force=False, timeout=30.0)
 
-        await asyncio.gather(
-            agent.run_async(message=_SLOW_PROMPT),
-            _stop_after_started(),
-        )
+        try:
+            await asyncio.gather(
+                agent.run_async(message=_SLOW_PROMPT),
+                _stop_after_started(),
+            )
+        except Exception as exc:
+            _skip_if_transient_upstream_error(exc)
+            raise
 
         assert sm.persist_call_count == 1, f"Expected exactly 1 persist call, got {sm.persist_call_count}"
 
@@ -260,6 +298,11 @@ class TestNoPersistDoubling:
             await asyncio.wait_for(asyncio.shield(run_task), timeout=10.0)
         except (TimeoutError, asyncio.CancelledError, Exception):
             pass
+        if run_task.done() and not run_task.cancelled():
+            exc = run_task.exception()
+            if exc is not None:
+                _skip_if_transient_upstream_error(exc)
+                raise exc
 
         assert sm.persist_call_count == 1, f"Expected exactly 1 persist call, got {sm.persist_call_count}"
 
@@ -271,7 +314,11 @@ class TestNoPersistDoubling:
         sm = _CountingSessionManager(InMemoryDatabaseEngine())
         agent = await _make_agent(sm)
 
-        await agent.run_async(message=_FAST_PROMPT)
+        try:
+            await agent.run_async(message=_FAST_PROMPT)
+        except Exception as exc:
+            _skip_if_transient_upstream_error(exc)
+            raise
 
         assert sm.persist_call_count == 1, f"Normal run should persist once, got {sm.persist_call_count}"
 
@@ -305,10 +352,14 @@ class TestStopDuringActiveExecution:
             await asyncio.sleep(1.0)
             return await agent.stop(force=False, timeout=30.0)
 
-        await asyncio.gather(
-            agent.run_async(message=_SLOW_PROMPT),
-            _stop_after_started(),
-        )
+        try:
+            await asyncio.gather(
+                agent.run_async(message=_SLOW_PROMPT),
+                _stop_after_started(),
+            )
+        except Exception as exc:
+            _skip_if_transient_upstream_error(exc)
+            raise
 
         # 3. 验证 lock 已释放
         is_locked = await sm.agent_lock.is_locked(
@@ -346,10 +397,14 @@ class TestLockReleasedAfterStop:
             await asyncio.sleep(0.5)
             return await agent.stop(force=False, timeout=30.0)
 
-        await asyncio.gather(
-            agent.run_async(message=_SLOW_PROMPT),
-            _stop_after_started(),
-        )
+        try:
+            await asyncio.gather(
+                agent.run_async(message=_SLOW_PROMPT),
+                _stop_after_started(),
+            )
+        except Exception as exc:
+            _skip_if_transient_upstream_error(exc)
+            raise
 
         is_locked = await sm.agent_lock.is_locked(
             session_id=agent._session_id,
@@ -389,6 +444,11 @@ class TestLockReleasedAfterStop:
             await asyncio.wait_for(asyncio.shield(run_task), timeout=10.0)
         except (TimeoutError, asyncio.CancelledError, Exception):
             pass
+        if run_task.done() and not run_task.cancelled():
+            exc = run_task.exception()
+            if exc is not None:
+                _skip_if_transient_upstream_error(exc)
+                raise exc
 
         # 4. 验证 lock 已释放
         is_locked = await sm.agent_lock.is_locked(
@@ -405,7 +465,11 @@ class TestLockReleasedAfterStop:
         sm = SessionManager(engine=InMemoryDatabaseEngine())
         agent = await _make_agent(sm)
 
-        await agent.run_async(message=_FAST_PROMPT)
+        try:
+            await agent.run_async(message=_FAST_PROMPT)
+        except Exception as exc:
+            _skip_if_transient_upstream_error(exc)
+            raise
 
         is_locked = await sm.agent_lock.is_locked(
             session_id=agent._session_id,

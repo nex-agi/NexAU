@@ -76,5 +76,6 @@ class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
     max_iterations: int = Field(default=100, ge=1)
     tool_call_mode: str = "structured"
     retry_attempts: int = Field(default=5, ge=0)
+    retry_backoff_max_seconds: int = Field(default=30, ge=1)
     timeout: int = Field(default=300, ge=1)
     tracers: list[Any] = Field(default_factory=list)
