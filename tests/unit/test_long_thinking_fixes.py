@@ -340,7 +340,7 @@ class TestAnthropicThinkingOnlyStreamingIntegration:
         the signature_delta arrives, the adapter should demote thinking to text to avoid 400 error.
         """
         from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
-        from nexau.core.messages import Message, ReasoningBlock, TextBlock
+        from nexau.core.messages import Message
 
         # 模拟流式中断：不发送 signature_delta
         events = _anthropic_thinking_only_events(

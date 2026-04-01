@@ -129,7 +129,7 @@ class AgentConfigSchema(
 
             if overrides:
                 warnings.warn(
-                    "Overrides will be removed in the v0.4.0, instead use "
+                    "Overrides will be removed in the v0.5.0, instead use "
                     "agent_config = AgentConfig.from_yaml(...) then agent_config.key = "
                     "value for overrides.",
                     DeprecationWarning,
@@ -154,7 +154,7 @@ class AgentConfigSchema(
 
 
 @deprecated(
-    "Overrides will be removed in the v0.4.0, instead use agent_config = "
+    "Overrides will be removed in the v0.5.0, instead use agent_config = "
     "AgentConfig.from_yaml(...) then agent_config.key = value for overrides.",
 )
 def apply_agent_name_overrides(

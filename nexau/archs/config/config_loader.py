@@ -19,7 +19,7 @@ class ConfigError(Exception):
 @deprecated(
     (
         "This function is deprecated and will be replaced by function Agent.from_yaml() "
-        "in v0.4.0. Please use Agent.from_yaml() instead. Example: "
+        "in v0.4.1. Please use Agent.from_yaml() instead. Example: "
         "agent = Agent.from_yaml('config.yaml')"
     ),
 )

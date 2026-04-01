@@ -150,9 +150,7 @@ def render() -> str:
 
     repo_rows = []
     for repo, meta in REPO_META.items():
-        repo_rows.append(
-            f"| [{repo}](https://github.com/{OWNER}/{repo}) | {meta['role']} | `{latest_tag(repo)}` | {meta['dependency']} |"
-        )
+        repo_rows.append(f"| [{repo}](https://github.com/{OWNER}/{repo}) | {meta['role']} | `{latest_tag(repo)}` | {meta['dependency']} |")
 
     view_rows = []
     for view in views:
@@ -170,11 +168,11 @@ def render() -> str:
         note = WORKFLOW_NOTE.get(name, "-")
         workflow_rows.append(f"| {name} | {status} | {note} |")
 
-    return f'''# {project['title']}
+    return f"""# {project["title"]}
 
 NexAU 产品线统一研发看板，覆盖 `nexau` / `nexau-cloud-runtime` / `north-coder` 三个 repo 的 backlog、iteration、PR、roadmap 管理。
 
-项目地址：<{project['url']}>
+项目地址：<{project["url"]}>
 
 ## 当前节奏
 
@@ -270,7 +268,7 @@ NexAU 产品线统一研发看板，覆盖 `nexau` / `nexau-cloud-runtime` / `no
 1. Project Settings → Workflows 中 **`Item closed`** 是否保持 **Disabled**
 2. 三个 repo 的 **`PROJECT_PAT`** 是否过期 / 权限不足
 3. 对应 workflow run 是否报 `Could not resolve to a node` / project permission 错误
-'''
+"""
 
 
 if __name__ == "__main__":
