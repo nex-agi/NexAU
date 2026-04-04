@@ -318,7 +318,8 @@ class TestMultiplexerCoverage:
 
 class TestSlidingWindowAsyncPaths:
     @pytest.mark.anyio
-    async def test_async_max_consecutive_fallbacks_raises(self, tmp_path):
+    async def test_async_summary_safe_fallback_on_failure(self, tmp_path):
+        """RFC-0014: _generate_summary_safe_async falls back to hard truncation on failure."""
         from nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window import (
             SlidingWindowCompaction,
         )
@@ -333,9 +334,10 @@ class TestSlidingWindowAsyncPaths:
             token_counter=counter,
             max_context_tokens=50000,
         )
-        sw._consecutive_fallback_count = sw._MAX_CONSECUTIVE_FALLBACKS
-        with pytest.raises(RuntimeError, match="persistently unavailable"):
-            await sw._generate_summary_safe_async([Message(role=Role.USER, content=[TextBlock(text="Hello")])])
+        with patch.object(sw, "_generate_summary_async", new_callable=AsyncMock, side_effect=RuntimeError("fail")):
+            result = await sw._generate_summary_safe_async([Message(role=Role.USER, content=[TextBlock(text="Hello")])])
+        # Should return hard truncation fallback instead of raising
+        assert isinstance(result, str)
 
     @pytest.mark.anyio
     async def test_async_chunked_summary_all_fail_raises(self, tmp_path):

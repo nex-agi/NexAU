@@ -20,8 +20,8 @@ import requests
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.tool.tool import StructuredToolDefinitionLike, structured_tool_definition_to_openai
-from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
 from nexau.core.messages import Message, Role
+from nexau.core.serializers.openai_chat import serialize_ump_to_openai_chat_payload
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase
@@ -153,7 +153,7 @@ class TokenTraceSession:
         return cast(dict[str, Any], data)
 
     def _messages_to_legacy(self, messages: list[Message]) -> list[dict[str, Any]]:
-        return messages_to_legacy_openai_chat(messages, tool_image_policy="inject_user_message")
+        return serialize_ump_to_openai_chat_payload(messages, tool_image_policy="inject_user_message")
 
     def _get_hf_tokenizer(self) -> PreTrainedTokenizerBase:
         """Lazily load HuggingFace tokenizer from llm_config.tokenizer_path."""

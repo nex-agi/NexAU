@@ -124,6 +124,9 @@ select = [
   "F401", # re-export fixtures to simplify imports
   "F403", # allow star-imports inside test package initializers
 ]
+"tests/scripts/**" = [
+  "E402", # sys.path manipulation before imports
+]
 "tests/**/*.py" = [
   "N802", # fixtures often use CamelCase/mixedCase names
   "N803", # fixture parameters commonly violate pep8 naming
@@ -139,6 +142,7 @@ exclude = [
   ".venv/.*",
   ".nox/.*",
   "examples/",
+  "tests/scripts/",
 ]
 implicit_reexport = true
 namespace_packages = true

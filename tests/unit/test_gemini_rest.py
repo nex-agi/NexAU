@@ -18,7 +18,7 @@ Unit tests for Gemini REST API support.
 Tests cover:
 - ModelResponse.from_gemini_rest parsing
 - convert_tools_to_gemini conversion
-- openai_to_gemini_rest_messages conversion
+- legacy OpenAI-chat shape -> UMP -> Gemini payload conversion
 - call_llm_with_gemini_rest function
 - GeminiRestStreamAggregator streaming aggregation
 - Gemini REST streaming end-to-end
@@ -28,26 +28,54 @@ Tests cover:
 
 import json
 import threading
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.execution import llm_caller
+from nexau.archs.main_sub.execution.hooks import ModelCallParams
 from nexau.archs.main_sub.execution.llm_caller import (
     GeminiRestStreamAggregator,
     LLMCaller,
     _iter_gemini_sse_chunks,
     call_llm_with_gemini_rest,
     convert_tools_to_gemini,
-    openai_to_gemini_rest_messages,
 )
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.tracer.adapters.in_memory import InMemoryTracer
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import SpanType
+from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message
+from nexau.core.serializers.gemini_messages import serialize_ump_to_gemini_messages_payload
+
+
+def _legacy_to_gemini_payload(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    ump_messages = messages_from_legacy_openai_chat(messages)
+    return serialize_ump_to_gemini_messages_payload(ump_messages)
+
+
+def _make_model_call_params(
+    messages: list[dict[str, Any]],
+    llm_config: LLMConfig | None,
+    shutdown_event: threading.Event | None = None,
+) -> ModelCallParams:
+    return ModelCallParams(
+        messages=messages_from_legacy_openai_chat(messages),
+        max_tokens=100,
+        force_stop_reason=None,
+        agent_state=None,
+        tool_call_mode="xml",
+        tools=None,
+        api_params={},
+        openai_client=None,
+        llm_config=llm_config,
+        retry_attempts=1,
+        shutdown_event=shutdown_event,
+    )
 
 
 class TestModelResponseFromGeminiRest:
@@ -359,14 +387,14 @@ class TestConvertToolsToGemini:
         assert items["properties"]["status"]["enum"] == ["pending", "done"]
 
 
-class TestOpenaiToGeminiRestMessages:
-    """Test cases for openai_to_gemini_rest_messages function."""
+class TestLegacyToGeminiPayload:
+    """Test cases for legacy OpenAI-chat shape to Gemini payload conversion."""
 
     def test_convert_user_message(self):
         """Test converting a user message."""
         messages = [{"role": "user", "content": "Hello, world!"}]
 
-        contents, system_instruction = openai_to_gemini_rest_messages(messages)
+        contents, system_instruction = _legacy_to_gemini_payload(messages)
 
         assert len(contents) == 1
         assert contents[0]["role"] == "user"
@@ -377,7 +405,7 @@ class TestOpenaiToGeminiRestMessages:
         """Test converting an assistant message."""
         messages = [{"role": "assistant", "content": "I am here to help."}]
 
-        contents, system_instruction = openai_to_gemini_rest_messages(messages)
+        contents, system_instruction = _legacy_to_gemini_payload(messages)
 
         assert len(contents) == 1
         assert contents[0]["role"] == "model"
@@ -387,7 +415,7 @@ class TestOpenaiToGeminiRestMessages:
         """Test converting a system message."""
         messages = [{"role": "system", "content": "You are a helpful assistant."}]
 
-        contents, system_instruction = openai_to_gemini_rest_messages(messages)
+        contents, system_instruction = _legacy_to_gemini_payload(messages)
 
         assert len(contents) == 0
         assert system_instruction is not None
@@ -402,7 +430,7 @@ class TestOpenaiToGeminiRestMessages:
             {"role": "user", "content": "How are you?"},
         ]
 
-        contents, system_instruction = openai_to_gemini_rest_messages(messages)
+        contents, system_instruction = _legacy_to_gemini_payload(messages)
 
         assert len(contents) == 3
         assert system_instruction["parts"][0]["text"] == "You are helpful."
@@ -422,7 +450,7 @@ class TestOpenaiToGeminiRestMessages:
             }
         ]
 
-        contents, system_instruction = openai_to_gemini_rest_messages(messages)
+        contents, system_instruction = _legacy_to_gemini_payload(messages)
 
         assert len(contents) == 1
         assert contents[0]["role"] == "model"
@@ -443,7 +471,7 @@ class TestOpenaiToGeminiRestMessages:
             }
         ]
 
-        contents, system_instruction = openai_to_gemini_rest_messages(messages)
+        contents, system_instruction = _legacy_to_gemini_payload(messages)
 
         assert len(contents) == 1
         # Check that thought signature is attached to first function call
@@ -460,7 +488,7 @@ class TestOpenaiToGeminiRestMessages:
         """Test converting a tool result message."""
         messages = [{"role": "tool", "tool_call_id": "call_1", "name": "get_weather", "content": "The weather is sunny, 72F."}]
 
-        contents, system_instruction = openai_to_gemini_rest_messages(messages)
+        contents, system_instruction = _legacy_to_gemini_payload(messages)
 
         assert len(contents) == 1
         assert contents[0]["role"] == "user"
@@ -484,7 +512,7 @@ class TestOpenaiToGeminiRestMessages:
             {"role": "tool", "tool_call_id": "call_2", "name": "get_weather", "content": "LA: 85F"},
         ]
 
-        contents, system_instruction = openai_to_gemini_rest_messages(messages)
+        contents, system_instruction = _legacy_to_gemini_payload(messages)
 
         # Should have: user message, model with tool calls, user with function responses
         assert len(contents) == 3
@@ -514,7 +542,7 @@ class TestOpenaiToGeminiRestMessages:
             }
         ]
 
-        contents, system_instruction = openai_to_gemini_rest_messages(messages)
+        contents, system_instruction = _legacy_to_gemini_payload(messages)
 
         fc_part = next(p for p in contents[0]["parts"] if "functionCall" in p)
         assert fc_part["functionCall"]["args"] == {"query": "test"}
@@ -523,7 +551,7 @@ class TestOpenaiToGeminiRestMessages:
         """Test converting messages with empty content."""
         messages = [{"role": "user", "content": ""}]
 
-        contents, system_instruction = openai_to_gemini_rest_messages(messages)
+        contents, system_instruction = _legacy_to_gemini_payload(messages)
 
         # Empty content should result in empty parts or no text part
         assert len(contents) == 1
@@ -549,8 +577,9 @@ class TestCallLLMWithGeminiRest:
         )
 
         kwargs = {"messages": [{"role": "user", "content": "Hello"}]}
+        params = _make_model_call_params(kwargs["messages"], llm_config)
 
-        result = call_llm_with_gemini_rest(kwargs, llm_config=llm_config)
+        result = call_llm_with_gemini_rest(kwargs, llm_config=llm_config, model_call_params=params)
 
         assert result.content == "Hello from Gemini!"
         mock_post.assert_called_once()
@@ -584,8 +613,9 @@ class TestCallLLMWithGeminiRest:
                 }
             ],
         }
+        params = _make_model_call_params(kwargs["messages"], llm_config)
 
-        result = call_llm_with_gemini_rest(kwargs, llm_config=llm_config)
+        result = call_llm_with_gemini_rest(kwargs, llm_config=llm_config, model_call_params=params)
 
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0].name == "get_weather"
@@ -621,8 +651,9 @@ class TestCallLLMWithGeminiRest:
         )
 
         kwargs = {"messages": [{"role": "user", "content": "Think about this"}]}
+        params = _make_model_call_params(kwargs["messages"], llm_config)
 
-        call_llm_with_gemini_rest(kwargs, llm_config=llm_config)
+        call_llm_with_gemini_rest(kwargs, llm_config=llm_config, model_call_params=params)
 
         # Verify thinking config from extra_params was included in request
         call_args = mock_post.call_args
@@ -646,8 +677,9 @@ class TestCallLLMWithGeminiRest:
         )
 
         kwargs = {"messages": [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": "Hi"}]}
+        params = _make_model_call_params(kwargs["messages"], llm_config)
 
-        call_llm_with_gemini_rest(kwargs, llm_config=llm_config)
+        call_llm_with_gemini_rest(kwargs, llm_config=llm_config, model_call_params=params)
 
         call_args = mock_post.call_args
         request_body = call_args.kwargs["json"]
@@ -664,9 +696,10 @@ class TestCallLLMWithGeminiRest:
         )
 
         kwargs = {"messages": [{"role": "user", "content": "Hello"}]}
+        params = _make_model_call_params(kwargs["messages"], llm_config)
 
         with pytest.raises(Exception, match="API Error"):
-            call_llm_with_gemini_rest(kwargs, llm_config=llm_config)
+            call_llm_with_gemini_rest(kwargs, llm_config=llm_config, model_call_params=params)
 
     def test_call_without_llm_config(self):
         """Test error handling when llm_config is not provided."""
@@ -694,8 +727,9 @@ class TestCallLLMWithGeminiRest:
         llm_config.base_url = None
 
         kwargs = {"messages": [{"role": "user", "content": "Hi"}]}
+        params = _make_model_call_params(kwargs["messages"], llm_config)
 
-        call_llm_with_gemini_rest(kwargs, llm_config=llm_config)
+        call_llm_with_gemini_rest(kwargs, llm_config=llm_config, model_call_params=params)
 
         call_args = mock_post.call_args
         url = call_args.args[0]
@@ -1129,7 +1163,8 @@ class TestCallLLMWithGeminiRestStreaming:
         )
 
         kwargs = {"messages": [{"role": "user", "content": "Hi"}], "stream": True}
-        result = call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config)
+        params = _make_model_call_params(kwargs["messages"], gemini_llm_config)
+        result = call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, model_call_params=params)
 
         assert result.content == "Hello world!"
         assert result.usage.input_tokens == 5
@@ -1144,7 +1179,8 @@ class TestCallLLMWithGeminiRestStreaming:
         )
 
         kwargs = {"messages": [{"role": "user", "content": "Hi"}], "stream": True}
-        call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config)
+        params = _make_model_call_params(kwargs["messages"], gemini_llm_config)
+        call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, model_call_params=params)
 
         url = mock_post.call_args.args[0]
         assert ":streamGenerateContent" in url
@@ -1161,7 +1197,8 @@ class TestCallLLMWithGeminiRestStreaming:
         )
 
         kwargs = {"messages": [{"role": "user", "content": "Think"}], "stream": True}
-        result = call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config)
+        params = _make_model_call_params(kwargs["messages"], gemini_llm_config)
+        result = call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, model_call_params=params)
 
         assert result.reasoning_content == "Hmm..."
         assert result.content == "42"
@@ -1176,7 +1213,8 @@ class TestCallLLMWithGeminiRestStreaming:
         )
 
         kwargs = {"messages": [{"role": "user", "content": "Search"}], "stream": True}
-        result = call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config)
+        params = _make_model_call_params(kwargs["messages"], gemini_llm_config)
+        result = call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, model_call_params=params)
 
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0].name == "search"
@@ -1189,14 +1227,13 @@ class TestCallLLMWithGeminiRestStreaming:
         mock_post.side_effect = req.exceptions.ConnectionError("Connection refused")
 
         kwargs = {"messages": [{"role": "user", "content": "Hi"}], "stream": True}
+        params = _make_model_call_params(kwargs["messages"], gemini_llm_config)
         with pytest.raises(req.exceptions.ConnectionError):
-            call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config)
+            call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, model_call_params=params)
 
     @patch("nexau.archs.main_sub.execution.llm_caller.requests.post")
     def test_streaming_shutdown_event(self, mock_post, gemini_llm_config):
         """Test shutdown_event interrupts streaming early."""
-        from nexau.archs.main_sub.execution.hooks import ModelCallParams
-
         # Two chunks, but shutdown fires after first
         shutdown_ev = threading.Event()
         call_count = 0
@@ -1223,21 +1260,9 @@ class TestCallLLMWithGeminiRestStreaming:
         original_response.iter_lines.return_value = iter_with_shutdown()
         mock_post.return_value = original_response
 
-        params = ModelCallParams(
-            messages=[],
-            max_tokens=100,
-            force_stop_reason=None,
-            agent_state=None,
-            tool_call_mode="xml",
-            tools=None,
-            api_params={},
-            openai_client=None,
-            llm_config=gemini_llm_config,
-            retry_attempts=1,
-            shutdown_event=shutdown_ev,
-        )
-
         kwargs = {"messages": [{"role": "user", "content": "Hi"}], "stream": True}
+        params = _make_model_call_params(kwargs["messages"], gemini_llm_config, shutdown_event=shutdown_ev)
+
         result = call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, model_call_params=params)
 
         # Should have partial content (only first chunk)
@@ -1261,7 +1286,8 @@ class TestCallLLMWithGeminiRestStreaming:
         )
 
         kwargs = {"messages": [{"role": "user", "content": "Hi"}]}
-        result = call_llm_with_gemini_rest(kwargs, llm_config=llm_config)
+        params = _make_model_call_params(kwargs["messages"], llm_config)
+        result = call_llm_with_gemini_rest(kwargs, llm_config=llm_config, model_call_params=params)
 
         assert result.content == "Streamed"
         url = mock_post.call_args.args[0]
@@ -1284,7 +1310,8 @@ class TestCallLLMWithGeminiRestStreaming:
         )
 
         kwargs = {"messages": [{"role": "user", "content": "Hi"}], "stream": True}
-        call_llm_with_gemini_rest(kwargs, llm_config=llm_config)
+        params = _make_model_call_params(kwargs["messages"], llm_config)
+        call_llm_with_gemini_rest(kwargs, llm_config=llm_config, model_call_params=params)
 
         url = mock_post.call_args.args[0]
         assert url.startswith("https://custom-proxy.example.com/models/gemini-2.5-flash:streamGenerateContent")
@@ -1300,7 +1327,8 @@ class TestCallLLMWithGeminiRestStreaming:
         )
 
         kwargs = {"messages": [{"role": "user", "content": "Hi"}], "stream": True}
-        call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config)
+        params = _make_model_call_params(kwargs["messages"], gemini_llm_config)
+        call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, model_call_params=params)
 
         assert mock_post.call_args.kwargs["stream"] is True
 
@@ -1315,7 +1343,8 @@ class TestCallLLMWithGeminiRestStreaming:
         )
 
         kwargs = {"messages": [{"role": "user", "content": "Hi"}], "stream": True}
-        result = call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config)
+        params = _make_model_call_params(kwargs["messages"], gemini_llm_config)
+        result = call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, model_call_params=params)
 
         assert result.content == "Recovered"
 
@@ -1594,9 +1623,10 @@ class TestCallLLMWithGeminiRestStreamingTracing:
         mock_post.return_value = _make_sse_response([{"candidates": [{"content": {"parts": [{"text": "hi"}]}}]}])
         tracer = InMemoryTracer()
         kwargs = {"messages": [{"role": "user", "content": "hello"}], "stream": True}
+        params = _make_model_call_params(kwargs["messages"], gemini_llm_config)
 
         with TraceContext(tracer, "parent", SpanType.AGENT):
-            result = call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, tracer=tracer)
+            result = call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, tracer=tracer, model_call_params=params)
 
         assert result.content == "hi"
         llm_spans = [s for s in tracer.spans.values() if s.name == "Gemini REST streamGenerateContent"]
@@ -1610,9 +1640,10 @@ class TestCallLLMWithGeminiRestStreamingTracing:
         mock_post.return_value = _make_sse_response([{"candidates": [{"content": {"parts": [{"text": "hello"}]}}]}])
         tracer = InMemoryTracer()
         kwargs = {"messages": [{"role": "user", "content": "hi"}], "stream": True}
+        params = _make_model_call_params(kwargs["messages"], gemini_llm_config)
 
         with TraceContext(tracer, "parent", SpanType.AGENT):
-            call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, tracer=tracer)
+            call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, tracer=tracer, model_call_params=params)
 
         llm_spans = [s for s in tracer.spans.values() if s.name == "Gemini REST streamGenerateContent"]
         assert len(llm_spans) == 1
@@ -1626,10 +1657,12 @@ class TestCallLLMWithGeminiRestStreamingTracing:
 
         mock_post.return_value = _make_sse_response([{"candidates": [{"content": {"parts": [{"text": "hi"}]}}]}])
         tracer = InMemoryTracer()
-        kwargs = {"messages": [{"role": "user", "content": "hello"}], "stream": True}
+        messages: list[dict[str, str]] = [{"role": "user", "content": "hello"}]
+        kwargs: dict[str, Any] = {"messages": messages, "stream": True}
+        params = _make_model_call_params(messages, gemini_llm_config)
 
         with TraceContext(tracer, "parent", SpanType.AGENT):
-            call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, tracer=tracer)
+            call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, tracer=tracer, model_call_params=params)
 
         llm_spans = [s for s in tracer.spans.values() if s.name == "Gemini REST streamGenerateContent"]
         assert len(llm_spans) == 1
@@ -1638,8 +1671,6 @@ class TestCallLLMWithGeminiRestStreamingTracing:
     @patch("nexau.archs.main_sub.execution.llm_caller.requests.post")
     def test_streaming_with_tracer_shutdown_event_interrupts(self, mock_post, gemini_llm_config):
         """Shutdown event mid-stream still ends the span and returns partial content."""
-        from nexau.archs.main_sub.execution.hooks import ModelCallParams
-
         shutdown_ev = threading.Event()
         call_count = 0
 
@@ -1663,22 +1694,9 @@ class TestCallLLMWithGeminiRestStreamingTracing:
         original_response.iter_lines.return_value = iter_with_shutdown()
         mock_post.return_value = original_response
 
-        params = ModelCallParams(
-            messages=[],
-            max_tokens=100,
-            force_stop_reason=None,
-            agent_state=None,
-            tool_call_mode="xml",
-            tools=None,
-            api_params={},
-            openai_client=None,
-            llm_config=gemini_llm_config,
-            retry_attempts=1,
-            shutdown_event=shutdown_ev,
-        )
-
         tracer = InMemoryTracer()
         kwargs = {"messages": [{"role": "user", "content": "Hi"}], "stream": True}
+        params = _make_model_call_params(kwargs["messages"], gemini_llm_config, shutdown_event=shutdown_ev)
 
         with TraceContext(tracer, "parent", SpanType.AGENT):
             result = call_llm_with_gemini_rest(kwargs, llm_config=gemini_llm_config, tracer=tracer, model_call_params=params)

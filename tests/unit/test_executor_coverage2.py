@@ -25,8 +25,8 @@ stop_signal, team_mode behavior, _apply_after_agent_hooks, _build_middleware_man
 
 from unittest.mock import Mock, patch
 
-from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.llm.llm_aggregators.events import RetryEvent
+from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.config import AgentConfig
 from nexau.archs.main_sub.execution.executor import Executor
 from nexau.archs.main_sub.execution.hooks import (

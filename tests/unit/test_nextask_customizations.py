@@ -27,10 +27,7 @@ from nexau.archs.main_sub.execution.middleware.context_compaction.middleware imp
 )
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
-from nexau.core.adapters.legacy import (
-    messages_from_legacy_openai_chat,
-    messages_to_legacy_openai_chat,
-)
+from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import (
     Message,
     ReasoningBlock,
@@ -39,6 +36,8 @@ from nexau.core.messages import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from nexau.core.serializers.openai_chat import serialize_ump_to_openai_chat_payload
+from nexau.core.serializers.openai_responses import sanitize_openai_responses_items_for_input
 from nexau.core.usage import TokenUsage
 
 # ---------------------------------------------------------------------------
@@ -223,6 +222,51 @@ class TestAnthropicAdapterReasoningBlock:
         assert thinking_blocks[0]["thinking"] == "my thinking"
         assert thinking_blocks[0]["signature"] == "sig1"
 
+    def test_reasoning_block_without_signature_downgraded_to_text(self):
+        """ReasoningBlock from non-Anthropic models (e.g. OpenAI o1/o3) has no signature.
+
+        Anthropic API requires signature on thinking blocks, so these must be
+        downgraded to plain text blocks to avoid a 400 error.
+        """
+        adapter = AnthropicMessagesAdapter()
+        messages = [
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ReasoningBlock(text="openai reasoning content", signature=None),
+                    TextBlock(text="my answer"),
+                ],
+            ),
+        ]
+        _, convo = adapter.to_vendor_format(messages)
+        blocks = convo[0]["content"]
+        # 不应有 thinking block（因为缺少 signature）
+        thinking_blocks = [b for b in blocks if b.get("type") == "thinking"]
+        assert len(thinking_blocks) == 0
+        # reasoning 内容应降级为 text block
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        assert len(text_blocks) == 2
+        assert text_blocks[0]["text"] == "openai reasoning content"
+        assert text_blocks[1]["text"] == "my answer"
+
+    def test_reasoning_block_empty_text_no_signature_dropped(self):
+        """Empty ReasoningBlock with no signature should produce no output block."""
+        adapter = AnthropicMessagesAdapter()
+        messages = [
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ReasoningBlock(text="", signature=None),
+                    TextBlock(text="answer"),
+                ],
+            ),
+        ]
+        _, convo = adapter.to_vendor_format(messages)
+        blocks = convo[0]["content"]
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "text"
+        assert blocks[0]["text"] == "answer"
+
     def test_redacted_thinking_block(self):
         adapter = AnthropicMessagesAdapter()
         messages = [
@@ -387,10 +431,10 @@ class TestLegacyReasoningSignatureRoundtrip:
                 TextBlock(text="answer"),
             ],
         )
-        legacy = messages_to_legacy_openai_chat([msg])
-        assert legacy[0]["reasoning_content"] == "think"
-        assert legacy[0]["reasoning_signature"] == "sig"
-        assert legacy[0]["reasoning_redacted_data"] == "rd"
+        payload = serialize_ump_to_openai_chat_payload([msg])
+        assert payload[0]["reasoning_content"] == "think"
+        assert payload[0]["reasoning_signature"] == "sig"
+        assert payload[0]["reasoning_redacted_data"] == "rd"
 
     def test_full_roundtrip(self):
         original = [
@@ -403,10 +447,10 @@ class TestLegacyReasoningSignatureRoundtrip:
             }
         ]
         msgs = messages_from_legacy_openai_chat(original)
-        roundtripped = messages_to_legacy_openai_chat(msgs)
-        assert roundtripped[0]["reasoning_content"] == "deep thought"
-        assert roundtripped[0]["reasoning_signature"] == "abc"
-        assert roundtripped[0]["reasoning_redacted_data"] == "xyz"
+        payload = serialize_ump_to_openai_chat_payload(msgs)
+        assert payload[0]["reasoning_content"] == "deep thought"
+        assert payload[0]["reasoning_signature"] == "abc"
+        assert payload[0]["reasoning_redacted_data"] == "xyz"
 
     def test_structured_content_reasoning_with_signature(self):
         """Test parsing reasoning from structured content list format."""
@@ -636,8 +680,6 @@ class TestSanitizeResponseItemsEncryptedContent:
     """Tests for _sanitize_response_items_for_input encrypted_content handling."""
 
     def test_encrypted_content_preserves_empty_summary(self):
-        from nexau.archs.main_sub.execution.llm_caller import _sanitize_response_items_for_input
-
         items = [
             {
                 "type": "reasoning",
@@ -646,15 +688,13 @@ class TestSanitizeResponseItemsEncryptedContent:
                 "summary": [],
             }
         ]
-        result = _sanitize_response_items_for_input(items)
+        result = sanitize_openai_responses_items_for_input(items)
         reasoning = [i for i in result if i.get("type") == "reasoning"]
         assert len(reasoning) == 1
         assert reasoning[0]["summary"] == []  # Preserved as empty list
         assert "id" not in reasoning[0]  # id should be removed
 
     def test_non_encrypted_reasoning_gets_summary_filled(self):
-        from nexau.archs.main_sub.execution.llm_caller import _sanitize_response_items_for_input
-
         items = [
             {
                 "type": "reasoning",
@@ -662,15 +702,13 @@ class TestSanitizeResponseItemsEncryptedContent:
                 "summary": [],
             }
         ]
-        result = _sanitize_response_items_for_input(items)
+        result = sanitize_openai_responses_items_for_input(items)
         reasoning = [i for i in result if i.get("type") == "reasoning"]
         assert len(reasoning) == 1
         # Should have been filled by _ensure_reasoning_summary
         assert len(reasoning[0]["summary"]) > 0
 
     def test_encrypted_with_nonempty_summary_preserved(self):
-        from nexau.archs.main_sub.execution.llm_caller import _sanitize_response_items_for_input
-
         items = [
             {
                 "type": "reasoning",
@@ -679,13 +717,11 @@ class TestSanitizeResponseItemsEncryptedContent:
                 "summary": [{"type": "summary_text", "text": "existing"}],
             }
         ]
-        result = _sanitize_response_items_for_input(items)
+        result = sanitize_openai_responses_items_for_input(items)
         reasoning = [i for i in result if i.get("type") == "reasoning"]
         assert reasoning[0]["summary"] == [{"type": "summary_text", "text": "existing"}]
 
     def test_message_phase_is_preserved(self):
-        from nexau.archs.main_sub.execution.llm_caller import _sanitize_response_items_for_input
-
         items = [
             {
                 "type": "message",
@@ -696,7 +732,7 @@ class TestSanitizeResponseItemsEncryptedContent:
                 "content": [{"type": "output_text", "text": "Thinking"}],
             }
         ]
-        result = _sanitize_response_items_for_input(items, drop_ephemeral_ids=True)
+        result = sanitize_openai_responses_items_for_input(items, drop_ephemeral_ids=True)
 
         assert result == [
             {
@@ -829,11 +865,6 @@ class TestCleanupManagerLoggingProtection:
             mock_logger.error.side_effect = ValueError("I/O operation on closed file")
             # Should not raise
             manager._cleanup_all_agents()
-
-
-# ===========================================================================
-# 9. Is-compaction-artifact detection
-# ===========================================================================
 
 
 # ===========================================================================

@@ -23,7 +23,6 @@ NexAU is a general-purpose agent framework for building intelligent agents with 
     * **[🧠 LLMs](./core-concepts/llms.md)**: Configure LLM providers and middleware-based extensions.
 
 * **Advanced Guides**
-    * **[Async / Sync Usage Guide](./advanced-guides/async.md)**: Dual-path async/sync usage, tool dispatch strategies, and common anti-patterns.
     * **[Skills](./advanced-guides/hooks.md)**: Skills (compatible with Claude Skill format) to dynamically ingest skill context (support both tool and file).
     * **[Hooks/Middleware](./advanced-guides/hooks.md)**: Intercept and modify agent behavior.
     * **[Global Storage](./advanced-guides/global-storage.md)**: Share state across tools and agents.

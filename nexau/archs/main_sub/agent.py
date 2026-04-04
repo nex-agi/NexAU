@@ -84,6 +84,22 @@ from nexau.core.messages import Message, Role, TextBlock
 logger = logging.getLogger(__name__)
 
 
+def _normalize_run_history(history: list[dict[str, Any]] | list[Message] | None) -> list[Message]:
+    """Normalize public Agent.run history input to UMP messages.
+
+    Legacy OpenAI-chat dict history is still accepted at the outermost Agent API
+    boundary for backward compatibility, but all internal execution should use
+    UMP ``Message`` objects.
+    """
+    if not history:
+        return []
+    if all(isinstance(item, Message) for item in history):
+        return list(cast(list[Message], history))
+    if all(isinstance(item, dict) for item in history):
+        return messages_from_legacy_openai_chat(cast(list[dict[str, Any]], history))
+    raise TypeError("history must contain only Message objects or only legacy OpenAI-chat dicts")
+
+
 class Agent:
     """Lightweight agent container focusing on configuration and delegation."""
 
@@ -1198,11 +1214,7 @@ class Agent:
 
             # Add caller-provided history
             if history:
-                # Support both Message objects and legacy dict format
-                if history and isinstance(history[0], Message):
-                    self.history.extend(cast(list[Message], history))
-                else:
-                    self.history.extend(messages_from_legacy_openai_chat(cast(list[dict[str, Any]], history)))
+                self.history.extend(_normalize_run_history(history))
 
             # Add user message (HistoryList will auto-persist)
             if isinstance(message, str):

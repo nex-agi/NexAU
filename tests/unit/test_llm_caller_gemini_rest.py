@@ -20,7 +20,6 @@ Targets:
 - _iter_gemini_sse_chunks_async (async, SSE + JSON array fallback)
 - _gemini_sanitize_parameters
 - convert_tools_to_gemini
-- openai_to_gemini_rest_messages
 - call_llm_with_gemini_rest (sync: non-stream, stream, tracing, errors)
 - call_llm_with_gemini_rest_async (async: non-stream, stream, tracing, errors)
 """
@@ -45,7 +44,6 @@ from nexau.archs.main_sub.execution.llm_caller import (
     call_llm_with_gemini_rest,
     call_llm_with_gemini_rest_async,
     convert_tools_to_gemini,
-    openai_to_gemini_rest_messages,
 )
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.core.messages import Message, Role, TextBlock
@@ -91,6 +89,23 @@ def _gemini_config(**overrides: Any) -> LLMConfig:
     }
     defaults.update(overrides)
     return LLMConfig(**defaults)
+
+
+def _make_gemini_params(
+    msg_text: str = "Hi",
+    shutdown_event: threading.Event | None = None,
+) -> ModelCallParams:
+    """Build a real ModelCallParams for Gemini REST tests."""
+    return ModelCallParams(
+        messages=[Message(role=Role.USER, content=[TextBlock(text=msg_text)])],
+        max_tokens=100,
+        force_stop_reason=None,
+        agent_state=None,
+        tool_call_mode="structured",
+        tools=None,
+        api_params={},
+        shutdown_event=shutdown_event,
+    )
 
 
 class _AsyncStreamCM:
@@ -491,30 +506,6 @@ class TestConvertToolsToGemini:
 
 
 # ===========================================================================
-# openai_to_gemini_rest_messages
-# ===========================================================================
-
-
-class TestOpenaiToGeminiRestMessages:
-    def test_simple_conversion(self):
-        messages = [
-            {"role": "user", "content": "Hello"},
-        ]
-        contents, system_instruction = openai_to_gemini_rest_messages(messages)
-        assert isinstance(contents, list)
-        assert len(contents) >= 1
-
-    def test_system_message_extracted(self):
-        messages = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Hi"},
-        ]
-        contents, system_instruction = openai_to_gemini_rest_messages(messages)
-        # System message should be extracted into system_instruction
-        assert system_instruction is not None
-
-
-# ===========================================================================
 # call_llm_with_gemini_rest (sync)
 # ===========================================================================
 
@@ -540,6 +531,7 @@ class TestCallLlmWithGeminiRestSync:
             result = call_llm_with_gemini_rest(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
 
         assert isinstance(result, ModelResponse)
@@ -572,6 +564,7 @@ class TestCallLlmWithGeminiRestSync:
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
                 tracer=mock_tracer,
+                model_call_params=_make_gemini_params(),
             )
 
         assert result.content == "traced"
@@ -590,6 +583,7 @@ class TestCallLlmWithGeminiRestSync:
             call_llm_with_gemini_rest(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
 
     def test_non_streaming_generic_exception(self):
@@ -602,6 +596,7 @@ class TestCallLlmWithGeminiRestSync:
             call_llm_with_gemini_rest(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
 
     def test_streaming_basic(self):
@@ -622,6 +617,7 @@ class TestCallLlmWithGeminiRestSync:
             result = call_llm_with_gemini_rest(
                 {"stream": True, "messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
 
         assert isinstance(result, ModelResponse)
@@ -678,6 +674,7 @@ class TestCallLlmWithGeminiRestSync:
             call_llm_with_gemini_rest(
                 {"stream": True, "messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
 
     def test_streaming_generic_exception(self):
@@ -690,9 +687,11 @@ class TestCallLlmWithGeminiRestSync:
             call_llm_with_gemini_rest(
                 {"stream": True, "messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
 
-    def test_image_block_raises(self):
+    def test_image_block_supported(self):
+        """RFC-0014: ImageBlock is now supported for Gemini REST via GeminiMessagesAdapter."""
         from nexau.core.messages import ImageBlock
 
         config = _gemini_config()
@@ -705,12 +704,25 @@ class TestCallLlmWithGeminiRestSync:
             tools=None,
             api_params={},
         )
-        with pytest.raises(ValueError, match="Image input is not supported"):
-            call_llm_with_gemini_rest(
+
+        mock_response = Mock()
+        mock_response.raise_for_status = Mock()
+        mock_response.json.return_value = self._make_gemini_response_json("image ok")
+
+        with patch("requests.post", return_value=mock_response) as mock_post:
+            result = call_llm_with_gemini_rest(
                 {"messages": []},
                 llm_config=config,
                 model_call_params=model_params,
             )
+
+        assert isinstance(result, ModelResponse)
+        assert result.content == "image ok"
+        # Verify the image was sent as inline_data in the request body
+        request_body = mock_post.call_args[1]["json"]
+        parts = request_body["contents"][0]["parts"]
+        inline_parts = [p for p in parts if "inlineData" in p or "inline_data" in p]
+        assert len(inline_parts) == 1
 
     def test_url_custom_base_url(self):
         """Custom base_url (non-googleapis) should use /models/ without v1beta."""
@@ -724,6 +736,7 @@ class TestCallLlmWithGeminiRestSync:
             call_llm_with_gemini_rest(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
         call_url = mock_post.call_args[0][0]
         assert "custom-proxy.example.com/models/" in call_url
@@ -742,6 +755,7 @@ class TestCallLlmWithGeminiRestSync:
             call_llm_with_gemini_rest(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
         call_url = mock_post.call_args[0][0]
         assert "generativelanguage.googleapis.com" in call_url
@@ -758,6 +772,7 @@ class TestCallLlmWithGeminiRestSync:
             call_llm_with_gemini_rest(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
         body = mock_post.call_args[1]["json"]
         gen_config = body["generationConfig"]
@@ -778,6 +793,7 @@ class TestCallLlmWithGeminiRestSync:
             call_llm_with_gemini_rest(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
         body = mock_post.call_args[1]["json"]
         assert "topK" not in body["generationConfig"]
@@ -794,6 +810,7 @@ class TestCallLlmWithGeminiRestSync:
             call_llm_with_gemini_rest(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
         body = mock_post.call_args[1]["json"]
         assert body["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 1024}
@@ -817,6 +834,7 @@ class TestCallLlmWithGeminiRestSync:
             call_llm_with_gemini_rest(
                 {"messages": [{"role": "user", "content": "Hi"}], "tools": tools},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
         body = mock_post.call_args[1]["json"]
         assert "tools" in body
@@ -852,6 +870,7 @@ class TestCallLlmWithGeminiRestSync:
             call_llm_with_gemini_rest(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=None,
+                model_call_params=_make_gemini_params(),
             )
 
     def test_stream_from_llm_config_attribute(self):
@@ -874,6 +893,7 @@ class TestCallLlmWithGeminiRestSync:
             call_llm_with_gemini_rest(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
         call_url = mock_post.call_args[0][0]
         assert "streamGenerateContent" in call_url
@@ -886,15 +906,24 @@ class TestCallLlmWithGeminiRestSync:
         mock_response.raise_for_status = Mock()
         mock_response.json.return_value = self._make_gemini_response_json()
 
+        sys_params = ModelCallParams(
+            messages=[
+                Message(role=Role.SYSTEM, content=[TextBlock(text="Be helpful")]),
+                Message(role=Role.USER, content=[TextBlock(text="Hi")]),
+            ],
+            max_tokens=100,
+            force_stop_reason=None,
+            agent_state=None,
+            tool_call_mode="structured",
+            tools=None,
+            api_params={},
+        )
+
         with patch("requests.post", return_value=mock_response) as mock_post:
             call_llm_with_gemini_rest(
-                {
-                    "messages": [
-                        {"role": "system", "content": "Be helpful"},
-                        {"role": "user", "content": "Hi"},
-                    ]
-                },
+                {},
                 llm_config=config,
+                model_call_params=sys_params,
             )
         body = mock_post.call_args[1]["json"]
         assert "systemInstruction" in body
@@ -933,6 +962,7 @@ class TestCallLlmWithGeminiRestAsync:
             result = await call_llm_with_gemini_rest_async(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
 
         assert isinstance(result, ModelResponse)
@@ -966,6 +996,7 @@ class TestCallLlmWithGeminiRestAsync:
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
                 tracer=mock_tracer,
+                model_call_params=_make_gemini_params(),
             )
 
         assert result.content == "traced-async"
@@ -994,6 +1025,7 @@ class TestCallLlmWithGeminiRestAsync:
             await call_llm_with_gemini_rest_async(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
 
     @pytest.mark.anyio
@@ -1012,6 +1044,7 @@ class TestCallLlmWithGeminiRestAsync:
             await call_llm_with_gemini_rest_async(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
 
     @pytest.mark.anyio
@@ -1037,6 +1070,7 @@ class TestCallLlmWithGeminiRestAsync:
             result = await call_llm_with_gemini_rest_async(
                 {"stream": True, "messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
 
         assert isinstance(result, ModelResponse)
@@ -1117,6 +1151,7 @@ class TestCallLlmWithGeminiRestAsync:
                 {"stream": True, "messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
                 tracer=mock_tracer,
+                model_call_params=_make_gemini_params(),
             )
 
         assert result.content == "traced-stream"
@@ -1124,7 +1159,8 @@ class TestCallLlmWithGeminiRestAsync:
         mock_trace_ctx.set_attributes.assert_called_once()
 
     @pytest.mark.anyio
-    async def test_image_block_raises(self):
+    async def test_image_block_supported(self):
+        """RFC-0014: ImageBlock is now supported for Gemini REST via GeminiMessagesAdapter."""
         from nexau.core.messages import ImageBlock
 
         config = _gemini_config()
@@ -1137,12 +1173,25 @@ class TestCallLlmWithGeminiRestAsync:
             tools=None,
             api_params={},
         )
-        with pytest.raises(ValueError, match="Image input is not supported"):
-            await call_llm_with_gemini_rest_async(
+
+        mock_response = Mock()
+        mock_response.raise_for_status = Mock()
+        mock_response.json.return_value = self._make_gemini_response_json("image ok")
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await call_llm_with_gemini_rest_async(
                 {"messages": []},
                 llm_config=config,
                 model_call_params=model_params,
             )
+
+        assert isinstance(result, ModelResponse)
+        assert result.content == "image ok"
 
     @pytest.mark.anyio
     async def test_no_api_key_raises(self):
@@ -1152,6 +1201,7 @@ class TestCallLlmWithGeminiRestAsync:
             await call_llm_with_gemini_rest_async(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
 
     @pytest.mark.anyio
@@ -1172,6 +1222,7 @@ class TestCallLlmWithGeminiRestAsync:
             result = await call_llm_with_gemini_rest_async(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
 
         assert result.content == "ok"
@@ -1228,6 +1279,7 @@ class TestCallLlmWithGeminiRestAsync:
             await call_llm_with_gemini_rest_async(
                 {"messages": [{"role": "user", "content": "Hi"}]},
                 llm_config=config,
+                model_call_params=_make_gemini_params(),
             )
 
         call_args = mock_client.post.call_args

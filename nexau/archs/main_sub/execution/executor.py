@@ -35,8 +35,8 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
 
-from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.llm.llm_aggregators.events import RetryEvent
+from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import AgentConfig
 from nexau.archs.main_sub.execution.batch_processor import BatchProcessor
@@ -189,7 +189,7 @@ class Executor:
             before_tool_hooks or [],
         )
         self._event_emitter: Callable[[Any], None] | None = None
-        self._wire_middleware_llm_runtime(llm_config, openai_client, session_id=session_id, max_context_tokens=max_context_tokens)
+        self._wire_middleware_llm_runtime(llm_config, openai_client, session_id=session_id)
         self._wire_middleware_event_emitters()
         self._tool_registry = tool_registry
         self._tool_registry_lock = threading.RLock()

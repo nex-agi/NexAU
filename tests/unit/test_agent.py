@@ -28,15 +28,16 @@ from nexau.archs.main_sub.agent_context import AgentContext, GlobalStorage
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import ExecutionConfig
 from nexau.archs.main_sub.context_value import ContextValue
-from nexau.archs.main_sub.execution.llm_caller import openai_to_anthropic_message
 from nexau.archs.main_sub.execution.middleware.context_compaction import ContextCompactionMiddleware
 from nexau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
 from nexau.archs.main_sub.skill import Skill
 from nexau.archs.tool import Tool
 from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
-from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
+from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock
+from nexau.core.serializers.anthropic_messages import serialize_ump_to_anthropic_messages_payload
+from nexau.core.serializers.openai_chat import serialize_ump_to_openai_chat_payload
 
 
 class DummyTracer(BaseTracer):
@@ -659,13 +660,14 @@ class TestAgent:
             tr = next((b for b in tool_msg.content if isinstance(b, ToolResultBlock) and b.tool_use_id == "call_stop"), None)
             assert tr is not None, "Expected ToolResultBlock with tool_use_id matching the tool_call_id"
 
-            # Legacy conversion must preserve a role=tool message (OpenAI chat shape).
-            legacy = messages_to_legacy_openai_chat(agent.history)
-            tool_dict = next((m for m in legacy if m.get("role") == "tool" and m.get("tool_call_id") == "call_stop"), None)
-            assert tool_dict is not None, "Expected legacy role=tool message with matching tool_call_id"
+            # Chat serializer must preserve a role=tool message (OpenAI chat shape).
+            payload = serialize_ump_to_openai_chat_payload(agent.history)
+            tool_dict = next((m for m in payload if m.get("role") == "tool" and m.get("tool_call_id") == "call_stop"), None)
+            assert tool_dict is not None, "Expected Chat payload role=tool message with matching tool_call_id"
 
             # And when converting to Anthropic Messages (Bedrock), tool_result must appear immediately after tool_use.
-            _, anthropic_msgs = openai_to_anthropic_message(legacy + [{"role": "user", "content": "hi"}])
+            anthropic_ump = messages_from_legacy_openai_chat(payload + [{"role": "user", "content": "hi"}])
+            _, anthropic_msgs = serialize_ump_to_anthropic_messages_payload(anthropic_ump)
             idx = next(
                 i
                 for i, m in enumerate(anthropic_msgs)
@@ -709,6 +711,17 @@ class TestAgent:
                 # Should include system prompt + existing history + new message
                 call_args = mock_execute.call_args[0][0]
                 assert any(msg.get_text_content() == "Previous message" for msg in call_args)
+
+    def test_run_with_mixed_history_types_raises(self, agent_config, global_storage):
+        """Mixed Message and legacy dict history should be rejected explicitly."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            agent = Agent(config=agent_config, global_storage=global_storage)
+            mixed_history = [Message.user("Previous question"), {"role": "assistant", "content": "Previous answer"}]
+
+            with pytest.raises(TypeError, match="history must contain only Message objects or only legacy OpenAI-chat dicts"):
+                agent.run(message="New question", history=mixed_history)
 
     def test_run_with_context_state_config(self, agent_config, global_storage):
         """Test agent run with context, state, and config."""

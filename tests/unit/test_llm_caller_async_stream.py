@@ -36,13 +36,16 @@ import pytest
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.execution.hooks import MiddlewareManager, ModelCallParams
 from nexau.archs.main_sub.execution.llm_caller import (
-    _prepare_responses_api_input,
     call_llm_with_anthropic_chat_completion_async,
     call_llm_with_openai_chat_completion_async,
     call_llm_with_openai_responses_async,
 )
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
+from nexau.core.messages import Message
+from nexau.core.serializers.openai_responses import (
+    prepare_openai_responses_api_input as _prepare_responses_api_input,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers: async iterator / context-manager fakes for streaming
@@ -373,6 +376,20 @@ class TestOpenAIChatCompletionAsyncStream:
 # ===========================================================================
 
 
+def _make_anthropic_params(shutdown_event: threading.Event | None = None) -> ModelCallParams:
+    """Build a real ModelCallParams for Anthropic async tests."""
+    return ModelCallParams(
+        messages=[Message.user("Hi")],
+        max_tokens=100,
+        force_stop_reason=None,
+        agent_state=None,
+        tool_call_mode="structured",
+        tools=None,
+        api_params={},
+        shutdown_event=shutdown_event,
+    )
+
+
 class TestAnthropicChatCompletionAsyncStream:
     """Cover Anthropic async stream paths with and without tracing."""
 
@@ -381,15 +398,16 @@ class TestAnthropicChatCompletionAsyncStream:
         """Lines 1874-1884: stream path without tracer."""
         client = Mock()
         client.messages.stream = Mock(return_value=_AsyncStreamContextManager(anthropic_stream_events))
+        params = _make_anthropic_params()
 
         result = await call_llm_with_anthropic_chat_completion_async(
             client,
             {
                 "model": "claude-3",
-                "messages": [{"role": "user", "content": "Hi"}],
                 "max_tokens": 100,
                 "stream": True,
             },
+            model_call_params=params,
         )
 
         assert isinstance(result, ModelResponse)
@@ -401,6 +419,7 @@ class TestAnthropicChatCompletionAsyncStream:
         client = Mock()
         client.messages.stream = Mock(return_value=_AsyncStreamContextManager(anthropic_stream_events))
         tracer = _FakeTracer()
+        params = _make_anthropic_params()
 
         with (
             patch(
@@ -416,11 +435,11 @@ class TestAnthropicChatCompletionAsyncStream:
                 client,
                 {
                     "model": "claude-3",
-                    "messages": [{"role": "user", "content": "Hi"}],
                     "max_tokens": 100,
                     "stream": True,
                 },
                 tracer=tracer,
+                model_call_params=params,
             )
 
         assert isinstance(result, ModelResponse)
@@ -431,8 +450,7 @@ class TestAnthropicChatCompletionAsyncStream:
         """Lines 1877-1879: shutdown event breaks out of stream loop."""
         shutdown = threading.Event()
         shutdown.set()
-        params = Mock(spec=ModelCallParams)
-        params.shutdown_event = shutdown
+        params = _make_anthropic_params(shutdown_event=shutdown)
 
         client = Mock()
         client.messages.stream = Mock(return_value=_AsyncStreamContextManager(anthropic_stream_events))
@@ -457,8 +475,7 @@ class TestAnthropicChatCompletionAsyncStream:
 
         mm = Mock(spec=MiddlewareManager)
         mm.stream_chunk.return_value = None
-        params = Mock(spec=ModelCallParams)
-        params.shutdown_event = None
+        params = _make_anthropic_params()
 
         with pytest.raises(RuntimeError, match="No stream chunks"):
             await call_llm_with_anthropic_chat_completion_async(
@@ -784,11 +801,11 @@ class TestPrepareResponsesApiInputToolCalls:
                 ],
             }
         ]
-        with pytest.raises(AssertionError, match="function"):
+        with pytest.raises(ValueError, match="function"):
             _prepare_responses_api_input(messages)
 
     def test_tool_calls_function_not_dict_raises(self) -> None:
-        """Tool call with non-dict 'function' raises assertion (L2143)."""
+        """Tool call with non-dict 'function' raises ValueError."""
         messages = [
             {
                 "role": "assistant",
@@ -798,11 +815,11 @@ class TestPrepareResponsesApiInputToolCalls:
                 ],
             }
         ]
-        with pytest.raises(AssertionError, match="Function must be a dict"):
+        with pytest.raises(ValueError, match="must be a dict"):
             _prepare_responses_api_input(messages)
 
     def test_tool_calls_function_missing_name_raises(self) -> None:
-        """Tool call function without 'name' raises assertion (L2145)."""
+        """Tool call function without 'name' raises ValueError."""
         messages = [
             {
                 "role": "assistant",
@@ -812,11 +829,11 @@ class TestPrepareResponsesApiInputToolCalls:
                 ],
             }
         ]
-        with pytest.raises(AssertionError, match="name"):
+        with pytest.raises(ValueError, match="name"):
             _prepare_responses_api_input(messages)
 
     def test_tool_calls_function_missing_arguments_raises(self) -> None:
-        """Tool call function without 'arguments' raises assertion (L2146)."""
+        """Tool call function without 'arguments' raises ValueError."""
         messages = [
             {
                 "role": "assistant",
@@ -826,7 +843,7 @@ class TestPrepareResponsesApiInputToolCalls:
                 ],
             }
         ]
-        with pytest.raises(AssertionError, match="arguments"):
+        with pytest.raises(ValueError, match="arguments"):
             _prepare_responses_api_input(messages)
 
 

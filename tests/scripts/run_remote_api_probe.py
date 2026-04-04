@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,7 +112,7 @@ def _build_cases() -> list[ProbeCase]:
             method="POST",
             url="https://code.rayinai.com/v1/responses",
             headers={
-                "Authorization": "Bearer sk-2ab502329ce03184303e5d6ed2e84496e3fb37ab2f6a4602524727385dec02e3",
+                "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
                 "Content-Type": "application/json",
             },
             body={
@@ -158,7 +159,7 @@ def _build_cases() -> list[ProbeCase]:
             method="POST",
             url="http://14.103.60.158:3001/v1/messages",
             headers={
-                "x-api-key": "sk-tSWa15zD6TKFjnNDIbKE0h0CvtHJBdrh67OaVt88HJZcYe5z",
+                "x-api-key": os.environ["ANTHROPIC_API_KEY"],
                 "anthropic-version": "2023-06-01",
                 "Content-Type": "application/json",
             },

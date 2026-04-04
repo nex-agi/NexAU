@@ -47,8 +47,12 @@ from nexau.archs.tool.tool import (
 )
 from nexau.archs.tracer.context import TraceContext, get_current_span
 from nexau.archs.tracer.core import BaseTracer, SpanType
-from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
 from nexau.core.messages import Message, Role, ToolResultBlock, ToolUseBlock
+from nexau.core.serializers.openai_chat import serialize_ump_to_openai_chat_payload
+from nexau.core.serializers.openai_responses import (
+    normalize_openai_responses_api_tools,
+    prepare_openai_responses_api_input,
+)
 
 from ..agent_state import AgentState
 from ..tool_call_modes import (
@@ -490,7 +494,7 @@ class LLMCaller:
         if self.llm_config.api_type in {"openai_chat_completion", "openai_responses"}:
             tool_image_policy = "embed_in_tool_message" if self.llm_config.api_type == "openai_responses" else "inject_user_message"
         if self.llm_config.api_type != "generate_with_token":
-            kwargs["messages"] = messages_to_legacy_openai_chat(params.messages, tool_image_policy=tool_image_policy)
+            kwargs["messages"] = serialize_ump_to_openai_chat_payload(params.messages, tool_image_policy=tool_image_policy)
 
         client = params.openai_client if params.openai_client is not None else self.openai_client
         response_content = call_llm_with_different_client(
@@ -559,7 +563,7 @@ class LLMCaller:
         if self.llm_config.api_type in {"openai_chat_completion", "openai_responses"}:
             tool_image_policy = "embed_in_tool_message" if self.llm_config.api_type == "openai_responses" else "inject_user_message"
         if self.llm_config.api_type != "generate_with_token":
-            kwargs["messages"] = messages_to_legacy_openai_chat(params.messages, tool_image_policy=tool_image_policy)
+            kwargs["messages"] = serialize_ump_to_openai_chat_payload(params.messages, tool_image_policy=tool_image_policy)
 
         async_client = self.async_openai_client
         response_content = await call_llm_with_different_client_async(
@@ -639,7 +643,7 @@ class LLMCaller:
                 if self.llm_config.api_type in {"openai_chat_completion", "openai_responses"}:
                     tool_image_policy = "embed_in_tool_message" if self.llm_config.api_type == "openai_responses" else "inject_user_message"
                 if self.llm_config.api_type != "generate_with_token":
-                    kwargs["messages"] = messages_to_legacy_openai_chat(params.messages, tool_image_policy=tool_image_policy)
+                    kwargs["messages"] = serialize_ump_to_openai_chat_payload(params.messages, tool_image_policy=tool_image_policy)
                     logger.debug(
                         "🔍 [HISTORY-DEBUG] After legacy conversion: %d dicts, roles=%s",
                         len(kwargs["messages"]),
@@ -684,6 +688,7 @@ class LLMCaller:
                 if params.shutdown_event and params.shutdown_event.is_set():
                     logger.info("🛑 LLM call interrupted by shutdown_event, skipping retry")
                     return None
+
                 logger.error(
                     f"❌ LLM call failed (attempt {i + 1}/{self.retry_attempts}): {e}",
                     exc_info=True,
@@ -860,6 +865,7 @@ class LLMCaller:
                 if params.shutdown_event and params.shutdown_event.is_set():
                     logger.info("🛑 LLM call interrupted by shutdown_event (async), skipping retry")
                     return None
+
                 logger.error(
                     f"❌ LLM call failed (attempt {i + 1}/{self.retry_attempts}, async): {e}",
                     exc_info=True,
@@ -1254,19 +1260,6 @@ def call_llm_with_generate_with_token(
     return model_response
 
 
-def openai_to_anthropic_message(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Convert NexAU legacy OpenAI-shaped chat messages to Anthropic Messages payload.
-
-    Internally this now uses the vendor-agnostic UMP model:
-      legacy dicts -> UMP -> Anthropic content blocks
-    """
-
-    from nexau.core.adapters.anthropic_messages import anthropic_payload_from_legacy_openai_chat
-
-    system_messages, user_messages = anthropic_payload_from_legacy_openai_chat(messages)
-    return system_messages, user_messages
-
-
 def _adapt_structured_tools_for_provider(
     tools: Sequence[StructuredToolDefinitionLike] | None,
     provider_target: StructuredProviderTarget,
@@ -1358,13 +1351,12 @@ def call_llm_with_anthropic_chat_completion(
                 content[0]["cache_control"] = _build_cache_control()
 
     def _build_anthropic_messages() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        if type(model_call_params) is ModelCallParams:
-            from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
+        if type(model_call_params) is not ModelCallParams:
+            raise ValueError("Anthropic calls require explicit ModelCallParams with UMP messages")
 
-            return AnthropicMessagesAdapter().to_vendor_format(model_call_params.messages)
+        from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
 
-        legacy_messages = _strip_responses_api_artifacts(kwargs.get("messages", []))
-        return openai_to_anthropic_message(cast(list[dict[str, Any]], legacy_messages))
+        return AnthropicMessagesAdapter().to_vendor_format(model_call_params.messages)
 
     def llm_call() -> Any:
         # 组装 Anthropic 参数
@@ -1613,7 +1605,7 @@ def call_llm_with_openai_responses(
 
     messages = request_payload.pop("messages", None)
     if messages is not None:
-        response_items, instructions = _prepare_responses_api_input(messages)
+        response_items, instructions = prepare_openai_responses_api_input(messages)
         if response_items:
             request_payload.setdefault("input", response_items)
         if instructions:
@@ -1631,11 +1623,17 @@ def call_llm_with_openai_responses(
 
     tools = request_payload.get("tools")
     if tools:
-        request_payload["tools"] = _normalize_responses_api_tools(tools)
+        request_payload["tools"] = normalize_openai_responses_api_tools(tools)
 
     stream_requested = bool(request_payload.pop("stream", False) or getattr(llm_config, "stream", False))
 
     request_payload.pop("store", None)
+
+    # 默认使用 detailed reasoning summary，使得 reasoning item 包含可读摘要。
+    # 如果调用方未指定 summary，自动注入 "detailed"。
+    reasoning_param = request_payload.get("reasoning")
+    if isinstance(reasoning_param, dict) and "summary" not in reasoning_param:
+        reasoning_param["summary"] = "detailed"
 
     # Always request encrypted reasoning content so that reasoning items can be
     # passed back in subsequent conversation turns (required for stateless / ZDR mode).
@@ -1921,12 +1919,12 @@ async def call_llm_with_anthropic_chat_completion_async(
                 content[0]["cache_control"] = _build_cache_control()
 
     def _build_anthropic_messages() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        if type(model_call_params) is ModelCallParams:
-            from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
+        if type(model_call_params) is not ModelCallParams:
+            raise ValueError("Anthropic calls require explicit ModelCallParams with UMP messages")
 
-            return AnthropicMessagesAdapter().to_vendor_format(model_call_params.messages)
-        legacy_messages = _strip_responses_api_artifacts(kwargs.get("messages", []))
-        return openai_to_anthropic_message(cast(list[dict[str, Any]], legacy_messages))
+        from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
+
+        return AnthropicMessagesAdapter().to_vendor_format(model_call_params.messages)
 
     # 1. 组装参数（与 sync 版完全相同）
     system_messages, user_messages = _build_anthropic_messages()
@@ -2012,7 +2010,7 @@ async def call_llm_with_openai_responses_async(
 
     messages = request_payload.pop("messages", None)
     if messages is not None:
-        response_items, instructions = _prepare_responses_api_input(messages)
+        response_items, instructions = prepare_openai_responses_api_input(messages)
         if response_items:
             request_payload.setdefault("input", response_items)
         if instructions:
@@ -2029,11 +2027,16 @@ async def call_llm_with_openai_responses_async(
 
     tools = request_payload.get("tools")
     if tools:
-        request_payload["tools"] = _normalize_responses_api_tools(tools)
+        request_payload["tools"] = normalize_openai_responses_api_tools(tools)
 
     stream_requested = bool(request_payload.pop("stream", False) or getattr(llm_config, "stream", False))
 
     request_payload.pop("store", None)
+
+    # 默认使用 detailed reasoning summary，使得 reasoning item 包含可读摘要。
+    reasoning_param = request_payload.get("reasoning")
+    if isinstance(reasoning_param, dict) and "summary" not in reasoning_param:
+        reasoning_param["summary"] = "detailed"
 
     include_value = request_payload.get("include")
     include_list: list[str] = []
@@ -2113,407 +2116,6 @@ async def call_llm_with_openai_responses_async(
     return ModelResponse.from_openai_response(response_payload_s)
 
 
-def _parse_image_url_part(part_map: Mapping[str, object]) -> dict[str, object] | None:
-    """Convert a legacy ``image_url`` content part to Responses API ``input_image`` format.
-
-    支持两种 image_url 值格式:
-    - dict: ``{"url": "...", "detail": "high"}``
-    - str:  ``"data:image/png;base64,..."``
-
-    Returns ``None`` when the part does not contain a usable URL.
-    """
-
-    image_url_any = part_map.get("image_url")
-    url: str | None = None
-    detail: str | None = None
-
-    if isinstance(image_url_any, Mapping):
-        image_url_map = cast(Mapping[str, object], image_url_any)
-        url_any = image_url_map.get("url")
-        if isinstance(url_any, str) and url_any.strip():
-            url = url_any.strip()
-        detail_any = image_url_map.get("detail")
-        if isinstance(detail_any, str) and detail_any in {"low", "high", "auto"}:
-            detail = detail_any
-    elif isinstance(image_url_any, str) and image_url_any.strip():
-        url = image_url_any.strip()
-
-    if not url:
-        return None
-
-    payload: dict[str, object] = {"type": "input_image", "image_url": url}
-    if detail and detail != "auto":
-        payload["detail"] = detail
-    return payload
-
-
-def _prepare_responses_api_input(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
-    """Convert internal message representation into Responses API input items and instructions."""
-
-    prepared: list[dict[str, Any]] = []
-    instructions: list[str] = []
-
-    for message in messages:
-        # If the message already carries raw response items, reuse them directly
-        response_items = message.get("response_items")
-        if response_items:
-            prepared.extend(_sanitize_response_items_for_input(response_items, drop_ephemeral_ids=True))
-            continue
-
-        role = message.get("role", "user")
-        content = message.get("content", "") or ""
-
-        if role == "tool":
-            tool_call_id = message.get("tool_call_id")
-            if tool_call_id:
-                output_value: Any = None
-                if isinstance(content, list):
-                    out_items: list[dict[str, Any]] = []
-                    for part in cast(list[Any], content):
-                        if not isinstance(part, Mapping):
-                            continue
-                        part_map = cast(Mapping[str, Any], part)
-                        part_type = str(part_map.get("type") or "")
-
-                        if part_type in {"text", "output_text", "input_text"}:
-                            text_val: Any = part_map.get("text") or part_map.get("content")
-                            out_items.append({"type": "input_text", "text": str(text_val or "")})
-                            continue
-
-                        if part_type == "image_url":
-                            img_part = _parse_image_url_part(part_map)
-                            if img_part is not None:
-                                out_items.append(img_part)
-                            continue
-
-                    # Use array output if it contains any images; otherwise keep legacy string coercion.
-                    if any(item.get("type") == "input_image" for item in out_items):
-                        output_value = out_items
-
-                if output_value is None:
-                    output_value = _coerce_tool_output_text(content)
-
-                prepared.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": tool_call_id,
-                        "output": output_value,
-                    },
-                )
-            continue
-
-        if role == "system":
-            instruction_text = _collapse_message_content_to_text(content)
-            if instruction_text:
-                instructions.append(instruction_text)
-            continue
-
-        # Build message item for standard roles
-        if role == "user":
-            text_type = "input_text"
-        else:
-            text_type = "output_text"
-
-        content_parts: list[dict[str, Any]] = []
-        if isinstance(content, list):
-            # 多模态 content（text + image_url 等），逐 part 转换为 Responses API 格式
-            for part in cast(list[Any], content):
-                if not isinstance(part, Mapping):
-                    continue
-                part_map = cast(Mapping[str, Any], part)
-                part_type = str(part_map.get("type") or "")
-
-                if part_type in {"text", "input_text", "output_text"}:
-                    msg_text_val: object = part_map.get("text") or part_map.get("content")
-                    if msg_text_val:
-                        content_parts.append({"type": text_type, "text": str(msg_text_val)})
-
-                elif part_type == "image_url":
-                    img_part = _parse_image_url_part(part_map)
-                    if img_part is not None:
-                        content_parts.append(img_part)
-        elif content:
-            content_parts.append({"type": text_type, "text": str(content)})
-
-        message_item: dict[str, Any] = {
-            "type": "message",
-            "role": role,
-            "content": content_parts,
-        }
-        phase = message.get("phase")
-        if role == "assistant" and isinstance(phase, str) and phase:
-            message_item["phase"] = phase
-
-        prepared.append(message_item)
-
-        # Reconstruct tool calls if present on assistant messages
-        tool_calls_payload_raw = message.get("tool_calls")
-        if isinstance(tool_calls_payload_raw, list):
-            tool_calls_payload_list: list[Any] = cast(list[Any], tool_calls_payload_raw)
-            for tc in tool_calls_payload_list:
-                if not isinstance(tc, Mapping):
-                    continue
-                typed_tool_call: Mapping[str, Any] = cast(Mapping[str, Any], tc)
-                tool_call_dict: dict[str, Any] = {}
-                for key_any, value_any in typed_tool_call.items():
-                    key: str = str(key_any)
-                    value: Any = value_any
-                    tool_call_dict[key] = value
-
-                assert tool_call_dict.get("function") is not None, "Tool call dict must contain a function"
-                assert isinstance(tool_call_dict.get("function"), dict), "Function must be a dict"
-                function = cast(dict[str, Any], tool_call_dict.get("function"))
-                assert function.get("name") is not None, "Function must contain a name"
-                assert function.get("arguments") is not None, "Function must contain arguments"
-                assert isinstance(function.get("name"), str), "Name must be a string"
-                # Responses API requires arguments as a JSON string.
-                # Legacy chat format (messages_to_legacy_openai_chat) serializes
-                # arguments as a string, but direct construction may pass a dict.
-                raw_arguments = function.get("arguments")
-                if isinstance(raw_arguments, dict):
-                    raw_arguments = json.dumps(raw_arguments, ensure_ascii=False)
-
-                prepared.append(
-                    {
-                        "type": "function_call",
-                        "call_id": tool_call_dict.get("id"),
-                        "name": function.get("name"),
-                        "arguments": raw_arguments,
-                    },
-                )
-
-        # Include stored reasoning items if available
-        reasoning_items = message.get("reasoning")
-        if reasoning_items:
-            if isinstance(reasoning_items, list):
-                prepared.extend(_sanitize_response_items_for_input(cast(list[Any], reasoning_items)))
-
-    joined_instructions = "\n\n".join(part.strip() for part in instructions if part.strip()) or None
-    return prepared, joined_instructions
-
-
-def _normalize_responses_api_tools(tools: list[Any]) -> list[dict[str, Any]]:
-    """Ensure tool definitions align with the Responses API schema."""
-
-    normalized: list[dict[str, Any]] = []
-
-    for tool in tools:
-        if not isinstance(tool, Mapping):
-            normalized.append(tool)
-            continue
-
-        tool_mapping = cast(Mapping[str, Any], tool)
-        tool_dict: dict[str, Any] = dict(tool_mapping)
-        tool_type = tool_dict.get("type")
-
-        if tool_type == "function":
-            function_spec = cast(dict[str, Any] | None, tool_dict.get("function"))
-
-            if isinstance(function_spec, dict):
-                name = function_spec.get("name")
-                description = function_spec.get("description")
-                parameters = function_spec.get("parameters")
-                strict = function_spec.get("strict")
-
-                if name and not tool_dict.get("name"):
-                    tool_dict["name"] = name
-                if description and not tool_dict.get("description"):
-                    tool_dict["description"] = description
-                if parameters is not None and "parameters" not in tool_dict:
-                    tool_dict["parameters"] = parameters
-                if strict is not None and "strict" not in tool_dict:
-                    tool_dict["strict"] = strict
-
-            # The Responses API expects function tools to specify the name at the top level
-            # and uses the Chat Completions style schema for parameters/description.
-            if tool_dict.get("name"):
-                tool_dict.pop("function", None)
-
-        normalized.append(tool_dict)
-
-    return normalized
-
-
-def _sanitize_response_items_for_input(items: list[Any], *, drop_ephemeral_ids: bool = False) -> list[dict[str, Any]]:
-    """Strip response-only fields that the Responses API rejects on input."""
-
-    sanitized: list[dict[str, Any]] = []
-
-    def _is_multimodal_output_list(value: Any) -> bool:
-        if not isinstance(value, list):
-            return False
-        for item in cast(list[Any], value):
-            if not isinstance(item, Mapping):
-                continue
-            item_dict = cast(Mapping[str, Any], item)
-            item_type = str(item_dict.get("type") or "")
-            if item_type in {"input_image", "image", "image_url", "input_file"}:
-                return True
-        return False
-
-    for item in items:
-        if isinstance(item, Mapping):
-            item_mapping = cast(Mapping[str, Any], item)
-            item_copy: dict[str, Any] = dict(item_mapping)
-            item_copy.pop("status", None)
-            if drop_ephemeral_ids:
-                item_copy.pop("id", None)
-            item_type = item_copy.get("type")
-            if item_type == "message":
-                item_copy.pop("status", None)
-                phase = item_copy.get("phase")
-                if not isinstance(phase, str) or not phase:
-                    item_copy.pop("phase", None)
-            elif item_type == "function_call_output":
-                output_value = item_copy.get("output")
-                # Preserve multimodal tool outputs as arrays; otherwise coerce to string for legacy compatibility.
-                if _is_multimodal_output_list(output_value):
-                    cleaned: list[dict[str, Any]] = []
-                    for out_item in cast(list[Any], output_value):
-                        if not isinstance(out_item, Mapping):
-                            continue
-                        out_dict = dict(cast(Mapping[str, Any], out_item))
-                        out_type = str(out_dict.get("type") or "")
-                        if out_type == "output_text":
-                            cleaned.append({"type": "input_text", "text": str(out_dict.get("text") or "")})
-                            continue
-                        if out_type == "image_url":
-                            image_url_any = out_dict.get("image_url")
-                            url: str | None = None
-                            detail: str | None = None
-                            if isinstance(image_url_any, Mapping):
-                                image_url_map = cast(Mapping[str, Any], image_url_any)
-                                url_any = image_url_map.get("url")
-                                if isinstance(url_any, str) and url_any.strip():
-                                    url = url_any.strip()
-                                detail_any = image_url_map.get("detail")
-                                if isinstance(detail_any, str) and detail_any in {"low", "high", "auto"}:
-                                    detail = detail_any
-                            elif isinstance(image_url_any, str) and image_url_any.strip():
-                                url = image_url_any.strip()
-                            if url:
-                                payload: dict[str, Any] = {"type": "input_image", "image_url": url}
-                                if detail and detail != "auto":
-                                    payload["detail"] = detail
-                                cleaned.append(payload)
-                            continue
-                        cleaned.append(out_dict)
-                    item_copy["output"] = cleaned
-                else:
-                    item_copy["output"] = _coerce_tool_output_text(output_value)
-            elif item_type == "reasoning":
-                item_copy.pop("id", None)
-                # When encrypted_content is present the reasoning payload is opaque;
-                # preserve the original summary as-is (API expects [] for encrypted items).
-                if not item_copy.get("encrypted_content"):
-                    item_copy["summary"] = _ensure_reasoning_summary(item_copy)
-                else:
-                    # API requires summary even for encrypted reasoning; default to []
-                    item_copy.setdefault("summary", [])
-        else:
-            sanitized.append(item)
-            continue
-
-        sanitized.append(item_copy)
-
-    return sanitized
-
-
-def _coerce_tool_output_text(output: Any) -> str:
-    """Convert arbitrary tool output into Responses-compatible string."""
-
-    if output is None:
-        return ""
-
-    if isinstance(output, list):
-        # Responses API rejects nested output_text objects; join textual parts instead
-        parts: list[str] = []
-        output_list: list[Any] = cast(list[Any], output)
-        for item in output_list:
-            if isinstance(item, dict):
-                item_dict = cast(dict[str, Any], item)
-                item_type = str(item_dict.get("type") or "")
-                if item_type in {"image_url", "input_image", "image"}:
-                    parts.append("<image>")
-                    continue
-                list_text_value: Any = item_dict.get("text") or item_dict.get("content")
-                if list_text_value is not None:
-                    parts.append(str(list_text_value))
-            else:
-                parts.append(str(item))
-        # Ensure non-empty output so tool results aren't silently dropped.
-        rendered = "\n".join(parts)
-        return rendered if rendered.strip() else "<tool_output>"
-
-    if isinstance(output, dict):
-        output_dict = cast(dict[str, Any], output)
-        dict_text_value: Any = output_dict.get("text") or output_dict.get("content")
-        if dict_text_value is not None:
-            return str(dict_text_value)
-        return json.dumps(output, ensure_ascii=False)
-
-    return str(output)
-
-
-def _ensure_reasoning_summary(reasoning_item: dict[str, Any]) -> list[dict[str, Any]]:
-    """Guarantee reasoning items include a summary list."""
-
-    summary_entries = reasoning_item.get("summary")
-    sanitized: list[dict[str, Any]] = []
-
-    if isinstance(summary_entries, list):
-        summary_entries_list: list[Any] = cast(list[Any], summary_entries)
-        for entry in summary_entries_list:
-            if isinstance(entry, dict):
-                entry_dict = cast(dict[str, Any], entry)
-                summary_type: str = cast(str, entry_dict.get("type") or "summary_text")
-                text = entry_dict.get("text")
-                sanitized.append({"type": summary_type, "text": str(text or "")})
-            elif entry is not None:
-                sanitized.append({"type": "summary_text", "text": str(entry)})
-
-    if not sanitized:
-        fallback_text = _collapse_message_content_to_text(reasoning_item.get("content"))
-        sanitized.append({"type": "summary_text", "text": fallback_text or ""})
-
-    return sanitized
-
-
-def _collapse_message_content_to_text(content: Any) -> str:
-    """Render potential structured message content into a plain-text instruction."""
-
-    if content is None:
-        return ""
-
-    if isinstance(content, str):
-        return content
-
-    if isinstance(content, list):
-        parts: list[str] = []
-        content_list: list[Any] = cast(list[Any], content)
-        for item in content_list:
-            if isinstance(item, dict):
-                item_dict = cast(dict[str, Any], item)
-                list_text_value: Any = item_dict.get("text") or item_dict.get("content")
-                if list_text_value is not None:
-                    parts.append(str(list_text_value))
-            elif item:
-                parts.append(str(item))
-        return "\n".join(part for part in parts if part)
-
-    if isinstance(content, dict):
-        content_dict = cast(dict[str, Any], content)
-        dict_text_value: Any = content_dict.get("text")
-        if dict_text_value is not None:
-            return str(dict_text_value)
-        nested = content_dict.get("content")
-        if nested:
-            return _collapse_message_content_to_text(nested)
-        return json.dumps(content_dict)
-
-    return str(content)
-
-
 def _process_stream_chunk(
     chunk: Any,
     middleware_manager: MiddlewareManager | None,
@@ -2570,6 +2172,45 @@ def _to_serializable_dict(payload: Any) -> dict[str, Any]:
             continue
         result[attr] = value
     return result
+
+
+def _enrich_gemini_trace_outputs(
+    output: dict[str, Any],
+    model_name: str,
+) -> dict[str, Any]:
+    """Enrich Gemini REST trace output with model and usage for Langfuse.
+
+    Gemini REST 响应使用 modelVersion / usageMetadata，而 Langfuse tracer
+    的 end_span 依赖 output dict 中的 model / usage 来填充 generation 的
+    model 标签和 token 用量。此函数做字段映射注入。
+    """
+    enriched = dict(output)
+    # 1. 注入 model（Langfuse 用来标记 generation 的模型名）
+    enriched["model"] = model_name
+    # 2. 将 usageMetadata 映射为 Langfuse 期望的 usage 格式
+    #    Langfuse _sanitize_usage 只保留 int 值，所以这里全部转 int。
+    usage_meta = output.get("usageMetadata")
+    if isinstance(usage_meta, dict):
+        meta: dict[str, object] = cast(dict[str, object], usage_meta)
+
+        def _int_field(key: str) -> int:
+            val = meta.get(key, 0)
+            return int(val) if isinstance(val, int) else 0
+
+        usage: dict[str, int] = {
+            "input_tokens": _int_field("promptTokenCount"),
+            "output_tokens": _int_field("candidatesTokenCount"),
+            "total_tokens": _int_field("totalTokenCount"),
+        }
+        # 缓存和推理 token — 仅在实际存在时注入，保持 Langfuse 用量面板简洁
+        cached = _int_field("cachedContentTokenCount")
+        if cached > 0:
+            usage["cached_tokens"] = cached
+        thoughts = _int_field("thoughtsTokenCount")
+        if thoughts > 0:
+            usage["reasoning_tokens"] = thoughts
+        enriched["usage"] = usage
+    return enriched
 
 
 class OpenAIChatStreamAggregator:
@@ -2722,7 +2363,11 @@ class AnthropicStreamAggregator:
                 self.stop_reason = stop_reason
             usage_data = delta.get("usage") or payload.get("usage")
             if usage_data:
-                self.usage = _to_serializable_dict(usage_data)
+                merged = _to_serializable_dict(usage_data)
+                if self.usage is not None:
+                    self.usage.update(merged)
+                else:
+                    self.usage = merged
         elif event_type == "content_block_start":
             index = payload.get("index")
             block = _to_serializable_dict(payload.get("content_block", {}))
@@ -2790,6 +2435,9 @@ class AnthropicStreamAggregator:
             # Anthropic streams thinking in fragments; append like text.
             block["type"] = "thinking"
             block["thinking"] = (block.get("thinking") or "") + (delta.get("thinking") or "")
+        elif delta_type == "signature_delta":
+            # signature 只会到达一次（与官方 SDK 行为一致），直接赋值
+            block["signature"] = delta.get("signature") or ""
         elif delta_type == "input_json_delta":
             block.setdefault("type", "tool_use")
             fragment = delta.get("partial_json") or ""
@@ -3361,20 +3009,6 @@ def convert_tools_to_gemini(
     return gemini_tools
 
 
-def openai_to_gemini_rest_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    """Convert legacy OpenAI-style messages to Gemini REST payloads.
-
-    RFC-0006: Gemini legacy compatibility wrapper
-
-    旧的 OpenAI-style message 入口保留为兼容包装，但内部委托到
-    ``GeminiMessagesAdapter`` 的原生 UMP -> Gemini 转换链路。
-    """
-
-    from nexau.core.adapters.gemini_messages import gemini_payload_from_legacy_openai_chat
-
-    return gemini_payload_from_legacy_openai_chat(messages)
-
-
 def call_llm_with_gemini_rest(
     kwargs: dict[str, Any],
     *,
@@ -3390,28 +3024,19 @@ def call_llm_with_gemini_rest(
     Gemini 请求体直接从统一消息表示与 neutral structured tool definitions
     生成，不再把 OpenAI schema 作为 structured tool calling 的主中转格式。
     """
-    from nexau.core.messages import ImageBlock
-
-    # TODO: Support image input for Gemini REST API
-    if model_call_params is not None:
-        for msg in model_call_params.messages:
-            for block in msg.content:
-                if isinstance(block, ImageBlock):
-                    raise ValueError("Image input is not supported for Gemini REST API")
     stream_requested = bool(kwargs.pop("stream", False) or getattr(llm_config, "stream", False))
     if not llm_config:
         raise ValueError("llm_config is required for gemini_rest call")
 
-    messages = kwargs.get("messages", [])
     tools = kwargs.get("tools")
 
     # Convert messages
-    if model_call_params is not None:
-        from nexau.core.adapters.gemini_messages import GeminiMessagesAdapter
+    if model_call_params is None:
+        raise ValueError("Gemini REST calls require explicit ModelCallParams with UMP messages")
 
-        contents, system_instruction = GeminiMessagesAdapter().to_vendor_format(model_call_params.messages)
-    else:
-        contents, system_instruction = openai_to_gemini_rest_messages(cast(list[dict[str, Any]], messages))
+    from nexau.core.adapters.gemini_messages import GeminiMessagesAdapter
+
+    contents, system_instruction = GeminiMessagesAdapter().to_vendor_format(model_call_params.messages)
 
     # Base URL handling
     base_url = llm_config.base_url.rstrip("/") if llm_config.base_url else ""
@@ -3521,7 +3146,7 @@ def call_llm_with_gemini_rest(
                             f"Gemini REST stream idle timeout ({_read_timeout}s): {exc}",
                         ) from exc
                     result = aggregator.finalize()
-                    trace_ctx.set_outputs(result)
+                    trace_ctx.set_outputs(_enrich_gemini_trace_outputs(result, model_name))
                     if first_token_time is not None:
                         trace_ctx.set_attributes(
                             {"time_to_first_token_ms": (first_token_time - start_time) * 1000},
@@ -3586,7 +3211,7 @@ def call_llm_with_gemini_rest(
             trace_ctx = TraceContext(tracer, "Gemini REST generateContent", SpanType.LLM, inputs=request_body)
             with trace_ctx:
                 response_json = do_request()
-                trace_ctx.set_outputs(_to_serializable_dict(response_json))
+                trace_ctx.set_outputs(_enrich_gemini_trace_outputs(_to_serializable_dict(response_json), model_name))
         else:
             response_json = do_request()
 
@@ -3662,26 +3287,16 @@ async def call_llm_with_gemini_rest_async(
     使用 httpx.AsyncClient 替代 requests.post，在主事件循环上执行
     Gemini REST API 调用（含流式和非流式），避免阻塞 event loop。
     """
-    from nexau.core.messages import ImageBlock
-
-    # 与 sync 版本相同的参数验证
-    if model_call_params is not None:
-        for msg in model_call_params.messages:
-            for block in msg.content:
-                if isinstance(block, ImageBlock):
-                    raise ValueError("Image input is not supported for Gemini REST API")
-
     stream_requested = bool(kwargs.pop("stream", False) or getattr(llm_config, "stream", False))
-    messages = kwargs.get("messages", [])
     tools = kwargs.get("tools")
 
     # 消息转换
-    if model_call_params is not None:
-        from nexau.core.adapters.gemini_messages import GeminiMessagesAdapter
+    if model_call_params is None:
+        raise ValueError("Gemini REST calls require explicit ModelCallParams with UMP messages")
 
-        contents, system_instruction = GeminiMessagesAdapter().to_vendor_format(model_call_params.messages)
-    else:
-        contents, system_instruction = openai_to_gemini_rest_messages(cast(list[dict[str, Any]], messages))
+    from nexau.core.adapters.gemini_messages import GeminiMessagesAdapter
+
+    contents, system_instruction = GeminiMessagesAdapter().to_vendor_format(model_call_params.messages)
 
     # URL 构建
     base_url = llm_config.base_url.rstrip("/") if llm_config.base_url else ""
@@ -3774,7 +3389,7 @@ async def call_llm_with_gemini_rest_async(
                                     continue
                                 aggregator.consume(processed_chunk)
                         result = aggregator.finalize()
-                        trace_ctx.set_outputs(result)
+                        trace_ctx.set_outputs(_enrich_gemini_trace_outputs(result, model_name))
                         if first_token_time is not None:
                             trace_ctx.set_attributes(
                                 {"time_to_first_token_ms": (first_token_time - start_time) * 1000},
@@ -3814,7 +3429,7 @@ async def call_llm_with_gemini_rest_async(
                     response = await client.post(url, json=request_body)
                     response.raise_for_status()
                     response_json = response.json()
-                    trace_ctx.set_outputs(_to_serializable_dict(response_json))
+                    trace_ctx.set_outputs(_enrich_gemini_trace_outputs(_to_serializable_dict(response_json), model_name))
             else:
                 response = await client.post(url, json=request_body)
                 response.raise_for_status()

@@ -3,9 +3,10 @@ from typing import Any
 
 from _pytest.logging import LogCaptureFixture
 
-from nexau.archs.main_sub.execution.llm_caller import openai_to_anthropic_message
-from nexau.core.adapters.legacy import messages_from_legacy_openai_chat, messages_to_legacy_openai_chat
+from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Role, TextBlock, ToolResultBlock, ToolUseBlock
+from nexau.core.serializers.anthropic_messages import serialize_ump_to_anthropic_messages_payload
+from nexau.core.serializers.openai_chat import serialize_ump_to_openai_chat_payload
 
 
 def test_legacy_roundtrip_text_only() -> None:
@@ -19,9 +20,8 @@ def test_legacy_roundtrip_text_only() -> None:
     assert [m.role for m in ump] == [Role.SYSTEM, Role.USER, Role.ASSISTANT]
     assert ump[1].get_text_content() == "Hello"
 
-    roundtripped = messages_to_legacy_openai_chat(ump)
-    # UMP adds ids; legacy conversion should preserve observable chat shape.
-    assert roundtripped == legacy
+    payload = serialize_ump_to_openai_chat_payload(ump)
+    assert payload == legacy
 
 
 def test_legacy_roundtrip_tool_call_and_result() -> None:
@@ -51,11 +51,11 @@ def test_legacy_roundtrip_tool_call_and_result() -> None:
     assert ump[2].role == Role.TOOL
     assert any(isinstance(b, ToolResultBlock) and b.tool_use_id == "call_1" and b.content == "4" for b in ump[2].content)
 
-    roundtripped = messages_to_legacy_openai_chat(ump)
-    assert roundtripped == legacy
+    payload = serialize_ump_to_openai_chat_payload(ump)
+    assert payload == legacy
 
 
-def test_openai_to_anthropic_message_uses_blocks() -> None:
+def test_anthropic_serializer_uses_blocks_from_legacy_input() -> None:
     legacy: list[dict[str, Any]] = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "hi"},
@@ -73,7 +73,8 @@ def test_openai_to_anthropic_message_uses_blocks() -> None:
         {"role": "tool", "tool_call_id": "call_1", "content": "4"},
     ]
 
-    system, messages = openai_to_anthropic_message(legacy)
+    ump_messages = messages_from_legacy_openai_chat(legacy)
+    system, messages = serialize_ump_to_anthropic_messages_payload(ump_messages)
     assert system == [{"type": "text", "text": "sys"}]
     assert messages[0]["role"] == "user"
     assert messages[0]["content"] == [{"type": "text", "text": "hi"}]
@@ -104,8 +105,8 @@ def test_legacy_structured_content_list_is_preserved_as_text_blocks() -> None:
     assert [type(b) for b in ump[0].content] == [TextBlock, TextBlock]
     assert ump[0].get_text_content() == "ab"
 
-    roundtripped = messages_to_legacy_openai_chat(ump)
-    assert roundtripped == [
+    payload = serialize_ump_to_openai_chat_payload(ump)
+    assert payload == [
         {"role": "user", "content": "ab"},
         {"role": "assistant", "content": "c"},
     ]
@@ -127,8 +128,8 @@ def test_legacy_roundtrip_structured_content_with_image_url() -> None:
     assert ump[0].role == Role.USER
     assert [b.type for b in ump[0].content] == ["text", "image", "text"]
 
-    roundtripped = messages_to_legacy_openai_chat(ump)
-    assert roundtripped == legacy
+    payload = serialize_ump_to_openai_chat_payload(ump)
+    assert payload == legacy
 
 
 def test_injected_tool_image_user_message_is_merged_back_into_tool_result() -> None:
@@ -159,7 +160,7 @@ def test_injected_tool_image_user_message_is_merged_back_into_tool_result() -> N
     assert any(getattr(p, "type", None) == "image" for p in tr.content)
 
 
-def test_openai_to_anthropic_message_embeds_tool_result_images_as_anthropic_image_blocks() -> None:
+def test_anthropic_serializer_embeds_tool_result_images_as_anthropic_image_blocks() -> None:
     legacy: list[dict[str, Any]] = [
         {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "file_read", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "call_1", "content": "Done <image>"},
@@ -172,7 +173,8 @@ def test_openai_to_anthropic_message_embeds_tool_result_images_as_anthropic_imag
         },
     ]
 
-    system, messages = openai_to_anthropic_message(legacy)
+    ump_messages = messages_from_legacy_openai_chat(legacy)
+    system, messages = serialize_ump_to_anthropic_messages_payload(ump_messages)
     assert system == []
     # Tool results are represented as a user message containing a tool_result block.
     tool_result_msg = next(m for m in messages if m.get("role") == "user" and isinstance(m.get("content"), list))

@@ -507,6 +507,10 @@ class LangfuseTracer(BaseTracer):
         Langfuse accepts strings, dicts, and lists. Complex objects
         need to be converted to JSON strings.
 
+        base64 图片数据不做截断 — Langfuse SDK 内置 MediaManager 会自动检测
+        Anthropic/OpenAI/Vertex 格式的 base64 图片，异步上传到对象存储后替换
+        为 media reference，保证 trace 中能看到完整图片。
+
         Args:
             data: Data to serialize
 

@@ -1,0 +1,25 @@
+type: agent
+name: cross_val_math_agent
+system_prompt: >-
+  You are a precise math assistant.
+  Think step-by-step about the problem.
+  Always end your response with the final numeric answer on its own line,
+  formatted as: ANSWER: <number>
+system_prompt_type: string
+max_context_tokens: 128000
+llm_config:
+  model: gpt-5
+  base_url: http://14.103.60.158:3001/v1
+  api_key: <GATEWAY_API_KEY>
+  temperature: 0.0
+  max_tokens: 1024
+  api_type: openai_chat_completion
+tracers:
+  - import: nexau.archs.tracer.adapters.langfuse:LangfuseTracer
+    params:
+      secret_key: ${LANGFUSE_SECRET_KEY}
+      public_key: ${LANGFUSE_PUBLIC_KEY}
+      host: ${LANGFUSE_HOST}
+      tags:
+        - cross-val-yaml
+        - live-test

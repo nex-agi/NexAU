@@ -14,18 +14,15 @@
 
 """Sliding window compaction strategy."""
 
-import asyncio
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import anthropic
 import openai
-from openai.types.chat import ChatCompletion
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.execution.llm_caller import LLMCaller
-from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock, ToolUseBlock
 
 from .....utils.token_counter import TokenCounter
@@ -479,31 +476,13 @@ class SlidingWindowCompaction:
         llm_messages = messages.copy()
         llm_messages.append(Message(role=Role.USER, content=[TextBlock(text=self.compact_prompt)]))
 
-        summary_api_type = (
-            self.summary_llm_config.api_type if self.summary_llm_config is not None else (self.summary_api_type or "openai_chat_completion")
+        model_response = await llm_caller.call_llm_async(
+            llm_messages,
+            tool_call_mode="structured",
         )
-        tool_call_mode = "structured"
-
-        try:
-            model_response = await llm_caller.call_llm_async(
-                llm_messages,
-                tool_call_mode=tool_call_mode,
-            )
-            summary = (model_response.content or "").strip() if model_response else ""
-            logger.info("[SlidingWindowCompaction] Async LLM summary generated successfully")
-            return summary
-        except Exception as exc:
-            if summary_api_type != "openai_chat_completion":
-                raise
-
-            logger.warning(
-                "[SlidingWindowCompaction] LLMCaller async summary generation failed; falling back to sync direct client call: %s",
-                exc,
-            )
-            # 回退到 sync direct client call（在线程中执行）
-            summary = await asyncio.to_thread(self._generate_summary_direct_fallback, llm_messages)
-            logger.info("[SlidingWindowCompaction] Async LLM summary generated successfully via sync fallback")
-            return summary
+        summary = (model_response.content or "").strip() if model_response else ""
+        logger.info("[SlidingWindowCompaction] Async LLM summary generated successfully")
+        return summary
 
     def _generate_summary_safe(self, messages: list[Message]) -> str:
         """Generate summary with automatic chunking for oversized inputs.
@@ -809,35 +788,6 @@ class SlidingWindowCompaction:
 
         return user_rounds
 
-    def _generate_summary_direct_fallback(self, llm_messages: list[Message]) -> str:
-        """Fallback summary path for simple OpenAI-compatible mocked clients."""
-        summary_api_type = (
-            self.summary_llm_config.api_type if self.summary_llm_config is not None else (self.summary_api_type or "openai_chat_completion")
-        )
-        if summary_api_type != "openai_chat_completion":
-            raise RuntimeError("Direct summary fallback only supports openai_chat_completion")
-        if self._summary_client is None:
-            raise RuntimeError("Summary client is not initialized")
-
-        create_kwargs: dict[str, Any] = {
-            "model": self.summary_llm_config.model if self.summary_llm_config is not None else self.summary_model,
-            "messages": messages_to_legacy_openai_chat(llm_messages),
-        }
-        if self.summary_llm_config is not None and self.summary_llm_config.max_tokens is not None:
-            create_kwargs["max_tokens"] = self.summary_llm_config.max_tokens
-
-        response = cast(
-            ChatCompletion,
-            self._summary_client.chat.completions.create(**create_kwargs),
-        )
-        if not response.choices:
-            return ""
-
-        content = response.choices[0].message.content
-        if isinstance(content, str):
-            return content.strip()
-        return ""
-
     def _generate_summary(self, messages: list[Message]) -> str:
         """Generate summary using LLM.
 
@@ -852,27 +802,10 @@ class SlidingWindowCompaction:
         llm_messages = messages.copy()
         llm_messages.append(Message(role=Role.USER, content=[TextBlock(text=self.compact_prompt)]))
 
-        summary_api_type = (
-            self.summary_llm_config.api_type if self.summary_llm_config is not None else (self.summary_api_type or "openai_chat_completion")
+        model_response = llm_caller.call_llm(
+            llm_messages,
+            tool_call_mode="structured",
         )
-        tool_call_mode = "structured"
-
-        try:
-            model_response = llm_caller.call_llm(
-                llm_messages,
-                tool_call_mode=tool_call_mode,
-            )
-            summary = (model_response.content or "").strip() if model_response else ""
-            logger.info("[SlidingWindowCompaction] LLM summary generated successfully")
-            return summary
-        except Exception as exc:
-            if summary_api_type != "openai_chat_completion":
-                raise
-
-            logger.warning(
-                "[SlidingWindowCompaction] LLMCaller summary generation failed; falling back to direct OpenAI-compatible client call: %s",
-                exc,
-            )
-            summary = self._generate_summary_direct_fallback(llm_messages)
-            logger.info("[SlidingWindowCompaction] LLM summary generated successfully via direct client fallback")
-            return summary
+        summary = (model_response.content or "").strip() if model_response else ""
+        logger.info("[SlidingWindowCompaction] LLM summary generated successfully")
+        return summary

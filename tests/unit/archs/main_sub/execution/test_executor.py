@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import threading
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,11 +26,23 @@ from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.execution.executor import Executor
 from nexau.archs.tool.tool_registry import ToolRegistry
 
+if TYPE_CHECKING:
+    from nexau.core.messages import Message
+
 # --- Helpers ---
 
 
 def make_tool_registry() -> ToolRegistry:
     return ToolRegistry()
+
+
+def make_history(system_text: str, user_text: str) -> list[Message]:
+    from nexau.core.messages import Message, Role, TextBlock
+
+    return [
+        Message(role=Role.SYSTEM, content=[TextBlock(text=system_text)]),
+        Message.user(user_text),
+    ]
 
 
 def make_executor(team_mode: bool = True) -> Executor:
@@ -314,10 +327,7 @@ class TestTeamModeStopTools:
         executor._wait_for_messages = MagicMock(return_value=False)
 
         response, _messages = executor.execute(
-            [
-                {"role": "system", "content": "You are helpful."},
-                {"role": "user", "content": "Need more input."},
-            ],
+            make_history("You are helpful.", "Need more input."),
             agent_state=MagicMock(),
         )
 
@@ -344,10 +354,7 @@ class TestTeamModeStopTools:
         executor._wait_for_messages = MagicMock(return_value=False)
 
         response, _messages = executor.execute(
-            [
-                {"role": "system", "content": "You are helpful."},
-                {"role": "user", "content": "Finish the work."},
-            ],
+            make_history("You are helpful.", "Finish the work."),
             agent_state=MagicMock(),
         )
 
@@ -374,10 +381,7 @@ class TestTeamModeStopTools:
         executor._wait_for_messages = MagicMock(return_value=False)
 
         response, _messages = executor.execute(
-            [
-                {"role": "system", "content": "You are helpful."},
-                {"role": "user", "content": "Finish the work."},
-            ],
+            make_history("You are helpful.", "Finish the work."),
             agent_state=MagicMock(),
         )
 

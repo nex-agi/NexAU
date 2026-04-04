@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from nexau.core.adapters.base import LLMAdapter
-from nexau.core.adapters.legacy import messages_to_legacy_openai_chat
 from nexau.core.messages import Message
+from nexau.core.serializers.openai_chat import serialize_ump_to_openai_chat_payload
 
 
 class OpenAIChatAdapter(LLMAdapter):
@@ -15,7 +15,7 @@ class OpenAIChatAdapter(LLMAdapter):
     """
 
     def to_vendor_format(self, messages: list[Message]) -> list[dict[str, Any]]:
-        return messages_to_legacy_openai_chat(messages)
+        return serialize_ump_to_openai_chat_payload(messages)
 
     def from_vendor_response(self, response: Any) -> Message:  # pragma: no cover (not wired yet)
         raise NotImplementedError

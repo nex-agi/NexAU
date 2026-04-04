@@ -33,12 +33,14 @@ from unittest.mock import Mock, call, patch
 import pytest
 
 from nexau.archs.llm.llm_config import LLMConfig
-from nexau.archs.main_sub.execution.hooks import MiddlewareManager
+from nexau.archs.main_sub.execution.hooks import MiddlewareManager, ModelCallParams
 from nexau.archs.main_sub.execution.llm_caller import LLMCaller
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
-from nexau.core.adapters.legacy import messages_from_legacy_openai_chat, messages_to_legacy_openai_chat
+from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import ImageBlock, Message, Role, TextBlock, ToolResultBlock
+from nexau.core.serializers.openai_chat import serialize_ump_to_openai_chat_payload
+from nexau.core.serializers.openai_responses import prepare_openai_responses_api_input
 from nexau.core.usage import TokenUsage
 
 
@@ -244,18 +246,134 @@ class TestLLMCallerBasicCalls:
         caller.call_llm(history, max_tokens=60, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
 
         followup_input = mock_openai_client.responses.create.call_args.kwargs["input"]
+        # RFC-0014: serializer strips `content` from reasoning items; only `summary` is kept
         expected_reasoning = {
             "type": "reasoning",
-            "content": [{"type": "text", "text": "Thought step"}],
             "summary": [{"type": "text", "text": "Summary"}],
         }
         assert expected_reasoning in followup_input
 
+    def test_model_response_from_completion_reasoning_shape(self):
+        """Chat Completions responses can carry reasoning_content directly on the assistant message."""
+
+        response = ModelResponse.from_openai_message(
+            {
+                "role": "assistant",
+                "content": "35 × 11 = 385\nFinal: 34",
+                "reasoning_content": "Compute 35 * 11 first, then divide by 13.",
+            },
+            usage={"prompt_tokens": 43, "completion_tokens": 82, "total_tokens": 125},
+        )
+
+        assert response.content == "35 × 11 = 385\nFinal: 34"
+        assert response.reasoning_content == "Compute 35 * 11 first, then divide by 13."
+        assert response.response_items == []
+        assert response.usage.total_tokens == 125
+
+    def test_model_response_from_responses_reasoning_shape(self):
+        """Responses API reasoning items should preserve summary text and encrypted replay artifacts."""
+
+        response = ModelResponse.from_openai_response(
+            {
+                "output": [
+                    {
+                        "id": "rs_real",
+                        "type": "reasoning",
+                        "encrypted_content": "encrypted_blob",
+                        "summary": [{"type": "summary_text", "text": "Verified the arithmetic before answering."}],
+                    },
+                    {
+                        "id": "msg_real",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "Final: 34"}],
+                    },
+                ],
+                "usage": {
+                    "input_tokens": 43,
+                    "output_tokens": 73,
+                    "total_tokens": 116,
+                    "output_tokens_details": {"reasoning_tokens": 38},
+                },
+            }
+        )
+
+        assert response.content == "Final: 34"
+        assert response.reasoning_content == "Verified the arithmetic before answering."
+        assert response.response_items[0]["type"] == "reasoning"
+        assert response.response_items[0]["encrypted_content"] == "encrypted_blob"
+        assert response.usage.reasoning_tokens == 38
+
+    def test_prepare_responses_input_reuses_encrypted_reasoning_response_items(self):
+        """Stored Responses API reasoning items should be replayed with encrypted_content intact."""
+        prepared, instructions = prepare_openai_responses_api_input(
+            [
+                {
+                    "role": "assistant",
+                    "content": "Final: 34",
+                    "response_items": [
+                        {
+                            "id": "rs_real",
+                            "type": "reasoning",
+                            "encrypted_content": "encrypted_blob",
+                            "summary": [{"type": "summary_text", "text": "Verified the arithmetic before answering."}],
+                        },
+                        {
+                            "id": "msg_real",
+                            "type": "message",
+                            "role": "assistant",
+                            "status": "completed",
+                            "content": [{"type": "output_text", "text": "Final: 34"}],
+                        },
+                    ],
+                }
+            ]
+        )
+
+        assert instructions is None
+        assert prepared == [
+            {
+                "type": "reasoning",
+                "encrypted_content": "encrypted_blob",
+                "summary": [{"type": "summary_text", "text": "Verified the arithmetic before answering."}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Final: 34"}],
+            },
+        ]
+
+    def test_prepare_responses_input_reconstructs_reasoning_from_completion_reasoning_content(self):
+        """Chat-completions reasoning_content should become replayable Responses reasoning input."""
+        prepared, instructions = prepare_openai_responses_api_input(
+            [
+                {
+                    "role": "assistant",
+                    "content": "Final: 34",
+                    "reasoning_content": "Compute 35 * 11 first, then divide by 13.",
+                }
+            ]
+        )
+
+        assert instructions is None
+        # RFC-0014: reasoning 在 message 之前（与 Responses API 原生顺序一致）
+        assert prepared == [
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "Compute 35 * 11 first, then divide by 13."}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Final: 34"}],
+            },
+        ]
+
     def test_prepare_responses_api_input_preserves_assistant_phase(self):
         """Assistant message phase should be forwarded to Responses API input."""
-        from nexau.archs.main_sub.execution.llm_caller import _prepare_responses_api_input
-
-        prepared, instructions = _prepare_responses_api_input(
+        prepared, instructions = prepare_openai_responses_api_input(
             [
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Working...", "phase": "commentary"},
@@ -270,9 +388,7 @@ class TestLLMCallerBasicCalls:
 
     def test_prepare_responses_api_input_user_multimodal_content(self):
         """User message with list content (text + image_url) should produce input_text + input_image parts."""
-        from nexau.archs.main_sub.execution.llm_caller import _prepare_responses_api_input
-
-        prepared, _instructions = _prepare_responses_api_input(
+        prepared, _instructions = prepare_openai_responses_api_input(
             [
                 {
                     "role": "user",
@@ -295,9 +411,8 @@ class TestLLMCallerBasicCalls:
 
     def test_prepare_responses_api_input_user_image_with_detail(self):
         """Image part with explicit detail should forward the detail field."""
-        from nexau.archs.main_sub.execution.llm_caller import _prepare_responses_api_input
 
-        prepared, _ = _prepare_responses_api_input(
+        prepared, _ = prepare_openai_responses_api_input(
             [
                 {
                     "role": "user",
@@ -318,9 +433,8 @@ class TestLLMCallerBasicCalls:
 
     def test_prepare_responses_api_input_user_string_content_unchanged(self):
         """Plain string content for user messages should still work (regression test)."""
-        from nexau.archs.main_sub.execution.llm_caller import _prepare_responses_api_input
 
-        prepared, _ = _prepare_responses_api_input([{"role": "user", "content": "just text"}])
+        prepared, _ = prepare_openai_responses_api_input([{"role": "user", "content": "just text"}])
 
         assert len(prepared) == 1
         msg = prepared[0]
@@ -328,9 +442,8 @@ class TestLLMCallerBasicCalls:
 
     def test_prepare_responses_api_input_assistant_multimodal_content(self):
         """Assistant message with list content should convert parts using output_text type."""
-        from nexau.archs.main_sub.execution.llm_caller import _prepare_responses_api_input
 
-        prepared, _ = _prepare_responses_api_input(
+        prepared, _ = prepare_openai_responses_api_input(
             [
                 {
                     "role": "assistant",
@@ -831,7 +944,7 @@ class TestLLMCallerBasicCalls:
 
         caller = LLMCaller(openai_client=mock_openai_client, llm_config=responses_llm_config)
 
-        # This tool message gets converted to legacy OpenAI-shaped dicts via messages_to_legacy_openai_chat,
+        # This tool message gets converted to OpenAI Chat payload dicts via the chat serializer,
         # which represent images as {"type":"image_url","image_url":{"url":"...","detail":"high"}} parts.
         history = [
             Message.user("Hello"),
@@ -1685,7 +1798,7 @@ class TestLLMCallerIntegration:
 
         # Verify API was called with correct parameters
         call_args = mock_openai_client.chat.completions.create.call_args
-        assert call_args[1]["messages"] == messages_to_legacy_openai_chat(messages, tool_image_policy="inject_user_message")
+        assert call_args[1]["messages"] == serialize_ump_to_openai_chat_payload(messages, tool_image_policy="inject_user_message")
         assert call_args[1]["max_tokens"] == 200
         assert "custom_stop" in call_args[1]["stop"]
         assert "</tool_use>" in call_args[1]["stop"]
@@ -1717,10 +1830,23 @@ class TestAnthropicCacheControl:
             "model": "claude-3",
             "max_tokens": 100,
         }
+        params = ModelCallParams(
+            messages=messages_from_legacy_openai_chat(kwargs["messages"]),
+            max_tokens=100,
+            force_stop_reason=None,
+            agent_state=None,
+            tool_call_mode="xml",
+            tools=None,
+            api_params={},
+            openai_client=None,
+            llm_config=None,
+            retry_attempts=1,
+            shutdown_event=None,
+        )
 
-        # Patch openai_to_anthropic_message to return system blocks with _cache flags
+        # Patch the Anthropic serializer to return system blocks with _cache flags
         with patch(
-            "nexau.archs.main_sub.execution.llm_caller.openai_to_anthropic_message",
+            "nexau.core.adapters.anthropic_messages.serialize_ump_to_anthropic_messages_payload",
             return_value=(
                 [
                     {"type": "text", "text": "static prompt", "_cache": True},
@@ -1729,7 +1855,7 @@ class TestAnthropicCacheControl:
                 [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
             ),
         ):
-            call_llm_with_anthropic_chat_completion(mock_client, kwargs)
+            call_llm_with_anthropic_chat_completion(mock_client, kwargs, model_call_params=params)
 
         call_args = mock_client.messages.create.call_args
         system_blocks = call_args[1]["system"]
@@ -1764,16 +1890,29 @@ class TestAnthropicCacheControl:
             "model": "claude-3",
             "max_tokens": 100,
         }
+        params = ModelCallParams(
+            messages=messages_from_legacy_openai_chat(kwargs["messages"]),
+            max_tokens=100,
+            force_stop_reason=None,
+            agent_state=None,
+            tool_call_mode="xml",
+            tools=None,
+            api_params={},
+            openai_client=None,
+            llm_config=None,
+            retry_attempts=1,
+            shutdown_event=None,
+        )
 
         # System block without _cache flag (legacy single-string prompt)
         with patch(
-            "nexau.archs.main_sub.execution.llm_caller.openai_to_anthropic_message",
+            "nexau.core.adapters.anthropic_messages.serialize_ump_to_anthropic_messages_payload",
             return_value=(
                 [{"type": "text", "text": "prompt"}],
                 [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
             ),
         ):
-            call_llm_with_anthropic_chat_completion(mock_client, kwargs)
+            call_llm_with_anthropic_chat_completion(mock_client, kwargs, model_call_params=params)
 
         call_args = mock_client.messages.create.call_args
         system_blocks = call_args[1]["system"]

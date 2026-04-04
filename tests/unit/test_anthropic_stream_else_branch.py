@@ -18,7 +18,7 @@ Covers the else branch in llm_stream_call (no tracer active):
 - Normal streaming without tracing
 - shutdown_event interruption mid-stream
 - Middleware filtering (_process_stream_chunk returning None)
-- No model_call_params (shutdown_ev is None)
+- Explicit UMP model_call_params with and without shutdown_event
 """
 
 from __future__ import annotations
@@ -26,14 +26,35 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace, TracebackType
 from typing import Any
-from unittest.mock import Mock
 
 from nexau.archs.main_sub.execution import llm_caller
 from nexau.archs.main_sub.execution.hooks import (
+    Middleware,
     MiddlewareManager,
     ModelCallParams,
 )
 from nexau.archs.main_sub.execution.model_response import ModelResponse
+from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
+
+
+def _make_model_call_params(
+    messages: list[dict[str, Any]],
+    *,
+    shutdown_event: threading.Event | None = None,
+) -> ModelCallParams:
+    return ModelCallParams(
+        messages=messages_from_legacy_openai_chat(messages),
+        max_tokens=128,
+        force_stop_reason=None,
+        agent_state=None,
+        tool_call_mode="xml",
+        tools=None,
+        api_params={},
+        openai_client=None,
+        llm_config=None,
+        retry_attempts=1,
+        shutdown_event=shutdown_event,
+    )
 
 
 class _IterableStream:
@@ -106,8 +127,10 @@ def test_anthropic_stream_no_tracing_normal_flow() -> None:
         "stream": True,
     }
 
+    params = _make_model_call_params(kwargs["messages"])
+
     # No tracer -> hits the else branch
-    resp = llm_caller.call_llm_with_anthropic_chat_completion(client, kwargs, tracer=None)
+    resp = llm_caller.call_llm_with_anthropic_chat_completion(client, kwargs, model_call_params=params, tracer=None)
 
     assert isinstance(resp, ModelResponse)
     assert resp.content == "Hello world"
@@ -148,7 +171,9 @@ def test_anthropic_stream_no_tracing_with_tool_use() -> None:
         "stream": True,
     }
 
-    resp = llm_caller.call_llm_with_anthropic_chat_completion(client, kwargs, tracer=None)
+    params = _make_model_call_params(kwargs["messages"])
+
+    resp = llm_caller.call_llm_with_anthropic_chat_completion(client, kwargs, model_call_params=params, tracer=None)
 
     assert isinstance(resp, ModelResponse)
     assert resp.has_tool_calls()
@@ -187,14 +212,12 @@ def test_anthropic_stream_shutdown_event_interrupts_mid_stream() -> None:
 
     client = _FakeClient()
 
-    model_call_params = Mock(spec=ModelCallParams)
-    model_call_params.shutdown_event = shutdown_ev
-
     kwargs: dict[str, Any] = {
         "model": "claude-test",
         "messages": [{"role": "user", "content": "hi"}],
         "stream": True,
     }
+    model_call_params = _make_model_call_params(kwargs["messages"], shutdown_event=shutdown_ev)
 
     resp = llm_caller.call_llm_with_anthropic_chat_completion(
         client,
@@ -224,11 +247,16 @@ def test_anthropic_stream_middleware_filters_chunks() -> None:
                 return None
         return chunk
 
-    middleware = Mock(spec=MiddlewareManager)
-    middleware.stream_chunk = Mock(side_effect=_filtering_stream_chunk)
+    class _FilteringMiddleware(Middleware):
+        def __init__(self) -> None:
+            self.call_count = 0
 
-    model_call_params = Mock(spec=ModelCallParams)
-    model_call_params.shutdown_event = None
+        def stream_chunk(self, chunk: Any, params: ModelCallParams) -> Any:  # noqa: ARG002
+            self.call_count += 1
+            return _filtering_stream_chunk(chunk, params)
+
+    filtering_mw = _FilteringMiddleware()
+    middleware = MiddlewareManager([filtering_mw])
 
     client = _make_anthropic_client(_anthropic_text_events())
     kwargs: dict[str, Any] = {
@@ -236,6 +264,7 @@ def test_anthropic_stream_middleware_filters_chunks() -> None:
         "messages": [{"role": "user", "content": "hi"}],
         "stream": True,
     }
+    model_call_params = _make_model_call_params(kwargs["messages"])
 
     resp = llm_caller.call_llm_with_anthropic_chat_completion(
         client,
@@ -248,11 +277,11 @@ def test_anthropic_stream_middleware_filters_chunks() -> None:
     assert isinstance(resp, ModelResponse)
     # " world" was filtered out by middleware
     assert resp.content == "Hello"
-    assert middleware.stream_chunk.call_count == 6  # 6 events in _anthropic_text_events()
+    assert filtering_mw.call_count == 6  # 6 events in _anthropic_text_events()
 
 
-def test_anthropic_stream_no_model_call_params_skips_shutdown_check() -> None:
-    """When model_call_params is None, shutdown_ev is None and the loop runs fully."""
+def test_anthropic_stream_without_shutdown_event_runs_fully() -> None:
+    """When shutdown_event is omitted, the full stream is consumed."""
     client = _make_anthropic_client(_anthropic_text_events())
     kwargs: dict[str, Any] = {
         "model": "claude-test",
@@ -260,11 +289,11 @@ def test_anthropic_stream_no_model_call_params_skips_shutdown_check() -> None:
         "stream": True,
     }
 
-    # model_call_params=None -> _shutdown_ev = None -> no shutdown check
+    params = _make_model_call_params(kwargs["messages"])
     resp = llm_caller.call_llm_with_anthropic_chat_completion(
         client,
         kwargs,
-        model_call_params=None,
+        model_call_params=params,
         tracer=None,
     )
 
@@ -276,15 +305,13 @@ def test_anthropic_stream_shutdown_event_not_set_runs_fully() -> None:
     """When shutdown_event exists but is never set, the full stream is consumed."""
     shutdown_ev = threading.Event()  # never set
 
-    model_call_params = Mock(spec=ModelCallParams)
-    model_call_params.shutdown_event = shutdown_ev
-
     client = _make_anthropic_client(_anthropic_text_events())
     kwargs: dict[str, Any] = {
         "model": "claude-test",
         "messages": [{"role": "user", "content": "hi"}],
         "stream": True,
     }
+    model_call_params = _make_model_call_params(kwargs["messages"], shutdown_event=shutdown_ev)
 
     resp = llm_caller.call_llm_with_anthropic_chat_completion(
         client,

@@ -7,9 +7,11 @@ from typing import Any
 import pytest
 
 from nexau.archs.main_sub.execution import llm_caller
+from nexau.archs.main_sub.execution.hooks import ModelCallParams
 from nexau.archs.tracer.adapters.in_memory import InMemoryTracer
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import SpanType
+from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 
 
 class _IterableStream:
@@ -29,6 +31,22 @@ class _IterableStream:
 def _patch_time(monkeypatch: pytest.MonkeyPatch, values: list[float]) -> None:
     it = iter(values)
     monkeypatch.setattr(llm_caller.time, "time", lambda: next(it))
+
+
+def _make_model_call_params(messages: list[dict[str, Any]]) -> ModelCallParams:
+    return ModelCallParams(
+        messages=messages_from_legacy_openai_chat(messages),
+        max_tokens=128,
+        force_stop_reason=None,
+        agent_state=None,
+        tool_call_mode="xml",
+        tools=None,
+        api_params={},
+        openai_client=None,
+        llm_config=None,
+        retry_attempts=1,
+        shutdown_event=None,
+    )
 
 
 def test_openai_chat_stream_records_time_to_first_token_ms(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -123,10 +141,12 @@ def test_anthropic_stream_records_time_to_first_token_ms(monkeypatch: pytest.Mon
 
     tracer = InMemoryTracer()
     client = FakeAnthropicClient()
-    kwargs = {"model": "claude-test", "messages": [{"role": "user", "content": "hello"}], "stream": True}
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "hello"}]
+    kwargs: dict[str, Any] = {"model": "claude-test", "messages": messages, "stream": True}
+    params = _make_model_call_params(messages)
 
     with TraceContext(tracer, "parent", SpanType.AGENT):
-        resp = llm_caller.call_llm_with_anthropic_chat_completion(client, kwargs, tracer=tracer)
+        resp = llm_caller.call_llm_with_anthropic_chat_completion(client, kwargs, model_call_params=params, tracer=tracer)
 
     assert resp.content == "hi"
 

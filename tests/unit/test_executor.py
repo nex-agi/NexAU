@@ -45,6 +45,13 @@ from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.core.messages import ImageBlock, Message, Role, TextBlock, ToolOutputImage, ToolResultBlock
 
 
+def make_history(system_text: str, user_text: str) -> list[Message]:
+    return [
+        Message(role=Role.SYSTEM, content=[TextBlock(text=system_text)]),
+        Message.user(user_text),
+    ]
+
+
 def make_tool_registry(tools: dict[str, Tool] | None = None) -> ToolRegistry:
     registry = ToolRegistry()
     if tools:
@@ -241,10 +248,7 @@ class TestExecutorExecution:
         )
         middleware.executor = executor
 
-        history = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Hello"},
-        ]
+        history = make_history("You are a helpful assistant.", "Hello")
 
         with patch.object(executor.llm_caller, "call_llm") as mock_call_llm:
             response, _ = executor.execute(history, agent_state)
@@ -283,10 +287,7 @@ class TestExecutorExecution:
         )
         middleware.executor = executor
 
-        history = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Hello"},
-        ]
+        history = make_history("You are a helpful assistant.", "Hello")
 
         with patch.object(executor.llm_caller, "call_llm") as mock_call_llm:
             response, _ = executor.execute(history, agent_state)
@@ -315,10 +316,7 @@ class TestExecutorExecution:
         )
         agent_state.global_storage = global_storage
 
-        history = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Hello"},
-        ]
+        history = make_history("You are a helpful assistant.", "Hello")
 
         with patch("nexau.archs.main_sub.execution.executor.TokenTraceSession") as mock_session_cls:
             mock_session = mock_session_cls.return_value
@@ -372,10 +370,7 @@ class TestExecutorExecution:
         )
         agent_state.global_storage = global_storage
 
-        history = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Hello"},
-        ]
+        history = make_history("You are a helpful assistant.", "Hello")
 
         with patch("nexau.archs.main_sub.execution.executor.TokenTraceSession") as mock_session_cls:
             mock_session = mock_session_cls.return_value
@@ -454,10 +449,7 @@ class TestExecutorExecution:
         )
         agent_state.global_storage = global_storage
 
-        history = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Use the tool and finish."},
-        ]
+        history = make_history("You are a helpful assistant.", "Use the tool and finish.")
 
         first_response = ModelResponse(
             content="",
@@ -562,10 +554,7 @@ class TestExecutorExecution:
             middlewares=[lifecycle_middleware],
         )
 
-        history = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Hello"},
-        ]
+        history = make_history("You are a helpful assistant.", "Hello")
 
         with patch.object(executor.llm_caller, "call_llm") as mock_call_llm:
             mock_call_llm.return_value = ModelResponse(content="Simple response")
@@ -616,10 +605,7 @@ class TestExecutorExecution:
             structured_tools=structured_tools,
         )
 
-        history = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Use the tool"},
-        ]
+        history = make_history("You are a helpful assistant.", "Use the tool")
 
         first_response = ModelResponse(
             content="",
@@ -692,10 +678,7 @@ class TestExecutorExecution:
             structured_tools=structured_tools,
         )
 
-        history = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Use the tool"},
-        ]
+        history = make_history("You are a helpful assistant.", "Use the tool")
 
         first_response = ModelResponse(
             content="",
@@ -755,10 +738,7 @@ class TestExecutorExecution:
             structured_tools=structured_tools,
         )
 
-        history = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Use the tool"},
-        ]
+        history = make_history("You are a helpful assistant.", "Use the tool")
 
         first_response = ModelResponse(
             content="",
@@ -816,10 +796,7 @@ class TestExecutorExecution:
                     batch_agent_calls=[],
                 )
 
-                history = [
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": "Hello"},
-                ]
+                history = make_history("You are a helpful assistant.", "Hello")
 
                 response, messages = executor.execute(history, agent_state)
 
@@ -856,10 +833,7 @@ class TestExecutorExecution:
                     batch_agent_calls=[],
                 )
 
-                history = [
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": "Hello"},
-                ]
+                history = make_history("You are a helpful assistant.", "Hello")
 
                 response, messages = executor.execute(history, agent_state)
 
@@ -884,10 +858,7 @@ class TestExecutorExecution:
         with patch.object(executor.token_counter, "count_tokens") as mock_count:
             mock_count.return_value = 200  # Exceeds limit
 
-            history = [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": "Hello"},
-            ]
+            history = make_history("You are a helpful assistant.", "Hello")
 
             # Mock LLM caller
             with patch.object(executor.llm_caller, "call_llm") as mock_call_llm:
@@ -922,10 +893,7 @@ class TestExecutorExecution:
         with patch.object(executor.llm_caller, "call_llm") as mock_call_llm:
             mock_call_llm.side_effect = Exception("Test exception")
 
-            history = [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": "Hello"},
-            ]
+            history = make_history("You are a helpful assistant.", "Hello")
 
             with pytest.raises(RuntimeError) as exc_info:
                 executor.execute(history, agent_state)
@@ -1600,10 +1568,7 @@ class TestExecutorWithHooks:
                     batch_agent_calls=[],
                 )
 
-                history = [
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": "Hello"},
-                ]
+                history = make_history("You are a helpful assistant.", "Hello")
 
                 response, messages = executor.execute(history, agent_state)
 
