@@ -1348,7 +1348,12 @@ def call_llm_with_anthropic_chat_completion(
         if user_messages and user_messages[-1].get("content"):
             content = cast(list[dict[str, Any]] | str | None, user_messages[-1].get("content"))
             if isinstance(content, list) and content:
-                content[0]["cache_control"] = _build_cache_control()
+                # RFC-0014: thinking/redacted_thinking blocks 不允许携带 cache_control
+                no_cache_types = {"thinking", "redacted_thinking"}
+                for block in content:
+                    if block.get("type") not in no_cache_types:
+                        block["cache_control"] = _build_cache_control()
+                        break
 
     def _build_anthropic_messages() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         if type(model_call_params) is not ModelCallParams:
@@ -1916,7 +1921,12 @@ async def call_llm_with_anthropic_chat_completion_async(
         if user_messages and user_messages[-1].get("content"):
             content = cast(list[dict[str, Any]] | str | None, user_messages[-1].get("content"))
             if isinstance(content, list) and content:
-                content[0]["cache_control"] = _build_cache_control()
+                # RFC-0014: thinking/redacted_thinking blocks 不允许携带 cache_control
+                no_cache_types = {"thinking", "redacted_thinking"}
+                for block in content:
+                    if block.get("type") not in no_cache_types:
+                        block["cache_control"] = _build_cache_control()
+                        break
 
     def _build_anthropic_messages() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         if type(model_call_params) is not ModelCallParams:
