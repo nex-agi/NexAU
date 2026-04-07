@@ -23,6 +23,7 @@ Tests session persistence, history management, and database backends:
 
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -31,6 +32,49 @@ from nexau.archs.main_sub.agent import Agent
 from nexau.archs.main_sub.config import AgentConfig
 from nexau.archs.session import InMemoryDatabaseEngine, SessionManager
 from nexau.archs.session.orm.jsonl_engine import JSONLDatabaseEngine
+from nexau.core.messages import Message, Role
+
+
+def _patch_execute_async(
+    agent: Agent,
+    *,
+    response_text: str,
+    expect_substrings: list[str] | None = None,
+    forbid_substrings: list[str] | None = None,
+):
+    """Patch an agent executor with deterministic history assertions.
+
+    These session-management integration tests care about persisted history and
+    isolation boundaries, not real LLM behavior. This helper keeps the full
+    Agent/session/history stack intact while making the executor deterministic.
+    """
+
+    async def fake_execute_async(
+        history: list[Message],
+        agent_state: object,
+        runtime_client: object | None = None,
+        custom_llm_client_provider: object | None = None,
+    ) -> tuple[str, list[Message]]:
+        del agent_state, runtime_client, custom_llm_client_provider
+
+        non_system_texts = [msg.get_text_content() for msg in history if msg.role != Role.SYSTEM]
+
+        if expect_substrings is not None:
+            for expected in expect_substrings:
+                assert any(expected in text for text in non_system_texts), (
+                    f"Expected to find '{expected}' in restored history: {non_system_texts}"
+                )
+
+        if forbid_substrings is not None:
+            for forbidden in forbid_substrings:
+                assert all(forbidden not in text for text in non_system_texts), (
+                    f"Did not expect to find '{forbidden}' in restored history: {non_system_texts}"
+                )
+
+        updated_messages = [*history, Message.assistant(response_text)]
+        return response_text, updated_messages
+
+    return patch.object(agent.executor, "execute_async", side_effect=fake_execute_async)
 
 
 class TestSessionPersistence:
@@ -73,7 +117,6 @@ class TestSessionPersistence:
         assert len(response) > 0
         # Session is created implicitly by Agent - verified by successful run
 
-    @pytest.mark.llm
     def test_history_persists_across_agent_instances(self, session_manager, agent_config):
         """Test that history persists across agent instances."""
         user_id = "test_user"
@@ -86,7 +129,12 @@ class TestSessionPersistence:
             user_id=user_id,
             session_id=session_id,
         )
-        agent1.run(message="My favorite number is 42.")
+        with _patch_execute_async(
+            agent1,
+            response_text="Stored favorite number.",
+            expect_substrings=["42"],
+        ):
+            agent1.run(message="My favorite number is 42.")
 
         # Second agent instance - should have access to history
         agent2 = Agent(
@@ -95,7 +143,12 @@ class TestSessionPersistence:
             user_id=user_id,
             session_id=session_id,
         )
-        response = agent2.run(message="What is my favorite number?")
+        with _patch_execute_async(
+            agent2,
+            response_text="42",
+            expect_substrings=["My favorite number is 42.", "Stored favorite number."],
+        ):
+            response = agent2.run(message="What is my favorite number?")
 
         # Agent should remember from persisted history
         assert "42" in response
@@ -129,7 +182,6 @@ class TestMultipleBackends:
         assert isinstance(response, str)
         assert len(response) > 0
 
-    @pytest.mark.llm
     def test_jsonl_backend_persistence(self, agent_config):
         """Test JSONL backend with directory persistence."""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -146,7 +198,12 @@ class TestMultipleBackends:
                 user_id="test_user",
                 session_id="jsonl_session",
             )
-            agent.run(message="Remember: my test token is ABC123.")
+            with _patch_execute_async(
+                agent,
+                response_text="Stored test token.",
+                expect_substrings=["ABC123"],
+            ):
+                agent.run(message="Remember: my test token is ABC123.")
 
             # Verify directory was created
             assert db_dir.exists()
@@ -161,7 +218,12 @@ class TestMultipleBackends:
                 user_id="test_user",
                 session_id="jsonl_session",
             )
-            response = agent2.run(message="What is my test token?")
+            with _patch_execute_async(
+                agent2,
+                response_text="ABC123",
+                expect_substrings=["Remember: my test token is ABC123.", "Stored test token."],
+            ):
+                response = agent2.run(message="What is my test token?")
 
             # Should remember from persisted JSONL
             assert "ABC123" in response
@@ -189,7 +251,6 @@ class TestSessionIsolation:
             llm_config=LLMConfig(),
         )
 
-    @pytest.mark.llm
     def test_different_users_are_isolated(self, session_manager, agent_config):
         """Test that different users have isolated sessions."""
         # User 1 tells something
@@ -199,7 +260,12 @@ class TestSessionIsolation:
             user_id="user_1",
             session_id="shared_session_id",  # Same session_id but different user
         )
-        agent1.run(message="I am User One and my pet is a dog.")
+        with _patch_execute_async(
+            agent1,
+            response_text="Stored pet.",
+            expect_substrings=["dog"],
+        ):
+            agent1.run(message="I am User One and my pet is a dog.")
 
         # User 2 should not know about User 1's information
         agent2 = Agent(
@@ -208,13 +274,17 @@ class TestSessionIsolation:
             user_id="user_2",
             session_id="shared_session_id",
         )
-        response = agent2.run(message="What is my pet?")
+        with _patch_execute_async(
+            agent2,
+            response_text="I don't know.",
+            forbid_substrings=["User One", "dog"],
+        ):
+            response = agent2.run(message="What is my pet?")
 
         # User 2 should not know about User 1's pet
         assert isinstance(response, str)
         # Response should indicate uncertainty or ask for clarification
 
-    @pytest.mark.llm
     def test_different_sessions_same_user_are_isolated(self, session_manager, agent_config):
         """Test that different sessions for same user are isolated."""
         user_id = "test_user"
@@ -226,7 +296,12 @@ class TestSessionIsolation:
             user_id=user_id,
             session_id="session_a",
         )
-        agent_a.run(message="In this conversation, we are discussing Python.")
+        with _patch_execute_async(
+            agent_a,
+            response_text="Stored topic.",
+            expect_substrings=["Python"],
+        ):
+            agent_a.run(message="In this conversation, we are discussing Python.")
 
         # Session B - should not know about session A
         agent_b = Agent(
@@ -235,7 +310,12 @@ class TestSessionIsolation:
             user_id=user_id,
             session_id="session_b",
         )
-        response = agent_b.run(message="What programming language are we discussing?")
+        with _patch_execute_async(
+            agent_b,
+            response_text="No language discussed in this session.",
+            forbid_substrings=["Python"],
+        ):
+            response = agent_b.run(message="What programming language are we discussing?")
 
         # Session B should not know about Python discussion
         assert isinstance(response, str)
