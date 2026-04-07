@@ -32,6 +32,7 @@ from unittest.mock import Mock, call, patch
 
 import pytest
 
+from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.execution.hooks import MiddlewareManager
 from nexau.archs.main_sub.execution.llm_caller import LLMCaller
 from nexau.archs.main_sub.execution.model_response import ModelResponse
@@ -187,6 +188,45 @@ class TestLLMCallerBasicCalls:
         ]
         assert call_kwargs["input"] == expected_input
         assert call_kwargs["max_output_tokens"] == 120
+        assert call_kwargs["parallel_tool_calls"] is True
+
+    def test_call_llm_success_responses_api_honors_parallel_tool_calls_override(self, mock_openai_client, agent_state):
+        """Responses API should preserve explicit parallel_tool_calls=False from LLMConfig extra kwargs."""
+        responses_payload = SimpleNamespace(
+            output=[
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "Hello from responses!"}],
+                }
+            ],
+            output_text="Hello from responses!",
+            model="gpt-4o-mini",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+        )
+        mock_openai_client.responses.create.return_value = responses_payload
+
+        llm_config = LLMConfig(
+            model="gpt-4o-mini",
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            temperature=0.1,
+            max_tokens=1000,
+            api_type="openai_responses",
+            parallel_tool_calls=False,
+        )
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=llm_config,
+        )
+
+        messages = [Message.user("Hello")]
+        response = caller.call_llm(messages, max_tokens=120, force_stop_reason=AgentStopReason.SUCCESS, agent_state=agent_state)
+
+        assert isinstance(response, ModelResponse)
+        call_kwargs = mock_openai_client.responses.create.call_args.kwargs
+        assert call_kwargs["parallel_tool_calls"] is False
 
     def test_call_llm_responses_api_carries_reasoning(self, mock_openai_client, responses_llm_config, agent_state):
         """Reasoning items should be preserved for subsequent turns."""

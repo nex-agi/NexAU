@@ -834,6 +834,16 @@ def call_llm_with_openai_chat_completion(
     return ModelResponse.from_openai_message(response_message, usage=usage)
 
 
+def _default_openai_responses_parallel_tool_calls(llm_config: LLMConfig | None) -> bool:
+    """Resolve the default parallel_tool_calls setting for Responses API requests."""
+
+    if llm_config is not None:
+        configured_value = llm_config.extra_params.get("parallel_tool_calls")
+        if isinstance(configured_value, bool):
+            return configured_value
+    return True
+
+
 def call_llm_with_openai_responses(
     client: Any,
     kwargs: dict[str, Any],
@@ -872,6 +882,7 @@ def call_llm_with_openai_responses(
     stream_requested = bool(request_payload.pop("stream", False) or getattr(llm_config, "stream", False))
 
     request_payload.pop("store", None)
+    request_payload.setdefault("parallel_tool_calls", _default_openai_responses_parallel_tool_calls(llm_config))
 
     # Always request encrypted reasoning content so that reasoning items can be
     # passed back in subsequent conversation turns (required for stateless / ZDR mode).
