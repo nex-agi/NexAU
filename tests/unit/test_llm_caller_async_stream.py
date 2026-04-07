@@ -523,6 +523,40 @@ class TestOpenAIResponsesAsyncNonStream:
 
         assert isinstance(result, ModelResponse)
         assert "Non-stream reply" in (result.content or "")
+        assert client.responses.create.await_args.kwargs["parallel_tool_calls"] is True
+
+    @pytest.mark.anyio
+    async def test_non_stream_honors_parallel_tool_calls_override(self) -> None:
+        """Explicit parallel_tool_calls=False from LLMConfig should not be overwritten."""
+        response_payload = SimpleNamespace(
+            output=[
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Non-stream reply"}],
+                }
+            ],
+            output_text="Non-stream reply",
+            usage=SimpleNamespace(input_tokens=5, output_tokens=3),
+        )
+        client = AsyncMock()
+        client.responses.create = AsyncMock(return_value=response_payload)
+        llm_config = LLMConfig(
+            model="gpt-4o-mini",
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            api_type="openai_responses",
+            parallel_tool_calls=False,
+        )
+
+        result = await call_llm_with_openai_responses_async(
+            client,
+            {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Hi"}]},
+            llm_config=llm_config,
+        )
+
+        assert isinstance(result, ModelResponse)
+        assert client.responses.create.await_args.kwargs["parallel_tool_calls"] is False
 
     @pytest.mark.anyio
     async def test_non_stream_with_tracing(self) -> None:

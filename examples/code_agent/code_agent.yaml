@@ -25,8 +25,6 @@ llm_config: # Support environment variable replacement in YAML config
   # api_type: anthropic_chat_completion
   # thinking:
   #   type: "adaptive"
-  #   budget_tokens: 1024
-
 
   api_type: openai_responses
   reasoning:

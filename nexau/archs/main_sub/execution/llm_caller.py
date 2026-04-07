@@ -1634,6 +1634,9 @@ def call_llm_with_openai_responses(
 
     request_payload.pop("store", None)
 
+    # 默认开启 parallel_tool_calls；若 LLMConfig.extra_kwargs 显式关闭，则尊重配置。
+    request_payload.setdefault("parallel_tool_calls", _default_openai_responses_parallel_tool_calls(llm_config))
+
     # 默认使用 detailed reasoning summary，使得 reasoning item 包含可读摘要。
     # 如果调用方未指定 summary，自动注入 "detailed"。
     reasoning_param = request_payload.get("reasoning")
@@ -2043,6 +2046,9 @@ async def call_llm_with_openai_responses_async(
 
     request_payload.pop("store", None)
 
+    # 默认开启 parallel_tool_calls；若 LLMConfig.extra_kwargs 显式关闭，则尊重配置。
+    request_payload.setdefault("parallel_tool_calls", _default_openai_responses_parallel_tool_calls(llm_config))
+
     # 默认使用 detailed reasoning summary，使得 reasoning item 包含可读摘要。
     reasoning_param = request_payload.get("reasoning")
     if isinstance(reasoning_param, dict) and "summary" not in reasoning_param:
@@ -2136,6 +2142,16 @@ def _process_stream_chunk(
     if middleware_manager is None or model_call_params is None:
         return chunk
     return middleware_manager.stream_chunk(chunk, model_call_params)
+
+
+def _default_openai_responses_parallel_tool_calls(llm_config: LLMConfig | None) -> bool:
+    """Resolve the default parallel_tool_calls setting for Responses API requests."""
+
+    if llm_config is not None:
+        configured_value = llm_config.extra_params.get("parallel_tool_calls")
+        if isinstance(configured_value, bool):
+            return configured_value
+    return True
 
 
 def _safe_get(item: Any, key: str, default: Any = None) -> Any:
