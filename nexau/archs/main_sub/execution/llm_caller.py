@@ -133,6 +133,24 @@ def _compact_scalar(value: Any, *, max_chars: int = 256) -> str:
     return f"{text[:max_chars]}...(truncated {len(text) - max_chars} chars)"
 
 
+def _extract_error_detail(payload: object) -> str:
+    """Extract error detail string from a raw LLM response payload.
+
+    Returns a string like `` (error_type: message)`` or empty string.
+    """
+    if isinstance(payload, Mapping):
+        payload_mapping = cast(Mapping[str, object], payload)
+        err = payload_mapping.get("error")
+        if isinstance(err, Mapping):
+            err_mapping = cast(Mapping[str, object], err)
+            err_type = str(err_mapping.get("type", "unknown"))
+            err_msg = str(err_mapping.get("message") or "")
+            return f" ({err_type}: {err_msg})"
+        if payload_mapping.get("type") == "error":
+            return f" (raw: {payload})"
+    return ""
+
+
 def _raw_message_metadata(payload: Any) -> dict[str, Any]:
     metadata: dict[str, Any] = {"raw_type": type(payload).__name__}
     if payload is None:
@@ -680,7 +698,9 @@ class LLMCaller:
                         response_content.usage.to_dict(),
                     )
                     logger.error("❌ Empty model raw_message_meta=%s", raw_message_meta)
-                    raise Exception("No response content or tool calls")
+                    # Extract error details from raw response if available
+                    error_detail = _extract_error_detail(response_content.raw_message)
+                    raise RuntimeError(f"No response content or tool calls{error_detail}")
 
             except Exception as e:
                 # RFC-0001: shutdown_event 已设置时不重试，直接返回 None
