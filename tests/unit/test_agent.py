@@ -162,7 +162,12 @@ class TestAgent:
             assert sample_tool in agent.config.tools
 
     def test_tool_call_payload_includes_sub_agents_openai(self, sample_tool):
-        """Legacy structured aliases should still build neutral tool and sub-agent definitions."""
+        """RFC-0015: Agent is a regular builtin tool registered in ToolRegistry.
+
+        When sub_agents is configured, AgentConfig._finalize() injects an Agent
+        tool into self.tools. The tool_call_payload should include 'Agent' as
+        a regular tool name, not 'sub-agent-child'.
+        """
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
@@ -177,10 +182,11 @@ class TestAgent:
 
             agent = Agent(config=agent_config)
 
-            # Expect both tool and sub-agent proxy definitions in the neutral structured shape.
+            # RFC-0015: Agent is a regular builtin tool, not a virtual sub-agent-{name}
             tool_names = {spec["name"] for spec in agent.tool_call_payload}
             assert sample_tool.name in tool_names
-            assert "sub-agent-child" in tool_names
+            assert "Agent" in tool_names
+            assert "sub-agent-child" not in tool_names
 
     def test_tool_call_payload_uses_skill_description_for_as_skill_openai(self):
         """Structured payload should expose only the brief skill description for as_skill tools."""
@@ -370,7 +376,11 @@ class TestAgent:
         assert agent2.sandbox_manager._session_context.get("upload_assets", []) == []
 
     def test_tool_call_payload_anthropic_mode(self, sample_tool):
-        """Legacy structured aliases should still build neutral definitions with sub-agents."""
+        """RFC-0015: Agent is a regular builtin tool registered in ToolRegistry.
+
+        When sub_agents is configured, AgentConfig._finalize() injects an Agent
+        tool. The tool_call_payload should include 'Agent' as a regular tool.
+        """
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
@@ -387,7 +397,8 @@ class TestAgent:
 
             names = {spec["name"] for spec in agent.tool_call_payload}
             assert sample_tool.name in names
-            assert "sub-agent-child" in names
+            assert "Agent" in names
+            assert "sub-agent-child" not in names
 
     def test_token_counter_callable_is_wrapped(self, global_storage):
         """Callable token_counter should be wrapped into TokenCounter instance."""

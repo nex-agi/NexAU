@@ -40,9 +40,7 @@ from nexau.archs.main_sub.execution.hooks import (
 )
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.parse_structures import (
-    BatchAgentCall,
     ParsedResponse,
-    SubAgentCall,
     ToolCall,
 )
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
@@ -89,25 +87,15 @@ def parsed_response():
         parameters={"param1": "value1"},
         raw_content="<tool>test</tool>",
     )
-    sub_agent_call = SubAgentCall(
-        agent_name="sub_agent",
-        message="test message",
+    sub_agent_call = ToolCall(
+        tool_name="Agent",
+        parameters={"sub_agent_name": "sub_agent", "message": "test message"},
         raw_content="<sub_agent>test</sub_agent>",
-    )
-    batch_call = BatchAgentCall(
-        agent_name="batch_agent",
-        file_path="test.json",
-        data_format="json",
-        message_template="Process: {{item}}",
-        raw_content="<batch>test</batch>",
     )
     return ParsedResponse(
         original_response="test response",
-        tool_calls=[tool_call],
-        sub_agent_calls=[sub_agent_call],
-        batch_agent_calls=[batch_call],
+        tool_calls=[tool_call, sub_agent_call],
         is_parallel_tools=True,
-        is_parallel_sub_agents=False,
     )
 
 
@@ -860,14 +848,14 @@ class TestToolCallParallelExecutionId:
         assert tool_call.parallel_execution_id is None
 
 
-class TestSubAgentCallParallelExecutionId:
-    """Tests for SubAgentCall parallel_execution_id field."""
+class TestSubAgentToolCallParallelExecutionId:
+    """Tests for Agent ToolCall parallel_execution_id field."""
 
     def test_sub_agent_call_with_parallel_execution_id(self):
-        """Test SubAgentCall initialization with parallel_execution_id."""
-        sub_agent_call = SubAgentCall(
-            agent_name="research_agent",
-            message="Find information",
+        """Test Agent ToolCall initialization with parallel_execution_id."""
+        sub_agent_call = ToolCall(
+            tool_name="Agent",
+            parameters={"sub_agent_name": "research_agent", "message": "Find information"},
             raw_content="<sub_agent>research</sub_agent>",
             parallel_execution_id="uuid-parallel-456",
         )
@@ -875,10 +863,10 @@ class TestSubAgentCallParallelExecutionId:
         assert sub_agent_call.parallel_execution_id == "uuid-parallel-456"
 
     def test_sub_agent_call_parallel_execution_id_optional(self):
-        """Test SubAgentCall parallel_execution_id is optional."""
-        sub_agent_call = SubAgentCall(
-            agent_name="research_agent",
-            message="Find information",
+        """Test Agent ToolCall parallel_execution_id is optional."""
+        sub_agent_call = ToolCall(
+            tool_name="Agent",
+            parameters={"sub_agent_name": "research_agent", "message": "Find information"},
             raw_content="<sub_agent>research</sub_agent>",
         )
 

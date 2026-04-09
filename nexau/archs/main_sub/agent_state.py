@@ -71,7 +71,7 @@ class AgentState:
             sandbox_manager: Optional sandbox manager for lazy sandbox access
             variables: Optional ContextValue with runtime variables
             token_trace_session: Optional token trace session for generate_with_token providers (RFC-0009)
-            subagent_manager: Optional SubAgentManager for RecallSubAgent tool access
+            subagent_manager: Optional SubAgentManager for Agent tool access
         """
         self.agent_name = agent_name
         self.agent_id = agent_id
@@ -90,7 +90,7 @@ class AgentState:
 
     @property
     def subagent_manager(self) -> Optional["SubAgentManager"]:
-        """SubAgentManager instance for RecallSubAgent tool access."""
+        """SubAgentManager instance for Agent tool access."""
         return self._subagent_manager
 
     def get_context_value(self, key: str, default: Any = None) -> Any:

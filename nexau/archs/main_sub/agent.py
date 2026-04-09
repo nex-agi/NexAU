@@ -52,7 +52,6 @@ from nexau.archs.main_sub.execution.stop_result import StopResult
 from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.prompt_builder import PromptBuilder
 from nexau.archs.main_sub.skill import Skill, build_load_skill_tool, build_tool_skill
-from nexau.archs.main_sub.sub_agent_naming import build_sub_agent_tool_name
 from nexau.archs.main_sub.token_trace_session import TokenTraceSession
 from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
@@ -71,7 +70,7 @@ from nexau.archs.sandbox import (
 )
 from nexau.archs.session import AgentRunActionKey, SessionManager
 from nexau.archs.session.orm import InMemoryDatabaseEngine
-from nexau.archs.tool import Tool, build_structured_tool_definition
+from nexau.archs.tool import Tool
 from nexau.archs.tool.builtin.tool_search import tool_search
 from nexau.archs.tool.tool import StructuredToolDefinition
 from nexau.archs.tool.tool_registry import ToolRegistry
@@ -708,42 +707,16 @@ class Agent:
         """Return the description exposed to structured tool-calling models."""
         return tool.get_structured_description()
 
-    def _build_sub_agent_tool_definition(
-        self,
-        sub_agent_name: str,
-        sub_agent_config: AgentConfig,
-    ) -> StructuredToolDefinition:
-        """Build the neutral structured definition for a sub-agent proxy.
-
-        RFC-0006: 中性 Structured Tool Definitions
-
-        SubAgent 与普通 Tool 在 Agent 层统一归一化为 neutral definition，避免
-        上游对象随着 provider 切换而改变内部主状态结构。
-        """
-
-        return build_structured_tool_definition(
-            name=build_sub_agent_tool_name(sub_agent_name),
-            description=sub_agent_config.description or f"Delegate work to sub-agent '{sub_agent_name}'.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string",
-                        "description": "Task or question for the sub-agent.",
-                    },
-                },
-                "required": ["message"],
-            },
-            kind="sub_agent",
-        )
-
     def _build_tool_call_payload(self) -> list[StructuredToolDefinition]:
         """Build neutral structured tool definitions for the active runtime.
 
         RFC-0006: Agent 仅缓存 neutral structured definitions
 
-        structured 模式下，Agent 先为 Tool / SubAgent 生成 neutral definitions；
+        structured 模式下，Agent 为 Tool 生成 neutral definitions；
         provider-specific OpenAI / Anthropic / Gemini schema 在发请求前再适配。
+
+        RFC-0015: Agent 作为普通 builtin tool 在 AgentConfig._finalize() 中注册，
+        不再需要单独生成虚拟工具定义。
         """
 
         if not self.use_structured_tool_calls:
@@ -751,20 +724,13 @@ class Agent:
 
         tools_spec: list[StructuredToolDefinition] = []
 
-        # 1. 先从当前 ToolRegistry 读取所有 eager tool（含 builtin / MCP / LoadSkill / ToolSearch）。
+        # 1. 从当前 ToolRegistry 读取所有 eager tool（含 builtin / MCP / LoadSkill / ToolSearch / Agent）。
         for tool in self._tool_registry.compute_eager_tools():
             tools_spec.append(
                 tool.to_structured_definition(
                     description=self._structured_tool_description(tool),
                 ),
             )
-
-        if self.config.sub_agents:
-            # 2. 再把 SubAgent 代理也收敛到相同的 neutral definition 契约。
-            for sub_agent_name, sub_agent_config in self.config.sub_agents.items():
-                tools_spec.append(
-                    self._build_sub_agent_tool_definition(sub_agent_name, sub_agent_config),
-                )
 
         return tools_spec
 

@@ -439,10 +439,7 @@ class LoggingMiddleware(Middleware):
         else:
             logger.info("Summary: %s", parsed.get_call_summary())
             logger.info("Tool calls: %s", len(parsed.tool_calls))
-            logger.info("Sub-agent calls: %s", len(parsed.sub_agent_calls))
-            logger.info("Batch agent calls: %s", len(parsed.batch_agent_calls))
             logger.info("Parallel tools: %s", parsed.is_parallel_tools)
-            logger.info("Parallel sub-agents: %s", parsed.is_parallel_sub_agents)
 
         logger.info("Message history: %s items", len(hook_input.messages))
         for idx, msg in enumerate(hook_input.messages[-3:]):

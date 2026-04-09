@@ -239,18 +239,32 @@ class AgentConfig(
 
     @model_validator(mode="after")
     def _finalize(self):  # type: ignore[override]
-        """Finalize configuration by normalizing fields and injecting skill tool."""
+        """Finalize configuration by normalizing fields and injecting skill tool.
+
+        RFC-0015: 合并 Sub-agent 工具为统一 Agent 工具
+
+        当 sub_agents 非空时注入 Agent 工具，并在描述中拼接可用子代理列表。
+        """
         if self._is_finalized:
             return self
-        from nexau.archs.tool.builtin.recall_sub_agent_tool import recall_sub_agent
+        from nexau.archs.tool.builtin.agent_tool import call_sub_agent
 
         nexau_package_path = Path(__file__).parent.parent.parent.parent
         if self.sub_agents:
-            recall_subagent_tool = Tool.from_yaml(
-                str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "recall_sub_agent_tool.yaml"),
-                binding=recall_sub_agent,
+            # 1. 生成可用子代理列表描述后缀
+            sub_agent_desc_parts: list[str] = ["\n\nAvailable sub-agents:"]
+            for _sa_name, _sa_config in self.sub_agents.items():
+                _sa_desc = _sa_config.description or f"Delegate work to sub-agent '{_sa_name}'."
+                sub_agent_desc_parts.append(f"\n- **{_sa_name}**: {_sa_desc}")
+            sub_agent_description_suffix = "".join(sub_agent_desc_parts)
+
+            # 2. 注册 Agent 工具
+            agent_tool = Tool.from_yaml(
+                str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "agent_tool.yaml"),
+                binding=call_sub_agent,
+                description_suffix=sub_agent_description_suffix,
             )
-            self.tools.append(recall_subagent_tool)
+            self.tools.append(agent_tool)
 
         # Ensure stop_tools is a set for faster lookup
         if isinstance(self.stop_tools, list):

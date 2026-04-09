@@ -106,7 +106,8 @@ class TestSubAgentManager:
             mock_agent_cls.return_value = mock_sub_agent
             result = subagent_manager.call_sub_agent("test_sub_agent", "test message")
 
-        assert result.startswith("sub agent result")
+        assert result.startswith("[sub_agent_id: mock_sub_agent_id]")
+        assert "sub agent result" in result
         assert "Sub-agent finished" in result
         mock_agent_cls.assert_called_once_with(
             config=sub_agent_config,
@@ -139,7 +140,8 @@ class TestSubAgentManager:
             mock_agent_cls.return_value = mock_sub_agent
             result = subagent_manager.call_sub_agent("test_sub_agent", "test message")
 
-        assert result.startswith("sub agent result")
+        assert result.startswith("[sub_agent_id: mock_sub_agent_id]")
+        assert "sub agent result" in result
         assert "Sub-agent finished" in result
         mock_agent_cls.assert_called_once_with(
             config=sub_agent_config,
@@ -177,7 +179,8 @@ class TestSubAgentManager:
                 context=explicit_context,
             )
 
-        assert result.startswith("sub agent result")
+        assert result.startswith("[sub_agent_id: mock_sub_agent_id]")
+        assert "sub agent result" in result
         assert "Sub-agent finished" in result
         call_args = mock_sub_agent.run.call_args
         assert call_args[1]["context"] == explicit_context
@@ -201,7 +204,8 @@ class TestSubAgentManager:
                 parent_agent_state=agent_state,
             )
 
-        assert result.startswith("sub agent result")
+        assert result.startswith("[sub_agent_id: mock_sub_agent_id]")
+        assert "sub agent result" in result
         call_args = mock_sub_agent.run.call_args
         assert call_args[1]["parent_agent_state"] == agent_state
 
@@ -222,7 +226,8 @@ class TestSubAgentManager:
             mock_agent_cls.return_value = mock_sub_agent
             result = manager.call_sub_agent("test_sub_agent", "message")
 
-        assert result.startswith("sub agent result")
+        assert result.startswith("[sub_agent_id: mock_sub_agent_id]")
+        assert "sub agent result" in result
         mock_agent_cls.assert_called_once_with(
             config=sub_agent_config,
             global_storage=mock_storage,
@@ -240,7 +245,8 @@ class TestSubAgentManager:
 
         with patch("nexau.archs.main_sub.agent.Agent") as mock_agent_cls:
             mock_agent_cls.return_value = mock_sub_agent
-            with pytest.raises(Exception, match="Execution error"):
+            # RFC-0015: 异常被包装为 RuntimeError，包含 [sub_agent_id: ...] 前缀
+            with pytest.raises(RuntimeError, match="Execution error"):
                 subagent_manager.call_sub_agent("test_sub_agent", "test message")
         assert subagent_manager.running_sub_agents == {}
 
@@ -254,7 +260,8 @@ class TestSubAgentManager:
             mock_agent_cls.return_value = mock_sub_agent
             result = subagent_manager.call_sub_agent("test_sub_agent", "test message")
 
-        assert result.startswith("sub agent result")
+        assert result.startswith("[sub_agent_id: None]")
+        assert "sub agent result" in result
         assert subagent_manager.running_sub_agents == {}
 
     @patch("nexau.archs.main_sub.agent_context.get_context")
@@ -274,7 +281,8 @@ class TestSubAgentManager:
             result = subagent_manager.call_sub_agent("test_sub_agent", "test message")
 
         assert len(subagent_manager.running_sub_agents) == 0
-        assert result.startswith("sub agent result")
+        assert result.startswith("[sub_agent_id: sub_agent_123]")
+        assert "sub agent result" in result
 
     @patch("nexau.archs.main_sub.agent_context.get_context")
     def test_call_sub_agent_recall_by_agent_id(
@@ -307,7 +315,8 @@ class TestSubAgentManager:
                 is_root=False,
             )
 
-        assert result.startswith("recalled result")
+        assert result.startswith("[sub_agent_id: recall-agent-1]")
+        assert "recalled result" in result
         assert "recall-agent-1" in result
 
     def test_shutdown(self, subagent_manager, mock_sub_agent):
@@ -372,7 +381,8 @@ class TestSubAgentManager:
                 custom_llm_client_provider=custom_provider,
             )
 
-        assert result.startswith("sub agent result")
+        assert result.startswith("[sub_agent_id: mock_sub_agent_id]")
+        assert "sub agent result" in result
         assert "Sub-agent finished" in result
         call_args = mock_sub_agent.run.call_args
         assert call_args[1]["custom_llm_client_provider"] is custom_provider

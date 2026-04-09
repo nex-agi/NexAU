@@ -209,7 +209,7 @@ Located in `nexau/archs/tool/builtin/`:
 
 #### Other Tools
 
-- `recall_sub_agent_tool`: Recall sub-agent history
+- `sub_agent_tool`: Delegate work to sub-agents (create or resume)
 - `llm_friendly`: Format output for LLM consumption
 
 

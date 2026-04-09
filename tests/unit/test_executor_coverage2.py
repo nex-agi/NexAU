@@ -18,8 +18,8 @@ Targets uncovered paths in:
 - nexau/archs/main_sub/execution/executor.py
 
 Covers: _wire_middleware_event_emitters, _wire_middleware_llm_runtime backward compat,
-_snapshot_structured_tool_definitions with sub-agents, _wait_for_messages,
-_build_sub_agent_tool_definition, _structured_tool_description, execute with
+_snapshot_structured_tool_definitions, _wait_for_messages,
+_structured_tool_description, execute with
 stop_signal, team_mode behavior, _apply_after_agent_hooks, _build_middleware_manager.
 """
 
@@ -221,6 +221,13 @@ class TestWireMiddlewareLlmRuntimeCompat:
 
 class TestSnapshotWithSubAgents:
     def test_includes_sub_agent_definitions(self):
+        """RFC-0015: Agent is a regular builtin tool, not a virtual definition.
+
+        Sub-agents configured on the executor should NOT generate virtual
+        sub-agent-{name} tool definitions. The Agent tool is registered
+        as a regular builtin tool in AgentConfig._finalize() and will appear
+        in structured_tool_payload only when it's in the ToolRegistry.
+        """
         sub_agent_config = AgentConfig(
             name="helper",
             system_prompt="Helper agent",
@@ -237,9 +244,9 @@ class TestSnapshotWithSubAgents:
             tool_call_mode="structured",
         )
         payload = executor.structured_tool_payload
-        # Should have sub-agent definition
+        # RFC-0015: No virtual sub-agent-{name} definitions should be generated
         sub_agent_names = [d["name"] for d in payload]
-        assert any("helper" in name for name in sub_agent_names)
+        assert not any("sub-agent-" in name for name in sub_agent_names)
 
     def test_sync_new_tools_from_registry(self):
         registry = make_tool_registry()

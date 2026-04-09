@@ -39,7 +39,6 @@ from nexau.archs.llm.llm_aggregators.events import RetryEvent
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import AgentConfig
-from nexau.archs.main_sub.execution.batch_processor import BatchProcessor
 from nexau.archs.main_sub.execution.hooks import (
     AfterAgentHookInput,
     AfterModelHook,
@@ -56,9 +55,7 @@ from nexau.archs.main_sub.execution.hooks import (
 from nexau.archs.main_sub.execution.llm_caller import LLMCaller
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.parse_structures import (
-    BatchAgentCall,
     ParsedResponse,
-    SubAgentCall,
     ToolCall,
 )
 from nexau.archs.main_sub.execution.response_parser import ResponseParser
@@ -67,7 +64,6 @@ from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
 from nexau.archs.main_sub.execution.tool_executor import ToolExecutor
 from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.main_sub.history_list import HistoryList
-from nexau.archs.main_sub.sub_agent_naming import build_sub_agent_tool_name
 from nexau.archs.main_sub.token_trace_session import TokenTraceContextOverflowError, TokenTraceSession
 from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
@@ -77,7 +73,6 @@ from nexau.archs.main_sub.utils.token_counter import TokenCounter
 from nexau.archs.tool.tool import (
     StructuredToolDefinition,
     Tool,
-    build_structured_tool_definition,
 )
 from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
@@ -207,10 +202,6 @@ class Executor:
             user_id=user_id,
             session_id=session_id,
         )
-        self.batch_processor = BatchProcessor(
-            self.subagent_manager,
-            max_running_subagents,
-        )
         self.response_parser = ResponseParser()
         self.llm_caller = LLMCaller(
             openai_client,
@@ -247,10 +238,6 @@ class Executor:
                 )
                 for tool in self._tool_registry.compute_eager_tools()
             ]
-            for sub_agent_name, sub_agent_config in sub_agents.items():
-                self.structured_tool_definitions.append(
-                    self._build_sub_agent_tool_definition(sub_agent_name, sub_agent_config),
-                )
         else:
             self.structured_tool_definitions = []
 
@@ -442,16 +429,6 @@ class Executor:
                     ),
                 )
                 definition_names.add(tool.name)
-
-            # 2. 同步动态新增的 sub-agent 代理定义。
-            for sub_agent_name, sub_agent_config in self.subagent_manager.sub_agents.items():
-                sub_agent_tool_name = build_sub_agent_tool_name(sub_agent_name)
-                if sub_agent_tool_name in definition_names:
-                    continue
-                self.structured_tool_definitions.append(
-                    self._build_sub_agent_tool_definition(sub_agent_name, sub_agent_config),
-                )
-                definition_names.add(sub_agent_tool_name)
 
             return deepcopy(self.structured_tool_definitions)
 
@@ -805,8 +782,6 @@ class Executor:
 
                         if isinstance(call_obj, ToolCall):
                             call_id = call_obj.tool_call_id
-                        elif isinstance(call_obj, SubAgentCall):
-                            call_id = call_obj.tool_call_id or call_obj.sub_agent_call_id
                         else:
                             call_id = None
 
@@ -1320,8 +1295,6 @@ class Executor:
 
                 if isinstance(call_obj, ToolCall):
                     call_id = call_obj.tool_call_id
-                elif isinstance(call_obj, SubAgentCall):
-                    call_id = call_obj.tool_call_id or call_obj.sub_agent_call_id
                 else:
                     call_id = None
 
@@ -1451,25 +1424,8 @@ class Executor:
         if self._shutdown_event.is_set():
             return processed_response, False, None, []
 
-        # Batch agent calls (sync, not parallelized)
-        if parsed_response.batch_agent_calls:
-            for batch_call in parsed_response.batch_agent_calls:
-                try:
-                    batch_result = await asyncio.to_thread(self._execute_batch_call, batch_call)
-                    processed_response += (
-                        f"\n<tool_result>\n<tool_name>batch_agent</tool_name>\n<result>{batch_result}</result>\n</tool_result>\n"
-                    )
-                except Exception as e:
-                    processed_response += f"\n<tool_result>\n<tool_name>batch_agent</tool_name>\n<error>{str(e)}</error>\n</tool_result>\n"
+        if not parsed_response.tool_calls:
             return processed_response, False, None, []
-
-        if not parsed_response.tool_calls and not parsed_response.sub_agent_calls:
-            return processed_response, False, None, []
-
-        from ..agent_context import get_context
-
-        current_context = get_context()
-        context_dict = current_context.context.copy() if current_context else None
 
         parallel_execution_id = str(uuid.uuid4())
 
@@ -1481,14 +1437,6 @@ class Executor:
             tool_call.tool_call_id = f"{base_id}_{count}" if count else base_id
             seen_tool_call_ids[base_id] += 1
             tool_call.parallel_execution_id = parallel_execution_id
-
-        seen_sub_agent_call_ids: defaultdict[str, int] = defaultdict(int)
-        for idx, sub_agent_call in enumerate(parsed_response.sub_agent_calls):
-            base_id = sub_agent_call.sub_agent_call_id or f"sub_agent_call_{idx}"
-            count = seen_sub_agent_call_ids[base_id]
-            sub_agent_call.sub_agent_call_id = f"{base_id}_{count}" if count else base_id
-            seen_sub_agent_call_ids[base_id] += 1
-            sub_agent_call.parallel_execution_id = parallel_execution_id
 
         serial_tool_names = set(self._tool_registry.compute_serial_tool_names())
 
@@ -1599,22 +1547,6 @@ class Executor:
             except Exception as e:
                 return ("tool", tc, (tc.tool_name, str(e), True))
 
-        async def _run_sub_agent(sac: SubAgentCall) -> tuple[str, SubAgentCall, tuple[str, str, bool]]:
-            try:
-                # P1 async/sync 修复: 直接 await async 路径，
-                # 避免 to_thread → Agent() → asyncio.run() 的间接 event loop 创建
-                result = await self.subagent_manager.call_sub_agent_async(
-                    sac.agent_name,
-                    sac.message,
-                    context=context_dict,
-                    parent_agent_state=agent_state,
-                    custom_llm_client_provider=custom_llm_client_provider,
-                    parallel_execution_id=sac.parallel_execution_id,
-                )
-                return ("sub_agent", sac, (sac.agent_name, result, False))
-            except Exception as e:
-                return ("sub_agent", sac, (sac.agent_name, str(e), True))
-
         # serial tools 需要顺序执行，其余并行
         serial_tasks: list[ToolCall] = []
         parallel_tool_tasks: list[ToolCall] = []
@@ -1625,32 +1557,26 @@ class Executor:
                 parallel_tool_tasks.append(tc)
 
         # 结果类型: (call_type, call_obj, (name, result, is_error))
-        all_results: list[tuple[str, ToolCall, tuple[str, Any, bool]] | tuple[str, SubAgentCall, tuple[str, str, bool]]] = []
+        all_results: list[tuple[str, ToolCall, tuple[str, Any, bool]]] = []
 
         # 先执行 serial tools（顺序）
         for tc in serial_tasks:
             all_results.append(await _run_tool(tc))
 
-        # 再并行执行剩余 tools + sub-agents
+        # 再并行执行剩余 tools
         # 维护 call_origins 与 parallel_coros 索引一一对应，gather 异常时保留调用上下文
         parallel_coros: list[Any] = []
-        call_origins: list[tuple[str, ToolCall] | tuple[str, SubAgentCall]] = []
+        call_origins: list[tuple[str, ToolCall]] = []
         for tc in parallel_tool_tasks:
             parallel_coros.append(_run_tool(tc))
             call_origins.append(("tool", tc))
-        for sac in parsed_response.sub_agent_calls:
-            parallel_coros.append(_run_sub_agent(sac))
-            call_origins.append(("sub_agent", sac))
 
         if parallel_coros:
             parallel_results = await asyncio.gather(*parallel_coros, return_exceptions=True)
             for idx, r in enumerate(parallel_results):
                 if isinstance(r, BaseException):
                     _, origin_call = call_origins[idx]
-                    if isinstance(origin_call, SubAgentCall):
-                        all_results.append(("sub_agent", origin_call, (origin_call.agent_name, str(r), True)))
-                    else:
-                        all_results.append(("tool", origin_call, (origin_call.tool_name, str(r), True)))
+                    all_results.append(("tool", origin_call, (origin_call.tool_name, str(r), True)))
                 elif isinstance(r, tuple):
                     all_results.append(r)  # type: ignore[arg-type]
 
@@ -1662,59 +1588,41 @@ class Executor:
 
         for entry in all_results:
             call_type: str = entry[0]
-            call_obj: ToolCall | SubAgentCall = entry[1]
+            call_obj: ToolCall = entry[1]
             result_data: tuple[str, Any, bool] = entry[2]
-            if call_type == "sub_agent":
-                agent_name, result, is_error = result_data
-                execution_feedbacks.append(
-                    {"call_type": "sub_agent", "call": call_obj, "content": result, "output": result, "is_error": is_error}
-                )
-                # SubAgentCall.tool_call_id is set for OpenAI structured calls; absent means XML mode
-                should_append_xml = not (isinstance(call_obj, SubAgentCall) and call_obj.tool_call_id)
-                if is_error:
-                    if should_append_xml:
-                        tool_results.append(
-                            f"\n<tool_result>\n<tool_name>{agent_name}_sub_agent</tool_name>\n<error>{result}</error>\n</tool_result>\n"
-                        )
-                else:
-                    if should_append_xml:
-                        tool_results.append(
-                            f"\n<tool_result>\n<tool_name>{agent_name}_sub_agent</tool_name>\n<result>{result}</result>\n</tool_result>\n"
-                        )
-            elif call_type == "tool":
-                tool_name, result, is_error = result_data
-                result_str = result if isinstance(result, str) else json.dumps(result, indent=2, ensure_ascii=False)
-                execution_feedbacks.append(
-                    {"call_type": "tool", "call": call_obj, "content": result_str, "output": result, "is_error": is_error}
-                )
+            tool_name, result, is_error = result_data
+            result_str = result if isinstance(result, str) else json.dumps(result, indent=2, ensure_ascii=False)
+            execution_feedbacks.append(
+                {"call_type": call_type, "call": call_obj, "content": result_str, "output": result, "is_error": is_error}
+            )
 
-                # ToolCall.source indicates origin; "openai" means structured tool call (no XML append)
-                should_append_xml = not (isinstance(call_obj, ToolCall) and call_obj.source == "openai")
-                if is_error:
-                    if should_append_xml:
-                        tool_results.append(
-                            f"\n<tool_result>\n<tool_name>{tool_name}</tool_name>\n<error>{result_str}</error>\n</tool_result>\n"
-                        )
-                else:
-                    if should_append_xml:
-                        tool_results.append(
-                            f"\n<tool_result>\n<tool_name>{tool_name}</tool_name>\n<result>{result_str}</result>\n</tool_result>\n"
-                        )
-                    # 检查 stop tool
-                    try:
-                        parsed_result = json.loads(result_str)
-                        if isinstance(parsed_result, dict):
-                            parsed_result_dict = cast(dict[str, Any], parsed_result)
-                            if parsed_result_dict.get("_is_stop_tool"):
-                                stop_tool_detected = True
-                                self._last_stop_tool_name = tool_name
-                                actual_result: dict[str, Any] = {k: v for k, v in parsed_result_dict.items() if k != "_is_stop_tool"}
-                                if "result" in actual_result and len(actual_result) == 1:
-                                    stop_tool_result = json.dumps(actual_result["result"], ensure_ascii=False, indent=4)
-                                else:
-                                    stop_tool_result = json.dumps(actual_result or parsed_result, ensure_ascii=False, indent=4)
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+            # ToolCall.source indicates call format; structured tool calls do not append XML tool results.
+            should_append_xml = call_obj.source != "structured"
+            if is_error:
+                if should_append_xml:
+                    tool_results.append(
+                        f"\n<tool_result>\n<tool_name>{tool_name}</tool_name>\n<error>{result_str}</error>\n</tool_result>\n"
+                    )
+            else:
+                if should_append_xml:
+                    tool_results.append(
+                        f"\n<tool_result>\n<tool_name>{tool_name}</tool_name>\n<result>{result_str}</result>\n</tool_result>\n"
+                    )
+                # 检查 stop tool
+                try:
+                    parsed_result = json.loads(result_str)
+                    if isinstance(parsed_result, dict):
+                        parsed_result_dict = cast(dict[str, Any], parsed_result)
+                        if parsed_result_dict.get("_is_stop_tool"):
+                            stop_tool_detected = True
+                            self._last_stop_tool_name = tool_name
+                            actual_result: dict[str, Any] = {k: v for k, v in parsed_result_dict.items() if k != "_is_stop_tool"}
+                            if "result" in actual_result and len(actual_result) == 1:
+                                stop_tool_result = json.dumps(actual_result["result"], ensure_ascii=False, indent=4)
+                            else:
+                                stop_tool_result = json.dumps(actual_result or parsed_result, ensure_ascii=False, indent=4)
+                except (json.JSONDecodeError, TypeError):
+                    pass
 
         if tool_results:
             processed_response += "\n\n" + "\n\n".join(tool_results)
@@ -1892,49 +1800,18 @@ class Executor:
             )
             return processed_response, False, None, []
 
-        # Handle batch agent calls first (they take priority and are not parallelized)
-        if parsed_response.batch_agent_calls:
-            for batch_call in parsed_response.batch_agent_calls:
-                try:
-                    batch_result = self._execute_batch_call(batch_call)
-                    processed_response += f"""
-<tool_result>
-<tool_name>batch_agent</tool_name>
-<result>{batch_result}</result>
-</tool_result>
-"""
-                except Exception as e:
-                    logger.error(f"❌ Batch agent call failed: {e}")
-                    processed_response += f"""
-<tool_result>
-<tool_name>batch_agent</tool_name>
-<error>{str(e)}</error>
-</tool_result>
-"""
+        # Execute tool calls in parallel
+        if not parsed_response.tool_calls:
             return processed_response, False, None, []
-
-        # Execute tool calls and sub-agent calls in parallel
-        if not parsed_response.tool_calls and not parsed_response.sub_agent_calls:
-            return processed_response, False, None, []
-
-        # Get current context to pass to sub-agents
-        from ..agent_context import get_context
-
-        current_context = get_context()
-        context_dict = current_context.context.copy() if current_context else None
 
         executor_id = str(uuid.uuid4())
         parallel_execution_id = str(uuid.uuid4())
 
         tool_executor = ThreadPoolExecutor()
-        subagent_executor = ThreadPoolExecutor(
-            max_workers=self.max_running_subagents,
-        )
 
         # Track executors for cleanup
         with self._executor_lock:
             self._running_executors[f"{executor_id}_tools"] = tool_executor
-            self._running_executors[f"{executor_id}_subagents"] = subagent_executor
 
         # Handle duplicate tool_call_ids by adding suffixes
         seen_tool_call_ids: defaultdict[str, int] = defaultdict(int)
@@ -1948,19 +1825,6 @@ class Executor:
             seen_tool_call_ids[base_id] += 1
             # Set parallel execution ID for grouping
             tool_call.parallel_execution_id = parallel_execution_id
-
-        # Handle duplicate sub_agent_call_ids by adding suffixes
-        seen_sub_agent_call_ids: defaultdict[str, int] = defaultdict(int)
-        for idx, sub_agent_call in enumerate(parsed_response.sub_agent_calls):
-            base_id = sub_agent_call.sub_agent_call_id or f"sub_agent_call_{idx}"
-            count = seen_sub_agent_call_ids[base_id]
-            if count:
-                sub_agent_call.sub_agent_call_id = f"{base_id}_{count}"
-            else:
-                sub_agent_call.sub_agent_call_id = base_id
-            seen_sub_agent_call_ids[base_id] += 1
-            # Set parallel execution ID for grouping
-            sub_agent_call.parallel_execution_id = parallel_execution_id
 
         serial_tool_names = set(self._tool_registry.compute_serial_tool_names())
 
@@ -1989,25 +1853,8 @@ class Executor:
                 if tool_call.tool_name in serial_tool_names:
                     future.result()
 
-            # Batch all context snapshots before any sub-agent task submission to prevent
-            # OTel context pollution between parallel sub-agent threads (fix-span-overlap)
-            sub_agent_snapshots = [(copy_context(), sub_agent_call) for sub_agent_call in parsed_response.sub_agent_calls]
-
-            # Submit sub-agent execution tasks using pre-created context snapshots
-            sub_agent_futures: dict[Future[tuple[str, str, bool]], tuple[str, SubAgentCall]] = {}
-            for task_ctx, sub_agent_call in sub_agent_snapshots:
-                future = subagent_executor.submit(
-                    task_ctx.run,
-                    self._execute_sub_agent_call_safe,
-                    sub_agent_call,
-                    context_dict,
-                    parent_agent_state=agent_state,
-                    custom_llm_client_provider=custom_llm_client_provider,
-                )
-                sub_agent_futures[future] = ("sub_agent", sub_agent_call)
-
             # Combine all futures
-            all_futures: dict[Future[tuple[str, Any, bool]], tuple[str, ToolCall | SubAgentCall]] = {**tool_futures, **sub_agent_futures}
+            all_futures: dict[Future[tuple[str, Any, bool]], tuple[str, ToolCall]] = {**tool_futures}
 
             # Collect results as they complete
             tool_results: list[str] = []
@@ -2019,130 +1866,81 @@ class Executor:
                 call_type, call_obj = all_futures[future]
                 try:
                     result_data = future.result()
-                    if call_type == "sub_agent" and isinstance(call_obj, SubAgentCall):
-                        agent_name, result, is_error = result_data
-                        result_str = result
-                        execution_feedbacks.append(
-                            {
-                                "call_type": "sub_agent",
-                                "call": call_obj,
-                                "content": result_str,
-                                "is_error": is_error,
-                            },
-                        )
-                        if is_error:
-                            logger.error(
-                                f"❌ Sub-agent '{agent_name}' error: {result}",
-                            )
-                            should_append_xml = not call_obj.tool_call_id
-                            if should_append_xml:
-                                tool_results.append(
-                                    f"""
-<tool_result>
-<tool_name>{agent_name}_sub_agent</tool_name>
-<error>{result}</error>
-</tool_result>
-""",
-                                )
-                        else:
-                            logger.info(
-                                f"📤 Sub-agent '{agent_name}' result: {result}",
-                            )
-                            should_append_xml = not call_obj.tool_call_id
-                            if should_append_xml:
-                                tool_results.append(
-                                    f"""
-<tool_result>
-<tool_name>{agent_name}_sub_agent</tool_name>
-<result>{result}</result>
-</tool_result>
-""",
-                                )
-                    elif not isinstance(call_obj, ToolCall):
+                    tool_name, result, is_error = result_data
+                    result_str = result if isinstance(result, str) else json.dumps(result, indent=2, ensure_ascii=False)
+                    execution_feedbacks.append(
+                        {
+                            "call_type": "tool",
+                            "call": call_obj,
+                            "content": result_str,
+                            "output": result,
+                            "is_error": is_error,
+                        },
+                    )
+                    if is_error:
                         logger.error(
-                            f"❌ Unexpected call object type: {type(call_obj)} (call_type={call_type})",
+                            f"❌ Tool '{tool_name}' error: {result_str}",
                         )
-                        continue
-                    elif call_type == "tool":
-                        tool_name, result, is_error = result_data
-                        result_str = result if isinstance(result, str) else json.dumps(result, indent=2, ensure_ascii=False)
-                        execution_feedbacks.append(
-                            {
-                                "call_type": "tool",
-                                "call": call_obj,
-                                "content": result_str,
-                                "output": result,
-                                "is_error": is_error,
-                            },
-                        )
-                        if is_error:
-                            logger.error(
-                                f"❌ Tool '{tool_name}' error: {result_str}",
-                            )
-                            should_append_xml = call_obj.source != "openai"
-                            if should_append_xml:
-                                tool_results.append(
-                                    f"""
+                        should_append_xml = call_obj.source != "structured"
+                        if should_append_xml:
+                            tool_results.append(
+                                f"""
 <tool_result>
 <tool_name>{tool_name}</tool_name>
 <error>{result_str}</error>
 </tool_result>
 """,
-                                )
-                        else:
-                            logger.info(
-                                f"📤 Tool '{tool_name}' result: {result_str[:100]}",
                             )
-                            should_append_xml = call_obj.source != "openai"
-                            tool_result_xml = f"""
+                    else:
+                        logger.info(
+                            f"📤 Tool '{tool_name}' result: {result_str[:100]}",
+                        )
+                        should_append_xml = call_obj.source != "structured"
+                        tool_result_xml = f"""
 <tool_result>
 <tool_name>{tool_name}</tool_name>
 <result>{result_str}</result>
 </tool_result>
 """
-                            if should_append_xml:
-                                tool_results.append(tool_result_xml)
+                        if should_append_xml:
+                            tool_results.append(tool_result_xml)
 
-                            # Check if this tool result indicates a stop tool was executed
-                            try:
-                                parsed_result = json.loads(result_str)
-                                if isinstance(parsed_result, dict):
-                                    parsed_result_dict = cast(dict[str, Any], parsed_result)
-                                    if parsed_result_dict.get("_is_stop_tool"):
-                                        stop_tool_detected = True
-                                        self._last_stop_tool_name = tool_name
-                                        actual_result: dict[str, Any] = {
-                                            key: value for key, value in parsed_result_dict.items() if key != "_is_stop_tool"
-                                        }
-                                        if "result" in actual_result and len(actual_result) == 1:
-                                            stop_tool_result = json.dumps(
-                                                actual_result["result"],
+                        # Check if this tool result indicates a stop tool was executed
+                        try:
+                            parsed_result = json.loads(result_str)
+                            if isinstance(parsed_result, dict):
+                                parsed_result_dict = cast(dict[str, Any], parsed_result)
+                                if parsed_result_dict.get("_is_stop_tool"):
+                                    stop_tool_detected = True
+                                    self._last_stop_tool_name = tool_name
+                                    actual_result: dict[str, Any] = {
+                                        key: value for key, value in parsed_result_dict.items() if key != "_is_stop_tool"
+                                    }
+                                    if "result" in actual_result and len(actual_result) == 1:
+                                        stop_tool_result = json.dumps(
+                                            actual_result["result"],
+                                            ensure_ascii=False,
+                                            indent=4,
+                                        )
+                                    else:
+                                        stop_tool_result = (
+                                            json.dumps(
+                                                actual_result,
                                                 ensure_ascii=False,
                                                 indent=4,
                                             )
-                                        else:
-                                            stop_tool_result = (
-                                                json.dumps(
-                                                    actual_result,
-                                                    ensure_ascii=False,
-                                                    indent=4,
-                                                )
-                                                if actual_result
-                                                else json.dumps(
-                                                    parsed_result,
-                                                    ensure_ascii=False,
-                                                    indent=4,
-                                                )
+                                            if actual_result
+                                            else json.dumps(
+                                                parsed_result,
+                                                ensure_ascii=False,
+                                                indent=4,
                                             )
-                                        logger.info(
-                                            f"🛑 Stop tool '{tool_name}' result detected, will terminate after processing",
                                         )
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-                    else:
-                        logger.error(
-                            f"❌ Unexpected call type '{call_type}' for object {type(call_obj)}",
-                        )
+                                    logger.info(
+                                        f"🛑 Stop tool '{tool_name}' result detected, will terminate after processing",
+                                    )
+                        except (json.JSONDecodeError, TypeError):
+                            pass
                 except Exception as e:
                     logger.error(
                         f"❌ Unexpected error processing {call_type}: {e}",
@@ -2165,15 +1963,10 @@ class Executor:
             with self._executor_lock:
                 try:
                     tool_executor.shutdown(wait=True, cancel_futures=False)
-                    subagent_executor.shutdown(wait=True, cancel_futures=False)
                 except Exception as e:
                     logger.error(f"❌ Error shutting down executors: {e}")
                 finally:
                     self._running_executors.pop(f"{executor_id}_tools", None)
-                    self._running_executors.pop(
-                        f"{executor_id}_subagents",
-                        None,
-                    )
 
         return processed_response, stop_tool_detected, stop_tool_result, execution_feedbacks
 
@@ -2208,39 +2001,6 @@ class Executor:
 
         except Exception as e:
             return tool_call.tool_name, str(e), True
-
-    def _execute_sub_agent_call_safe(
-        self,
-        sub_agent_call: SubAgentCall,
-        context: dict[str, Any] | None = None,
-        parent_agent_state: AgentState | None = None,
-        *,
-        custom_llm_client_provider: Callable[[str], Any] | None = None,
-    ) -> tuple[str, str, bool]:
-        """Safely execute a sub-agent call."""
-        try:
-            result = self.subagent_manager.call_sub_agent(
-                sub_agent_call.agent_name,
-                sub_agent_call.message,
-                context=context,
-                parent_agent_state=parent_agent_state,
-                custom_llm_client_provider=custom_llm_client_provider,
-                parallel_execution_id=sub_agent_call.parallel_execution_id,
-            )
-
-            return sub_agent_call.agent_name, result, False
-
-        except Exception as e:
-            return sub_agent_call.agent_name, str(e), True
-
-    def _execute_batch_call(self, batch_call: BatchAgentCall) -> str:
-        """Execute a batch agent call."""
-        return self.batch_processor.process_batch_data(
-            batch_call.agent_name,
-            batch_call.file_path,
-            batch_call.data_format,
-            batch_call.message_template,
-        )
 
     def force_stop(self) -> None:
         """Force-stop the executor, breaking the team_mode forever-run loop.
@@ -2308,35 +2068,6 @@ class Executor:
 
         return tool.get_structured_description()
 
-    @staticmethod
-    def _build_sub_agent_tool_definition(
-        name: str,
-        agent_config: AgentConfig,
-    ) -> StructuredToolDefinition:
-        """Build the neutral structured definition for a sub-agent proxy.
-
-        RFC-0006: 中性 Structured Tool Definitions
-
-        SubAgent 在 structured 模式下与普通 Tool 共享统一的 neutral definition
-        契约，provider-specific schema 继续延迟到 LLMCaller 请求边界生成。
-        """
-
-        return build_structured_tool_definition(
-            name=build_sub_agent_tool_name(name),
-            description=agent_config.description or f"Delegate work to sub-agent '{name}'.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string",
-                        "description": "Task or question for the sub-agent.",
-                    },
-                },
-                "required": ["message"],
-            },
-            kind="sub_agent",
-        )
-
     def add_tool(self, tool: Tool) -> None:
         """Add a tool to the executor.
 
@@ -2365,9 +2096,4 @@ class Executor:
             name: Name of the sub-agent
             agent_config: Config creates the agent
         """
-        with self._tool_registry_lock:
-            if self.use_structured_tool_calls:
-                self.structured_tool_definitions.append(
-                    self._build_sub_agent_tool_definition(name, agent_config),
-                )
         self.subagent_manager.add_sub_agent(name, agent_config)

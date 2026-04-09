@@ -895,9 +895,10 @@ def create_cli_progress_hook():
                     )
 
             # Report sub-agent calls
-            if hook_input.parsed_response.sub_agent_calls:
-                agent_count = len(hook_input.parsed_response.sub_agent_calls)
-                agent_names = [call.agent_name for call in hook_input.parsed_response.sub_agent_calls]
+            sub_agent_tool_calls = [tc for tc in hook_input.parsed_response.tool_calls if tc.tool_name == "Agent"]
+            if sub_agent_tool_calls:
+                agent_count = len(sub_agent_tool_calls)
+                agent_names = [tc.parameters.get("sub_agent_name", "unknown") for tc in sub_agent_tool_calls]
 
                 send_message(
                     message_type,

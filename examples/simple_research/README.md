@@ -93,14 +93,24 @@ description: >-
   - Good for finding recent information, facts, and data
 ```
 
-### Calling a Sub-Agent
+### Calling an Agent Tool
 
-The framework automatically creates a `call_sub_agent` tool for each defined sub-agent. The main agent can call it like:
+The framework automatically injects an `Agent` tool when sub-agents are configured. The main agent can call it like:
 
 ```
-call_sub_agent(
-  agent_name="research_assistant",
+Agent(
+  sub_agent_name="research_assistant",
   message="Research the latest quantum computing breakthroughs"
+)
+```
+
+To resume a previously finished sub-agent, provide the `sub_agent_id` parameter:
+
+```
+Agent(
+  sub_agent_name="research_assistant",
+  sub_agent_id="abc123",
+  message="Follow up on the previous research"
 )
 ```
 
