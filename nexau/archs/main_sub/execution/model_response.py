@@ -787,7 +787,10 @@ class ModelResponse:
                 ),
             )
 
-        msg = Message(role=role, content=blocks)
+        # micro-compact: 设置 created_at 时间戳，用于 TimeBasedTrigger 判断
+        from datetime import UTC, datetime
+
+        msg = Message(role=role, content=blocks, created_at=datetime.now(UTC))
         msg.metadata["usage"] = self.usage.to_dict()
         if self.response_items:
             msg.metadata["response_items"] = self.response_items

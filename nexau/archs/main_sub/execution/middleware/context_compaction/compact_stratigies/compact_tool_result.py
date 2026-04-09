@@ -43,14 +43,20 @@ class ToolResultCompaction:
         keep_system: bool = True,
         keep_iterations: int = 3,
         keep_user_rounds: int = 0,
+        compactable_tools: frozenset[str] | None = None,
     ):
         """Initialize tool result compaction.
+
+        micro-compact: 增强 ToolResultCompaction，支持工具类型过滤
 
         Args:
             keep_system: Whether to preserve the system message. Default: True.
             keep_iterations: Number of recent iterations to keep tool results uncompacted. Default: 3.
             keep_user_rounds: Number of recent user rounds to keep uncompacted. Default: 0 (disabled).
                 When > 0, uses user rounds mode instead of iterations mode.
+            compactable_tools: Tool names eligible for compaction. None = compact all tools (backward compat).
+                When set, only ToolResultBlocks whose corresponding ToolUseBlock.name is in this set
+                will be compacted; other tool results are preserved intact.
 
         Raises:
             ValueError: If both keep_iterations != 3 and keep_user_rounds > 0 are set.
@@ -67,10 +73,12 @@ class ToolResultCompaction:
         self.keep_system = keep_system
         self.keep_iterations = keep_iterations
         self.keep_user_rounds = keep_user_rounds
+        self.compactable_tools = compactable_tools
 
         logger.info(
             f"[ToolResultCompaction] Initialized: keep_system={self.keep_system}, "
-            f"keep_iterations={self.keep_iterations}, keep_user_rounds={self.keep_user_rounds}"
+            f"keep_iterations={self.keep_iterations}, keep_user_rounds={self.keep_user_rounds}, "
+            f"compactable_tools={self.compactable_tools}"
         )
 
     def compact(
@@ -122,26 +130,49 @@ class ToolResultCompaction:
                             protected_indices.add(i)
                             break
 
+        # micro-compact: 构建 tool_use_id → tool_name 映射，用于 compactable_tools 过滤
+        tool_use_id_to_name: dict[str, str] = {}
+        if self.compactable_tools is not None:
+            for msg in messages:
+                if msg.role == Role.ASSISTANT:
+                    for block in msg.content:
+                        if isinstance(block, ToolUseBlock):
+                            tool_use_id_to_name[block.id] = block.name
+
         # Process all messages
         compacted_count = 0
         for i in range(start_idx, len(messages)):
             msg = messages[i]
             if msg.role == Role.TOOL and i not in protected_indices:
-                # Compact this tool result
+                # Compact this tool result (respecting compactable_tools filter)
                 new_blocks: list[BlockType] = []
+                any_compacted = False
                 for block in msg.content:
                     if isinstance(block, ToolResultBlock):
-                        new_blocks.append(
-                            ToolResultBlock(
-                                tool_use_id=block.tool_use_id,
-                                content="Tool call result has been compacted",
-                                is_error=block.is_error,
-                            ),
-                        )
+                        # micro-compact: compactable_tools 过滤——仅压缩指定工具的结果
+                        should_compact_block = True
+                        if self.compactable_tools is not None:
+                            tool_name = tool_use_id_to_name.get(block.tool_use_id, "")
+                            should_compact_block = tool_name in self.compactable_tools
+
+                        if should_compact_block:
+                            new_blocks.append(
+                                ToolResultBlock(
+                                    tool_use_id=block.tool_use_id,
+                                    content="Tool call result has been compacted",
+                                    is_error=block.is_error,
+                                ),
+                            )
+                            any_compacted = True
+                        else:
+                            new_blocks.append(block)
                     else:
                         new_blocks.append(block)
-                result.append(msg.model_copy(update={"content": new_blocks}))
-                compacted_count += 1
+                if any_compacted:
+                    result.append(msg.model_copy(update={"content": new_blocks}))
+                    compacted_count += 1
+                else:
+                    result.append(msg)
             else:
                 # Keep message as-is
                 result.append(msg)
