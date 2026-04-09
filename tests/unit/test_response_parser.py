@@ -17,8 +17,6 @@ Unit tests for ResponseParser class.
 
 Tests cover parsing of LLM responses containing:
 - Tool calls
-- Sub-agent calls
-- Batch agent calls
 - Parallel operations
 - Malformed XML handling
 - Edge cases and error scenarios
@@ -30,11 +28,6 @@ from unittest.mock import patch
 import pytest
 
 from nexau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
-from nexau.archs.main_sub.execution.parse_structures import (
-    BatchAgentCall,
-    SubAgentCall,
-    ToolCall,
-)
 from nexau.archs.main_sub.execution.response_parser import ResponseParser
 
 
@@ -54,8 +47,6 @@ class TestResponseParser:
 
         assert result.original_response == ""
         assert len(result.tool_calls) == 0
-        assert len(result.sub_agent_calls) == 0
-        assert len(result.batch_agent_calls) == 0
         assert not result.has_calls()
         assert result.get_call_summary() == "no calls"
 
@@ -131,165 +122,104 @@ class TestResponseParser:
         tool_call = result.tool_calls[0]
         assert tool_call.tool_name == "sample_tool"
         assert tool_call.parameters["param"] == "value"
-        assert tool_call.source == "openai"
+        assert tool_call.source == "structured"
 
     def test_parse_openai_sub_agent_call(self, parser):
-        """Test parsing OpenAI tool call that targets a sub-agent."""
+        """RFC-0015: Agent calls are parsed as regular ToolCalls.
+
+        The Agent builtin tool uses tool_name="Agent" with
+        sub_agent_name and message as parameters.
+        """
         model_response = ModelResponse(
             content=None,
             tool_calls=[
                 ModelToolCall(
                     call_id="call_agent",
-                    name="sub-agent-researcher",
-                    arguments={"task": "Analyze data"},
-                    raw_arguments='{"task": "Analyze data"}',
+                    name="Agent",
+                    arguments={"sub_agent_name": "researcher", "message": "Analyze data"},
+                    raw_arguments='{"sub_agent_name": "researcher", "message": "Analyze data"}',
                 ),
             ],
         )
 
         result = parser.parse_response(model_response)
 
-        assert len(result.sub_agent_calls) == 1
-        sub_agent_call = result.sub_agent_calls[0]
-        assert sub_agent_call.agent_name == "researcher"
-        assert "task: Analyze data" in sub_agent_call.message
-        assert result.get_call_summary() == "1 sub-agent calls"
+        assert len(result.tool_calls) == 1
+        tool_call = result.tool_calls[0]
+        # RFC-0015: Agent is a regular builtin tool, parsed like any other
+        assert tool_call.tool_name == "Agent"
+        assert tool_call.parameters["sub_agent_name"] == "researcher"
+        assert tool_call.parameters["message"] == "Analyze data"
+        assert result.get_call_summary() == "1 tool calls"
 
-    # ========== Sub-Agent Call Tests ==========
+    # ========== Tool Call Passthrough Tests (RFC-0015) ==========
 
     def test_parse_sub_agent_call(self, parser):
-        """Test parsing a sub-agent call."""
+        """RFC-0015: Agent XML calls are parsed as regular ToolCalls.
+
+        The Agent builtin tool uses tool_name="Agent" with
+        sub_agent_name and message as parameters.
+        """
         response = """
 <tool_use>
-<tool_name>sub-agent-researcher</tool_name>
+<tool_name>Agent</tool_name>
 <parameter>
-<task>Research quantum computing</task>
+<sub_agent_name>researcher</sub_agent_name>
+<message>Research quantum computing</message>
 <deadline>2025-12-31</deadline>
 </parameter>
 </tool_use>
 """
         result = parser.parse_response(response)
 
-        assert len(result.sub_agent_calls) == 1
-        assert result.sub_agent_calls[0].agent_name == "researcher"
-        assert "task: Research quantum computing" in result.sub_agent_calls[0].message
-        assert "deadline: 2025-12-31" in result.sub_agent_calls[0].message
-        assert result.get_call_summary() == "1 sub-agent calls"
+        assert len(result.tool_calls) == 1
+        # RFC-0015: Agent is a regular builtin tool
+        assert result.tool_calls[0].tool_name == "Agent"
+        assert result.tool_calls[0].parameters["sub_agent_name"] == "researcher"
+        assert result.tool_calls[0].parameters["message"] == "Research quantum computing"
+        assert result.tool_calls[0].parameters["deadline"] == "2025-12-31"
+        assert result.get_call_summary() == "1 tool calls"
 
     def test_parse_sub_agent_call_empty_parameters(self, parser):
-        """Test parsing sub-agent call with empty parameters."""
+        """RFC-0015: Agent with empty message parameter is a regular ToolCall."""
         response = """
 <tool_use>
-<tool_name>sub-agent-worker</tool_name>
+<tool_name>Agent</tool_name>
 <parameter>
-<task></task>
+<sub_agent_name>worker</sub_agent_name>
+<message></message>
 </parameter>
 </tool_use>
 """
         result = parser.parse_response(response)
 
-        assert len(result.sub_agent_calls) == 1
-        # Empty parameters should not appear in message
-        assert result.sub_agent_calls[0].message == ""
+        assert len(result.tool_calls) == 1
+        # RFC-0015: Agent is a regular builtin tool
+        assert result.tool_calls[0].tool_name == "Agent"
+        assert result.tool_calls[0].parameters["sub_agent_name"] == "worker"
+        assert result.tool_calls[0].parameters["message"] == ""
 
-    def test_parse_sub_agent_call_legacy_prefix(self, parser):
-        """Legacy agent: prefix should still be parsed for backward compatibility."""
+    def test_parse_sub_agent_call_resume_mode(self, parser):
+        """RFC-0015: Agent with sub_agent_id parameter (resume mode) is a regular ToolCall."""
         response = """
 <tool_use>
-<tool_name>agent:legacy</tool_name>
+<tool_name>Agent</tool_name>
 <parameter>
-<task>Legacy task</task>
+<sub_agent_name>helper</sub_agent_name>
+<sub_agent_id>abc-123</sub_agent_id>
+<message>Continue the task</message>
 </parameter>
 </tool_use>
 """
 
         result = parser.parse_response(response)
 
-        assert len(result.sub_agent_calls) == 1
-        assert result.sub_agent_calls[0].agent_name == "legacy"
-
-    # ========== Batch Agent Call Tests ==========
-
-    def test_parse_batch_agent_call(self, parser):
-        """Test parsing a batch agent call."""
-        response = """
-<use_batch_agent>
-<agent_name>data_processor</agent_name>
-<input_data_source>
-<file_name>data.jsonl</file_name>
-<format>jsonl</format>
-</input_data_source>
-<message>Process this data: {item}</message>
-</use_batch_agent>
-"""
-        result = parser.parse_response(response)
-
-        assert len(result.batch_agent_calls) == 1
-        batch_call = result.batch_agent_calls[0]
-        assert batch_call.agent_name == "data_processor"
-        assert batch_call.file_path == "data.jsonl"
-        assert batch_call.data_format == "jsonl"
-        assert batch_call.message_template == "Process this data: {item}"
-        assert result.get_call_summary() == "1 batch agent calls"
-
-    def test_parse_batch_agent_call_default_format(self, parser):
-        """Test parsing batch agent call with default format."""
-        response = """
-<use_batch_agent>
-<agent_name>processor</agent_name>
-<input_data_source>
-<file_name>data.jsonl</file_name>
-</input_data_source>
-<message>Process: {data}</message>
-</use_batch_agent>
-"""
-        result = parser.parse_response(response)
-
-        assert len(result.batch_agent_calls) == 1
-        assert result.batch_agent_calls[0].data_format == "jsonl"
-
-    def test_parse_batch_agent_call_missing_agent_name(self, parser):
-        """Test parsing batch agent call with missing agent name."""
-        response = """
-<use_batch_agent>
-<input_data_source>
-<file_name>data.jsonl</file_name>
-</input_data_source>
-<message>Process</message>
-</use_batch_agent>
-"""
-        result = parser.parse_response(response)
-
-        assert len(result.batch_agent_calls) == 0
-
-    def test_parse_batch_agent_call_missing_file_name(self, parser):
-        """Test parsing batch agent call with missing file name."""
-        response = """
-<use_batch_agent>
-<agent_name>processor</agent_name>
-<input_data_source>
-<format>jsonl</format>
-</input_data_source>
-<message>Process</message>
-</use_batch_agent>
-"""
-        result = parser.parse_response(response)
-
-        assert len(result.batch_agent_calls) == 0
-
-    def test_parse_batch_agent_call_missing_message(self, parser):
-        """Test parsing batch agent call with missing message."""
-        response = """
-<use_batch_agent>
-<agent_name>processor</agent_name>
-<input_data_source>
-<file_name>data.jsonl</file_name>
-</input_data_source>
-</use_batch_agent>
-"""
-        result = parser.parse_response(response)
-
-        assert len(result.batch_agent_calls) == 0
+        assert len(result.tool_calls) == 1
+        # RFC-0015: Agent resume mode is a regular ToolCall
+        assert result.tool_calls[0].tool_name == "Agent"
+        assert result.tool_calls[0].parameters["sub_agent_name"] == "helper"
+        assert result.tool_calls[0].parameters["sub_agent_id"] == "abc-123"
+        assert result.tool_calls[0].parameters["message"] == "Continue the task"
 
     # ========== Parallel Tool Calls Tests ==========
 
@@ -319,7 +249,7 @@ class TestResponseParser:
         assert result.tool_calls[1].tool_name == "tool_two"
 
     def test_parse_parallel_with_sub_agent(self, parser):
-        """Test parsing parallel calls containing sub-agent."""
+        """RFC-0015: parallel calls with Agent are passed through as regular ToolCalls."""
         response = """
 <use_parallel_tool_calls>
 <parallel_tool>
@@ -329,19 +259,22 @@ class TestResponseParser:
 </parameter>
 </parallel_tool>
 <parallel_tool>
-<tool_name>sub-agent-worker</tool_name>
+<tool_name>Agent</tool_name>
 <parameter>
-<task>Do work</task>
+<sub_agent_name>worker</sub_agent_name>
+<message>Do work</message>
 </parameter>
 </parallel_tool>
 </use_parallel_tool_calls>
 """
         result = parser.parse_response(response)
 
-        assert len(result.tool_calls) == 1
-        assert len(result.sub_agent_calls) == 1
+        assert len(result.tool_calls) == 2
         assert result.tool_calls[0].tool_name == "regular_tool"
-        assert result.sub_agent_calls[0].agent_name == "worker"
+        # RFC-0015: Agent is a regular builtin tool
+        assert result.tool_calls[1].tool_name == "Agent"
+        assert result.tool_calls[1].parameters["sub_agent_name"] == "worker"
+        assert result.tool_calls[1].parameters["message"] == "Do work"
 
     # ========== Tool Call Parsing Tests ==========
 
@@ -609,151 +542,10 @@ outer
         assert "param1" in params
         assert "param2" in params
 
-    # ========== Sub-Agent Call Parsing Tests ==========
-
-    def test_parse_sub_agent_call_direct(self, parser):
-        """Test parsing sub-agent call directly."""
-        xml_content = """
-<tool_name>sub-agent-researcher</tool_name>
-<parameter>
-<task>Research topic</task>
-<priority>high</priority>
-</parameter>
-"""
-        sub_agent_call = parser._parse_sub_agent_call(xml_content)
-
-        assert sub_agent_call is not None
-        assert sub_agent_call.agent_name == "researcher"
-        assert "task: Research topic" in sub_agent_call.message
-        assert "priority: high" in sub_agent_call.message
-
-    def test_parse_sub_agent_call_missing_agent_name(self, parser):
-        """Test parsing sub-agent call with missing agent name."""
-        xml_content = """
-<parameter>
-<task>Do something</task>
-</parameter>
-"""
-        sub_agent_call = parser._parse_sub_agent_call(xml_content)
-
-        assert sub_agent_call is None
-
-    def test_parse_sub_agent_call_invalid_xml(self, parser):
-        """Test parsing sub-agent call with invalid XML."""
-        xml_content = """
-<tool_name>sub-agent.broken
-<parameter>
-<task>Do something</task>
-"""
-        sub_agent_call = parser._parse_sub_agent_call(xml_content)
-
-        # Invalid XML without successful fallback returns None
-        assert sub_agent_call is None
-
-    def test_parse_sub_agent_call_value_error_with_fallback(self, parser):
-        """Test parsing sub-agent call with value error that has successful fallback."""
-        # Create well-formed XML that will trigger fallback parsing
-        xml_content = """
-<tool_name>sub-agent-worker</tool_name>
-<parameter>
-<task>Do work</task>
-</parameter>
-"""
-        # Mock the XML parser to raise ValueError, triggering fallback
-        with patch.object(parser.xml_parser, "parse_xml_content", side_effect=ValueError("Parse error")):
-            # Mock the XMLUtils module (imported inside the function)
-            with patch("nexau.archs.main_sub.utils.xml_utils.XMLUtils") as mock_utils:
-                mock_utils.extract_agent_name_from_xml.return_value = "worker"
-
-                sub_agent_call = parser._parse_sub_agent_call(xml_content)
-
-                # Should fall back to minimal creation
-                assert sub_agent_call is not None
-                assert sub_agent_call.agent_name == "worker"
-
-    def test_parse_sub_agent_call_no_parameters(self, parser):
-        """Test parsing sub-agent call with no parameters."""
-        xml_content = """
-<tool_name>sub-agent-simple</tool_name>
-"""
-        sub_agent_call = parser._parse_sub_agent_call(xml_content)
-
-        assert sub_agent_call is not None
-        assert sub_agent_call.agent_name == "simple"
-        assert sub_agent_call.message == ""
-
-    def test_parse_sub_agent_call_unexpected_error(self, parser):
-        """Test handling unexpected error in sub-agent parsing."""
-        with patch.object(parser.xml_parser, "parse_xml_content", side_effect=RuntimeError("Unexpected")):
-            xml_content = """
-<tool_name>agent:test</tool_name>
-<parameter>
-<task>Test</task>
-</parameter>
-"""
-            sub_agent_call = parser._parse_sub_agent_call(xml_content)
-
-            assert sub_agent_call is None
-
-    # ========== Batch Agent Call Parsing Tests ==========
-
-    def test_parse_batch_agent_call_direct(self, parser):
-        """Test parsing batch agent call directly."""
-        xml_content = """
-<agent_name>batch_processor</agent_name>
-<input_data_source>
-<file_name>input.jsonl</file_name>
-<format>jsonl</format>
-</input_data_source>
-<message>Process item: {data}</message>
-"""
-        batch_call = parser._parse_batch_agent_call(xml_content)
-
-        assert batch_call is not None
-        assert batch_call.agent_name == "batch_processor"
-        assert batch_call.file_path == "input.jsonl"
-        assert batch_call.data_format == "jsonl"
-        assert batch_call.message_template == "Process item: {data}"
-
-    def test_parse_batch_agent_call_invalid_xml(self, parser):
-        """Test parsing batch agent call with invalid XML."""
-        xml_content = """
-<agent_name>broken
-<input_data_source>
-<file_name>data.jsonl</file_name>
-"""
-        batch_call = parser._parse_batch_agent_call(xml_content)
-
-        assert batch_call is None
-
-    def test_parse_batch_agent_call_general_error(self, parser):
-        """Test handling general error in batch agent parsing."""
-        with patch.object(parser.xml_parser, "parse_xml_content", side_effect=RuntimeError("Error")):
-            xml_content = """
-<agent_name>test</agent_name>
-<input_data_source>
-<file_name>test.jsonl</file_name>
-</input_data_source>
-<message>Test</message>
-"""
-            batch_call = parser._parse_batch_agent_call(xml_content)
-
-            assert batch_call is None
-
-    def test_parse_batch_agent_call_missing_input_data_source(self, parser):
-        """Test parsing batch agent call without input data source."""
-        xml_content = """
-<agent_name>processor</agent_name>
-<message>Process</message>
-"""
-        batch_call = parser._parse_batch_agent_call(xml_content)
-
-        assert batch_call is None
-
     # ========== Integration Tests ==========
 
     def test_parse_mixed_calls(self, parser):
-        """Test parsing response with mixed call types."""
+        """RFC-0015: mixed calls with Agent are parsed as regular ToolCalls."""
         response = """
 Here's what I'll do:
 <tool_use>
@@ -763,43 +555,22 @@ Here's what I'll do:
 </parameter>
 </tool_use>
 <tool_use>
-<tool_name>agent:helper</tool_name>
+<tool_name>Agent</tool_name>
 <parameter>
-<task>help me</task>
+<sub_agent_name>helper</sub_agent_name>
+<message>help me</message>
 </parameter>
 </tool_use>
 """
         result = parser.parse_response(response)
 
-        assert len(result.tool_calls) == 1
-        assert len(result.sub_agent_calls) == 1
+        assert len(result.tool_calls) == 2
         assert result.tool_calls[0].tool_name == "search"
-        assert result.sub_agent_calls[0].agent_name == "helper"
-        assert result.get_call_summary() == "1 tool calls, 1 sub-agent calls"
-
-    def test_parse_response_batch_takes_priority(self, parser):
-        """Test that batch agent calls take priority."""
-        response = """
-<use_batch_agent>
-<agent_name>batch_proc</agent_name>
-<input_data_source>
-<file_name>data.jsonl</file_name>
-</input_data_source>
-<message>Process</message>
-</use_batch_agent>
-<tool_use>
-<tool_name>regular_tool</tool_name>
-<parameter>
-<param>value</param>
-</parameter>
-</tool_use>
-"""
-        result = parser.parse_response(response)
-
-        # Batch agent call should be found
-        assert len(result.batch_agent_calls) == 1
-        # Regular tool call should also be found
-        assert len(result.tool_calls) == 1
+        # RFC-0015: Agent is a regular builtin tool
+        assert result.tool_calls[1].tool_name == "Agent"
+        assert result.tool_calls[1].parameters["sub_agent_name"] == "helper"
+        assert result.tool_calls[1].parameters["message"] == "help me"
+        assert result.get_call_summary() == "2 tool calls"
 
     def test_parse_response_with_text_around_calls(self, parser):
         """Test parsing response with text before and after calls."""
@@ -877,33 +648,6 @@ And that's what I'll do.
         # Both tools should be found (from first block matching)
         assert len(result.tool_calls) >= 1
 
-    def test_parsed_response_get_all_calls(self, parser):
-        """Test ParsedResponse.get_all_calls method."""
-        response = """
-<tool_use>
-<tool_name>tool1</tool_name>
-<parameter><p>v</p></parameter>
-</tool_use>
-<tool_use>
-<tool_name>agent:sub</tool_name>
-<parameter><task>work</task></parameter>
-</tool_use>
-<use_batch_agent>
-<agent_name>batch</agent_name>
-<input_data_source>
-<file_name>data.jsonl</file_name>
-</input_data_source>
-<message>msg</message>
-</use_batch_agent>
-"""
-        result = parser.parse_response(response)
-        all_calls = result.get_all_calls()
-
-        assert len(all_calls) == 3
-        assert isinstance(all_calls[0], ToolCall)
-        assert isinstance(all_calls[1], SubAgentCall)
-        assert isinstance(all_calls[2], BatchAgentCall)
-
     def test_tool_call_id_generation(self, parser):
         """Test that tool calls get unique IDs."""
         response = """
@@ -923,22 +667,22 @@ And that's what I'll do.
         assert result.tool_calls[0].tool_call_id != result.tool_calls[1].tool_call_id
 
     def test_sub_agent_call_id_generation(self, parser):
-        """Test that sub-agent calls get unique IDs."""
+        """RFC-0015: Agent tool calls get unique IDs like any other ToolCall."""
         response = """
 <tool_use>
-<tool_name>agent:sub1</tool_name>
-<parameter><task>t1</task></parameter>
+<tool_name>Agent</tool_name>
+<parameter><sub_agent_name>researcher</sub_agent_name><message>t1</message></parameter>
 </tool_use>
 <tool_use>
-<tool_name>agent:sub2</tool_name>
-<parameter><task>t2</task></parameter>
+<tool_name>Agent</tool_name>
+<parameter><sub_agent_name>worker</sub_agent_name><message>t2</message></parameter>
 </tool_use>
 """
         result = parser.parse_response(response)
 
-        assert result.sub_agent_calls[0].sub_agent_call_id is not None
-        assert result.sub_agent_calls[1].sub_agent_call_id is not None
-        assert result.sub_agent_calls[0].sub_agent_call_id != result.sub_agent_calls[1].sub_agent_call_id
+        assert result.tool_calls[0].tool_call_id is not None
+        assert result.tool_calls[1].tool_call_id is not None
+        assert result.tool_calls[0].tool_call_id != result.tool_calls[1].tool_call_id
 
     def test_xml_content_preserved_in_calls(self, parser):
         """Test that original XML content is preserved in parsed calls."""
@@ -1027,25 +771,6 @@ And that's what I'll do.
         # Valid tag should be captured
         assert "valid_tag" in params
 
-    def test_parse_sub_agent_call_parseerror(self, parser):
-        """Test sub-agent call parsing with ParseError."""
-        xml_content = "<tool_name>agent:test</tool_name><parameter>"
-
-        with patch.object(parser.xml_parser, "parse_xml_content", side_effect=ET.ParseError("Parse error")):
-            sub_agent_call = parser._parse_sub_agent_call(xml_content)
-
-            # Should return None when fallback fails
-            assert sub_agent_call is None
-
-    def test_parse_batch_agent_call_parseerror(self, parser):
-        """Test batch agent call parsing with ParseError."""
-        xml_content = "<agent_name>test</agent_name><input_data_source>"
-
-        batch_call = parser._parse_batch_agent_call(xml_content)
-
-        # Should return None with invalid XML
-        assert batch_call is None
-
     def test_parse_tool_call_value_error_with_failed_regex(self, parser):
         """Test tool call parsing when ValueError occurs and regex fallback fails."""
         xml_content = "<invalid>no tool name</invalid>"
@@ -1129,21 +854,6 @@ And that's what I'll do.
             # Should use regex fallback successfully
             assert tool_call is not None
             assert tool_call.tool_name == "regex_recovered"
-
-    def test_parse_batch_agent_call_with_parseerror_logging(self, parser, caplog):
-        """Test batch agent call ParseError logging."""
-        import logging
-
-        caplog.set_level(logging.ERROR)
-
-        xml_content = "<agent_name>test<input_data_source>"
-
-        with patch.object(parser.xml_parser, "parse_xml_content", side_effect=ET.ParseError("Parse error")):
-            batch_call = parser._parse_batch_agent_call(xml_content)
-
-            assert batch_call is None
-            # Check logging occurred
-            assert any("Invalid XML format in batch agent call" in record.message for record in caplog.records)
 
     def test_parse_tool_call_with_parameter_containing_only_nested_elements(self, parser):
         """Test parsing when parameter has no text but contains nested XML elements.

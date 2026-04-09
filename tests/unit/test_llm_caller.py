@@ -1110,7 +1110,6 @@ class TestLLMCallerBasicCalls:
 
         assert "</tool_use>" in stop_sequences
         assert "</use_parallel_tool_calls>" in stop_sequences
-        assert "</use_batch_agent>" in stop_sequences
 
     def test_call_llm_merges_existing_stop_sequences(self, mock_openai_client, mock_llm_config, agent_state):
         """Test that existing stop sequences are preserved and merged."""

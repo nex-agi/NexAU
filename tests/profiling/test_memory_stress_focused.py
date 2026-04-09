@@ -79,7 +79,7 @@ _REASONING_BLOCK = (
     "completes processing. Additionally, we should consider implementing a "
     "sliding window approach for the query cache to prevent unbounded growth.\n\n"
     "```python\n"
-    "class BatchProcessor:\n"
+    "class ToolExecutor:\n"
     '    """Processes data batches with managed memory lifecycle."""\n\n'
     "    def __init__(self, pool_size: int = 20, cache_max_mb: int = 50):\n"
     "        self.pool = ConnectionPool(max_size=pool_size)\n"

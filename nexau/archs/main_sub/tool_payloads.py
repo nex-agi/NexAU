@@ -12,23 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Provider-specific structured tool payload builders."""
+"""Provider-specific structured tool payload builders.
 
-from collections.abc import Mapping, Sequence
+RFC-0015: Removed sub_agents parameter and build_sub_agent_tool_name calls.
+Agent is now a regular builtin tool registered in ToolRegistry via
+AgentConfig._finalize(), so tool_payloads only needs to iterate over
+eager tools — no special sub-agent handling required.
+"""
+
+from collections.abc import Sequence
 from typing import Any, cast
 
 from anthropic.types import ToolParam
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 
-from nexau.archs.main_sub.config import AgentConfig
-from nexau.archs.main_sub.sub_agent_naming import build_sub_agent_tool_name
 from nexau.archs.tool.tool import Tool
 
 
 def build_openai_tool_payload(
     *,
     eager_tools: Sequence[Tool],
-    sub_agents: Mapping[str, AgentConfig] | None = None,
 ) -> list[ChatCompletionToolParam]:
     """Build OpenAI-compatible structured tool payload."""
     tools_payload: list[ChatCompletionToolParam] = []
@@ -43,34 +46,12 @@ def build_openai_tool_payload(
             pass
         tools_payload.append(tool_spec)
 
-    for sub_agent_name, sub_agent_config in _iter_sub_agents(sub_agents):
-        tools_payload.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": build_sub_agent_tool_name(sub_agent_name),
-                    "description": sub_agent_config.description or f"Delegate work to sub-agent '{sub_agent_name}'.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "message": {
-                                "type": "string",
-                                "description": "Task or question for the sub-agent.",
-                            },
-                        },
-                        "required": ["message"],
-                    },
-                },
-            },
-        )
-
     return tools_payload
 
 
 def build_anthropic_tool_payload(
     *,
     eager_tools: Sequence[Tool],
-    sub_agents: Mapping[str, AgentConfig] | None = None,
 ) -> list[ToolParam]:
     """Build Anthropic-compatible structured tool payload."""
     tools_payload: list[ToolParam] = []
@@ -83,34 +64,7 @@ def build_anthropic_tool_payload(
             pass
         tools_payload.append(tool_spec)
 
-    for sub_agent_name, sub_agent_config in _iter_sub_agents(sub_agents):
-        tools_payload.append(
-            {
-                "name": build_sub_agent_tool_name(sub_agent_name),
-                "description": sub_agent_config.description or f"Delegate work to sub-agent '{sub_agent_name}'.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "message": {
-                            "type": "string",
-                            "description": "Task or question for the sub-agent.",
-                        },
-                    },
-                    "required": ["message"],
-                },
-            },
-        )
-
     return tools_payload
-
-
-def _iter_sub_agents(
-    sub_agents: Mapping[str, AgentConfig] | None,
-) -> Sequence[tuple[str, AgentConfig]]:
-    """Return sub-agent items while tolerating test doubles."""
-    if isinstance(sub_agents, Mapping):
-        return tuple(sub_agents.items())
-    return ()
 
 
 def structured_tool_description(tool: Tool) -> str:

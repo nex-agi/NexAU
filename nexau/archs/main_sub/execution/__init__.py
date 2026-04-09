@@ -14,7 +14,6 @@
 
 """Execution components for agent task processing."""
 
-from .batch_processor import BatchProcessor
 from .executor import Executor
 from .llm_caller import LLMCaller
 from .stop_reason import AgentStopReason
@@ -24,7 +23,6 @@ from .tool_executor import ToolExecutor
 
 __all__ = [
     "AgentStopReason",
-    "BatchProcessor",
     "Executor",
     "StopResult",
     "LLMCaller",

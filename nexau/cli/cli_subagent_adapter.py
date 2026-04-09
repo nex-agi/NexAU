@@ -119,8 +119,6 @@ class CLIEnabledSubAgentManager(SubAgentManager):
             )
             if cli_nested is not nested_manager:
                 sub_agent.executor.subagent_manager = cli_nested
-                if hasattr(sub_agent.executor, "batch_processor") and sub_agent.executor.batch_processor:
-                    sub_agent.executor.batch_processor.subagent_manager = cli_nested
 
         sub_agent._cli_hooks_injected = True
 
@@ -154,7 +152,8 @@ class CLIEnabledSubAgentManager(SubAgentManager):
             is_root=False,
         )
 
-        self.running_sub_agents[sub_agent.agent_id] = sub_agent
+        actual_sub_agent_id = sub_agent.agent_id
+        self.running_sub_agents[actual_sub_agent_id] = sub_agent
         self._inject_cli_hooks(sub_agent)
 
         self._emit_event(
@@ -162,7 +161,7 @@ class CLIEnabledSubAgentManager(SubAgentManager):
             {
                 "agent_name": sub_agent_name,
                 "display_name": getattr(sub_agent.config, "name", sub_agent_name),
-                "agent_id": sub_agent.agent_id,
+                "agent_id": actual_sub_agent_id,
                 "parent_agent_name": self.agent_name,
                 "parent_agent_id": parent_agent_id,
                 "message": message,
@@ -183,9 +182,9 @@ class CLIEnabledSubAgentManager(SubAgentManager):
                 custom_llm_client_provider=custom_llm_client_provider,
             )
             result_text = (
-                f"{result}\n"
+                f"[sub_agent_id: {actual_sub_agent_id}] {result}\n"
                 f"Sub-agent finished (sub_agent_name: {sub_agent.agent_name}, "
-                f"sub_agent_id: {sub_agent.agent_id}. Recall this agent if needed)."
+                f"sub_agent_id: {actual_sub_agent_id}. Recall this agent if needed)."
             )
 
             self._emit_event(
@@ -193,7 +192,7 @@ class CLIEnabledSubAgentManager(SubAgentManager):
                 {
                     "agent_name": sub_agent_name,
                     "display_name": getattr(sub_agent.config, "name", sub_agent_name),
-                    "agent_id": sub_agent.agent_id,
+                    "agent_id": actual_sub_agent_id,
                     "parent_agent_name": self.agent_name,
                     "parent_agent_id": parent_agent_id,
                     "result": result_text,
@@ -215,9 +214,12 @@ class CLIEnabledSubAgentManager(SubAgentManager):
                     "error": str(exc),
                 },
             )
-            raise
+            # RFC-0015: 无论成功或失败，返回消息都包含 sub_agent_id
+            raise RuntimeError(
+                f"[sub_agent_id: {actual_sub_agent_id}] Sub-agent '{sub_agent_name}' (id: {actual_sub_agent_id}) failed: {exc}"
+            ) from exc
         finally:
-            self.running_sub_agents.pop(getattr(sub_agent, "agent_id", ""), None)
+            self.running_sub_agents.pop(actual_sub_agent_id, None)
 
 
 def attach_cli_manager(
@@ -272,7 +274,5 @@ def attach_cli_to_agent(agent, progress_hook, tool_hook, event_callback) -> None
     )
     if cli_manager:
         agent.executor.subagent_manager = cli_manager
-        if hasattr(agent.executor, "batch_processor") and agent.executor.batch_processor:
-            agent.executor.batch_processor.subagent_manager = cli_manager
 
     agent._cli_hooks_attached = True

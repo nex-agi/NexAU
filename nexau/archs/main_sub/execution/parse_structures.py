@@ -12,22 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Data structures for parsed tool calls, sub-agent calls, and batch operations."""
+"""Data structures for parsed tool calls.
+
+RFC-0015: Removed BatchAgentCall and CallType enum; ExecutableCall is now just ToolCall.
+"""
 
 import uuid
 from dataclasses import dataclass
-from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from .model_response import ModelResponse
 
-
-class CallType(Enum):
-    """Types of executable calls."""
-
-    TOOL = "tool"
-    SUB_AGENT = "sub_agent"
-    BATCH_AGENT = "batch_agent"
+ToolCallSource = Literal["xml", "structured"]
 
 
 @dataclass
@@ -38,7 +34,7 @@ class ToolCall:
     parameters: dict[str, Any]
     raw_content: str | None = None  # Original representation for error reporting/debugging
     tool_call_id: str | None = None
-    source: str = "xml"
+    source: ToolCallSource = "xml"
     parallel_execution_id: str | None = None  # ID for grouping parallel executions
 
     def __post_init__(self):
@@ -50,88 +46,32 @@ class ToolCall:
         return self.raw_content
 
 
-@dataclass
-class SubAgentCall:
-    """Represents a parsed sub-agent call."""
-
-    agent_name: str
-    message: str
-    raw_content: str | None = None  # Original representation for error reporting/debugging
-    tool_call_id: str | None = None
-    sub_agent_call_id: str | None = None
-    parallel_execution_id: str | None = None  # ID for grouping parallel executions
-
-    def __post_init__(self):
-        if self.sub_agent_call_id is None:
-            self.sub_agent_call_id = "sub_agent_call_" + str(uuid.uuid4())
-
-    @property
-    def xml_content(self) -> str | None:  # pragma: no cover - backward compatibility
-        return self.raw_content
-
-
-@dataclass
-class BatchAgentCall:
-    """Represents a parsed batch agent call."""
-
-    agent_name: str
-    file_path: str
-    data_format: str
-    message_template: str
-    raw_content: str | None = None  # Original representation for error reporting/debugging
-    batch_agent_call_id: str | None = None
-
-    def __post_init__(self):
-        if self.batch_agent_call_id is None:
-            self.batch_agent_call_id = "batch_agent_call_" + str(uuid.uuid4())
-
-    @property
-    def xml_content(self) -> str | None:  # pragma: no cover - backward compatibility
-        return self.raw_content
-
-
-# Union type for all call types
-ExecutableCall = ToolCall | SubAgentCall | BatchAgentCall
+# Union type for all call types — simplified to ToolCall after BatchAgentCall removal (RFC-0015)
+ExecutableCall = ToolCall
 
 
 @dataclass
 class ParsedResponse:
-    """Container for all parsed calls from an LLM response."""
+    """Container for all parsed calls from an LLM response.
+
+    RFC-0015: Removed sub_agent_calls and batch_agent_calls fields.
+    """
 
     original_response: str
     tool_calls: list[ToolCall]
-    sub_agent_calls: list[SubAgentCall]
-    batch_agent_calls: list[BatchAgentCall]
     is_parallel_tools: bool = False
-    is_parallel_sub_agents: bool = False
     model_response: ModelResponse | None = None
 
     def get_all_calls(self) -> list[ExecutableCall]:
         """Get all calls in execution order."""
-        all_calls: list[ToolCall | SubAgentCall | BatchAgentCall] = []
-        all_calls.extend(self.tool_calls)
-        all_calls.extend(self.sub_agent_calls)
-        all_calls.extend(self.batch_agent_calls)
-        return all_calls
+        return list(self.tool_calls)
 
     def has_calls(self) -> bool:
         """Check if there are any calls to execute."""
-        return bool(self.tool_calls or self.sub_agent_calls or self.batch_agent_calls)
+        return bool(self.tool_calls)
 
     def get_call_summary(self) -> str:
         """Get a summary of all calls."""
-        summary_parts: list[str] = []
         if self.tool_calls:
-            summary_parts.append(f"{len(self.tool_calls)} tool calls")
-        if self.sub_agent_calls:
-            summary_parts.append(
-                f"{len(self.sub_agent_calls)} sub-agent calls",
-            )
-        if self.batch_agent_calls:
-            summary_parts.append(
-                f"{len(self.batch_agent_calls)} batch agent calls",
-            )
-
-        if summary_parts:
-            return ", ".join(summary_parts)
+            return f"{len(self.tool_calls)} tool calls"
         return "no calls"

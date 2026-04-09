@@ -5,8 +5,8 @@ When you use tools or sub-agents, include the XML blocks in your response and I 
 CRITICAL CONSTRAINT: You MUST output only ONE type of tool call XML at a time. DO NOT mix different types of tool calls in a single response.
 
 Valid tool call types (use only ONE per response):
-1. Single tool or sub_agent: <tool_use>
-2. Parallel tools or sub_agents or mixture of them: <use_parallel_tool_calls>
+1. Single tool or Agent delegation: <tool_use>
+2. Parallel tools or Agent delegations or mixture of them: <use_parallel_tool_calls>
 
 IMPORTANT: each response should only contain ONE type of tool call XML.
 If you generate </tool_use>, </use_parallel_tool_calls>, you should stop your response immediately.
@@ -21,23 +21,25 @@ For single tool execution:
   </parameter>
 </tool_use>
 
-For single sub_agent delegation:
+For single Agent delegation:
 <tool_use>
-  <tool_name>agent:{agent_name}</tool_name>
+  <tool_name>Agent</tool_name>
   <parameter>
+    <sub_agent_name>agent_name</sub_agent_name>
     <message>task description</message>
   </parameter>
 </tool_use>
 
-For parallel execution of multiple tools or sub_agents or mixture of them, use:
+For parallel execution of multiple tools or Agent delegations or mixture of them, use:
 <use_parallel_tool_calls>
 <parallel_tool>
   <tool_name>tool1</tool_name>
   <parameter>...</parameter>
 </parallel_tool>
 <parallel_tool>
-  <tool_name>agent:{agent_name}</tool_name>
+  <tool_name>Agent</tool_name>
   <parameter>
+    <sub_agent_name>agent_name</sub_agent_name>
     <message>task description</message>
   </parameter>
 </parallel_tool>

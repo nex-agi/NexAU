@@ -92,7 +92,6 @@ def complete_task(result: str | None = None, **kwargs: Any) -> str:
                 "message": "Result submitted and task completed.",
                 "status": "TASK_COMPLETED",
                 "task_completed": True,
-                "output": output_data,
             },
             ensure_ascii=False,
         )

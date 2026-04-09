@@ -788,8 +788,6 @@ class TestContextCompactionMiddleware:
             parsed_response=ParsedResponse(
                 original_response="Test",
                 tool_calls=[],
-                sub_agent_calls=[],
-                batch_agent_calls=[],
             ),
         )
         result = middleware.after_model(hook_input)
@@ -866,8 +864,6 @@ class TestContextCompactionMiddleware:
             parsed_response=ParsedResponse(
                 original_response="Test",
                 tool_calls=[],
-                sub_agent_calls=[],
-                batch_agent_calls=[],
             ),
         )
 
@@ -911,8 +907,6 @@ class TestContextCompactionMiddleware:
             parsed_response=ParsedResponse(
                 original_response="Test",
                 tool_calls=[],
-                sub_agent_calls=[],
-                batch_agent_calls=[],
             ),
         )
 
@@ -1865,8 +1859,6 @@ class TestContextCompactionMiddlewareAdvanced:
             parsed_response=ParsedResponse(
                 original_response="Test",
                 tool_calls=[],
-                sub_agent_calls=[],
-                batch_agent_calls=[],
             ),
         )
 
@@ -1930,8 +1922,6 @@ class TestContextCompactionMiddlewareAdvanced:
             parsed_response=ParsedResponse(
                 original_response="Test",
                 tool_calls=[],
-                sub_agent_calls=[],
-                batch_agent_calls=[],
             ),
         )
 
@@ -1982,8 +1972,6 @@ class TestContextCompactionMiddlewareAdvanced:
             parsed_response=ParsedResponse(
                 original_response="Test",
                 tool_calls=[],
-                sub_agent_calls=[],
-                batch_agent_calls=[],
             ),
         )
 
@@ -2304,8 +2292,6 @@ class TestCompactionTracerSpan:
         parsed = ParsedResponse(
             original_response="A2",
             tool_calls=[],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
 
         hook_input = AfterModelHookInput(

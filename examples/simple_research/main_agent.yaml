@@ -4,7 +4,7 @@ max_context_tokens: 100000
 system_prompt: |
   You are a helpful assistant that can delegate research tasks to a specialized research agent.
 
-  When the user asks you to research something, use the call_sub_agent tool to delegate the task
+  When the user asks you to research something, use the Agent tool to delegate the task
   to the 'research_assistant' sub-agent. The research assistant has access to web search tools.
 
   For simple questions or tasks that don't require research, answer directly.

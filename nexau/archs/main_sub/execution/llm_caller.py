@@ -405,7 +405,6 @@ class LLMCaller:
             xml_stop_sequences = [
                 "</tool_use>",
                 "</use_parallel_tool_calls>",
-                "</use_batch_agent>",
             ]
 
             # Merge with existing stop sequences if any
@@ -773,7 +772,7 @@ class LLMCaller:
                 api_params["tools"] = adapted_tools
 
         if not use_structured_tools:
-            xml_stop_sequences = ["</tool_use>", "</use_parallel_tool_calls>", "</use_batch_agent>"]
+            xml_stop_sequences = ["</tool_use>", "</use_parallel_tool_calls>"]
             existing_stop = api_params.get("stop", [])
             if isinstance(existing_stop, str):
                 existing_stop = [existing_stop]
