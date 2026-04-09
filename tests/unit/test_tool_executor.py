@@ -155,17 +155,14 @@ class TestToolExecutorExecution:
             tool_registry=ToolRegistry(),
             sandbox_manager=sandbox_manager,
         )
-        local_agent_state.set_global_value(
-            "skill_registry",
-            {
-                "memory-skill": Skill(
-                    name="memory-skill",
-                    description="Skill stored in memory",
-                    detail="Detailed skill content",
-                    folder="",
-                )
-            },
-        )
+        local_agent_state.skill_registry = {
+            "memory-skill": Skill(
+                name="memory-skill",
+                description="Skill stored in memory",
+                detail="Detailed skill content",
+                folder="",
+            )
+        }
 
         load_skill_tool = Tool(
             name="LoadSkill",

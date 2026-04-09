@@ -38,12 +38,7 @@ class _SkillRegistryState:
     """Minimal agent-state stand-in for load_skill integration checks."""
 
     def __init__(self, skill_registry: Mapping[str, object]):
-        self._skill_registry = skill_registry
-
-    def get_global_value(self, key: str, default=None):  # type: ignore[override]
-        if key == "skill_registry":
-            return self._skill_registry
-        return default
+        self.skill_registry = skill_registry
 
 
 class TestStructuredAsSkillIntegration:
