@@ -234,9 +234,8 @@ class Agent:
             len(self.config.sub_agents) if self.config.sub_agents else 0,
         )
 
-        # Build skill registry for quick lookup
+        # Build skill registry for quick lookup (per-agent, not in global_storage)
         self.skill_registry = {skill.name: skill for skill in runtime_skills}
-        self.global_storage.set("skill_registry", self.skill_registry)
 
         # Initialize prompt builder
         self.prompt_builder = PromptBuilder()
@@ -532,16 +531,13 @@ class Agent:
         """Re-inject non-serializable runtime state after storage swap.
 
         Issue #431: Agent.create() 用 session 恢复的 storage 替换 __init__ 中的
-        临时 storage，导致 skill_registry 等非序列化状态丢失。
+        临时 storage，导致瞬态状态丢失。
         此方法将所有瞬态状态统一重新注入，未来新增瞬态 key 只需在此维护。
+
+        Note: skill_registry 已移至 AgentState（per-agent），不再写入 global_storage。
         """
         # 1. 重新注入 tracer（已有逻辑）
         self._setup_tracer()
-
-        # 2. 重新注入 skill_registry（非序列化，不会被 DB 恢复）
-        if self.skill_registry:
-            self.global_storage.set("skill_registry", self.skill_registry)
-            logger.debug("Re-injected skill_registry with %d skills", len(self.skill_registry))
 
     @classmethod
     def from_yaml(
@@ -1213,6 +1209,7 @@ class Agent:
                 team_state=self._team_state,
                 token_trace_session=self._token_trace_session,
                 subagent_manager=self.executor.subagent_manager,
+                skill_registry=self.skill_registry,
             )
 
             # Execute with or without tracing

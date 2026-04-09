@@ -247,8 +247,7 @@ class TestLoadSkill:
             name="test-skill", description="Test skill description", detail="Detailed skill information", folder="/path/to/skill"
         )
 
-        skill_registry = {"test-skill": test_skill}
-        agent_state.set_global_value("skill_registry", skill_registry)
+        agent_state.skill_registry = {"test-skill": test_skill}
 
         result = load_skill("test-skill", agent_state)
 
@@ -262,7 +261,7 @@ class TestLoadSkill:
     def test_load_skill_not_found(self, agent_state):
         """Test loading a skill that doesn't exist."""
         # Empty skill registry
-        agent_state.set_global_value("skill_registry", {})
+        agent_state.skill_registry = {}
 
         with pytest.raises(ValueError, match="Skill nonexistent not found"):
             load_skill("nonexistent", agent_state)
@@ -283,8 +282,7 @@ class TestLoadSkill:
             folder="/path/with/special chars",
         )
 
-        skill_registry = {"special-skill": test_skill}
-        agent_state.set_global_value("skill_registry", skill_registry)
+        agent_state.skill_registry = {"special-skill": test_skill}
 
         result = load_skill("special-skill", agent_state)
 
@@ -298,8 +296,7 @@ class TestLoadSkill:
         """Test loading skill with None description and detail."""
         test_skill = Skill(name="minimal-skill", description=None, detail=None, folder="")
 
-        skill_registry = {"minimal-skill": test_skill}
-        agent_state.set_global_value("skill_registry", skill_registry)
+        agent_state.skill_registry = {"minimal-skill": test_skill}
 
         result = load_skill("minimal-skill", agent_state)
 
@@ -336,8 +333,7 @@ This skill demonstrates the full workflow from folder to retrieval.
         skill = Skill.from_folder(skill_folder)
 
         # Register it in agent state
-        skill_registry = {skill.name: skill}
-        agent_state.set_global_value("skill_registry", skill_registry)
+        agent_state.skill_registry = {skill.name: skill}
 
         # Load and verify
         result = load_skill("integration-skill", agent_state)
@@ -367,8 +363,7 @@ Details for skill {i}
             skills.append(skill)
 
         # Register all skills
-        skill_registry = {skill.name: skill for skill in skills}
-        agent_state.set_global_value("skill_registry", skill_registry)
+        agent_state.skill_registry = {skill.name: skill for skill in skills}
 
         # Load each skill and verify
         for i in range(3):

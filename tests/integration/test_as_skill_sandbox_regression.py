@@ -38,6 +38,7 @@ def _build_agent_state(agent: Agent) -> AgentState:
         global_storage=agent.global_storage,
         tool_registry=agent._tool_registry,
         sandbox_manager=agent.sandbox_manager,
+        skill_registry=agent.skill_registry,
     )
 
 

@@ -182,7 +182,7 @@ def build_tool_skill(tool: Tool, tool_call_mode: str = "xml") -> Skill:
 
 def load_skill(skill_name: str, agent_state: AgentState) -> str:
     """Load a skill from skill folders."""
-    skills: dict[str, Skill] = agent_state.get_global_value("skill_registry", {})
+    skills = agent_state.skill_registry
     if skill_name not in skills:
         raise ValueError(f"Skill {skill_name} not found")
     skill = skills[skill_name]
