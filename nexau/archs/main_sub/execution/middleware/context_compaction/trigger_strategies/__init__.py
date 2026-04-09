@@ -13,9 +13,11 @@
 # limitations under the License.
 
 from .base import TriggerStrategy
+from .time_based import TimeBasedTrigger
 from .token_threshold import TokenThresholdTrigger
 
 __all__ = [
+    "TimeBasedTrigger",
     "TriggerStrategy",
     "TokenThresholdTrigger",
 ]

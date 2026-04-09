@@ -22,6 +22,7 @@ from .compact_stratigies.sliding_window import SlidingWindowCompaction
 from .compact_stratigies.user_model_full_trace_adaptive import UserModelFullTraceAdaptiveCompaction
 from .config import CompactionConfig
 from .trigger_strategies.base import TriggerStrategy
+from .trigger_strategies.time_based import TimeBasedTrigger
 from .trigger_strategies.token_threshold import TokenThresholdTrigger
 
 
@@ -52,9 +53,14 @@ def create_compaction_strategy(config: CompactionConfig) -> CompactionStrategy:
         )
 
     if config.compaction_strategy == "tool_result_compaction":
+        # micro-compact: 传递 compactable_tools 参数
+        compactable_tools_set: frozenset[str] | None = None
+        if config.compactable_tools is not None:
+            compactable_tools_set = frozenset(config.compactable_tools)
         return ToolResultCompaction(
             keep_iterations=config.keep_iterations,
             keep_user_rounds=config.keep_user_rounds,
+            compactable_tools=compactable_tools_set,
         )
 
     raise ValueError(f"Unknown compaction strategy: {config.compaction_strategy}")
@@ -63,12 +69,16 @@ def create_compaction_strategy(config: CompactionConfig) -> CompactionStrategy:
 def create_trigger_strategy(config: CompactionConfig) -> TriggerStrategy:
     """Builds the trigger strategy based on config.
 
+    micro-compact: 支持 time_based 和 token_threshold 两种触发器
+
     Args:
         config: Validated configuration object
 
     Returns:
         Initialized trigger strategy instance
     """
+    if config.trigger == "time_based":
+        return TimeBasedTrigger(gap_threshold_minutes=config.gap_threshold_minutes)
     return TokenThresholdTrigger(threshold=config.threshold)
 
 

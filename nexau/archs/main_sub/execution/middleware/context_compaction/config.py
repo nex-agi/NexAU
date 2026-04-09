@@ -37,12 +37,19 @@ class CompactionConfig(BaseModel):
     emergency_compact_enabled: bool = True
     threshold: float = 0.75
 
+    # Trigger Selection (micro-compact: 新增 time_based 触发器)
+    trigger: Literal["token_threshold", "time_based"] = "token_threshold"
+    gap_threshold_minutes: float = 5  # micro-compact: time_based trigger 专用
+
     # Strategy Selection
     compaction_strategy: Literal["llm_summary", "sliding_window", "tool_result_compaction"] = "tool_result_compaction"
 
     # Shared Settings (used by both strategies)
     keep_iterations: int = 3  # Number of recent iterations to keep uncompacted
     keep_user_rounds: int = 0  # Number of recent user rounds to keep uncompacted (0 = disabled)
+
+    # micro-compact: tool_result_compaction 工具类型过滤
+    compactable_tools: list[str] | None = None
 
     # Summary LLM overrides
     summary_llm_config: dict[str, Any] | None = None
