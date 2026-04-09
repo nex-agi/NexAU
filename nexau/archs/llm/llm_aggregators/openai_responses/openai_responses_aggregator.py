@@ -199,8 +199,12 @@ class OpenAIResponsesAggregator(Aggregator[ResponseStreamEvent, Response]):
             return
 
         if item.type == "response.completed":
-            # Update status in metadata (no action needed for now)
-            self._value = item.response
+            # Preserve the locally aggregated output placeholders/items because
+            # OpenAI's completed event may carry an empty output array in
+            # streaming mode. build() relies on this list to merge built items
+            # back by output_index.
+            preserved_output = self._value.output if self._value.output else item.response.output
+            self._value = item.response.model_copy(update={"output": preserved_output}, deep=True)
             return
 
     def build(self) -> Response:
@@ -218,8 +222,17 @@ class OpenAIResponsesAggregator(Aggregator[ResponseStreamEvent, Response]):
         for item_id in sorted(self._output_aggregators.keys(), key=lambda x: self._output_aggregators[x].output_index):
             output_item = self._output_aggregators[item_id].build()
             output_index = self._output_aggregators[item_id].output_index
-            # Replace the item at output_index with the built output
-            new_value.output[output_index] = output_item
+            # Replace the item at output_index with the built output.
+            # If response.completed replaced output with an empty list, rebuild
+            # the list in-order from the aggregated items.
+            if output_index < len(new_value.output):
+                new_value.output[output_index] = output_item
+            elif output_index == len(new_value.output):
+                new_value.output.append(output_item)
+            else:
+                raise ValueError(
+                    f"Invalid output_index {output_index} while building response. Current output length is {len(new_value.output)}."
+                )
 
         return new_value
 
