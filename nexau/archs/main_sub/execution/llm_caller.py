@@ -34,6 +34,7 @@ from typing import Any, Literal, cast
 import httpx
 import openai
 import requests
+from json_repair import repair_json
 from openai import AsyncStream, Stream
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
@@ -2516,7 +2517,17 @@ class AnthropicStreamAggregator:
                         len(input_buffer),
                     )
                 except (json.JSONDecodeError, ValueError):
-                    block["input"] = input_buffer
+                    # 模型生成的 tool input 可能包含未转义的引号等 JSON 瑕疵；
+                    # 用 repair_json 尝试修复，与 OpenAI 路径 (ModelToolCall.from_openai) 保持一致。
+                    try:
+                        repaired = repair_json(input_buffer)
+                        block["input"] = json.loads(repaired)
+                        logger.warning(
+                            "⚠️ Anthropic tool input had malformed JSON; repaired successfully. raw length=%d",
+                            len(input_buffer),
+                        )
+                    except Exception:
+                        block["input"] = input_buffer
         self._completed_blocks.append(block)
 
     def _flush_active_blocks(self) -> None:
