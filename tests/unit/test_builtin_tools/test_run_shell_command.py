@@ -115,6 +115,10 @@ class TestRunShellCommandIntegration:
         assert "error" not in result or result.get("error") is None
         assert "hello world" in result["content"]
         assert "hello world" in result["returnDisplay"]
+        assert result["stdout"] == "hello world"
+        assert result["stderr"] == ""
+        assert result["interrupted"] is False
+        assert result["timed_out"] is False
 
     @patch("nexau.archs.tool.builtin.shell_tools.run_shell_command.time.sleep", return_value=None)
     def test_stop_request_kills_running_foreground_command(self, _sleep_mock):
@@ -162,3 +166,7 @@ class TestRunShellCommandIntegration:
         assert "Interrupted: command stopped due to stop request." in result["content"]
         assert result["returnDisplay"] == "partial output"
         assert result["exit_code"] == -1
+        assert result["stdout"] == "partial output"
+        assert result["stderr"] == ""
+        assert result["interrupted"] is True
+        assert result["timed_out"] is False

@@ -63,6 +63,22 @@ def test_from_yaml_prefers_agent_binding_over_yaml_binding(tmp_path: Path):
     assert tool.implementation_import_path is None
 
 
+def test_from_yaml_reads_formatter_field(tmp_path: Path):
+    yaml_path = tmp_path / "yaml_formatter.tool.yaml"
+    yaml_content = {
+        "type": "tool",
+        "name": "yaml_formatter",
+        "description": "desc",
+        "formatter": "xml",
+        "input_schema": {"type": "object", "properties": {}},
+    }
+    yaml_path.write_text(yaml.safe_dump(yaml_content))
+
+    tool = Tool.from_yaml(str(yaml_path), binding=lambda **_: {"result": "ok"})
+
+    assert tool.formatter == "xml"
+
+
 @pytest.mark.parametrize("reserved_field", ["global_storage", "agent_state", "ctx"])
 def test_from_yaml_rejects_reserved_fields(tmp_path: Path, reserved_field):
     yaml_path = tmp_path / f"{reserved_field}.yaml"
@@ -189,6 +205,87 @@ def test_get_info_and_string_helpers():
     assert "Tool 'info_tool'" in str(tool)
     assert "Skill description" in str(tool)
     assert "implementation=impl" in repr(tool)
+
+
+def test_tool_defaults_to_xml_formatter() -> None:
+    tool = Tool(
+        name="xml_default",
+        description="desc",
+        input_schema={"type": "object", "properties": {}},
+        implementation=lambda: {"result": "Hello from tool\nSecond line"},
+    )
+
+    formatted = tool.format_output_for_llm(
+        tool_input={},
+        tool_output={"result": "Hello from tool\nSecond line", "status": "success"},
+        tool_call_id="call_1",
+        is_error=False,
+    )
+
+    assert isinstance(formatted, str)
+    assert "<tool_result>" in formatted
+    assert '<body field="result">' in formatted
+    assert "Hello from tool" in formatted
+
+
+def test_tool_xml_formatter_unwraps_single_content_field() -> None:
+    tool = Tool(
+        name="content_only",
+        description="desc",
+        input_schema={"type": "object", "properties": {}},
+        implementation=lambda: {"content": "Plain content for llm"},
+    )
+
+    formatted = tool.format_output_for_llm(
+        tool_input={},
+        tool_output={"content": "Plain content for llm"},
+        tool_call_id="call_1",
+        is_error=False,
+    )
+
+    assert formatted == "Plain content for llm"
+
+
+def test_tool_xml_formatter_unwraps_single_result_field() -> None:
+    tool = Tool(
+        name="result_only",
+        description="desc",
+        input_schema={"type": "object", "properties": {}},
+        implementation=lambda: {"result": "Plain result for llm"},
+    )
+
+    formatted = tool.format_output_for_llm(
+        tool_input={},
+        tool_output={"result": "Plain result for llm"},
+        tool_call_id="call_1",
+        is_error=False,
+    )
+
+    assert formatted == "Plain result for llm"
+
+
+def test_tool_import_path_formatter_is_used() -> None:
+    tool = Tool(
+        name="agent_tool",
+        description="desc",
+        input_schema={"type": "object", "properties": {}},
+        implementation=lambda: {"status": "success"},
+        formatter="nexau.archs.tool.formatters.agent:format_agent_tool_output",
+    )
+
+    formatted = tool.format_output_for_llm(
+        tool_input={},
+        tool_output={
+            "status": "success",
+            "sub_agent_name": "explore",
+            "sub_agent_id": "sub-123",
+            "result": "## Answer\n\nDone.",
+        },
+        tool_call_id="call_1",
+        is_error=False,
+    )
+
+    assert formatted == "Sub-agent finished (sub_agent_name: explore, sub_agent_id: sub-123).\n\n## Answer\n\nDone."
 
 
 @pytest.mark.parametrize(

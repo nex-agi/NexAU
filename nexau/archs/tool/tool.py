@@ -39,6 +39,8 @@ from jsonschema.validators import validator_for
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 from pydantic import BaseModel, ConfigDict, Field
 
+from .formatters import ToolFormatter, ToolFormatterContext, resolve_tool_formatter
+
 logger = logging.getLogger(__name__)
 _UNRESOLVED_ANNOTATION = object()
 
@@ -205,6 +207,7 @@ class ToolYamlSchema(BaseModel):
     template_override: str | None = None
     builtin: str | None = None
     binding: str | None = None
+    formatter: str | None = None
 
 
 class ConfigError(Exception):
@@ -229,6 +232,7 @@ class Tool:
         defer_loading: bool = False,
         search_hint: str | None = None,
         template_override: str | None = None,
+        formatter: str | ToolFormatter | None = None,
         extra_kwargs: dict[str, Any] | None = None,
         source_name: str | None = None,
     ):
@@ -256,6 +260,8 @@ class Tool:
         self.defer_loading = defer_loading
         self.search_hint = search_hint
         self.template_override = template_override
+        self.formatter = formatter
+        self._resolved_formatter: ToolFormatter | None = None
         self.disable_parallel = disable_parallel
         reserved_keys = {"agent_state", "global_storage", "ctx"}
         extra_kwargs = extra_kwargs or {}
@@ -337,6 +343,7 @@ class Tool:
             )
 
         template_override = tool_def.get("template_override")
+        formatter = tool_def.get("formatter")
 
         # Create tool instance
         return cls(
@@ -352,8 +359,57 @@ class Tool:
             defer_loading=effective_defer_loading,
             search_hint=search_hint_val,
             template_override=template_override,
+            formatter=formatter,
             extra_kwargs=extra_kwargs,
         )
+
+    def resolve_formatter(self) -> ToolFormatter:
+        """Resolve and cache the formatter configured for this tool.
+
+        RFC-0017: formatter resolver
+
+        未显式配置时自动回退到 builtin `xml` formatter。
+        """
+
+        if self._resolved_formatter is None:
+            self._resolved_formatter = resolve_tool_formatter(self.formatter)
+        return self._resolved_formatter
+
+    def format_output_for_llm(
+        self,
+        *,
+        tool_input: dict[str, Any],
+        tool_output: object,
+        tool_call_id: str | None,
+        is_error: bool,
+    ) -> object:
+        """Format raw tool output into the LLM-facing representation.
+
+        RFC-0017: tool output flattening
+
+        先执行 formatter，再进入 after_tool middleware，保证后续截断与最终
+        模型输入始终作用于同一份 llm-facing output。
+        """
+
+        formatter_context = ToolFormatterContext(
+            tool_name=self.name,
+            tool_input=cast(dict[str, object], dict(tool_input)),
+            tool_output=tool_output,
+            tool_call_id=tool_call_id,
+            is_error=is_error,
+        )
+
+        formatter = self.resolve_formatter()
+        try:
+            return formatter(formatter_context)
+        except Exception:
+            logger.exception("Tool '%s' formatter failed; falling back to builtin XML formatter", self.name)
+            fallback_formatter = resolve_tool_formatter("xml")
+            try:
+                return fallback_formatter(formatter_context)
+            except Exception:
+                logger.exception("Tool '%s' builtin XML formatter failed; falling back to raw tool output", self.name)
+                return tool_output
 
     def _validate_reserved_param_annotations(self) -> None:
         """Validate reserved framework parameter annotations for tool implementations."""
@@ -679,12 +735,14 @@ class Tool:
             "description": self.description,
             "skill_description": self.skill_description,
             "input_schema": self.input_schema,
+            "formatter": self.formatter if isinstance(self.formatter, str) else None,
         }
 
     def __repr__(self) -> str:
         impl = self.implementation
         impl_name = getattr(impl, "__name__", repr(impl)) if impl is not None else "None"
-        return f"Tool(name='{self.name}', implementation={impl_name})"
+        formatter_name = self.formatter if isinstance(self.formatter, str) else getattr(self.formatter, "__name__", "xml")
+        return f"Tool(name='{self.name}', implementation={impl_name}, formatter={formatter_name})"
 
     def __str__(self) -> str:
         tool_str = f"Tool '{self.name}': {self.description[:50]}{'...' if len(self.description) > 50 else ''}"

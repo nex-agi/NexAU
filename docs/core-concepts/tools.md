@@ -183,6 +183,42 @@ def my_search_tool(query: str, agent_state=None) -> dict:
 
 This is the same pattern used by all NexAU built-in tools (file tools, web tools, shell tools, etc.). Use it in your custom tools whenever the full output is verbose but you want a clean one-liner in the UI.
 
+## Tool Output Formatters
+
+Besides `returnDisplay`, tools can also control the **model-facing** result via a formatter.
+
+- The tool implementation returns the raw structured value.
+- The formatter converts that raw value into the payload the LLM will actually see.
+- `returnDisplay` remains frontend-only and is stripped before the model sees the result.
+
+If no formatter is configured, NexAU uses the built-in `xml` formatter.
+
+Typical reasons to add a custom formatter:
+
+- flatten verbose runtime metadata into cleaner prompt text
+- preserve raw structured output for middleware or tracing while giving the model a simpler summary
+- produce tool-specific output formats, such as shell-style command summaries
+
+You can configure a formatter in YAML:
+
+```yaml
+type: tool
+name: my_tool
+description: Example tool
+formatter: xml
+input_schema:
+  type: object
+  properties: {}
+```
+
+Or use an import path for a custom formatter:
+
+```yaml
+formatter: my_project.tool_formatters:format_my_tool_output
+```
+
+See [Tool Output Formatters](../advanced-guides/tool-formatters.md) for the execution order, middleware interaction, and custom formatter examples.
+
 ## Tool Output Truncation
 
 Tools like file search or code analysis can produce very large outputs that waste LLM context tokens. NexAU provides two complementary truncation mechanisms:

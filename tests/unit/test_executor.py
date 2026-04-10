@@ -36,6 +36,7 @@ from nexau.archs.main_sub.execution.parse_structures import (
     ParsedResponse,
     ToolCall,
 )
+from nexau.archs.main_sub.execution.tool_executor import ToolExecutionResult
 from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.tool.tool import Tool, build_structured_tool_definition
 from nexau.archs.tool.tool_registry import ToolRegistry
@@ -487,7 +488,7 @@ class TestExecutorExecution:
                 tool_block = next(block for block in tool_message.content if isinstance(block, ToolResultBlock))
                 assert tool_block.tool_use_id == "call_123"
                 assert isinstance(tool_block.content, str)
-                assert '"result"' in tool_block.content
+                assert tool_block.content == "4"
                 return second_response
 
             with patch.object(executor.llm_caller, "call_llm", side_effect=llm_side_effect):
@@ -635,7 +636,8 @@ class TestExecutorExecution:
 
         tool_block = next(block for block in matching_tool_messages[0].content if isinstance(block, ToolResultBlock))
         tool_content = tool_block.content
-        assert '"result"' in tool_content
+        assert isinstance(tool_content, str)
+        assert tool_content == "4"
 
         # Tool message should appear before the final assistant reply
         tool_index = messages.index(matching_tool_messages[0])
@@ -1032,7 +1034,9 @@ class TestExecutorToolExecution:
 
         assert tool_name == "test_tool"
         assert is_error is False
-        assert "result" in result
+        assert isinstance(result, ToolExecutionResult)
+        assert result.raw_output["result"] == 10
+        assert result.llm_tool_output == 10
 
     def test_execute_tool_call_safe_error(self, mock_llm_config, agent_state):
         """Test tool execution with error."""
@@ -1072,8 +1076,8 @@ class TestExecutorToolExecution:
 
         assert tool_name == "error_tool"
         assert is_error is False
-        assert isinstance(result, dict)
-        assert result["error"] == "Tool error"
+        assert isinstance(result, ToolExecutionResult)
+        assert result.raw_output["error"] == "Tool error"
 
 
 class TestExecutorCleanup:

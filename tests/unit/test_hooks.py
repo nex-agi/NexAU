@@ -346,6 +346,7 @@ class TestAfterToolHookInput:
         assert hook_input.tool_call_id == "call_123"
         assert hook_input.tool_input == {"param": "value"}
         assert hook_input.tool_output == "result"
+        assert hook_input.llm_tool_output is None
 
     def test_initialization_with_parallel_execution_id(self, agent_state):
         """Test initialization of AfterToolHookInput with parallel_execution_id."""
@@ -412,6 +413,11 @@ class TestAfterToolHookResult:
         result = AfterToolHookResult(tool_output="modified")
         assert result.has_modifications() is True
 
+    def test_has_modifications_true_with_llm_output(self):
+        """LLM tool output alone also counts as a modification."""
+        result = AfterToolHookResult(llm_tool_output="formatted")
+        assert result.has_modifications() is True
+
     def test_has_modifications_false(self):
         """Test has_modifications returns False when no modifications."""
         result = AfterToolHookResult()
@@ -425,8 +431,9 @@ class TestAfterToolHookResult:
 
     def test_with_modifications(self):
         """Test with_modifications class method."""
-        result = AfterToolHookResult.with_modifications(tool_output="modified")
+        result = AfterToolHookResult.with_modifications(tool_output="modified", llm_tool_output="formatted")
         assert result.tool_output == "modified"
+        assert result.llm_tool_output == "formatted"
         assert result.has_modifications() is True
 
 
@@ -546,9 +553,33 @@ class TestMiddlewareManager:
             sandbox=LocalSandbox(),
         )
 
-        result = manager.run_after_tool(hook_input, "base")
+        result, llm_result = manager.run_after_tool(hook_input, "base")
         assert order == ["second", "first"]
         assert result == "base-second-first"
+        assert llm_result is None
+
+    def test_run_after_tool_tracks_llm_output_separately(self, agent_state):
+        """LLM-facing output should flow through after_tool middleware independently."""
+
+        def llm_hook(hook_input: AfterToolHookInput) -> HookResult:
+            assert hook_input.tool_output == {"result": "raw"}
+            assert hook_input.llm_tool_output == "formatted"
+            return HookResult.with_modifications(llm_tool_output="formatted-2")
+
+        manager = MiddlewareManager([FunctionMiddleware(after_tool_hook=llm_hook)])
+        hook_input = AfterToolHookInput(
+            agent_state=agent_state,
+            tool_name="demo",
+            tool_call_id="call_1",
+            tool_input={},
+            tool_output={"result": "raw"},
+            llm_tool_output="formatted",
+            sandbox=LocalSandbox(),
+        )
+
+        raw_result, llm_result = manager.run_after_tool(hook_input, {"result": "raw"}, "formatted")
+        assert raw_result == {"result": "raw"}
+        assert llm_result == "formatted-2"
 
     def test_wrap_model_call_nested(self):
         """wrap_model_call applies middleware in a nested fashion."""
@@ -746,6 +777,28 @@ class TestMiddlewareManager:
         assert "AFTER TOOL HOOK TRIGGERED" in joined
         assert "Tool: calc" in joined
         assert "Tool output: result text" in joined
+
+    def test_logging_middleware_after_tool_logs_llm_output(self, agent_state, caplog):
+        """after_tool logs llm-facing output when present."""
+
+        logger_name = "tests.logging.middleware.tool.llm"
+        middleware = LoggingMiddleware(tool_logger=logger_name)
+        caplog.set_level(logging.INFO, logger=logger_name)
+
+        hook_input = AfterToolHookInput(
+            agent_state=agent_state,
+            tool_name="calc",
+            tool_call_id="call_1",
+            tool_input={"a": 1},
+            tool_output={"result": "raw"},
+            llm_tool_output="formatted output",
+            sandbox=LocalSandbox(),
+        )
+
+        middleware.after_tool(hook_input)
+
+        joined = "\n".join(record.getMessage() for record in caplog.records if record.name == logger_name)
+        assert "LLM tool output: formatted output" in joined
 
     def test_logging_middleware_after_tool_truncates_output(self, agent_state, caplog):
         """after_tool truncates long outputs when preview limit is exceeded."""

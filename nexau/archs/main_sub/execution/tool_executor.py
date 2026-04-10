@@ -17,6 +17,7 @@
 import dataclasses
 import json
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
@@ -37,6 +38,17 @@ from .hooks import AfterToolHookInput, BeforeToolHookInput, MiddlewareManager, T
 JsonDict = dict[str, Any]
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ToolExecutionResult:
+    """Raw and LLM-facing tool outputs for a single execution.
+
+    RFC-0017: tool_output + llm_tool_output 双通道
+    """
+
+    raw_output: JsonDict
+    llm_tool_output: object
 
 
 class ToolExecutor:
@@ -78,6 +90,27 @@ class ToolExecutor:
         parallel_execution_id: str | None = None,
         framework_context: "FrameworkContext | None" = None,
     ) -> JsonDict:
+        """Execute a tool and return the raw tool output channel."""
+
+        execution_result = self.execute_tool_with_llm_output(
+            agent_state=agent_state,
+            tool_name=tool_name,
+            parameters=parameters,
+            tool_call_id=tool_call_id,
+            parallel_execution_id=parallel_execution_id,
+            framework_context=framework_context,
+        )
+        return execution_result.raw_output
+
+    def execute_tool_with_llm_output(
+        self,
+        agent_state: "AgentState",
+        tool_name: str,
+        parameters: dict[str, Any],
+        tool_call_id: str,
+        parallel_execution_id: str | None = None,
+        framework_context: "FrameworkContext | None" = None,
+    ) -> ToolExecutionResult:
         """Execute a tool with given parameters.
 
         Args:
@@ -152,7 +185,7 @@ class ToolExecutor:
         tool_parameters: dict[str, Any],
         tool_call_id: str,
         framework_context: "FrameworkContext | None" = None,
-    ) -> JsonDict:
+    ) -> ToolExecutionResult:
         """Execute tool with tracing enabled.
 
         Args:
@@ -188,7 +221,7 @@ class ToolExecutor:
                     tool_call_id=tool_call_id,
                     framework_context=framework_context,
                 )
-                trace_ctx.set_outputs({"result": result})
+                trace_ctx.set_outputs({"result": result.raw_output})
                 return result
             except Exception as e:
                 logger.error(f"❌ Tool '{tool_name}' execution failed: {e}")
@@ -204,7 +237,7 @@ class ToolExecutor:
         tool_parameters: dict[str, Any],
         tool_call_id: str,
         framework_context: "FrameworkContext | None" = None,
-    ) -> JsonDict:
+    ) -> ToolExecutionResult:
         """Inner tool execution logic without tracing wrapper.
 
         Args:
@@ -255,7 +288,120 @@ class ToolExecutor:
                 "error_type": type(e).__name__,
             }
 
-        # Normalize result to a dict for downstream processing
+        execution_result = self.finalize_tool_execution(
+            agent_state=agent_state,
+            sandbox=sandbox,
+            tool=cast(Tool, tool),
+            tool_name=tool_name,
+            tool_parameters=tool_parameters,
+            tool_call_id=tool_call_id,
+            result=result,
+            execution_error=execution_error,
+        )
+
+        if execution_error:
+            raise execution_error
+
+        return execution_result
+
+    def finalize_tool_execution(
+        self,
+        *,
+        agent_state: "AgentState",
+        sandbox: BaseSandbox | None,
+        tool: Tool,
+        tool_name: str,
+        tool_parameters: dict[str, Any],
+        tool_call_id: str,
+        result: Any,
+        execution_error: Exception | None,
+    ) -> ToolExecutionResult:
+        """Finalize raw and LLM-facing outputs after a tool call.
+
+        RFC-0017: formatter 先于 after_tool middleware 执行
+        """
+
+        raw_output = self._normalize_tool_output(result)
+
+        if tool_name in self.stop_tools:
+            logger.info(
+                f"🛑 Stop tool '{tool_name}' executed, marking for early termination",
+            )
+            raw_output["_is_stop_tool"] = True
+
+        inferred_error = execution_error is not None or self._should_mark_llm_output_as_error(raw_output)
+
+        llm_tool_output = tool.format_output_for_llm(
+            tool_input=tool_parameters,
+            tool_output=raw_output,
+            tool_call_id=tool_call_id,
+            is_error=inferred_error,
+        )
+
+        if self.middleware_manager:
+            try:
+                hook_input = AfterToolHookInput(
+                    agent_state=agent_state,
+                    sandbox=sandbox,
+                    tool_name=tool_name,
+                    tool_input=tool_parameters,
+                    tool_output=raw_output,
+                    llm_tool_output=llm_tool_output,
+                    tool_call_id=tool_call_id,
+                )
+                after_output, after_llm_output = self.middleware_manager.run_after_tool(
+                    hook_input,
+                    raw_output,
+                    llm_tool_output,
+                )
+                raw_output = cast(JsonDict, after_output) if isinstance(after_output, dict) else {"result": after_output}
+                llm_tool_output = after_llm_output if after_llm_output is not None else llm_tool_output
+            except Exception as hook_error:
+                logger.error(f"❌ After-tool middleware execution failed for '{tool_name}': {hook_error}")
+
+        if raw_output.get("status") == "error" and raw_output.get("_is_stop_tool", False):
+            logger.error(
+                f"❌ Finish Tool '{tool_name}' execution failed, will continue.",
+            )
+            raw_output["_is_stop_tool"] = False
+
+        # Strip returnDisplay — already streamed to frontend via ToolCallResultEvent
+        # in after_tool middleware. Keeping it doubles token consumption for the LLM.
+        # 对 llm_tool_output 再做一次浅层 strip，是为了覆盖 formatter 未走 XML
+        # 路径、而是直接返回 dict 的场景；XML 字符串路径在 formatter 阶段已处理。
+        raw_output.pop("returnDisplay", None)
+        llm_tool_output = self._strip_display_only_from_llm_output(llm_tool_output)
+
+        return ToolExecutionResult(raw_output=raw_output, llm_tool_output=llm_tool_output)
+
+    @staticmethod
+    def _should_mark_llm_output_as_error(raw_output: JsonDict) -> bool:
+        """Infer whether formatter should render the output on the error path.
+
+        RFC-0017: error-aware formatter routing
+
+        execute()/execute_async() may swallow implementation exceptions and return
+        an error dict instead of re-raising. The formatter still needs
+        ``is_error=True`` so XML body selection prefers ``error`` / ``traceback``.
+        """
+
+        status_value = raw_output.get("status")
+        if status_value == "error":
+            return True
+
+        if "error" not in raw_output:
+            return False
+
+        error_value = raw_output.get("error")
+        if isinstance(error_value, str):
+            return bool(error_value.strip())
+
+        return error_value is not None
+
+    @staticmethod
+    def _normalize_tool_output(result: Any) -> JsonDict:
+        """Normalize arbitrary tool output into a JSON-like dict."""
+
         def _make_jsonable(obj: Any) -> Any:
             if isinstance(obj, BaseModel):
                 return obj.model_dump()
@@ -269,46 +415,17 @@ class ToolExecutor:
                 return [_make_jsonable(v) for v in obj_list]
             return obj
 
-        result = _make_jsonable(result)
-        if isinstance(result, dict):
-            result_dict: JsonDict = cast(JsonDict, result)
-        else:
-            result_dict = {"result": result}
+        jsonable_result = _make_jsonable(result)
+        if isinstance(jsonable_result, dict):
+            return cast(JsonDict, jsonable_result)
+        return {"result": jsonable_result}
 
-        if tool_name in self.stop_tools:
-            logger.info(
-                f"🛑 Stop tool '{tool_name}' executed, marking for early termination",
-            )
-            result_dict["_is_stop_tool"] = True
-
-        if self.middleware_manager:
-            try:
-                hook_input = AfterToolHookInput(
-                    agent_state=agent_state,
-                    sandbox=sandbox,
-                    tool_name=tool_name,
-                    tool_input=tool_parameters,
-                    tool_output=result_dict,
-                    tool_call_id=tool_call_id,
-                )
-                after_result = self.middleware_manager.run_after_tool(hook_input, result_dict)
-                result_dict = cast(JsonDict, after_result) if isinstance(after_result, dict) else {"result": after_result}
-            except Exception as hook_error:
-                logger.error(f"❌ After-tool middleware execution failed for '{tool_name}': {hook_error}")
-
-        if execution_error:
-            raise execution_error
-
-        if result_dict.get("status") == "error" and result_dict.get("_is_stop_tool", False):
-            logger.error(
-                f"❌ Finish Tool '{tool_name}' execution failed, will continue.",
-            )
-            result_dict["_is_stop_tool"] = False
-        # Strip returnDisplay — already streamed to frontend via ToolCallResultEvent
-        # in after_tool middleware. Keeping it doubles token consumption for the LLM.
-        result_dict.pop("returnDisplay", None)
-
-        return result_dict
+    @staticmethod
+    def _strip_display_only_from_llm_output(value: object) -> object:
+        if isinstance(value, dict):
+            value_dict = cast(dict[str, object], value)
+            return {key: item for key, item in value_dict.items() if key != "returnDisplay"}
+        return value
 
     def convert_parameter_type(
         self,
