@@ -61,7 +61,7 @@ from nexau.archs.main_sub.execution.parse_structures import (
 from nexau.archs.main_sub.execution.response_parser import ResponseParser
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
-from nexau.archs.main_sub.execution.tool_executor import ToolExecutor
+from nexau.archs.main_sub.execution.tool_executor import ToolExecutionResult, ToolExecutor
 from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.token_trace_session import TokenTraceContextOverflowError, TokenTraceSession
@@ -790,7 +790,10 @@ class Executor:
 
                         tool_result_block = ToolResultBlock(
                             tool_use_id=str(call_id),
-                            content=coerce_tool_result_content(output if output is not None else content, fallback_text=str(content)),
+                            content=coerce_tool_result_content(
+                                feedback.get("llm_tool_output", output if output is not None else content),
+                                fallback_text=None,
+                            ),
                             is_error=bool(feedback.get("is_error")),
                         )
 
@@ -1312,7 +1315,10 @@ class Executor:
 
                 tool_result_block = ToolResultBlock(
                     tool_use_id=str(call_id),
-                    content=coerce_tool_result_content(output if output is not None else content, fallback_text=str(content)),
+                    content=coerce_tool_result_content(
+                        feedback.get("llm_tool_output", output if output is not None else content),
+                        fallback_text=None,
+                    ),
                     is_error=bool(feedback.get("is_error")),
                 )
                 # micro-compact: 设置 created_at 时间戳
@@ -1527,35 +1533,19 @@ class Executor:
 
                 # Async tool: 直接 await（不经过 to_thread）
                 result = await tool_obj.execute_async(**exec_params)
+                execution_result = await asyncio.to_thread(
+                    self.tool_executor.finalize_tool_execution,
+                    agent_state=agent_state,
+                    sandbox=sandbox,
+                    tool=tool_obj,
+                    tool_name=tc.tool_name,
+                    tool_parameters=tool_parameters,
+                    tool_call_id=tc.tool_call_id or "",
+                    result=result,
+                    execution_error=None,
+                )
 
-                result_dict: dict[str, Any] = dict(result)
-
-                # 注入 _is_stop_tool 标记
-                if tc.tool_name in self.tool_executor.stop_tools:
-                    result_dict["_is_stop_tool"] = True
-
-                # after_tool middleware hook (sync hook → to_thread)
-                if self.middleware_manager:
-                    from nexau.archs.main_sub.execution.hooks import AfterToolHookInput
-
-                    hook_input = AfterToolHookInput(
-                        agent_state=agent_state,
-                        sandbox=sandbox,
-                        tool_name=tc.tool_name,
-                        tool_input=tool_parameters,
-                        tool_output=result_dict,
-                        tool_call_id=tc.tool_call_id or "",
-                    )
-                    after_result = await asyncio.to_thread(self.middleware_manager.run_after_tool, hook_input, result_dict)
-                    after_dict: dict[str, Any] = (
-                        cast(dict[str, Any], after_result) if isinstance(after_result, dict) else {"result": after_result}
-                    )
-                    result_dict = after_dict
-
-                    if result_dict.get("status") == "error" and result_dict.get("_is_stop_tool", False):
-                        result_dict["_is_stop_tool"] = False
-
-                return ("tool", tc, (tc.tool_name, result_dict, False))
+                return ("tool", tc, (tc.tool_name, execution_result, False))
             except Exception as e:
                 return ("tool", tc, (tc.tool_name, str(e), True))
 
@@ -1603,9 +1593,17 @@ class Executor:
             call_obj: ToolCall = entry[1]
             result_data: tuple[str, Any, bool] = entry[2]
             tool_name, result, is_error = result_data
-            result_str = result if isinstance(result, str) else json.dumps(result, indent=2, ensure_ascii=False)
+            raw_output, llm_tool_output = self._split_tool_outputs(result)
+            result_str = self._serialize_llm_tool_output(llm_tool_output)
             execution_feedbacks.append(
-                {"call_type": call_type, "call": call_obj, "content": result_str, "output": result, "is_error": is_error}
+                {
+                    "call_type": call_type,
+                    "call": call_obj,
+                    "content": result_str,
+                    "output": raw_output,
+                    "llm_tool_output": llm_tool_output,
+                    "is_error": is_error,
+                }
             )
 
             # ToolCall.source indicates call format; structured tool calls do not append XML tool results.
@@ -1622,18 +1620,20 @@ class Executor:
                     )
                 # 检查 stop tool
                 try:
-                    parsed_result = json.loads(result_str)
-                    if isinstance(parsed_result, dict):
-                        parsed_result_dict = cast(dict[str, Any], parsed_result)
-                        if parsed_result_dict.get("_is_stop_tool"):
-                            stop_tool_detected = True
-                            self._last_stop_tool_name = tool_name
-                            actual_result: dict[str, Any] = {k: v for k, v in parsed_result_dict.items() if k != "_is_stop_tool"}
-                            if "result" in actual_result and len(actual_result) == 1:
-                                stop_tool_result = json.dumps(actual_result["result"], ensure_ascii=False, indent=4)
-                            else:
-                                stop_tool_result = json.dumps(actual_result or parsed_result, ensure_ascii=False, indent=4)
-                except (json.JSONDecodeError, TypeError):
+                    if isinstance(raw_output, dict):
+                        raw_output_dict = cast(dict[str, Any], raw_output)
+                    else:
+                        raw_output_dict = None
+
+                    if raw_output_dict is not None and raw_output_dict.get("_is_stop_tool"):
+                        stop_tool_detected = True
+                        self._last_stop_tool_name = tool_name
+                        actual_result: dict[str, Any] = {key: value for key, value in raw_output_dict.items() if key != "_is_stop_tool"}
+                        if "result" in actual_result and len(actual_result) == 1:
+                            stop_tool_result = json.dumps(actual_result["result"], ensure_ascii=False, indent=4)
+                        else:
+                            stop_tool_result = json.dumps(actual_result or raw_output_dict, ensure_ascii=False, indent=4)
+                except TypeError:
                     pass
 
         if tool_results:
@@ -1879,13 +1879,15 @@ class Executor:
                 try:
                     result_data = future.result()
                     tool_name, result, is_error = result_data
-                    result_str = result if isinstance(result, str) else json.dumps(result, indent=2, ensure_ascii=False)
+                    raw_output, llm_tool_output = self._split_tool_outputs(result)
+                    result_str = self._serialize_llm_tool_output(llm_tool_output)
                     execution_feedbacks.append(
                         {
                             "call_type": "tool",
                             "call": call_obj,
                             "content": result_str,
-                            "output": result,
+                            "output": raw_output,
+                            "llm_tool_output": llm_tool_output,
                             "is_error": is_error,
                         },
                     )
@@ -1919,39 +1921,41 @@ class Executor:
 
                         # Check if this tool result indicates a stop tool was executed
                         try:
-                            parsed_result = json.loads(result_str)
-                            if isinstance(parsed_result, dict):
-                                parsed_result_dict = cast(dict[str, Any], parsed_result)
-                                if parsed_result_dict.get("_is_stop_tool"):
-                                    stop_tool_detected = True
-                                    self._last_stop_tool_name = tool_name
-                                    actual_result: dict[str, Any] = {
-                                        key: value for key, value in parsed_result_dict.items() if key != "_is_stop_tool"
-                                    }
-                                    if "result" in actual_result and len(actual_result) == 1:
-                                        stop_tool_result = json.dumps(
-                                            actual_result["result"],
+                            if isinstance(raw_output, dict):
+                                raw_output_dict = cast(dict[str, Any], raw_output)
+                            else:
+                                raw_output_dict = None
+
+                            if raw_output_dict is not None and raw_output_dict.get("_is_stop_tool"):
+                                stop_tool_detected = True
+                                self._last_stop_tool_name = tool_name
+                                actual_result: dict[str, Any] = {
+                                    key: value for key, value in raw_output_dict.items() if key != "_is_stop_tool"
+                                }
+                                if "result" in actual_result and len(actual_result) == 1:
+                                    stop_tool_result = json.dumps(
+                                        actual_result["result"],
+                                        ensure_ascii=False,
+                                        indent=4,
+                                    )
+                                else:
+                                    stop_tool_result = (
+                                        json.dumps(
+                                            actual_result,
                                             ensure_ascii=False,
                                             indent=4,
                                         )
-                                    else:
-                                        stop_tool_result = (
-                                            json.dumps(
-                                                actual_result,
-                                                ensure_ascii=False,
-                                                indent=4,
-                                            )
-                                            if actual_result
-                                            else json.dumps(
-                                                parsed_result,
-                                                ensure_ascii=False,
-                                                indent=4,
-                                            )
+                                        if actual_result
+                                        else json.dumps(
+                                            raw_output_dict,
+                                            ensure_ascii=False,
+                                            indent=4,
                                         )
-                                    logger.info(
-                                        f"🛑 Stop tool '{tool_name}' result detected, will terminate after processing",
                                     )
-                        except (json.JSONDecodeError, TypeError):
+                                logger.info(
+                                    f"🛑 Stop tool '{tool_name}' result detected, will terminate after processing",
+                                )
+                        except TypeError:
                             pass
                 except Exception as e:
                     logger.error(
@@ -2000,7 +2004,7 @@ class Executor:
                 )
 
             tool_call_id = tool_call.tool_call_id or f"tool_call_{uuid.uuid4()}"
-            result = self.tool_executor.execute_tool(
+            result = self.tool_executor.execute_tool_with_llm_output(
                 agent_state,
                 tool_call.tool_name,
                 converted_params,
@@ -2079,6 +2083,25 @@ class Executor:
         """Return the description exposed to structured tool-calling models."""
 
         return tool.get_structured_description()
+
+    @staticmethod
+    def _split_tool_outputs(result: Any) -> tuple[Any, Any]:
+        """Split raw and llm-facing outputs from the execution result."""
+
+        if isinstance(result, ToolExecutionResult):
+            return result.raw_output, result.llm_tool_output
+        return result, result
+
+    @staticmethod
+    def _serialize_llm_tool_output(value: Any) -> str:
+        """Serialize llm-facing tool output for text-only feedback paths."""
+
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value, indent=2, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
 
     def add_tool(self, tool: Tool) -> None:
         """Add a tool to the executor.

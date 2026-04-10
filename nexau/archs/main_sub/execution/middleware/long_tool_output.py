@@ -160,7 +160,7 @@ class LongToolOutputMiddleware(Middleware):
         if hook_input.tool_name in self._bypass_tool_names:
             return HookResult.no_changes()
 
-        output = hook_input.tool_output
+        output = hook_input.llm_tool_output if hook_input.llm_tool_output is not None else hook_input.tool_output
         sandbox = hook_input.sandbox
 
         # For dict outputs with a known text field, measure that field directly
@@ -221,6 +221,8 @@ class LongToolOutputMiddleware(Middleware):
             saved_path,
         )
 
+        if hook_input.llm_tool_output is not None:
+            return HookResult.with_modifications(llm_tool_output=new_output)
         return HookResult.with_modifications(tool_output=new_output)
 
     # ------------------------------------------------------------------

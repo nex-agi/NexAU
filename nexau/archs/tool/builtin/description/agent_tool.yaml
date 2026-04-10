@@ -9,6 +9,7 @@ description: >-
 
   Available sub-agent names are listed in the tool description for your context.
   `sub_agent_name` must match one of the parent agent's configured sub-agents.
+formatter: nexau.archs.tool.formatters.agent:format_agent_tool_output
 input_schema:
   type: object
   properties:

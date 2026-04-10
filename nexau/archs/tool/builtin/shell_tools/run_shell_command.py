@@ -331,6 +331,12 @@ def run_shell_command(
             "exit_code": exit_code,
         }
 
+        # RFC-0017: raw fields for the shell formatter
+        result["stdout"] = stdout
+        result["stderr"] = stderr
+        result["interrupted"] = cmd_result.status == SandboxStatus.STOPPED
+        result["timed_out"] = cmd_result.status == SandboxStatus.TIMEOUT
+
         # Include CommandResult truncation metadata and file paths
         if cmd_result.output_dir:
             result["output_dir"] = cmd_result.output_dir

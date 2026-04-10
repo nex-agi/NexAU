@@ -90,7 +90,7 @@ class AgentState:
         self.team_state = team_state
         self.token_trace_session = token_trace_session
         self._subagent_manager = subagent_manager
-        self.skill_registry: "dict[str, Skill]" = skill_registry or {}
+        self.skill_registry: dict[str, Skill] = skill_registry or {}
 
     @property
     def subagent_manager(self) -> Optional["SubAgentManager"]:
