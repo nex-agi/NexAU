@@ -44,6 +44,7 @@ from nexau.archs.main_sub.execution.hooks import (
     AfterModelHook,
     AfterModelHookInput,
     AfterToolHook,
+    AfterToolHookInput,
     BeforeAgentHookInput,
     BeforeModelHook,
     BeforeModelHookInput,
@@ -1474,11 +1475,15 @@ class Executor:
               run_async_function_sync()。
             """
             if self._shutdown_event.is_set():
-                return ("tool", tc, (tc.tool_name, "Shutdown in progress", True))
+                error_msg = "Shutdown in progress"
+                await asyncio.to_thread(self._emit_tool_error_result, tc, error_msg, agent_state)
+                return ("tool", tc, (tc.tool_name, error_msg, True))
 
             tool_obj = self._tool_registry.get_tool(tc.tool_name)
             if tool_obj is None:
-                return ("tool", tc, (tc.tool_name, f"Tool '{tc.tool_name}' not found", True))
+                error_msg = self._tool_not_found_msg(tc.tool_name)
+                await asyncio.to_thread(self._emit_tool_error_result, tc, error_msg, agent_state)
+                return ("tool", tc, (tc.tool_name, error_msg, True))
 
             # 检测 async tool: implementation 是 async def，
             # 或子类（如 MCPTool）声明了原生 async execute_async() 覆盖。
@@ -1986,6 +1991,50 @@ class Executor:
 
         return processed_response, stop_tool_detected, stop_tool_result, execution_feedbacks
 
+    @staticmethod
+    def _tool_not_found_msg(tool_name: str) -> str:
+        return f"Tool '{tool_name}' not found"
+
+    def _emit_tool_error_result(
+        self,
+        tc: ToolCall,
+        error_msg: str,
+        agent_state: "AgentState",
+    ) -> None:
+        """Invoke after_tool middleware hooks for tool calls that bypass normal execution.
+
+        When a tool call is rejected early (tool not found, shutdown), the normal
+        finalize_tool_execution path is skipped, so after_tool middleware hooks —
+        most importantly AgentEventsMiddleware which emits ToolCallResultEvent —
+        are never invoked. This leaves the event stream missing the tool_call_result
+        event, causing downstream consumers (persistence layer, UI) to never
+        receive the tool result.
+        """
+        if not self.middleware_manager:
+            return
+        error_output: dict[str, Any] = {"status": "error", "error": error_msg}
+        hook_input = AfterToolHookInput(
+            agent_state=agent_state,
+            # sandbox 为 None：此时工具不存在或正在 shutdown，尚未进入 ToolExecutor，
+            # 无法也不需要获取 sandbox。当前所有 after_tool middleware（如
+            # LongToolOutputMiddleware）对短错误消息不会触及 sandbox 路径。
+            sandbox=None,
+            tool_name=tc.tool_name,
+            tool_call_id=tc.tool_call_id or "",
+            tool_input=tc.parameters,
+            tool_output=error_output,
+            llm_tool_output=error_output,
+        )
+        try:
+            self.middleware_manager.run_after_tool(hook_input, error_output, error_output)
+        except Exception:
+            logger.warning(
+                "Failed to emit error tool result for '%s' (tool_call_id=%s)",
+                tc.tool_name,
+                tc.tool_call_id,
+                exc_info=True,
+            )
+
     def _execute_tool_call_safe(
         self,
         tool_call: ToolCall,
@@ -1993,6 +2042,15 @@ class Executor:
         framework_context: FrameworkContext,
     ) -> tuple[str, Any, bool]:
         """Safely execute a tool call."""
+        # Early check: emit error result event if tool is not registered.
+        # tool_executor.execute_tool_with_llm_output raises ValueError for
+        # missing tools, but that exception is caught by the broad except below
+        # which bypasses after_tool hooks (and ToolCallResultEvent emission).
+        if self._tool_registry.get_tool(tool_call.tool_name) is None:
+            error_msg = self._tool_not_found_msg(tool_call.tool_name)
+            self._emit_tool_error_result(tool_call, error_msg, agent_state)
+            return (tool_call.tool_name, error_msg, True)
+
         try:
             # Convert parameters to correct types and execute
             converted_params: dict[str, Any] = {}
