@@ -90,7 +90,7 @@
       "id": "T10",
       "title": "RFC-0016 MCP 资源发现与错误恢复",
       "depends_on": ["T1"],
-      "status": "pending",
+      "status": "implemented",
       "ref": "rfcs/0016-mcp-resource-discovery-and-recovery.md"
     },
     {

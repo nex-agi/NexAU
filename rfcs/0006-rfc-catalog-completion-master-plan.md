@@ -237,7 +237,7 @@ graph LR
 | T7 | 子 Agent 委派与上下文传播 | P1 | T1, T2 | RFC-0013 | implemented |
 | T8 | 提示词工程与模板化 | P2 | T1 | RFC-0014 | implemented |
 | T9 | 传输层路由与请求调度 | P2 | T4 | RFC-0015 | implemented |
-| T10 | MCP 资源发现与错误恢复 | P2 | T1 | RFC-0016 | pending |
+| T10 | MCP 资源发现与错误恢复 | P2 | T1 | RFC-0016 | implemented |
 | T11 | CLI 与 YAML 配置加载 | P2 | - | RFC-0017 | pending |
 | T12 | 技能系统与嵌入模型 | P2 | T1 | RFC-0018 | pending |
 | T13 | 图像令牌化与缓存 | P3 | T4 | RFC-0019 | pending |
