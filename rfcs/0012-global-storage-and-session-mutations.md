@@ -326,11 +326,11 @@ flowchart TB
 - `rfcs/0008-session-persistence-and-history.md` — 本 RFC 的依赖：RFC-0008 描述 session backend；本 RFC 描述存进 backend 的状态结构
 - `rfcs/0011-middleware-hook-composition.md` — 中间件读写 `AgentContext` / `GlobalStorage` 的具体场景由 RFC-0011 的 hook 模型支撑
 - `rfcs/0006-rfc-catalog-completion-master-plan.md` — 本 RFC 是 T6 的产出
-- `nexau/archs/main_sub/agent_context.py` — `AgentContext` (line 30) + `GlobalStorage` (line 181) 实现
-- `nexau/archs/main_sub/agent_state.py` — `AgentState` 统一外观 (line 28)
-- `nexau/archs/main_sub/context_value.py` — `ContextValue` 输入模型 (line 21)
+- `nexau/archs/main_sub/agent_context.py` — `AgentContext` (line 29) + `GlobalStorage` (line 187) 实现
+- `nexau/archs/main_sub/agent_state.py` — `AgentState` 统一外观 (line 29)
+- `nexau/archs/main_sub/context_value.py` — `ContextValue` 输入模型 (line 20)
 - `nexau/archs/session/models/session.py` — `SessionModel.storage` / `.context` 列定义 (line 74)
-- `nexau/archs/session/models/types.py` — `GlobalStorageJson` TypeDecorator (line 58)
-- `nexau/archs/session/session_manager.py` — `update_session_storage` / `update_session_state` (line 278-340)
+- `nexau/archs/session/models/types.py` — `GlobalStorageJson` TypeDecorator (line 57)
+- `nexau/archs/session/session_manager.py` — `update_session_storage` / `update_session_state` (line 279-340)
 - `nexau/archs/main_sub/execution/subagent_manager.py` — sub-agent global_storage 传播 (line 60-133)
 - `nexau/archs/main_sub/execution/middleware/context_compaction/middleware.py` — `AgentContext` full-trace 缓存示例 (line 694-718)
