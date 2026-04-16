@@ -144,7 +144,9 @@ Agent 在 `_initialize_sandbox()`（[agent.py:544](nexau/archs/main_sub/agent.py
 - **共享模式**（[agent.py:558-571](nexau/archs/main_sub/agent.py#L558-L571)）——`_shared_sandbox_manager` 由 `AgentTeam` 注入，多个 sub-agent 共用一个沙箱；只 `add_upload_assets` 不再 `prepare_session_context`，cleanup 由 Team 统一负责
 - **独立模式**（[agent.py:573-607](nexau/archs/main_sub/agent.py#L573-L607)）——按 config 类型选 `LocalSandboxManager` 或 `E2BSandboxManager`，调用 `prepare_session_context()` 注册上下文，并 `cleanup_manager.register_sandbox_manager()` 挂到全局清理钩子
 
-工具执行路径在 [agent.py:765-772](nexau/archs/main_sub/agent.py#L765-L772) 通过 `self.sandbox_manager.instance` 取实例（自动触发懒启动）。RFC-0007 描述的 `tool_executor` 把这个实例注入工具上下文。
+**工具访问 sandbox 的真正路径**走 `AgentState`：Agent 在每次 run 起点构造 `AgentState`（[agent.py:902-914](nexau/archs/main_sub/agent.py#L902-L914)），把 `sandbox_manager` 而不是 sandbox 实例注入；工具调用时通过 `AgentState.get_sandbox()`（[agent_state.py:159-169](nexau/archs/main_sub/agent_state.py#L159-L169)）触发 `start_sync()`，懒启动正好发生在工具实际所在的事件循环里。RFC-0007 描述的 `tool_executor` 通过 `AgentState` 把这条路径暴露给工具上下文。
+
+另一处对 `self.sandbox_manager.instance` 的直接读取在 [agent.py:765-772](nexau/archs/main_sub/agent.py#L765-L772)，但用途不同——它是 RFC-0032 `sandbox_env` 的运行时注入路径：若 sandbox 已启动，原地更新 `envs`；否则把新 envs 合并回 `session_context.sandbox_config`，等下次懒启动一起带上。
 
 Run 结束后的生命周期（[agent.py:941-952](nexau/archs/main_sub/agent.py#L941-L952)）：
 1. 共享模式：完全跳过本块（Team 决定何时停）
@@ -221,7 +223,9 @@ Run 结束后的生命周期（[agent.py:941-952](nexau/archs/main_sub/agent.py#
 - [`nexau/archs/sandbox/e2b_sandbox.py:97`](nexau/archs/sandbox/e2b_sandbox.py#L97) — `E2BSandbox`
 - [`nexau/archs/sandbox/e2b_sandbox.py:1523`](nexau/archs/sandbox/e2b_sandbox.py#L1523) — `E2BSandboxManager`
 - [`nexau/archs/main_sub/agent.py:544-607`](nexau/archs/main_sub/agent.py#L544-L607) — Agent `_initialize_sandbox`（共享 / 独立模式）
-- [`nexau/archs/main_sub/agent.py:765-772`](nexau/archs/main_sub/agent.py#L765-L772) — 工具执行路径取 sandbox 实例
+- [`nexau/archs/main_sub/agent.py:902-914`](nexau/archs/main_sub/agent.py#L902-L914) — AgentState 构造：注入 `sandbox_manager` 而非 sandbox 实例
+- [`nexau/archs/main_sub/agent_state.py:159-169`](nexau/archs/main_sub/agent_state.py#L159-L169) — `AgentState.get_sandbox()` → `start_sync()`：工具访问 sandbox 的真正懒启动入口
+- [`nexau/archs/main_sub/agent.py:765-772`](nexau/archs/main_sub/agent.py#L765-L772) — RFC-0032 `sandbox_env` 运行时注入路径（与工具执行路径不同）
 - [`nexau/archs/main_sub/agent.py:941-952`](nexau/archs/main_sub/agent.py#L941-L952) — Run 结束后的生命周期处理
 - RFC-0006 NexAU RFC 目录补全总纲（本 RFC 所属主计划）
 - RFC-0008 会话持久化与历史管理（`sandbox_state` 字段所在）

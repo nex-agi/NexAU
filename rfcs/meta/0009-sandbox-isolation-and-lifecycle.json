@@ -14,6 +14,7 @@
   "updated": "2026-04-16",
   "requires": [],
   "related": [
+    "rfcs/0001-state-persistence-on-stop.md",
     "rfcs/0006-rfc-catalog-completion-master-plan.md",
     "rfcs/0008-session-persistence-and-history.md"
   ],
