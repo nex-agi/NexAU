@@ -1,0 +1,27 @@
+{
+  "rfc": "0011",
+  "title": "中间件钩子组合与语义",
+  "status": "implemented",
+  "priority": "P1",
+  "tags": [
+    "architecture",
+    "middleware",
+    "hooks",
+    "execution-pipeline",
+    "composition"
+  ],
+  "affects": "nexau/archs/main_sub/execution/hooks.py, nexau/archs/main_sub/execution/executor.py, nexau/archs/main_sub/execution/middleware/, nexau/archs/main_sub/team/middleware/",
+  "created": "2026-04-16",
+  "updated": "2026-04-16",
+  "requires": [
+    "rfcs/0007-tool-system-architecture-and-binding.md",
+    "rfcs/0010-llm-aggregator-event-stream.md"
+  ],
+  "related": [
+    "rfcs/0002-agent-team.md",
+    "rfcs/0003-llm-failover-middleware.md",
+    "rfcs/0004-context-overflow-emergency-compaction-and-error-events.md",
+    "rfcs/0006-rfc-catalog-completion-master-plan.md"
+  ],
+  "tasks": []
+}
