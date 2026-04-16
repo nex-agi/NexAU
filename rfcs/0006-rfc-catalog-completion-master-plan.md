@@ -231,7 +231,7 @@ graph LR
 | T1 | 工具系统架构与绑定模型 | P0 | - | RFC-0007 | implemented |
 | T2 | 会话持久化与历史管理 | P1 | - | RFC-0008 | implemented |
 | T3 | 沙箱隔离与生命周期管理 | P1 | - | RFC-0009 | implemented |
-| T4 | LLM 聚合器事件流设计 | P1 | - | RFC-0010 | pending |
+| T4 | LLM 聚合器事件流设计 | P1 | - | RFC-0010 | implemented |
 | T5 | 中间件钩子组合与语义 | P1 | T1, T4 | RFC-0011 | pending |
 | T6 | 全局存储与会话级变更 | P1 | T2 | RFC-0012 | pending |
 | T7 | 子 Agent 委派与上下文传播 | P1 | T1, T2 | RFC-0013 | pending |

@@ -48,7 +48,7 @@
       "id": "T4",
       "title": "RFC-0010 LLM 聚合器事件流设计",
       "depends_on": [],
-      "status": "pending",
+      "status": "implemented",
       "ref": "rfcs/0010-llm-aggregator-event-stream.md"
     },
     {
