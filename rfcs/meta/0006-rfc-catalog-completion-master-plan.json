@@ -1,0 +1,116 @@
+{
+  "rfc": "0006",
+  "title": "NexAU RFC 目录补全总纲",
+  "status": "draft",
+  "priority": "P0",
+  "tags": [
+    "architecture",
+    "documentation",
+    "governance",
+    "dx"
+  ],
+  "affects": "rfcs/, future RFC catalog (RFC-0007..RFC-0019), documentation governance for nexau/archs/* subsystems",
+  "created": "2026-04-16",
+  "updated": "2026-04-16",
+  "requires": [],
+  "related": [
+    "rfcs/0001-state-persistence-on-stop.md",
+    "rfcs/0002-agent-team.md",
+    "rfcs/0003-llm-failover-middleware.md",
+    "rfcs/0004-context-overflow-emergency-compaction-and-error-events.md",
+    "rfcs/0005-tool-search.md"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "RFC-0007 工具系统架构与绑定模型",
+      "depends_on": [],
+      "status": "pending",
+      "ref": "rfcs/0007-tool-system-architecture-and-binding.md"
+    },
+    {
+      "id": "T2",
+      "title": "RFC-0008 会话持久化与历史管理",
+      "depends_on": [],
+      "status": "pending",
+      "ref": "rfcs/0008-session-persistence-and-history.md"
+    },
+    {
+      "id": "T3",
+      "title": "RFC-0009 沙箱隔离与生命周期管理",
+      "depends_on": [],
+      "status": "pending",
+      "ref": "rfcs/0009-sandbox-isolation-and-lifecycle.md"
+    },
+    {
+      "id": "T4",
+      "title": "RFC-0010 LLM 聚合器事件流设计",
+      "depends_on": [],
+      "status": "pending",
+      "ref": "rfcs/0010-llm-aggregator-event-stream.md"
+    },
+    {
+      "id": "T5",
+      "title": "RFC-0011 中间件钩子组合与语义",
+      "depends_on": ["T1", "T4"],
+      "status": "pending",
+      "ref": "rfcs/0011-middleware-hook-composition.md"
+    },
+    {
+      "id": "T6",
+      "title": "RFC-0012 全局存储与会话级变更",
+      "depends_on": ["T2"],
+      "status": "pending",
+      "ref": "rfcs/0012-global-storage-and-session-mutations.md"
+    },
+    {
+      "id": "T7",
+      "title": "RFC-0013 子 Agent 委派与上下文传播",
+      "depends_on": ["T1", "T2"],
+      "status": "pending",
+      "ref": "rfcs/0013-subagent-delegation-and-context-propagation.md"
+    },
+    {
+      "id": "T8",
+      "title": "RFC-0014 提示词工程与模板化",
+      "depends_on": ["T1"],
+      "status": "pending",
+      "ref": "rfcs/0014-prompt-engineering-and-templating.md"
+    },
+    {
+      "id": "T9",
+      "title": "RFC-0015 传输层路由与请求调度",
+      "depends_on": ["T4"],
+      "status": "pending",
+      "ref": "rfcs/0015-transport-routing-and-dispatch.md"
+    },
+    {
+      "id": "T10",
+      "title": "RFC-0016 MCP 资源发现与错误恢复",
+      "depends_on": ["T1"],
+      "status": "pending",
+      "ref": "rfcs/0016-mcp-resource-discovery-and-recovery.md"
+    },
+    {
+      "id": "T11",
+      "title": "RFC-0017 CLI 与 YAML 配置加载",
+      "depends_on": [],
+      "status": "pending",
+      "ref": "rfcs/0017-cli-and-yaml-config-loading.md"
+    },
+    {
+      "id": "T12",
+      "title": "RFC-0018 技能系统与嵌入模型",
+      "depends_on": ["T1"],
+      "status": "pending",
+      "ref": "rfcs/0018-skill-system-and-embeddings.md"
+    },
+    {
+      "id": "T13",
+      "title": "RFC-0019 图像令牌化与缓存",
+      "depends_on": ["T4"],
+      "status": "pending",
+      "ref": "rfcs/0019-image-tokenization-and-caching.md"
+    }
+  ]
+}
