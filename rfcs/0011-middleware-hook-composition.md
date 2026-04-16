@@ -65,7 +65,7 @@ class HookResult:
 
 ### `MiddlewareManager`：统一编排器
 
-`MiddlewareManager`（`hooks.py:493-704`）是 executor 与中间件之间的唯一接口。executor 在以下 9 处显式调用它（`executor.py` 通过 `self.middleware_manager.run_*` / `wrap_*` / `stream_chunk` 入口）：
+`MiddlewareManager`（`hooks.py:493-704`）是核心 executor 路径与中间件之间的唯一接口。它被三个文件共 9 处显式调用——分布如下：`executor.py` 4 处（agent / model 生命周期）、`tool_executor.py` 3 处（tool 调用前 / 围绕 / 之后）、`llm_caller.py` 2 处（model wrap + stream chunk）：
 
 | 调用位置 | manager 方法 | 关键行为 |
 |---|---|---|
@@ -73,11 +73,11 @@ class HookResult:
 | `executor.py:806` | `run_after_agent` | **反序**遍历；同时合并 `agent_response` 与 `messages` 修改（`hooks.py:541-552`） |
 | `executor.py:503` | `run_before_model` | 正序；本地变量 `current_messages` 累积修改，避免污染 `hook_input` 的引用 |
 | `executor.py:888` | `run_after_model` | 反序；除 messages/parsed_response 外，任何中间件设置 `force_continue=True` 即整体 `force_continue=True`（`hooks.py:598-599`） |
-| 工具调用前 | `run_before_tool` | 正序；累积 `tool_input` 修改 |
-| 工具调用后 | `run_after_tool(hook_input, initial_output)` | 反序；累积 `tool_output` 修改 |
-| 单次 LLM 请求 | `wrap_model_call(params, call_next)` | 递归实现洋葱：`invoke(0, params)` → middleware[0].wrap_model_call(params, lambda p: invoke(1, p)) → … → `call_next(params)`；middleware[0] 是最外层（`hooks.py:640-655`） |
-| 单次 tool 执行 | `wrap_tool_call(params, call_next)` | 与 wrap_model_call 同构（`hooks.py:683-698`） |
-| 流式 chunk | `stream_chunk(chunk, params)` | 正序；任一中间件返回 `None` 立刻 `return None` 丢弃（`hooks.py:667-672`）；返回新对象记 info 日志 |
+| `tool_executor.py:109` | `run_before_tool` | 正序；累积 `tool_input` 修改 |
+| `tool_executor.py:231` | `wrap_tool_call(params, call_next)` | 与 wrap_model_call 同构的洋葱递归（`hooks.py:683-698`） |
+| `tool_executor.py:280` | `run_after_tool(hook_input, initial_output)` | 反序；累积 `tool_output` 修改 |
+| `llm_caller.py:319` | `wrap_model_call(params, call_next)` | 递归实现洋葱：`invoke(0, params)` → middleware[0].wrap_model_call(params, lambda p: invoke(1, p)) → … → `call_next(params)`；middleware[0] 是最外层（`hooks.py:640-655`） |
+| `llm_caller.py:1239` | `stream_chunk(chunk, params)` | 正序；任一中间件返回 `None` 立刻 `return None` 丢弃（`hooks.py:667-672`）；返回新对象记 info 日志 |
 
 #### 为什么 before 正序、after 反序？
 
