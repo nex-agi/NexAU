@@ -1,0 +1,25 @@
+{
+  "rfc": "0012",
+  "title": "全局存储与会话级变更",
+  "status": "implemented",
+  "priority": "P1",
+  "tags": [
+    "architecture",
+    "state",
+    "storage",
+    "session",
+    "concurrency"
+  ],
+  "affects": "nexau/archs/main_sub/agent_context.py, nexau/archs/main_sub/agent_state.py, nexau/archs/main_sub/context_value.py, nexau/archs/session/models/session.py, nexau/archs/session/models/types.py",
+  "created": "2026-04-16",
+  "updated": "2026-04-16",
+  "requires": [
+    "rfcs/0008-session-persistence-and-history.md"
+  ],
+  "related": [
+    "rfcs/0001-state-persistence-on-stop.md",
+    "rfcs/0006-rfc-catalog-completion-master-plan.md",
+    "rfcs/0011-middleware-hook-composition.md"
+  ],
+  "tasks": []
+}
