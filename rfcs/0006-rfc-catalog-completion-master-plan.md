@@ -1,6 +1,6 @@
 # RFC-0006: NexAU RFC 目录补全总纲
 
-- **状态**: draft
+- **状态**: implementing
 - **优先级**: P0
 - **标签**: `architecture`, `documentation`, `governance`, `dx`
 - **影响服务**: `nexau`（整个仓库的设计文档体系）
@@ -228,7 +228,7 @@ graph LR
 
 | ID | 标题 | 优先级 | 依赖 | 子 RFC | 状态 |
 |----|------|--------|------|--------|------|
-| T1 | 工具系统架构与绑定模型 | P0 | - | RFC-0007 | pending |
+| T1 | 工具系统架构与绑定模型 | P0 | - | RFC-0007 | implemented |
 | T2 | 会话持久化与历史管理 | P1 | - | RFC-0008 | pending |
 | T3 | 沙箱隔离与生命周期管理 | P1 | - | RFC-0009 | pending |
 | T4 | LLM 聚合器事件流设计 | P1 | - | RFC-0010 | pending |

@@ -1,7 +1,7 @@
 {
   "rfc": "0006",
   "title": "NexAU RFC 目录补全总纲",
-  "status": "draft",
+  "status": "implementing",
   "priority": "P0",
   "tags": [
     "meta",
@@ -27,7 +27,7 @@
       "id": "T1",
       "title": "RFC-0007 工具系统架构与绑定模型",
       "depends_on": [],
-      "status": "pending",
+      "status": "implemented",
       "ref": "rfcs/0007-tool-system-architecture-and-binding.md"
     },
     {
