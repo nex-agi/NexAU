@@ -76,7 +76,7 @@
       "id": "T8",
       "title": "RFC-0014 提示词工程与模板化",
       "depends_on": ["T1"],
-      "status": "pending",
+      "status": "implemented",
       "ref": "rfcs/0014-prompt-engineering-and-templating.md"
     },
     {
