@@ -97,7 +97,7 @@
       "id": "T11",
       "title": "RFC-0017 CLI 与 YAML 配置加载",
       "depends_on": [],
-      "status": "pending",
+      "status": "implemented",
       "ref": "rfcs/0017-cli-and-yaml-config-loading.md"
     },
     {
