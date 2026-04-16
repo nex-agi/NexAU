@@ -234,7 +234,7 @@ graph LR
 | T4 | LLM 聚合器事件流设计 | P1 | - | RFC-0010 | implemented |
 | T5 | 中间件钩子组合与语义 | P1 | T1, T4 | RFC-0011 | implemented |
 | T6 | 全局存储与会话级变更 | P1 | T2 | RFC-0012 | implemented |
-| T7 | 子 Agent 委派与上下文传播 | P1 | T1, T2 | RFC-0013 | pending |
+| T7 | 子 Agent 委派与上下文传播 | P1 | T1, T2 | RFC-0013 | implemented |
 | T8 | 提示词工程与模板化 | P2 | T1 | RFC-0014 | pending |
 | T9 | 传输层路由与请求调度 | P2 | T4 | RFC-0015 | pending |
 | T10 | MCP 资源发现与错误恢复 | P2 | T1 | RFC-0016 | pending |

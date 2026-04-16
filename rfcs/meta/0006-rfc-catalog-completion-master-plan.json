@@ -69,7 +69,7 @@
       "id": "T7",
       "title": "RFC-0013 子 Agent 委派与上下文传播",
       "depends_on": ["T1", "T2"],
-      "status": "pending",
+      "status": "implemented",
       "ref": "rfcs/0013-subagent-delegation-and-context-propagation.md"
     },
     {
