@@ -83,7 +83,7 @@
       "id": "T9",
       "title": "RFC-0015 传输层路由与请求调度",
       "depends_on": ["T4"],
-      "status": "pending",
+      "status": "implemented",
       "ref": "rfcs/0015-transport-routing-and-dispatch.md"
     },
     {
