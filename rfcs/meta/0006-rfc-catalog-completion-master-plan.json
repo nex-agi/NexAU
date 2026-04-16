@@ -62,7 +62,7 @@
       "id": "T6",
       "title": "RFC-0012 全局存储与会话级变更",
       "depends_on": ["T2"],
-      "status": "pending",
+      "status": "implemented",
       "ref": "rfcs/0012-global-storage-and-session-mutations.md"
     },
     {
