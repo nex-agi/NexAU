@@ -1,0 +1,26 @@
+{
+  "rfc": "0014",
+  "title": "提示词工程与模板化",
+  "status": "implemented",
+  "priority": "P2",
+  "tags": [
+    "prompt",
+    "templating",
+    "jinja2",
+    "dx",
+    "architecture"
+  ],
+  "affects": "nexau/archs/main_sub/prompt_builder.py, nexau/archs/main_sub/prompt_handler.py, nexau/archs/main_sub/prompts/*.j2, nexau/archs/main_sub/config/base.py, nexau/archs/main_sub/config/config.py, nexau/archs/main_sub/agent.py, examples/*/systemprompt*.md, examples/*/*.yaml",
+  "created": "2026-04-16",
+  "updated": "2026-04-16",
+  "requires": [
+    "rfcs/0007-tool-system-architecture-and-binding.md"
+  ],
+  "related": [
+    "rfcs/0002-agent-team.md",
+    "rfcs/0006-rfc-catalog-completion-master-plan.md",
+    "rfcs/0009-sandbox-isolation-and-lifecycle.md",
+    "rfcs/0018-skill-system-and-embeddings.md"
+  ],
+  "tasks": []
+}
