@@ -1,0 +1,21 @@
+{
+  "rfc": "0009",
+  "title": "沙箱隔离与生命周期管理",
+  "status": "implemented",
+  "priority": "P1",
+  "tags": [
+    "architecture",
+    "sandbox",
+    "lifecycle",
+    "isolation"
+  ],
+  "affects": "nexau/archs/sandbox/, nexau/archs/main_sub/agent.py (sandbox 集成路径)",
+  "created": "2026-04-16",
+  "updated": "2026-04-16",
+  "requires": [],
+  "related": [
+    "rfcs/0006-rfc-catalog-completion-master-plan.md",
+    "rfcs/0008-session-persistence-and-history.md"
+  ],
+  "tasks": []
+}
