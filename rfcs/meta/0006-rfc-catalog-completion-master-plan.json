@@ -55,7 +55,7 @@
       "id": "T5",
       "title": "RFC-0011 中间件钩子组合与语义",
       "depends_on": ["T1", "T4"],
-      "status": "pending",
+      "status": "implemented",
       "ref": "rfcs/0011-middleware-hook-composition.md"
     },
     {
