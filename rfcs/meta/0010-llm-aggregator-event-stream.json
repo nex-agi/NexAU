@@ -1,0 +1,24 @@
+{
+  "rfc": "0010",
+  "title": "LLM 聚合器事件流设计",
+  "status": "implemented",
+  "priority": "P1",
+  "tags": [
+    "architecture",
+    "llm",
+    "streaming",
+    "events",
+    "middleware"
+  ],
+  "affects": "nexau/archs/llm/llm_aggregators/, nexau/archs/main_sub/execution/middleware/agent_events_middleware.py",
+  "created": "2026-04-16",
+  "updated": "2026-04-16",
+  "requires": [],
+  "related": [
+    "rfcs/0002-agent-team.md",
+    "rfcs/0003-llm-failover-middleware.md",
+    "rfcs/0004-context-overflow-emergency-compaction-and-error-events.md",
+    "rfcs/0006-rfc-catalog-completion-master-plan.md"
+  ],
+  "tasks": []
+}
