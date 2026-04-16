@@ -34,7 +34,7 @@
       "id": "T2",
       "title": "RFC-0008 会话持久化与历史管理",
       "depends_on": [],
-      "status": "pending",
+      "status": "implemented",
       "ref": "rfcs/0008-session-persistence-and-history.md"
     },
     {
