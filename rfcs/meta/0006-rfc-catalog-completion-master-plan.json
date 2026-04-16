@@ -4,6 +4,8 @@
   "status": "draft",
   "priority": "P0",
   "tags": [
+    "meta",
+    "rfc-catalog",
     "architecture",
     "documentation",
     "governance",
