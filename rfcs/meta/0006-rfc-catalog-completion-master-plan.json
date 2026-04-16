@@ -41,7 +41,7 @@
       "id": "T3",
       "title": "RFC-0009 沙箱隔离与生命周期管理",
       "depends_on": [],
-      "status": "pending",
+      "status": "implemented",
       "ref": "rfcs/0009-sandbox-isolation-and-lifecycle.md"
     },
     {
