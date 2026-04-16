@@ -11,7 +11,7 @@
 
 ## 摘要
 
-NexAU 通过一个"**聚合器 + 统一事件流**"层（`nexau/archs/llm/llm_aggregators/`）把 Anthropic / OpenAI Chat Completions / OpenAI Responses / Gemini REST 这四种**互不兼容**的流式 API 收敛到**同一个 `Event` 联合类型**上。每个后端都实现一个 `Aggregator[InputT, OutputT]` 子类：一边通过 `aggregate()` 逐 chunk 吃原生流数据、最终 `build()` 出原生消息对象供重放/持久化；一边通过注入的 `on_event` 回调**同步**吐出以 `ag_ui.core` 为底的统一事件（Text / Thinking / ToolCall / Image 各自 START → CONTENT → END 三段式生命周期，外加 Run 生命周期、传输错误等）。消费侧由 `AgentEventsMiddleware` 完成——它在 `stream_chunk` hook 里按类型分发到正确的聚合器、在 `before_agent / after_agent / after_tool` 里补发运行时级别的 RunStarted / RunFinished / RunError / ToolCallResult 事件。
+NexAU 通过一个"**聚合器 + 统一事件流**"层（`nexau/archs/llm/llm_aggregators/`）把 Anthropic / OpenAI Chat Completions / OpenAI Responses / Gemini REST 这四种**互不兼容**的流式 API 收敛到**同一个 `Event` 联合类型**上。每个后端都提供一个聚合器：前三家显式继承 `Aggregator[InputT, OutputT]` ABC（`aggregate()` 逐 chunk 吃原生流数据、`build()` 产出后端原生消息对象供重放/持久化、`clear()` 复位状态），Gemini REST 因历史原因仅鸭子类型兼容（实现 `aggregate / clear`、无 `build`）。所有聚合器都通过注入的 `on_event` 回调**同步**吐出以 `ag_ui.core` 为底的统一事件（Text / Thinking / ToolCall / Image 各自 START → CONTENT → END 三段式生命周期，外加 Run 生命周期、传输错误等）。消费侧由 `AgentEventsMiddleware` 完成——它在 `stream_chunk` hook 里按类型分发到正确的聚合器、在 `before_agent / after_agent / after_tool` 里补发运行时级别的 RunStarted / RunFinished / RunError / ToolCallResult 事件。
 
 ## 动机
 
@@ -79,14 +79,16 @@ class Aggregator[AggregatorInputT, AggregatorOutputT](ABC):
 
 公开的 4 个后端实现均位于同一包下（`llm_aggregators/__init__.py`）：
 
-| 类 | 位置 | Generic 参数（InputT → OutputT） |
-|---|---|---|
-| `AnthropicEventAggregator` | `anthropic/anthropic_event_aggregator.py:46` | `RawMessageStreamEvent` → `None` |
-| `OpenAIChatCompletionAggregator` | `openai_chat_completion/openai_chat_completion_aggregator.py:63` | `ChatCompletionChunk` → `ChatCompletion` |
-| `OpenAIResponsesAggregator` | `openai_responses/openai_responses_aggregator.py:47` | `ResponseStreamEvent` → `Response` |
-| `GeminiRestEventAggregator` | `gemini_rest/gemini_rest_event_aggregator.py` | `dict[str, object]` → `None` |
+| 类 | 位置 | 是否继承 `Aggregator` ABC | Generic 参数（InputT → OutputT） |
+|---|---|---|---|
+| `AnthropicEventAggregator` | `anthropic/anthropic_event_aggregator.py:46` | ✅ 是 | `RawMessageStreamEvent` → `None` |
+| `OpenAIChatCompletionAggregator` | `openai_chat_completion/openai_chat_completion_aggregator.py:63` | ✅ 是 | `ChatCompletionChunk` → `ChatCompletion` |
+| `OpenAIResponsesAggregator` | `openai_responses/openai_responses_aggregator.py:47` | ✅ 是 | `ResponseStreamEvent` → `Response` |
+| `GeminiRestEventAggregator` | `gemini_rest/gemini_rest_event_aggregator.py:31` | ❌ 否（duck-typed） | n/a — 仅实现 `aggregate(chunk: dict[str, object])` 与 `clear()`，无 `build()` |
 
-Anthropic 和 Gemini REST 的 `OutputT = None` 是有意选择——它们的上游调用方（`llm_caller.py` 里的 `AnthropicStreamAggregator` / `GeminiRestStreamAggregator`）自己另行维护重放态，不需要 `build()` 的返回值。
+前三个类**显式继承** `Aggregator[InputT, OutputT]` ABC 并实现完整三方法。`GeminiRestEventAggregator` 是唯一的例外——它是**鸭子类型兼容**而非 ABC 子类：只实现了 `aggregate` 和 `clear`（`gemini_rest_event_aggregator.py:53, 107`），没有 `build()`。消费侧（`AgentEventsMiddleware`）对它和其他三个聚合器的用法完全一致（只调 `aggregate()` 和 `clear()`），因此功能上无差异；但从类型层面上，它不能被标注为 `Aggregator[...]`。新增后端时如果需要重放能力（`build()`），应选择 ABC 继承方案；Gemini REST 的这个缺口由 `llm_caller.py` 里独立的 `GeminiRestStreamAggregator` 补齐重放职责（见下文"llm_caller.py 同名不同姓"的说明）。
+
+Anthropic 的 `OutputT = None` 是有意选择——其上游调用方（`llm_caller.py` 里的 `AnthropicStreamAggregator`）自己另行维护重放态，不需要 `build()` 的返回值。
 
 ### 统一事件模型（以 `ag_ui.core` 为底）
 
@@ -121,7 +123,7 @@ Anthropic 和 Gemini REST 的 `OutputT = None` 是有意选择——它们的上
 5. **`on_event` 同步发事件**——禁止投入线程池或 async；UI 对事件顺序敏感。
 6. **`clear()` 清空所有 per-index 状态**；`build()`（若实现）根据累计 state 重新组装完整消息对象。
 
-子聚合器嵌套是允许的——`OpenAIResponsesAggregator` 内部为 `_ReasoningItemAggregator` / `_FunctionCallItemAggregator` / `_MessageItemAggregator` 各建一个子 `Aggregator[..., ...]`（`openai_responses_aggregator.py:256 / 393 / 553`），每个负责一种 output_item 的增量解析，这让单个巨大 Responses 事件流的状态机变得可局部推理。
+子聚合器嵌套是允许的——`OpenAIResponsesAggregator` 内部为 `_ReasoningItemAggregator` / `_MessageItemAggregator` / `_FunctionCallItemAggregator` 各建一个子 `Aggregator[..., ...]`（`openai_responses_aggregator.py:256 / 393 / 553`），每个负责一种 output_item 的增量解析，这让单个巨大 Responses 事件流的状态机变得可局部推理。
 
 ### 消费侧：`AgentEventsMiddleware`
 
@@ -140,16 +142,16 @@ Anthropic 和 Gemini REST 的 `OutputT = None` 是有意选择——它们的上
    ```
    Anthropic / Gemini / Responses 各自**单例懒启动**；Chat Completions 例外——用 `dict[str, OpenAIChatCompletionAggregator]` 按 `chunk.id` 一流一实例（`agent_events_middleware.py:113, 274`），以防并行 `n>1` choices 的 chunks 串线。
 
-3. **`stream_chunk` 按类型分发**（`agent_events_middleware.py:240-303`）——用三条类型守卫函数快速判别来源：
-   - `isinstance(chunk, ChatCompletionChunk)` → Chat Completions
-   - `is_openai_responses_event(chunk)`（`agent_events_middleware.py:67-69`，靠 `chunk.__class__.__module__` 前缀） → Responses
-   - `is_anthropic_event(chunk)`（`agent_events_middleware.py:63-64`） → Anthropic
-   - `is_gemini_rest_chunk(chunk)`（`agent_events_middleware.py:72-74`，鸭子判断 `"candidates" in chunk`） → Gemini REST
+3. **`stream_chunk` 按类型分发**（`agent_events_middleware.py:240-303`）——按代码顺序依次用四条类型守卫判别来源（每条互斥，因此先后顺序仅影响命中速度，不影响正确性）：
+   1. `isinstance(chunk, ChatCompletionChunk)` → Chat Completions（`agent_events_middleware.py:273`）
+   2. `is_openai_responses_event(chunk)`（`agent_events_middleware.py:67-69`，靠 `chunk.__class__.__module__` 前缀 `openai.types.responses` 或 `openai.lib.streaming`） → Responses（`agent_events_middleware.py:283`）
+   3. `is_gemini_rest_chunk(chunk)`（`agent_events_middleware.py:72-74`，鸭子判断 `isinstance(chunk, dict) and "candidates" in chunk`） → Gemini REST（`agent_events_middleware.py:289`）
+   4. `is_anthropic_event(chunk)`（`agent_events_middleware.py:63-64`，靠 `chunk.__class__.__module__` 前缀 `anthropic.`） → Anthropic（`agent_events_middleware.py:293`）
 
 4. **流边界清理**：
-   - Anthropic：遇到 `message_start` 前 `clear()`（`agent_events_middleware.py:295-296`）
    - Responses：遇到 `response.created` 前 `clear()`（`agent_events_middleware.py:285-286`）
    - Gemini：按 `run_id` 变化 `clear()`（`agent_events_middleware.py:138-141`）
+   - Anthropic：遇到 `message_start` 前 `clear()`（`agent_events_middleware.py:295-296`）
    - Chat Completions：一流一实例，无需 clear，流结束即可抛弃
 
 5. **运行时事件补发**——这些事件**不来自任何 LLM chunk**，由中间件的三个 hook 直接 emit：
@@ -203,8 +205,8 @@ Anthropic 和 Gemini REST 的 `OutputT = None` 是有意选择——它们的上
    - Chat Completions 在 `n>1` 或并行 tool call 时**同一请求内就会有多个 chunk.id**，如果共享一个 aggregator，不同 choice 的 `delta.content` 会串到一起。
    - 其余三个后端的原生协议本身就**每轮 LLM 请求只有一条流**（Anthropic 单消息、Responses 单 response、Gemini REST 单会话轮），`clear()` 时机明确、单例安全。
 
-4. **Anthropic / Gemini 的 `OutputT = None` 会不会丢失重放能力？**
-   - 丢不了——`llm_caller.py` 里另有专门的 `*StreamAggregator` 做重放持久化。拆成两套的代价是"两处要同时消费同一个 chunk"，收益是"事件职责"和"重放职责"解耦：未来要改 UI 事件协议不会波及重放格式，反之亦然。
+4. **Anthropic 的 `OutputT = None` 与 Gemini 干脆不实现 `build()` 会不会丢失重放能力？**
+   - 丢不了——`llm_caller.py` 里另有专门的 `*StreamAggregator` 做重放持久化（包括 `AnthropicStreamAggregator` 与 `GeminiRestStreamAggregator`）。拆成两套的代价是"两处要同时消费同一个 chunk"，收益是"事件职责"和"重放职责"解耦：未来要改 UI 事件协议不会波及重放格式，反之亦然。Gemini 选择**完全不继承** `Aggregator` ABC（而其他三家选择 `OutputT = None` 但仍继承）属于历史遗留——理想做法是统一成"继承 ABC + `OutputT = None`"，但当前消费侧并不在意，迁移收益不足以触发改动。
 
 5. **`run_id` 为什么只放 Start 事件？**
    - 替代：每个事件都带 `run_id`。
