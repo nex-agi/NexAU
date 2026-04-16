@@ -1,6 +1,6 @@
 # RFC-0006: NexAU RFC 目录补全总纲
 
-- **状态**: implementing
+- **状态**: implemented
 - **优先级**: P0
 - **标签**: `architecture`, `documentation`, `governance`, `dx`
 - **影响服务**: `nexau`（整个仓库的设计文档体系）
@@ -240,7 +240,7 @@ graph LR
 | T10 | MCP 资源发现与错误恢复 | P2 | T1 | RFC-0016 | implemented |
 | T11 | CLI 与 YAML 配置加载 | P2 | - | RFC-0017 | implemented |
 | T12 | 技能系统与嵌入模型 | P2 | T1 | RFC-0018 | implemented |
-| T13 | 图像令牌化与缓存 | P3 | T4 | RFC-0019 | pending |
+| T13 | 图像令牌化与缓存 | P3 | T4 | RFC-0019 | implemented |
 
 > **并行提示**：P0 阶段只有 T1，必须先完成；T2/T3/T4/T11 在 P1+ 阶段可与 T1 完成后并行启动；T8/T9/T10/T12 在各自依赖满足后并行；T13 收尾。本任务在单线程下顺序推进，per-tick commit 即可，无需并行 session。
 

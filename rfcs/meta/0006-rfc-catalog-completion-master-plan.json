@@ -1,7 +1,7 @@
 {
   "rfc": "0006",
   "title": "NexAU RFC 目录补全总纲",
-  "status": "implementing",
+  "status": "implemented",
   "priority": "P0",
   "tags": [
     "meta",
@@ -111,7 +111,7 @@
       "id": "T13",
       "title": "RFC-0019 图像令牌化与缓存",
       "depends_on": ["T4"],
-      "status": "pending",
+      "status": "implemented",
       "ref": "rfcs/0019-image-tokenization-and-caching.md"
     }
   ]
