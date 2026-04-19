@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from collections.abc import Callable
 from datetime import datetime
-from typing import Literal
+from typing import Literal, cast
 
 from openai.types.chat.chat_completion import (
     ChatCompletion,
@@ -41,6 +42,9 @@ from ..events import (
     TextMessageContentEvent,
     TextMessageEndEvent,
     TextMessageStartEvent,
+    ThinkingTextMessageContentEvent,
+    ThinkingTextMessageEndEvent,
+    ThinkingTextMessageStartEvent,
     ToolCallArgsEvent,
     ToolCallEndEvent,
     ToolCallStartEvent,
@@ -200,6 +204,10 @@ class _ChoiceAggregator(Aggregator[ChatCompletionChunkChoice, ChatCompletionChoi
             logprobs=None,
         )
         self._started = False
+        # Thinking (reasoning_content) state — 非标准字段，部分 OpenAI-compatible 提供商使用
+        self._thinking_message_id: str | None = None
+        self._thinking_started = False
+        self._thinking_ended = False
 
     def aggregate(self, item: ChatCompletionChunkChoice) -> None:
         """
@@ -222,8 +230,14 @@ class _ChoiceAggregator(Aggregator[ChatCompletionChunkChoice, ChatCompletionChoi
                 )
             )
 
+        # Reasoning content — 非标准字段（实施标准），DeepSeek/Qwen/vLLM 等 provider 使用
+        # OpenAI SDK 将未知字段放入 model_extra（ChoiceDelta 配置 extra='allow'）
+        self._aggregate_reasoning(delta)
+
         # Aggregate content
         if delta.content:
+            # 收到正式内容意味着推理结束，先关闭 thinking message
+            self._end_thinking_if_needed()
             self._value.message.content = (self._value.message.content or "") + delta.content
             # Emit TextMessageContentEvent
             self._on_event(
@@ -236,6 +250,7 @@ class _ChoiceAggregator(Aggregator[ChatCompletionChunkChoice, ChatCompletionChoi
 
         # Aggregate refusal
         if delta.refusal:
+            self._end_thinking_if_needed()
             self._value.message.refusal = (self._value.message.refusal or "") + delta.refusal
             self._on_event(
                 TextMessageContentEvent(
@@ -247,6 +262,7 @@ class _ChoiceAggregator(Aggregator[ChatCompletionChunkChoice, ChatCompletionChoi
 
         # Aggregate tool calls
         if delta.tool_calls:
+            self._end_thinking_if_needed()
             for tool_delta in delta.tool_calls:
                 aggregator = self._tool_call_aggregators.setdefault(
                     tool_delta.index,
@@ -267,6 +283,8 @@ class _ChoiceAggregator(Aggregator[ChatCompletionChunkChoice, ChatCompletionChoi
 
         # Emit message end event when choice is complete
         if item.finish_reason is not None:
+            # 若 provider 只返回 reasoning_content 就结束（无正式内容），在此兜底关闭 thinking
+            self._end_thinking_if_needed()
             # Ensure all tool calls have emitted their start+end events
             for aggregator in self._tool_call_aggregators.values():
                 aggregator.ensure_ended()
@@ -313,6 +331,74 @@ class _ChoiceAggregator(Aggregator[ChatCompletionChunkChoice, ChatCompletionChoi
             logprobs=None,
         )
         self._started = False
+        self._thinking_message_id = None
+        self._thinking_started = False
+        self._thinking_ended = False
+
+    def _extract_reasoning_delta(self, delta: ChoiceDelta) -> str:
+        """Pull reasoning_content out of ChoiceDelta.model_extra, normalize to str.
+
+        OpenAI Chat Completions API 未定义 reasoning_content；DeepSeek、Qwen、vLLM 等
+        以实施标准的形式通过该字段流式传回推理内容。字段可能为 str 或 list[{text: ...}]。
+        """
+        extra = delta.model_extra
+        if not extra:
+            return ""
+        raw: object = cast(object, extra.get("reasoning_content"))
+        if isinstance(raw, str):
+            return raw
+        if isinstance(raw, list):
+            entries = cast(list[object], raw)
+            parts: list[str] = []
+            for entry in entries:
+                if isinstance(entry, dict):
+                    entry_dict = cast(dict[str, object], entry)
+                    text = entry_dict.get("text")
+                    if isinstance(text, str) and text:
+                        parts.append(text)
+            return "".join(parts)
+        return ""
+
+    def _aggregate_reasoning(self, delta: ChoiceDelta) -> None:
+        """Emit Thinking* events for reasoning_content deltas."""
+        reasoning_delta = self._extract_reasoning_delta(delta)
+        if not reasoning_delta:
+            return
+        if self._thinking_ended:
+            # 推理块已关闭后再收到 reasoning_content 属于 provider 异常，忽略即可
+            return
+        if not self._thinking_started:
+            self._thinking_started = True
+            self._thinking_message_id = str(uuid.uuid4())
+            self._on_event(
+                ThinkingTextMessageStartEvent(
+                    parent_message_id=self._message_id,
+                    thinking_message_id=self._thinking_message_id,
+                    run_id=self._run_id,
+                    timestamp=int(datetime.now().timestamp() * 1000),
+                )
+            )
+        assert self._thinking_message_id is not None
+        self._on_event(
+            ThinkingTextMessageContentEvent(
+                thinking_message_id=self._thinking_message_id,
+                delta=reasoning_delta,
+                timestamp=int(datetime.now().timestamp() * 1000),
+            )
+        )
+
+    def _end_thinking_if_needed(self) -> None:
+        """Close an open thinking message before real content/tool_calls/finish."""
+        if not self._thinking_started or self._thinking_ended:
+            return
+        assert self._thinking_message_id is not None
+        self._thinking_ended = True
+        self._on_event(
+            ThinkingTextMessageEndEvent(
+                thinking_message_id=self._thinking_message_id,
+                timestamp=int(datetime.now().timestamp() * 1000),
+            )
+        )
 
     def _append_logprobs(self, chunk_logprobs: ChatCompletionChunkChoiceLogprobs) -> None:
         """Append logprobs from a chunk to the aggregated logprobs."""
