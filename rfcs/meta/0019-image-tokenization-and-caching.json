@@ -1,0 +1,25 @@
+{
+  "rfc": "0019",
+  "title": "图像令牌化与缓存",
+  "status": "implemented",
+  "priority": "P3",
+  "tags": [
+    "multimodal",
+    "image",
+    "cache",
+    "prompt-cache",
+    "architecture"
+  ],
+  "affects": "nexau/core/messages.py, nexau/core/adapters/legacy.py, nexau/core/adapters/anthropic_messages.py, nexau/archs/tool/builtin/file_tools/read_visual_file.py, nexau/archs/main_sub/agent.py, nexau/archs/main_sub/execution/llm_caller.py, nexau/archs/main_sub/execution/model_response.py, nexau/archs/main_sub/execution/middleware/context_compaction/middleware.py",
+  "created": "2026-04-16",
+  "updated": "2026-04-16",
+  "requires": [
+    "rfcs/0010-llm-aggregator-event-stream.md"
+  ],
+  "related": [
+    "rfcs/0006-rfc-catalog-completion-master-plan.md",
+    "rfcs/0007-tool-system-architecture-and-binding.md",
+    "rfcs/0011-middleware-hook-composition.md"
+  ],
+  "tasks": []
+}

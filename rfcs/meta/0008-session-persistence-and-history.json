@@ -1,0 +1,21 @@
+{
+  "rfc": "0008",
+  "title": "会话持久化与历史管理",
+  "status": "implemented",
+  "priority": "P1",
+  "tags": [
+    "architecture",
+    "session",
+    "persistence",
+    "history"
+  ],
+  "affects": "nexau/archs/session/, nexau/archs/main_sub/history_list.py, nexau/archs/main_sub/agent.py",
+  "created": "2026-04-16",
+  "updated": "2026-04-16",
+  "requires": [],
+  "related": [
+    "rfcs/0001-state-persistence-on-stop.md",
+    "rfcs/0006-rfc-catalog-completion-master-plan.md"
+  ],
+  "tasks": []
+}

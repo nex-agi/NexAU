@@ -1,0 +1,20 @@
+{
+  "rfc": "0007",
+  "title": "工具系统架构与绑定模型",
+  "status": "implemented",
+  "priority": "P0",
+  "tags": [
+    "architecture",
+    "tools",
+    "tool-binding"
+  ],
+  "affects": "nexau/archs/tool, nexau/archs/main_sub/agent.py, nexau/archs/main_sub/execution/tool_executor.py, nexau/archs/main_sub/execution/executor.py, nexau/archs/main_sub/execution/response_parser.py, nexau/archs/main_sub/config/config.py",
+  "created": "2026-04-16",
+  "updated": "2026-04-16",
+  "requires": [],
+  "related": [
+    "rfcs/0005-tool-search.md",
+    "rfcs/0006-rfc-catalog-completion-master-plan.md"
+  ],
+  "tasks": []
+}

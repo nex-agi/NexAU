@@ -1,0 +1,30 @@
+{
+  "rfc": "0015",
+  "title": "传输层路由与请求调度",
+  "status": "implemented",
+  "priority": "P2",
+  "tags": [
+    "transport",
+    "http",
+    "sse",
+    "stdio",
+    "jsonrpc",
+    "architecture"
+  ],
+  "affects": "nexau/archs/transports/base.py, nexau/archs/transports/http/sse_server.py, nexau/archs/transports/http/sse_client.py, nexau/archs/transports/http/team_routes.py, nexau/archs/transports/http/team_registry.py, nexau/archs/transports/http/models.py, nexau/archs/transports/http/config.py, nexau/archs/transports/stdio/stdio_transport.py, nexau/archs/transports/stdio/config.py",
+  "created": "2026-04-16",
+  "updated": "2026-04-16",
+  "requires": [
+    "rfcs/0010-llm-aggregator-event-stream.md"
+  ],
+  "related": [
+    "rfcs/0001-state-persistence-on-stop.md",
+    "rfcs/0002-agent-team.md",
+    "rfcs/0003-llm-failover-middleware.md",
+    "rfcs/0006-rfc-catalog-completion-master-plan.md",
+    "rfcs/0008-session-persistence-and-history.md",
+    "rfcs/0011-middleware-hook-composition.md",
+    "rfcs/0014-prompt-engineering-and-templating.md"
+  ],
+  "tasks": []
+}

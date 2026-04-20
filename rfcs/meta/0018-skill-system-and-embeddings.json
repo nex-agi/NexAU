@@ -1,0 +1,25 @@
+{
+  "rfc": "0018",
+  "title": "技能系统与嵌入模型",
+  "status": "implemented",
+  "priority": "P2",
+  "tags": [
+    "skill",
+    "tool",
+    "dx",
+    "architecture",
+    "prompt"
+  ],
+  "affects": "nexau/archs/main_sub/skill.py, nexau/archs/tool/builtin/skill_tool.py, nexau/archs/tool/builtin/description/skill_tool.yaml, nexau/archs/main_sub/agent.py, nexau/archs/main_sub/config/config.py, nexau/archs/tool/tool.py, examples/*/skills/*/SKILL.md",
+  "created": "2026-04-16",
+  "updated": "2026-04-16",
+  "requires": [
+    "rfcs/0007-tool-system-architecture-and-binding.md"
+  ],
+  "related": [
+    "rfcs/0006-rfc-catalog-completion-master-plan.md",
+    "rfcs/0014-prompt-engineering-and-templating.md",
+    "rfcs/0017-cli-and-yaml-config-loading.md"
+  ],
+  "tasks": []
+}
