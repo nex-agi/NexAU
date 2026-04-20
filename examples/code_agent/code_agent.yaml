@@ -26,10 +26,11 @@ llm_config: # Support environment variable replacement in YAML config
   # thinking:
   #   type: "adaptive"
 
-  api_type: openai_responses
-  reasoning:
-    effort: "medium"
-    summary: "detailed"
+  # api_type: openai_responses
+  # reasoning:
+  #   effort: "medium"
+  #   summary: "detailed"
+  api_type: openai_chat_completion
 
 sub_agents:
   - name: explore
