@@ -1,0 +1,23 @@
+type: tool
+name: complete_task
+kind: external
+description: >-
+  Call this tool to submit your final answer and complete the task.
+
+  This is the ONLY way to finish a task. You MUST call this tool when your work
+  is done.
+
+  Important:
+  - Always provide comprehensive results in the 'result' argument
+  - Do not call any other tools after calling complete_task
+input_schema:
+  type: object
+  properties:
+    result:
+      type: string
+      description: >-
+        Your final results or findings to return.
+  required:
+    - result
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

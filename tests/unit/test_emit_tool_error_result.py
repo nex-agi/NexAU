@@ -248,7 +248,7 @@ class TestExecuteParsedCallsAsyncErrorPaths:
         assert emit_args[2] is agent_state
 
         # The result should indicate an error
-        _, _, _, feedbacks = result
+        _, _, _, feedbacks, _ = result
         assert len(feedbacks) >= 1
         assert feedbacks[0]["is_error"] is True
 
@@ -299,7 +299,7 @@ class TestExecuteParsedCallsAsyncErrorPaths:
         assert emit_args[2] is agent_state
 
         # Result should show an error
-        _, _, _, feedbacks = result
+        _, _, _, feedbacks, _ = result
         assert len(feedbacks) >= 1
         assert feedbacks[0]["is_error"] is True
 

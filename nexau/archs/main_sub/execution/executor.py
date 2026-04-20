@@ -31,7 +31,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import copy_context
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
 
@@ -77,7 +77,7 @@ from nexau.archs.tool.tool import (
 )
 from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
-from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, coerce_tool_result_content
+from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, ToolUseBlock, coerce_tool_result_content
 
 if TYPE_CHECKING:
     from nexau.archs.sandbox.base_sandbox import BaseSandbox
@@ -111,6 +111,9 @@ class _AsyncIterationState:
     runtime_client: object | None
     custom_llm_client_provider: Callable[[str], object] | None
     origin_history: list[Message] | list[dict[str, object]]
+    # RFC-0018: external tool — 累积当前 iteration 中被跳过的 external tool calls，
+    # 由上层作为 pending_tool_calls 暴露给调用方；loop 在 step 10 时据此决定暂停。
+    pending_external_calls: list[ToolUseBlock] = field(default_factory=list[ToolUseBlock])
 
 
 class Executor:
@@ -964,7 +967,7 @@ class Executor:
         *,
         runtime_client: Any | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
-    ) -> tuple[str, list[Message]]:
+    ) -> tuple[str, list[Message], list[ToolUseBlock]]:
         """Fully async execution — runs on the main event loop.
 
         async/sync 技术债修复: 理想状态的 async 执行器
@@ -976,6 +979,10 @@ class Executor:
         - History flush: 直接 create_task 或 await flush_async()
 
         sync execute() 保留给向后兼容的 sync 调用方和测试。
+
+        RFC-0018: 返回三元组 ``(response, messages, pending_external_calls)``。
+        ``pending_external_calls`` 仅在 ``AgentStopReason.EXTERNAL_TOOL_CALL`` 时非空；
+        其余正常结束路径均为 ``[]``，保持与旧形状在信息量上的等价。
         """
 
         # 1. 初始化执行状态
@@ -1018,7 +1025,7 @@ class Executor:
                         final_response=stop_response,
                         stop_reason=AgentStopReason.USER_INTERRUPTED,
                     )
-                    return stop_response, state.messages
+                    return stop_response, state.messages, []
 
                 outcome = await self._execute_iteration_async(state)
                 if outcome == _IterationOutcome.BREAK:
@@ -1035,10 +1042,13 @@ class Executor:
                 messages=state.messages,
                 final_response=state.final_response,
                 stop_reason=state.force_stop_reason,
+                pending_external_calls=list(state.pending_external_calls) or None,
             )
 
             self._store_token_trace(state.token_trace_session)
-            return state.final_response, state.messages
+            # RFC-0018: 只有 EXTERNAL_TOOL_CALL 暂停路径会携带 pending calls，
+            # 其余正常 / MAX_ITERATIONS / NO_MORE_TOOL_CALLS 等均为空列表。
+            return state.final_response, state.messages, list(state.pending_external_calls)
 
         except TokenTraceContextOverflowError as e:
             state.force_stop_reason = AgentStopReason.CONTEXT_TOKEN_LIMIT
@@ -1051,7 +1061,7 @@ class Executor:
                 stop_reason=state.force_stop_reason,
             )
             self._store_token_trace(state.token_trace_session)
-            return state.final_response, state.messages
+            return state.final_response, state.messages, []
 
         except Exception as e:
             state.force_stop_reason = AgentStopReason.ERROR_OCCURRED
@@ -1249,6 +1259,7 @@ class Executor:
             stop_tool_result,
             updated_messages,
             execution_feedbacks,
+            pending_external_calls,
         ) = await self._process_xml_calls_async(
             after_model_hook_input,
             custom_llm_client_provider=state.custom_llm_client_provider,
@@ -1257,7 +1268,7 @@ class Executor:
 
         state.messages = updated_messages
 
-        # 9. 构建工具结果消息
+        # 9. 构建工具结果消息（仅包含已执行的 local tool calls；external tool 由调用方补齐）
         self._append_tool_result_messages(
             state=state,
             execution_feedbacks=execution_feedbacks,
@@ -1265,6 +1276,14 @@ class Executor:
             assistant_content=assistant_content,
             processed_response=processed_response,
         )
+
+        # RFC-0018: 10a. 若本轮出现 external tool calls，先 append local results 后暂停 loop，
+        # 由调用方回传 tool results 再通过新的 run_async 继续。
+        if pending_external_calls:
+            state.pending_external_calls = pending_external_calls
+            state.force_stop_reason = AgentStopReason.EXTERNAL_TOOL_CALL
+            state.final_response = ""
+            return _IterationOutcome.BREAK
 
         # 10. 停止条件判断
         if should_stop and len(self.queued_messages) == 0:
@@ -1386,11 +1405,13 @@ class Executor:
         *,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         framework_context: FrameworkContext,
-    ) -> tuple[str, bool, str | None, list[Message], list[dict[str, Any]]]:
+    ) -> tuple[str, bool, str | None, list[Message], list[dict[str, Any]], list[ToolUseBlock]]:
         """Async version of _process_xml_calls.
 
         Middleware hooks 通过 to_thread 调用（sync API），
         tool/sub-agent 通过 _execute_parsed_calls_async 异步执行。
+
+        RFC-0018: 透传来自 _execute_parsed_calls_async 的 pending_external_calls。
         """
 
         response_payload: str | ModelResponse = hook_input.model_response or hook_input.original_response
@@ -1411,18 +1432,31 @@ class Executor:
 
         if not parsed_response or not parsed_response.has_calls():
             if force_continue:
-                return hook_input.original_response, False, None, current_messages, []
+                return hook_input.original_response, False, None, current_messages, [], []
             else:
-                return hook_input.original_response, True, None, current_messages, []
+                return hook_input.original_response, True, None, current_messages, [], []
 
         assert parsed_response is not None
-        processed_response, should_stop, stop_tool_result, execution_feedbacks = await self._execute_parsed_calls_async(
+        (
+            processed_response,
+            should_stop,
+            stop_tool_result,
+            execution_feedbacks,
+            pending_external_calls,
+        ) = await self._execute_parsed_calls_async(
             parsed_response,
             hook_input.agent_state,
             custom_llm_client_provider=custom_llm_client_provider,
             framework_context=framework_context,
         )
-        return processed_response, should_stop, stop_tool_result, current_messages, execution_feedbacks
+        return (
+            processed_response,
+            should_stop,
+            stop_tool_result,
+            current_messages,
+            execution_feedbacks,
+            pending_external_calls,
+        )
 
     async def _execute_parsed_calls_async(
         self,
@@ -1431,20 +1465,23 @@ class Executor:
         *,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         framework_context: FrameworkContext,
-    ) -> tuple[str, bool, str | None, list[dict[str, Any]]]:
+    ) -> tuple[str, bool, str | None, list[dict[str, Any]], list[ToolUseBlock]]:
         """Async parallel tool/sub-agent execution via asyncio.gather.
 
         async tool → 直接 await tool.execute_async()
         sync tool / sub-agent → asyncio.to_thread 在线程池执行
+
+        RFC-0018: external tool 被识别后不参与执行，转换为 ToolUseBlock 加入
+        pending 列表一并返回；上层据此决定是否暂停 agent loop。
         """
 
         processed_response = parsed_response.original_response
 
         if self._shutdown_event.is_set():
-            return processed_response, False, None, []
+            return processed_response, False, None, [], []
 
         if not parsed_response.tool_calls:
-            return processed_response, False, None, []
+            return processed_response, False, None, [], []
 
         parallel_execution_id = str(uuid.uuid4())
 
@@ -1456,6 +1493,23 @@ class Executor:
             tool_call.tool_call_id = f"{base_id}_{count}" if count else base_id
             seen_tool_call_ids[base_id] += 1
             tool_call.parallel_execution_id = parallel_execution_id
+
+        # RFC-0018: 在派发前识别 external tool calls 并从待执行列表中剥离。
+        # 未注册的 tool 交给下游 `_run_tool` 返回 tool-not-found 错误（保持原行为）。
+        pending_external_calls: list[ToolUseBlock] = []
+        executable_tool_calls: list[ToolCall] = []
+        for tool_call in parsed_response.tool_calls:
+            tool_obj = self._tool_registry.get_tool(tool_call.tool_name)
+            if tool_obj is not None and tool_obj.is_external:
+                pending_external_calls.append(
+                    ToolUseBlock(
+                        id=tool_call.tool_call_id or "",
+                        name=tool_call.tool_name,
+                        input=dict(tool_call.parameters),
+                    ),
+                )
+            else:
+                executable_tool_calls.append(tool_call)
 
         serial_tool_names = set(self._tool_registry.compute_serial_tool_names())
 
@@ -1554,10 +1608,11 @@ class Executor:
             except Exception as e:
                 return ("tool", tc, (tc.tool_name, str(e), True))
 
-        # serial tools 需要顺序执行，其余并行
+        # serial tools 需要顺序执行，其余并行。
+        # RFC-0018: external tool 已从 executable_tool_calls 中剥离，这里不会再被派发。
         serial_tasks: list[ToolCall] = []
         parallel_tool_tasks: list[ToolCall] = []
-        for tc in parsed_response.tool_calls:
+        for tc in executable_tool_calls:
             if tc.tool_name in serial_tool_names:
                 serial_tasks.append(tc)
             else:
@@ -1644,7 +1699,7 @@ class Executor:
         if tool_results:
             processed_response += "\n\n" + "\n\n".join(tool_results)
 
-        return processed_response, stop_tool_detected, stop_tool_result, execution_feedbacks
+        return processed_response, stop_tool_detected, stop_tool_result, execution_feedbacks, pending_external_calls
 
     def _store_token_trace(self, token_trace_session: TokenTraceSession | None) -> None:
         """Persist token trace data into shared trace memory."""
@@ -1663,6 +1718,7 @@ class Executor:
         messages: list[Message],
         final_response: str,
         stop_reason: AgentStopReason | None,
+        pending_external_calls: list[ToolUseBlock] | None = None,
     ) -> tuple[str, list[Message]]:
         """Run after-agent middleware hooks and return possibly updated values."""
 
@@ -1674,6 +1730,7 @@ class Executor:
             messages=messages,
             agent_response=final_response,
             stop_reason=stop_reason,
+            pending_external_calls=pending_external_calls,
         )
         try:
             return self.middleware_manager.run_after_agent(after_agent_hook_input)

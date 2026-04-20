@@ -31,7 +31,7 @@ import uuid
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 if TYPE_CHECKING:
     from nexau.archs.main_sub.team.state import AgentTeamState
@@ -77,10 +77,23 @@ from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
-from nexau.core.messages import Message, Role, TextBlock
+from nexau.core.messages import Message, Role, TextBlock, ToolUseBlock
 
 # Setup logger for agent execution
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class _TraceIdBindable(Protocol):
+    """RFC-0018 T7: Optional tracer capability for binding an externally-owned trace_id.
+
+    Tracers that want to follow Agent's trace_id expose this method; tracers that
+    don't still work (they just keep generating their own trace ids). Using a
+    Protocol instead of a BaseTracer abstract method keeps the tracer surface
+    unchanged while giving the type checker something concrete to reason about.
+    """
+
+    def bind_trace_id(self, trace_id: str) -> None: ...
 
 
 def _normalize_run_history(history: list[dict[str, Any]] | list[Message] | None) -> list[Message]:
@@ -949,6 +962,40 @@ class Agent:
         - Fast recovery: max 30s deadlock time even if release fails
         - No waiting: fails immediately if agent is busy
 
+        RFC-0018 (External Tool): 当 LLM 调用一个无本地实现的 external tool 时,
+        agent loop 会在本轮本地工具执行完毕后暂停,返回元组形式::
+
+            (
+                "",
+                {
+                    "stop_reason": "EXTERNAL_TOOL_CALL",
+                    "pending_tool_calls": [{"id": "call_abc", "name": "ext_tool", "input": {...}}, ...],
+                    "trace_id": "xxx",
+                },
+            )
+
+        ``stop_reason`` 为 :class:`AgentStopReason` 枚举的 ``.name``（当前仅
+        ``"EXTERNAL_TOOL_CALL"``）；``pending_tool_calls`` 是 :class:`ToolUseBlock`
+        序列化后的 list,含 ``id``/``name``/``input`` 三字段；``trace_id`` 为
+        T7 Session-level trace_id (Agent 自己生成,与 tracer 是否启用无关),
+        客户端仅用于观测关联,恢复时只需保持相同 ``session_id``。
+
+        调用方执行远程工具后,通过再次调用 ``run_async`` 并传入 ``ToolResultBlock``
+        恢复执行::
+
+            response = await agent.run_async(
+                message=[
+                    Message(
+                        role=Role.TOOL,
+                        content=[
+                            ToolResultBlock(tool_use_id="call_abc", content="result", is_error=False),
+                        ],
+                    ),
+                ]
+            )
+
+        正常结束（无 pending external calls）时仍返回纯字符串,保持向后兼容。
+
         Args:
             message: User message or list of messages
             history: Optional conversation history
@@ -961,7 +1008,7 @@ class Agent:
             run_id: Optional pre-generated run ID; auto-generated if not provided
 
         Returns:
-            Agent response string or tuple of (response, state)
+            Agent response string, or tuple (response, dict) when paused on external tool.
 
         Raises:
             TimeoutError: If agent is already running
@@ -1063,6 +1110,55 @@ class Agent:
 
         # Get tracer from global storage
         tracer: BaseTracer | None = self.global_storage.get("tracer")
+
+        # RFC-0018 T7: Resolve the session-level trace_id (Agent-owned, Tracer-agnostic).
+        # trace_id 语义：一个 Session 可有多条 trace；每次 user-triggered run = 一条 trace。
+        # EXTERNAL_TOOL_CALL 暂停时 SessionModel.current_trace_id 被保留，resume 时复用；
+        # 其他 stop reason 结束时清除，下一次 run 生成新 id。tracer 是否启用不影响此流程。
+        # Sub-agent 不管理 trace_id（沿用 parent 的 run 所在的 trace，不写 SessionModel）。
+        resolved_trace_id: str
+        if parent_agent_state is None:
+            try:
+                existing_session = await self._session_manager.get_session(
+                    user_id=self._user_id,
+                    session_id=self._session_id,
+                )
+                if existing_session is not None and existing_session.current_trace_id:
+                    resolved_trace_id = existing_session.current_trace_id
+                    logger.debug(
+                        "Reusing SessionModel.current_trace_id=%s (session=%s)",
+                        resolved_trace_id,
+                        self._session_id,
+                    )
+                else:
+                    resolved_trace_id = uuid.uuid4().hex
+                    await self._session_manager.update_session_current_trace_id(
+                        user_id=self._user_id,
+                        session_id=self._session_id,
+                        trace_id=resolved_trace_id,
+                    )
+                    logger.debug(
+                        "Generated new trace_id=%s (session=%s)",
+                        resolved_trace_id,
+                        self._session_id,
+                    )
+            except Exception as exc:
+                resolved_trace_id = uuid.uuid4().hex
+                logger.warning(
+                    "Failed to resolve SessionModel.current_trace_id: %s; using ephemeral %s",
+                    exc,
+                    resolved_trace_id,
+                )
+            # RFC-0018 T7: Soft-bind to tracer (optional observer). Tracers that want
+            # to follow Agent's trace_id implement the _TraceIdBindable protocol;
+            # tracers that don't are untouched (they keep generating their own id).
+            if isinstance(tracer, _TraceIdBindable):
+                try:
+                    tracer.bind_trace_id(resolved_trace_id)
+                except Exception as exc:
+                    logger.warning("tracer.bind_trace_id failed: %s", exc)
+        else:
+            resolved_trace_id = parent_agent_state.trace_id or uuid.uuid4().hex
 
         # Determine span type based on whether this is a sub-agent
         span_type = SpanType.SUB_AGENT if parent_agent_state else SpanType.AGENT
@@ -1210,12 +1306,13 @@ class Agent:
                 token_trace_session=self._token_trace_session,
                 subagent_manager=self.executor.subagent_manager,
                 skill_registry=self.skill_registry,
+                trace_id=resolved_trace_id,
             )
 
             # Execute with or without tracing
             try:
                 if tracer:
-                    response = await self._run_with_tracing(
+                    response, pending_external_calls = await self._run_with_tracing(
                         tracer=tracer,
                         span_type=span_type,
                         message_text_for_logs=message_text_for_logs,
@@ -1225,7 +1322,7 @@ class Agent:
                         custom_llm_client_provider=custom_llm_client_provider,
                     )
                 else:
-                    response = await self._run_inner(
+                    response, pending_external_calls = await self._run_inner(
                         agent_state,
                         merged_context,
                         runtime_client=runtime_client,
@@ -1252,6 +1349,36 @@ class Agent:
                         logger.info("Sandbox lifecycle managed by caller (status_after_run=none)")
 
                 logger.info(f"✅ Agent '{self.config.name}' completed execution")
+
+                # RFC-0018: 当 executor 因 external tool 暂停时，返回 (response, dict) 元组，
+                # dict 携带 stop_reason、pending_tool_calls 与 trace_id (T7) 供调用方恢复。
+                # 正常结束仍返回纯 str 以保持向后兼容。
+                if pending_external_calls:
+                    # RFC-0018 T7: 暂停时 SessionModel.current_trace_id 保留不变，
+                    # 下一次 run 凭 session_id 复用同一 trace_id。
+                    return (
+                        response,
+                        {
+                            "stop_reason": AgentStopReason.EXTERNAL_TOOL_CALL.name,
+                            "pending_tool_calls": [
+                                block.model_dump(mode="json", include={"id", "name", "input"}) for block in pending_external_calls
+                            ],
+                            "trace_id": resolved_trace_id,
+                        },
+                    )
+
+                # RFC-0018 T7: 非 EXTERNAL_TOOL_CALL 停止 — 清除 SessionModel.current_trace_id，
+                # 下一次用户消息开始新一条 trace。仅在顶层 agent 执行（sub-agent 不写 Session）。
+                if parent_agent_state is None:
+                    try:
+                        await self._session_manager.update_session_current_trace_id(
+                            user_id=self._user_id,
+                            session_id=self._session_id,
+                            trace_id=None,
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to clear SessionModel.current_trace_id: %s", exc)
+
                 return response
 
             except Exception as e:
@@ -1336,8 +1463,11 @@ class Agent:
         merged_context: dict[str, Any],
         runtime_client: Any,
         custom_llm_client_provider: Callable[[str], Any] | None,
-    ) -> str:
-        """Execute agent with tracing enabled."""
+    ) -> tuple[str, list[ToolUseBlock]]:
+        """Execute agent with tracing enabled.
+
+        RFC-0018: 透传 _run_inner 的 (response, pending_external_calls) 元组。
+        """
         span_name = f"Agent: {self.agent_name}"
         inputs = {
             "message": message_text_for_logs,
@@ -1351,14 +1481,14 @@ class Agent:
         trace_ctx = TraceContext(tracer, span_name, span_type, inputs, attributes)
         with trace_ctx:
             try:
-                response = await self._run_inner(
+                response, pending_external_calls = await self._run_inner(
                     agent_state,
                     merged_context,
                     runtime_client=runtime_client,
                     custom_llm_client_provider=custom_llm_client_provider,
                 )
                 trace_ctx.set_outputs({"response": response})
-                return response
+                return response, pending_external_calls
             except Exception:
                 raise
 
@@ -1369,16 +1499,20 @@ class Agent:
         *,
         runtime_client: Any,
         custom_llm_client_provider: Callable[[str], Any] | None,
-    ) -> str:
+    ) -> tuple[str, list[ToolUseBlock]]:
         """Inner execution logic without tracing wrapper.
 
         RFC-0001: 中断时持久化保障
+        RFC-0018: 返回 (response, pending_external_calls)。pending 非空表示 agent
+        因 external tool 调用暂停，调用方需喂回 ToolResultBlock 恢复。
 
         finally 块确保无论正常返回、Exception 还是 CancelledError，
         都会尝试 flush 未持久化的消息。
         """
         try:
-            response, updated_messages = await self.executor.execute_async(
+            # RFC-0018: executor 返回三元组 (response, messages, pending_external_calls)。
+            # 当 pending_external_calls 非空时，agent 因 external tool 调用暂停。
+            response, updated_messages, pending_external_calls = await self.executor.execute_async(
                 self.history,
                 agent_state,
                 runtime_client=runtime_client,
@@ -1400,7 +1534,7 @@ class Agent:
             # Flush pending messages to persistence
             self.history.flush()
 
-            return response
+            return response, pending_external_calls
 
         except Exception as e:
             logger.debug(
@@ -1417,7 +1551,7 @@ class Agent:
                 # Flush pending messages to persistence
                 self.history.flush()
 
-                return error_response
+                return error_response, []
             else:
                 assistant_error = Message.assistant(f"Error: {str(e)}")
                 self.history.append(assistant_error)

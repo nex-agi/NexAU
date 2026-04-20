@@ -18,6 +18,7 @@ from nexau.archs.llm.llm_aggregators.events import (
     CompactionFinishedEvent,
     CompactionStartedEvent,
     Event,
+    ExternalToolCallEvent,
     ImageMessageContentEvent,
     ImageMessageEndEvent,
     ImageMessageStartEvent,
@@ -74,6 +75,8 @@ def _parse_event_dict(event_data: dict[str, Any]) -> Event:
         return ToolCallEndEvent(**event_data)
     elif event_type == "TOOL_CALL_RESULT":
         return ToolCallResultEvent(**event_data)
+    elif event_type == "EXTERNAL_TOOL_CALL":
+        return ExternalToolCallEvent(**event_data)
     elif event_type == "RUN_STARTED":
         return RunStartedEvent(**event_data)
     elif event_type == "RUN_FINISHED":

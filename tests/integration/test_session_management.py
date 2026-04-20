@@ -54,7 +54,7 @@ def _patch_execute_async(
         agent_state: object,
         runtime_client: object | None = None,
         custom_llm_client_provider: object | None = None,
-    ) -> tuple[str, list[Message]]:
+    ) -> tuple[str, list[Message], list[object]]:
         del agent_state, runtime_client, custom_llm_client_provider
 
         non_system_texts = [msg.get_text_content() for msg in history if msg.role != Role.SYSTEM]
@@ -72,7 +72,8 @@ def _patch_execute_async(
                 )
 
         updated_messages = [*history, Message.assistant(response_text)]
-        return response_text, updated_messages
+        # RFC-0018: executor 返回三元组 (response, messages, pending_external_calls)
+        return response_text, updated_messages, []
 
     return patch.object(agent.executor, "execute_async", side_effect=fake_execute_async)
 
