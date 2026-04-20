@@ -55,6 +55,43 @@ def test_legacy_roundtrip_tool_call_and_result() -> None:
     assert payload == legacy
 
 
+def test_legacy_roundtrip_preserves_reasoning_details() -> None:
+    """OpenRouter `reasoning_details` must survive legacy → UMP → OpenAI-chat roundtrip
+    unchanged, so multi-turn reasoning context reaches the provider untouched.
+    """
+    details = [
+        {
+            "type": "reasoning.text",
+            "text": "Let me think...",
+            "id": "r1",
+            "signature": None,
+            "format": "anthropic-claude-v1",
+            "index": 0,
+        },
+        {
+            "type": "reasoning.summary",
+            "summary": "Decomposed the problem",
+            "id": "r2",
+            "format": "anthropic-claude-v1",
+            "index": 1,
+        },
+    ]
+    legacy: list[dict[str, Any]] = [
+        {"role": "user", "content": "Solve it."},
+        {
+            "role": "assistant",
+            "content": "Answer.",
+            "reasoning_details": details,
+        },
+    ]
+
+    ump = messages_from_legacy_openai_chat(legacy)
+    assert ump[1].metadata["reasoning_details"] == details
+
+    payload = serialize_ump_to_openai_chat_payload(ump)
+    assert payload == legacy
+
+
 def test_anthropic_serializer_uses_blocks_from_legacy_input() -> None:
     legacy: list[dict[str, Any]] = [
         {"role": "system", "content": "sys"},

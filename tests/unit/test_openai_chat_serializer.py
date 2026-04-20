@@ -38,6 +38,46 @@ def test_openai_chat_serializer_emits_reasoning_and_tool_calls() -> None:
     ]
 
 
+def test_openai_chat_serializer_echoes_reasoning_details_from_metadata() -> None:
+    """OpenRouter-style `reasoning_details` must flow from Message.metadata to the outgoing
+    assistant entry verbatim — any rewrite would break multi-turn reasoning context.
+    """
+    details = [
+        {
+            "type": "reasoning.text",
+            "text": "line A",
+            "id": "r1",
+            "signature": None,
+            "format": "anthropic-claude-v1",
+            "index": 0,
+        },
+        {
+            "type": "reasoning.summary",
+            "summary": "line B",
+            "id": "r2",
+            "format": "anthropic-claude-v1",
+            "index": 1,
+        },
+    ]
+    msgs = [
+        Message(
+            role=Role.ASSISTANT,
+            content=[TextBlock(text="answer")],
+            metadata={"reasoning_details": details},
+        ),
+    ]
+
+    serialized = serialize_ump_to_openai_chat_payload(msgs)
+
+    assert serialized == [
+        {
+            "role": "assistant",
+            "content": "answer",
+            "reasoning_details": details,
+        },
+    ]
+
+
 def test_openai_chat_serializer_matches_legacy_tool_image_injection_policy() -> None:
     msgs = [
         Message.user("show tool result"),

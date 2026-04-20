@@ -2266,6 +2266,7 @@ class OpenAIChatStreamAggregator:
         self._content_parts: list[str] = []
         self._tool_calls: dict[int, dict[str, Any]] = {}
         self._reasoning_parts: list[str] = []
+        self._reasoning_details: list[dict[str, Any]] = []
         self.role: str = "assistant"
         self.model_name: str | None = None
         self.usage: Any | None = None
@@ -2299,6 +2300,8 @@ class OpenAIChatStreamAggregator:
                     if entry_text:
                         self._content_parts.append(str(entry_text))
 
+            # reasoning_content: DeepSeek / Qwen / vLLM style — a single aggregated reasoning
+            # string (may also arrive as a list of {text: ...} entries that we flatten).
             reasoning = delta.get("reasoning_content")
             if isinstance(reasoning, str):
                 self._reasoning_parts.append(reasoning)
@@ -2308,6 +2311,19 @@ class OpenAIChatStreamAggregator:
                     text = _safe_get(entry, "text")
                     if text:
                         self._reasoning_parts.append(str(text))
+
+            # reasoning_details: OpenRouter wire format — a list of structured blocks that
+            # MUST be echoed back unmodified on subsequent turns for multi-turn reasoning.
+            # Preserve the original shape verbatim (do not flatten into reasoning_content).
+            reasoning_details = delta.get("reasoning_details")
+            if isinstance(reasoning_details, list):
+                reasoning_details_list: list[Any] = cast(list[Any], reasoning_details)
+                for detail_entry in reasoning_details_list:
+                    if detail_entry is None:
+                        continue
+                    detail_dict = _to_serializable_dict(detail_entry)
+                    if detail_dict:
+                        self._reasoning_details.append(detail_dict)
 
             tool_calls: list[Any] = delta.get("tool_calls") or []
             for tool_delta in tool_calls:
@@ -2335,7 +2351,7 @@ class OpenAIChatStreamAggregator:
                     builder["function"]["arguments"] = f"{current}{arguments}"
 
     def finalize(self) -> dict[str, Any]:
-        if not self._content_parts and not self._tool_calls and not self._reasoning_parts:
+        if not self._content_parts and not self._tool_calls and not self._reasoning_parts and not self._reasoning_details:
             raise RuntimeError("No stream chunks were received from OpenAI chat completion")
 
         message: dict[str, Any] = {
@@ -2365,6 +2381,9 @@ class OpenAIChatStreamAggregator:
 
         if self._reasoning_parts:
             message["reasoning_content"] = "".join(self._reasoning_parts)
+
+        if self._reasoning_details:
+            message["reasoning_details"] = self._reasoning_details
 
         if self.model_name:
             message["model"] = self.model_name
