@@ -242,6 +242,13 @@ class ModelResponse:
     Be sure to include these items in your input to the Responses API for subsequent turns of a
     conversation if you are manually managing context.
     """
+    reasoning_details: list[JsonDict] | None = None
+    """Structured reasoning details (OpenRouter wire format).
+
+    Distinct from ``reasoning_content`` — OpenRouter requires the exact list of blocks
+    (``reasoning.text`` / ``reasoning.summary`` / ``reasoning.encrypted`` ...) to be echoed
+    back unmodified on subsequent turns, so we preserve it verbatim.
+    """
     reasoning_signature: str | None = None
     """Optional signature for the reasoning content (used by Anthropic)."""
     reasoning_redacted_data: str | None = None
@@ -315,12 +322,33 @@ class ModelResponse:
                         ),
                     )
 
-        # Extract reasoning_content if available (for models like kimi-k2-thinking)
+        # Extract reasoning_content if available (e.g. DeepSeek / Qwen / vLLM style:
+        # a single aggregated string of chain-of-thought).
         reasoning_content = None
         if hasattr(message_obj, "reasoning_content"):
             reasoning_content = getattr(message_obj, "reasoning_content")
         elif message_dict is not None and "reasoning_content" in message_dict:
             reasoning_content = message_dict["reasoning_content"]
+
+        # Extract reasoning_details verbatim (OpenRouter style: a list of structured blocks —
+        # reasoning.text / reasoning.summary / reasoning.encrypted — that must be echoed back
+        # unmodified on subsequent turns for multi-turn reasoning context). Keep the raw shape.
+        reasoning_details_raw: Any = None
+        if hasattr(message_obj, "reasoning_details"):
+            reasoning_details_raw = getattr(message_obj, "reasoning_details")
+        elif message_dict is not None and "reasoning_details" in message_dict:
+            reasoning_details_raw = message_dict["reasoning_details"]
+        reasoning_details: list[JsonDict] | None = None
+        if isinstance(reasoning_details_raw, list):
+            preserved: list[JsonDict] = []
+            for entry in cast(list[Any], reasoning_details_raw):
+                if isinstance(entry, dict):
+                    preserved.append(dict(cast(dict[str, Any], entry)))
+                else:
+                    # Non-dict entries are uncommon; serialize defensively so we don't drop state.
+                    preserved.append(_to_serializable_dict(entry))
+            if preserved:
+                reasoning_details = preserved
 
         # Extract usage information if available in the message itself
         message_usage: JsonDict | None = None
@@ -340,6 +368,7 @@ class ModelResponse:
             role=role,
             raw_message=message,
             reasoning_content=reasoning_content if reasoning_content else None,
+            reasoning_details=reasoning_details,
             usage=_normalize_usage(final_usage, "openai_chat_completion"),
         )
 
@@ -743,6 +772,8 @@ class ModelResponse:
             message["response_items"] = self.response_items
         if self.reasoning_content:
             message["reasoning_content"] = self.reasoning_content
+        if self.reasoning_details:
+            message["reasoning_details"] = self.reasoning_details
         if self.reasoning_signature:
             message["reasoning_signature"] = self.reasoning_signature
         if self.reasoning_redacted_data:
@@ -794,6 +825,8 @@ class ModelResponse:
         msg.metadata["usage"] = self.usage.to_dict()
         if self.response_items:
             msg.metadata["response_items"] = self.response_items
+        if self.reasoning_details:
+            msg.metadata["reasoning_details"] = self.reasoning_details
         if self.thought_signature:
             msg.metadata["thought_signature"] = self.thought_signature
         return msg

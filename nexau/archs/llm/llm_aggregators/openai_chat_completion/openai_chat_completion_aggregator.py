@@ -336,28 +336,36 @@ class _ChoiceAggregator(Aggregator[ChatCompletionChunkChoice, ChatCompletionChoi
         self._thinking_ended = False
 
     def _extract_reasoning_delta(self, delta: ChoiceDelta) -> str:
-        """Pull reasoning_content out of ChoiceDelta.model_extra, normalize to str.
+        """Pull a display-text delta out of ChoiceDelta.model_extra for thinking events.
 
-        OpenAI Chat Completions API 未定义 reasoning_content；DeepSeek、Qwen、vLLM 等
-        以实施标准的形式通过该字段流式传回推理内容。字段可能为 str 或 list[{text: ...}]。
+        Two independent wire formats may carry reasoning from an OpenAI-compatible provider
+        (neither typed by the SDK):
+
+        - ``reasoning_content`` — DeepSeek / Qwen / vLLM: a single aggregated string
+          (may also arrive as ``list[{text: ...}]`` which we flatten).
+        - ``reasoning_details`` — OpenRouter: a list of structured blocks (``reasoning.text``,
+          ``reasoning.summary``, ...) whose text may live under either ``text`` or ``summary``.
+          This function only extracts the display text for UI streaming; the original
+          structured list is preserved elsewhere for verbatim echo-back.
         """
         extra = delta.model_extra
         if not extra:
             return ""
-        raw: object = cast(object, extra.get("reasoning_content"))
-        if isinstance(raw, str):
-            return raw
-        if isinstance(raw, list):
-            entries = cast(list[object], raw)
-            parts: list[str] = []
-            for entry in entries:
-                if isinstance(entry, dict):
-                    entry_dict = cast(dict[str, object], entry)
-                    text = entry_dict.get("text")
-                    if isinstance(text, str) and text:
-                        parts.append(text)
-            return "".join(parts)
-        return ""
+        parts: list[str] = []
+        for key in ("reasoning_content", "reasoning_details"):
+            raw: object = cast(object, extra.get(key))
+            if isinstance(raw, str):
+                parts.append(raw)
+            elif isinstance(raw, list):
+                entries = cast(list[object], raw)
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        entry_dict = cast(dict[str, object], entry)
+                        for text_key in ("text", "summary"):
+                            value = entry_dict.get(text_key)
+                            if isinstance(value, str) and value:
+                                parts.append(value)
+        return "".join(parts)
 
     def _aggregate_reasoning(self, delta: ChoiceDelta) -> None:
         """Emit Thinking* events for reasoning_content deltas."""

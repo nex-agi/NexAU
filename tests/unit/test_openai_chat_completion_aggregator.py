@@ -1390,6 +1390,93 @@ class TestReasoningContentStreaming:
         assert self._events_of(mock_on_event, "ThinkingTextMessageStartEvent") == []
         assert self._events_of(mock_on_event, "ThinkingTextMessageContentEvent") == []
 
+    def test_reasoning_details_list_dict_text_emits_content(self):
+        """reasoning_details is a provider alias for reasoning_content (e.g. OpenRouter).
+
+        Structured list entries carry a `text` field that must be surfaced as thinking deltas.
+        """
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-17")
+
+        agg.aggregate(
+            self._make_chunk(
+                {
+                    "reasoning_details": [
+                        {"type": "reasoning.text", "text": "plan "},
+                        {"type": "reasoning.text", "text": "phase"},
+                    ],
+                },
+            )
+        )
+
+        starts = self._events_of(mock_on_event, "ThinkingTextMessageStartEvent")
+        contents = self._events_of(mock_on_event, "ThinkingTextMessageContentEvent")
+        assert len(starts) == 1
+        assert len(contents) == 1
+        assert contents[0].delta == "plan phase"
+
+    def test_reasoning_details_str_shape_also_accepted(self):
+        """Some providers send reasoning_details as a bare string; treat it as reasoning text too."""
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-18")
+
+        agg.aggregate(self._make_chunk({"reasoning_details": "string-form"}))
+
+        contents = self._events_of(mock_on_event, "ThinkingTextMessageContentEvent")
+        assert len(contents) == 1
+        assert contents[0].delta == "string-form"
+
+    def test_reasoning_content_and_details_concatenated_same_chunk(self):
+        """If a provider emits both in one chunk, both texts are concatenated into one delta."""
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-19")
+
+        agg.aggregate(
+            self._make_chunk(
+                {
+                    "reasoning_content": "first ",
+                    "reasoning_details": [{"text": "second"}],
+                },
+            )
+        )
+
+        contents = self._events_of(mock_on_event, "ThinkingTextMessageContentEvent")
+        assert len(contents) == 1
+        assert contents[0].delta == "first second"
+
+    def test_reasoning_details_summary_type_text_surfaced(self):
+        """OpenRouter emits reasoning.summary entries with a `summary` field instead of `text`."""
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-20")
+
+        agg.aggregate(
+            self._make_chunk(
+                {
+                    "reasoning_details": [
+                        {
+                            "type": "reasoning.summary",
+                            "summary": "Analyzed by decomposition",
+                            "id": "reasoning-summary-1",
+                            "format": "anthropic-claude-v1",
+                            "index": 0,
+                        },
+                        {
+                            "type": "reasoning.text",
+                            "text": " then verified",
+                            "signature": None,
+                            "id": "reasoning-text-1",
+                            "format": "anthropic-claude-v1",
+                            "index": 1,
+                        },
+                    ],
+                },
+            )
+        )
+
+        contents = self._events_of(mock_on_event, "ThinkingTextMessageContentEvent")
+        assert len(contents) == 1
+        assert contents[0].delta == "Analyzed by decomposition then verified"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

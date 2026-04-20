@@ -71,6 +71,97 @@ def test_openai_chat_stream_aggregator_merges_chunks():
     assert tool_call["function"]["arguments"] == '{ "query": "Hello" }'
 
 
+def test_openai_chat_stream_aggregator_preserves_reasoning_details_verbatim():
+    """OpenRouter wire format: `reasoning_details` is a list of structured blocks that must
+    round-trip unmodified for multi-turn reasoning context. The streaming aggregator must
+    accumulate the raw entries in order without flattening them into `reasoning_content`.
+    """
+    aggregator = OpenAIChatStreamAggregator()
+
+    aggregator.consume(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "role": "assistant",
+                        "reasoning_content": "flat step",
+                    },
+                },
+            ],
+        },
+    )
+    aggregator.consume(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "reasoning_details": [
+                            {
+                                "type": "reasoning.text",
+                                "text": "structured A",
+                                "id": "r1",
+                                "format": "anthropic-claude-v1",
+                                "index": 0,
+                            },
+                        ],
+                    },
+                },
+            ],
+        },
+    )
+    aggregator.consume(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "reasoning_details": [
+                            {
+                                "type": "reasoning.summary",
+                                "summary": "structured B",
+                                "id": "r2",
+                                "index": 1,
+                            },
+                        ],
+                    },
+                },
+            ],
+        },
+    )
+    aggregator.consume(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "content": "done",
+                    },
+                },
+            ],
+        },
+    )
+
+    message = aggregator.finalize()
+
+    assert message["content"] == "done"
+    # reasoning_content stays the DeepSeek-style string, untouched by reasoning_details.
+    assert message["reasoning_content"] == "flat step"
+    # reasoning_details preserves order, structure, and all provider keys.
+    assert message["reasoning_details"] == [
+        {
+            "type": "reasoning.text",
+            "text": "structured A",
+            "id": "r1",
+            "format": "anthropic-claude-v1",
+            "index": 0,
+        },
+        {
+            "type": "reasoning.summary",
+            "summary": "structured B",
+            "id": "r2",
+            "index": 1,
+        },
+    ]
+
+
 def test_openai_chat_stream_aggregator_preserves_usage_details():
     aggregator = OpenAIChatStreamAggregator()
 
