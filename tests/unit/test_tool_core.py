@@ -9,7 +9,7 @@ from pytest import LogCaptureFixture
 
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.framework_context import FrameworkContext
-from nexau.archs.tool.tool import ConfigError, Tool, normalize_structured_tool_definition
+from nexau.archs.tool.tool import ConfigError, ExternalToolError, Tool, normalize_structured_tool_definition
 
 
 @pytest.fixture
@@ -357,3 +357,167 @@ def test_normalize_structured_tool_definition_accepts_legacy_openai_shape():
         "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
         "kind": "tool",
     }
+
+
+# --- RFC-0018: External Tool ---
+
+
+def test_external_tool_python_api_creates_without_implementation():
+    tool = Tool(
+        name="remote_search",
+        description="Executed by caller",
+        input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+        implementation=None,
+        kind="external",
+    )
+
+    assert tool.is_external is True
+    assert tool.kind == "external"
+    assert tool.implementation is None
+
+
+def test_external_tool_rejects_implementation_binding():
+    with pytest.raises(ConfigError, match="external"):
+        Tool(
+            name="bad_external",
+            description="desc",
+            input_schema={},
+            implementation=lambda: None,
+            kind="external",
+        )
+
+
+def test_default_tool_is_not_external():
+    tool = Tool(
+        name="local",
+        description="desc",
+        input_schema={},
+        implementation=lambda: "ok",
+    )
+
+    assert tool.is_external is False
+    assert tool.kind == "tool"
+
+
+def test_external_tool_execute_raises_external_tool_error():
+    tool = Tool(
+        name="remote_exec",
+        description="desc",
+        input_schema={},
+        implementation=None,
+        kind="external",
+    )
+
+    with pytest.raises(ExternalToolError, match="remote_exec"):
+        tool.execute()
+
+
+@pytest.mark.anyio
+async def test_external_tool_execute_async_raises_external_tool_error():
+    tool = Tool(
+        name="remote_exec_async",
+        description="desc",
+        input_schema={},
+        implementation=None,
+        kind="external",
+    )
+
+    with pytest.raises(ExternalToolError, match="remote_exec_async"):
+        await tool.execute_async()
+
+
+def test_external_tool_structured_definition_exposes_kind_tool():
+    tool = Tool(
+        name="remote_tool",
+        description="Executed by caller",
+        input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+        implementation=None,
+        kind="external",
+    )
+
+    structured = tool.to_structured_definition()
+
+    assert structured["kind"] == "tool"
+    assert structured["name"] == "remote_tool"
+    assert structured["description"] == "Executed by caller"
+
+
+def test_external_tool_structured_definition_coerces_explicit_external_kind():
+    tool = Tool(
+        name="remote_tool",
+        description="desc",
+        input_schema={},
+        implementation=None,
+        kind="external",
+    )
+
+    # Even if caller forwards kind="external", the outgoing definition must
+    # still be "tool" so the LLM never sees the internal marker.
+    structured = tool.to_structured_definition(kind="external")
+
+    assert structured["kind"] == "tool"
+
+
+def test_from_yaml_creates_external_tool_without_binding(tmp_path: Path):
+    yaml_path = tmp_path / "external.tool.yaml"
+    yaml_content = {
+        "type": "tool",
+        "name": "external_search",
+        "description": "remote search",
+        "kind": "external",
+        "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
+    }
+    yaml_path.write_text(yaml.safe_dump(yaml_content))
+
+    tool = Tool.from_yaml(str(yaml_path), binding=None)
+
+    assert tool.is_external is True
+    assert tool.implementation is None
+    assert tool.implementation_import_path is None
+
+
+def test_from_yaml_external_tool_rejects_binding_argument(tmp_path: Path):
+    yaml_path = tmp_path / "external_with_binding.tool.yaml"
+    yaml_content = {
+        "type": "tool",
+        "name": "bad_external",
+        "description": "desc",
+        "kind": "external",
+        "input_schema": {},
+    }
+    yaml_path.write_text(yaml.safe_dump(yaml_content))
+
+    with pytest.raises(ConfigError, match="external"):
+        Tool.from_yaml(str(yaml_path), binding=lambda **_: None)
+
+
+def test_from_yaml_external_tool_rejects_binding_in_yaml(tmp_path: Path):
+    yaml_path = tmp_path / "external_yaml_binding.tool.yaml"
+    yaml_content = {
+        "type": "tool",
+        "name": "bad_external",
+        "description": "desc",
+        "kind": "external",
+        "binding": "pkg.module:func",
+        "input_schema": {},
+    }
+    yaml_path.write_text(yaml.safe_dump(yaml_content))
+
+    with pytest.raises(ConfigError, match="external"):
+        Tool.from_yaml(str(yaml_path), binding=None)
+
+
+def test_from_yaml_default_kind_is_tool(tmp_path: Path):
+    yaml_path = tmp_path / "plain.tool.yaml"
+    yaml_content = {
+        "type": "tool",
+        "name": "plain",
+        "description": "desc",
+        "input_schema": {},
+    }
+    yaml_path.write_text(yaml.safe_dump(yaml_content))
+
+    tool = Tool.from_yaml(str(yaml_path), binding=lambda: "ok")
+
+    assert tool.is_external is False
+    assert tool.kind == "tool"

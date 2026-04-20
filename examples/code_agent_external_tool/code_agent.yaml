@@ -1,0 +1,51 @@
+type: agent
+name: nexau_code_agent_external
+max_context_tokens: 200000
+system_prompt: ./systemprompt.md
+system_prompt_type: jinja
+tool_call_mode: structured
+max_iterations: 300
+
+llm_config:
+  model: ${env.LLM_MODEL}
+  base_url: ${env.LLM_BASE_URL}
+  api_key: ${env.LLM_API_KEY}
+  max_tokens: 32000
+  stream: True
+  temperature: 1
+
+  api_type: openai_chat_completion
+
+# RFC-0018: External tools — 所有 tool 只提供 name / description / input_schema，
+# 没有 `binding`。Agent 在 LLM 调用这些 tool 时会暂停 loop，并把 pending tool
+# calls 回给调用方；由 start.py 的外部调度器用 builtin 实现完成实际执行并喂回。
+tools:
+  - name: read_file
+    yaml_path: ./tools/read_file.tool.yaml
+  - name: write_file
+    yaml_path: ./tools/write_file.tool.yaml
+  - name: list_directory
+    yaml_path: ./tools/list_directory.tool.yaml
+  - name: run_shell_command
+    yaml_path: ./tools/run_shell_command.tool.yaml
+  - name: complete_task
+    yaml_path: ./tools/complete_task.tool.yaml
+
+stop_tools: [complete_task]
+middlewares:
+  - import: nexau.archs.main_sub.execution.middleware.long_tool_output:LongToolOutputMiddleware
+    params:
+      max_output_chars: 10000
+      head_lines: 50
+      tail_lines: 30
+      head_chars: 5000
+      tail_chars: 5000
+      bypass_tool_names:
+        - run_shell_command
+tracers:
+  - import: nexau.archs.tracer.adapters.in_memory:InMemoryTracer
+  - import: nexau.archs.tracer.adapters.langfuse:LangfuseTracer
+    params:
+      public_key: ${env.LANGFUSE_PUBLIC_KEY}
+      secret_key: ${env.LANGFUSE_SECRET_KEY}
+      host: ${env.LANGFUSE_HOST}

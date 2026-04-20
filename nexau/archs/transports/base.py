@@ -160,13 +160,20 @@ class TransportBase[TTransportConfig](ABC):
         session_id: str | None = None,
         context: dict[str, Any] | None = None,
         variables: ContextValue | None = None,
-    ) -> str:
+    ) -> str | tuple[str, dict[str, Any]]:
         """Handle a single request.
 
         Agent internally handles all session/agent initialization including:
         - Database table initialization
         - Session creation
         - Agent registration with root_agent_id reuse
+
+        RFC-0018: 当 agent 因 external tool 调用暂停时，返回
+        ``(response, {"stop_reason": "EXTERNAL_TOOL_CALL", "pending_tool_calls": [...],
+        "trace_id": str})`` 元组；正常结束仍返回纯 ``str``，保持向后兼容。
+        T7: ``trace_id`` 由 Agent 自己生成（Session-level），与 tracer 是否启用无关；
+        仅作观测回显，resume 时客户端只需传回相同 ``session_id``，服务端从
+        ``SessionModel.current_trace_id`` 恢复。
 
         Args:
             message: User message or list of messages
@@ -176,7 +183,7 @@ class TransportBase[TTransportConfig](ABC):
             context: Optional context dict to merge with session context
 
         Returns:
-            Agent response string
+            Agent response string, or tuple (response, dict) when paused on external tool.
         """
         start_time = datetime.now()
         logger.info("handle_request (user_id: %s, session_id: %s)", user_id, session_id or "new")
@@ -209,8 +216,8 @@ class TransportBase[TTransportConfig](ABC):
             self._running_agents[agent_key] = agent
 
         try:
-            # Run agent (agent handles locking and persistence internally)
-            response = cast(str, await agent.run_async(message=message, context=context, variables=variables))
+            # RFC-0018: run_async 可能返回 str 或 tuple[str, dict]，不再 cast(str, ...)
+            result = await agent.run_async(message=message, context=context, variables=variables)
         finally:
             # RFC-0001 Phase 4: 从运行表移除
             async with self._running_agents_lock:
@@ -219,7 +226,7 @@ class TransportBase[TTransportConfig](ABC):
         duration = (datetime.now() - start_time).total_seconds()
         logger.info("handle_request completed in %.2fs (session_id: %s)", duration, session_id)
 
-        return response
+        return result
 
     async def handle_streaming_request(
         self,

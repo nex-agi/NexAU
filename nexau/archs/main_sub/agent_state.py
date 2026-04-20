@@ -57,6 +57,7 @@ class AgentState:
         token_trace_session: Optional["TokenTraceSession"] = None,
         subagent_manager: Optional["SubAgentManager"] = None,
         skill_registry: "dict[str, Skill] | None" = None,
+        trace_id: str | None = None,
     ):
         """Initialize agent state.
 
@@ -75,6 +76,9 @@ class AgentState:
             token_trace_session: Optional token trace session for generate_with_token providers (RFC-0009)
             subagent_manager: Optional SubAgentManager for Agent tool access
             skill_registry: Per-agent skill registry (avoids global storage conflicts between parent and sub-agents)
+            trace_id: RFC-0018 T7 — Session-level trace_id for the current user-triggered run.
+                Owned by Agent; preserved across EXTERNAL_TOOL_CALL pauses; cleared on normal stop.
+                Exposed here so middleware/events can echo it without reaching into tracer internals.
         """
         self.agent_name = agent_name
         self.agent_id = agent_id
@@ -91,6 +95,7 @@ class AgentState:
         self.token_trace_session = token_trace_session
         self._subagent_manager = subagent_manager
         self.skill_registry: dict[str, Skill] = skill_registry or {}
+        self.trace_id = trace_id
 
     @property
     def subagent_manager(self) -> Optional["SubAgentManager"]:

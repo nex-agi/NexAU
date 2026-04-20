@@ -227,6 +227,9 @@ class StdioTransport(TransportBase[StdioConfig]):
     async def _handle_sync_request_model(self, request: AgentRequest, rpc_id: str) -> None:
         """Handle synchronous request using AgentRequest model.
 
+        RFC-0018: handle_request 可能返回 tuple[str, dict]（external tool 暂停），
+        此时将其转换为结构化 dict 写入 JSON-RPC result；正常 str 返回不变。
+
         Args:
             request: Validated AgentRequest
         """
@@ -240,7 +243,21 @@ class StdioTransport(TransportBase[StdioConfig]):
                 variables=request.variables,
             )
 
-            self._write_line(JsonRpcSuccessResponse(id=rpc_id, result=result).model_dump_json())
+            # RFC-0018: tuple 表示 external tool 暂停，转为 dict 以便 JSON 序列化
+            rpc_result: str | dict[str, Any]
+            if isinstance(result, tuple):
+                response_text, meta = result
+                rpc_result = {
+                    "response": response_text,
+                    "stop_reason": meta.get("stop_reason"),
+                    "pending_tool_calls": meta.get("pending_tool_calls"),
+                    # RFC-0018 T7: Agent-owned trace_id, observe-only echo
+                    "trace_id": meta.get("trace_id"),
+                }
+            else:
+                rpc_result = result
+
+            self._write_line(JsonRpcSuccessResponse(id=rpc_id, result=rpc_result).model_dump_json())
 
         except Exception as e:
             logger.error(f"Request error: {e}")

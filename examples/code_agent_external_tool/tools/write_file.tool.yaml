@@ -1,0 +1,24 @@
+type: tool
+name: write_file
+kind: external
+description: >-
+  Writes content to a specified file in the local filesystem.
+
+  Usage:
+  - Creates parent directories if they don't exist
+  - Overwrites the file if it already exists
+  - Use this for creating new files or completely replacing file content
+input_schema:
+  type: object
+  properties:
+    file_path:
+      type: string
+      description: The path to the file to write to.
+    content:
+      type: string
+      description: The content to write to the file.
+  required:
+    - file_path
+    - content
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

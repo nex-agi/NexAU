@@ -35,6 +35,8 @@ if TYPE_CHECKING:
     from ..token_trace_session import TokenTraceSession
     from .executor import AgentStopReason
 
+    from nexau.core.messages import ToolUseBlock
+
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,8 @@ class AfterAgentHookInput:
     messages: list[Message]
     agent_response: str
     stop_reason: AgentStopReason | None = None
+    # RFC-0018: Pending external tool calls when stop_reason == EXTERNAL_TOOL_CALL
+    pending_external_calls: list[ToolUseBlock] | None = None
 
 
 @dataclass
