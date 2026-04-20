@@ -27,7 +27,7 @@ Covers:
 
 import threading
 from typing import Any
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -39,7 +39,7 @@ from nexau.archs.main_sub.execution.executor import (
     _IterationOutcome,
 )
 from nexau.archs.main_sub.execution.hooks import HookResult, Middleware
-from nexau.archs.main_sub.execution.parse_structures import ParsedResponse, SubAgentCall, ToolCall
+from nexau.archs.main_sub.execution.parse_structures import ParsedResponse, ToolCall
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.main_sub.history_list import HistoryList
@@ -498,8 +498,6 @@ class TestExecuteParsedCallsAsyncTool:
         parsed = ParsedResponse(
             original_response="calling async tool",
             tool_calls=[tc],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
 
         with patch("nexau.archs.main_sub.agent_context.get_context", return_value=None):
@@ -509,7 +507,7 @@ class TestExecuteParsedCallsAsyncTool:
                 framework_context=framework_context,
             )
 
-        _, _, _, feedbacks = result
+        _, _, _, feedbacks, _ = result
         assert len(feedbacks) >= 1
         assert feedbacks[0]["call_type"] == "tool"
         assert feedbacks[0].get("is_error") is not True
@@ -526,8 +524,6 @@ class TestExecuteParsedCallsAsyncTool:
         parsed = ParsedResponse(
             original_response="calling tool",
             tool_calls=[tc],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
 
         # get_sandbox raising triggers the outer except block (lines 1572-1573)
@@ -541,7 +537,7 @@ class TestExecuteParsedCallsAsyncTool:
                 framework_context=framework_context,
             )
 
-        _, _, _, feedbacks = result
+        _, _, _, feedbacks, _ = result
         assert len(feedbacks) >= 1
         assert feedbacks[0]["is_error"] is True
         assert "sandbox boom" in feedbacks[0]["content"]
@@ -567,8 +563,6 @@ class TestExecuteParsedCallsAsyncTool:
         parsed = ParsedResponse(
             original_response="calling stop tool",
             tool_calls=[tc],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
 
         with patch("nexau.archs.main_sub.agent_context.get_context", return_value=None):
@@ -578,7 +572,7 @@ class TestExecuteParsedCallsAsyncTool:
                 framework_context=framework_context,
             )
 
-        _, should_stop, stop_tool_result, feedbacks = result
+        _, should_stop, stop_tool_result, feedbacks, _ = result
         assert should_stop is True
         assert stop_tool_result is not None
 
@@ -609,8 +603,6 @@ class TestExecuteParsedCallsAsyncTool:
         parsed = ParsedResponse(
             original_response="calling mw async tool",
             tool_calls=[tc],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
 
         with patch("nexau.archs.main_sub.agent_context.get_context", return_value=None):
@@ -620,7 +612,7 @@ class TestExecuteParsedCallsAsyncTool:
                 framework_context=framework_context,
             )
 
-        _, _, _, feedbacks = result
+        _, _, _, feedbacks, _ = result
         assert len(feedbacks) >= 1
         assert mw.before_tool_called is True
         assert mw.after_tool_called is True
@@ -646,8 +638,6 @@ class TestExecuteParsedCallsAsyncTool:
         parsed = ParsedResponse(
             original_response="calling LoadSkill",
             tool_calls=[tc],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
 
         with patch("nexau.archs.main_sub.agent_context.get_context", return_value=None):
@@ -657,76 +647,9 @@ class TestExecuteParsedCallsAsyncTool:
                 framework_context=framework_context,
             )
 
-        _, _, _, feedbacks = result
+        _, _, _, feedbacks, _ = result
         assert len(feedbacks) >= 1
         assert feedbacks[0].get("is_error") is not True
-
-    @pytest.mark.anyio
-    async def test_sub_agent_call_success(self):
-        """Sub-agent call executes successfully (lines 1575-1587)."""
-        executor = _make_executor()
-        agent_state = _make_agent_state()
-        framework_context = _make_framework_context()
-
-        sac = SubAgentCall(agent_name="helper_agent", message="Do something", sub_agent_call_id="sac_1")
-        parsed = ParsedResponse(
-            original_response="delegating to sub-agent",
-            tool_calls=[],
-            sub_agent_calls=[sac],
-            batch_agent_calls=[],
-        )
-
-        with patch("nexau.archs.main_sub.agent_context.get_context", return_value=None):
-            with patch.object(
-                executor.subagent_manager,
-                "call_sub_agent_async",
-                new_callable=AsyncMock,
-                return_value="sub-agent result",
-            ):
-                result = await executor._execute_parsed_calls_async(
-                    parsed,
-                    agent_state,
-                    framework_context=framework_context,
-                )
-
-        _, _, _, feedbacks = result
-        assert len(feedbacks) >= 1
-        assert feedbacks[0]["call_type"] == "sub_agent"
-        assert feedbacks[0]["content"] == "sub-agent result"
-        assert feedbacks[0].get("is_error") is not True
-
-    @pytest.mark.anyio
-    async def test_sub_agent_call_error(self):
-        """Sub-agent call raises exception → caught at line 1588-1589."""
-        executor = _make_executor()
-        agent_state = _make_agent_state()
-        framework_context = _make_framework_context()
-
-        sac = SubAgentCall(agent_name="broken_agent", message="This will fail", sub_agent_call_id="sac_fail")
-        parsed = ParsedResponse(
-            original_response="delegating to broken sub-agent",
-            tool_calls=[],
-            sub_agent_calls=[sac],
-            batch_agent_calls=[],
-        )
-
-        with patch("nexau.archs.main_sub.agent_context.get_context", return_value=None):
-            with patch.object(
-                executor.subagent_manager,
-                "call_sub_agent_async",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("sub-agent boom"),
-            ):
-                result = await executor._execute_parsed_calls_async(
-                    parsed,
-                    agent_state,
-                    framework_context=framework_context,
-                )
-
-        _, _, _, feedbacks = result
-        assert len(feedbacks) >= 1
-        assert feedbacks[0]["is_error"] is True
-        assert "sub-agent boom" in feedbacks[0]["content"]
 
     @pytest.mark.anyio
     async def test_async_tool_after_tool_error_clears_stop_marker(self):
@@ -759,8 +682,6 @@ class TestExecuteParsedCallsAsyncTool:
         parsed = ParsedResponse(
             original_response="calling erroring stop tool",
             tool_calls=[tc],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
 
         with patch("nexau.archs.main_sub.agent_context.get_context", return_value=None):
@@ -770,6 +691,6 @@ class TestExecuteParsedCallsAsyncTool:
                 framework_context=framework_context,
             )
 
-        _, should_stop, stop_tool_result, feedbacks = result
+        _, should_stop, stop_tool_result, feedbacks, _ = result
         # _is_stop_tool cleared by line 1569 because status was "error"
         assert should_stop is False

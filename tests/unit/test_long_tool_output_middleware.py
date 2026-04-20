@@ -293,6 +293,48 @@ class TestLongOutput:
         assert "content" in new_output
         assert "LongToolOutputMiddleware" in new_output["content"]
 
+    def test_llm_tool_output_takes_priority_over_raw_output(self, agent_state: AgentState, mock_sandbox):
+        """When llm_tool_output exists, only that channel should be truncated."""
+
+        raw_output = {"result": "short raw output"}
+        llm_output = _long_text(200)
+        mw = _make_middleware(max_output_chars=100, head_lines=4, tail_lines=3)
+        hook_input = AfterToolHookInput(
+            agent_state=agent_state,
+            sandbox=mock_sandbox,
+            tool_name="test_tool",
+            tool_call_id="call_abc12345",
+            tool_input={"query": "hello"},
+            tool_output=raw_output,
+            llm_tool_output=llm_output,
+        )
+
+        result = mw.after_tool(hook_input)
+
+        assert result.tool_output is None
+        assert isinstance(result.llm_tool_output, str)
+        assert "LongToolOutputMiddleware" in result.llm_tool_output
+        assert "Line 0000:" in result.llm_tool_output
+
+    def test_short_llm_tool_output_does_not_fall_back_to_raw_output(self, agent_state: AgentState, mock_sandbox):
+        """A short llm_tool_output should prevent truncating a long raw dict."""
+
+        raw_output = {f"field_{i}": "x" * 500 for i in range(50)}
+        hook_input = AfterToolHookInput(
+            agent_state=agent_state,
+            sandbox=mock_sandbox,
+            tool_name="test_tool",
+            tool_call_id="call_abc12345",
+            tool_input={"query": "hello"},
+            tool_output=raw_output,
+            llm_tool_output="short formatted output",
+        )
+        mw = _make_middleware(max_output_chars=100)
+
+        result = mw.after_tool(hook_input)
+
+        assert not result.has_modifications()
+
 
 # ---------------------------------------------------------------------------
 # Sandbox write_file interaction

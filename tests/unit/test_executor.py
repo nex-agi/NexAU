@@ -24,7 +24,6 @@ Tests cover:
 - Token and iteration limit handling
 """
 
-import json
 from unittest.mock import Mock, patch
 
 import pytest
@@ -34,11 +33,10 @@ from nexau.archs.main_sub.execution.executor import Executor
 from nexau.archs.main_sub.execution.hooks import HookResult, Middleware
 from nexau.archs.main_sub.execution.model_response import ModelResponse, ModelToolCall
 from nexau.archs.main_sub.execution.parse_structures import (
-    BatchAgentCall,
     ParsedResponse,
-    SubAgentCall,
     ToolCall,
 )
+from nexau.archs.main_sub.execution.tool_executor import ToolExecutionResult
 from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.tool.tool import Tool, build_structured_tool_definition
 from nexau.archs.tool.tool_registry import ToolRegistry
@@ -490,7 +488,7 @@ class TestExecutorExecution:
                 tool_block = next(block for block in tool_message.content if isinstance(block, ToolResultBlock))
                 assert tool_block.tool_use_id == "call_123"
                 assert isinstance(tool_block.content, str)
-                assert '"result"' in tool_block.content
+                assert tool_block.content == "4"
                 return second_response
 
             with patch.object(executor.llm_caller, "call_llm", side_effect=llm_side_effect):
@@ -562,8 +560,6 @@ class TestExecutorExecution:
                 mock_parse.return_value = ParsedResponse(
                     original_response="Simple response",
                     tool_calls=[],
-                    sub_agent_calls=[],
-                    batch_agent_calls=[],
                 )
 
                 response, messages = executor.execute(history, agent_state)
@@ -640,7 +636,8 @@ class TestExecutorExecution:
 
         tool_block = next(block for block in matching_tool_messages[0].content if isinstance(block, ToolResultBlock))
         tool_content = tool_block.content
-        assert '"result"' in tool_content
+        assert isinstance(tool_content, str)
+        assert tool_content == "4"
 
         # Tool message should appear before the final assistant reply
         tool_index = messages.index(matching_tool_messages[0])
@@ -792,8 +789,6 @@ class TestExecutorExecution:
                 mock_parse.return_value = ParsedResponse(
                     original_response="Simple response",
                     tool_calls=[],
-                    sub_agent_calls=[],
-                    batch_agent_calls=[],
                 )
 
                 history = make_history("You are a helpful assistant.", "Hello")
@@ -829,8 +824,6 @@ class TestExecutorExecution:
                 mock_parse.return_value = ParsedResponse(
                     original_response="Simple response",
                     tool_calls=[],
-                    sub_agent_calls=[],
-                    batch_agent_calls=[],
                 )
 
                 history = make_history("You are a helpful assistant.", "Hello")
@@ -868,8 +861,6 @@ class TestExecutorExecution:
                     mock_parse.return_value = ParsedResponse(
                         original_response="Simple response",
                         tool_calls=[],
-                        sub_agent_calls=[],
-                        batch_agent_calls=[],
                     )
 
                     response, messages = executor.execute(history, agent_state)
@@ -926,8 +917,6 @@ class TestExecutorXMLCallProcessing:
             parsed_response=ParsedResponse(
                 original_response="Just a plain response",
                 tool_calls=[],
-                sub_agent_calls=[],
-                batch_agent_calls=[],
             ),
             messages=[],
         )
@@ -980,8 +969,6 @@ class TestExecutorXMLCallProcessing:
         parsed_response = ParsedResponse(
             original_response="Let me use a tool",
             tool_calls=[tool_call],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
 
         # Mock the response parser to return our parsed response
@@ -1004,67 +991,6 @@ class TestExecutorXMLCallProcessing:
             assert "<tool_result>" in processed
             assert "simple_tool" in processed
             assert len(feedbacks) == 1
-
-    def test_process_xml_calls_with_batch_calls(self, mock_llm_config, agent_state, agent_config, temp_dir):
-        """Test processing response with batch calls."""
-        import os
-
-        # Create a test file for batch processing
-        test_file = os.path.join(temp_dir, "batch_data.json")
-        with open(test_file, "w") as f:
-            json.dump([{"id": 1, "value": "test"}], f)
-
-        sub_agent_config = agent_config.model_copy(update={"name": "sub_agent", "agent_id": "sub_agent_123"})
-        executor = Executor(
-            agent_name="test_agent",
-            agent_id="test_id",
-            tool_registry=make_tool_registry(),
-            sub_agents={"sub_agent": sub_agent_config},
-            stop_tools=set(),
-            openai_client=Mock(),
-            llm_config=mock_llm_config,
-        )
-
-        from nexau.archs.main_sub.execution.hooks import AfterModelHookInput
-
-        batch_call = BatchAgentCall(
-            agent_name="sub_agent",
-            file_path=test_file,
-            data_format="json",
-            message_template="Process: {value}",
-            raw_content="<batch_agent>...</batch_agent>",
-        )
-
-        parsed_response = ParsedResponse(
-            original_response="Processing batch",
-            tool_calls=[],
-            sub_agent_calls=[],
-            batch_agent_calls=[batch_call],
-        )
-
-        # Mock the response parser and batch processor
-        with patch.object(executor.response_parser, "parse_response") as mock_parse:
-            mock_parse.return_value = parsed_response
-
-            with patch.object(executor.batch_processor, "process_batch_data") as mock_batch:
-                mock_batch.return_value = "Batch processed"
-
-                hook_input = AfterModelHookInput(
-                    agent_state=agent_state,
-                    max_iterations=10,
-                    current_iteration=0,
-                    original_response="Processing batch",
-                    parsed_response=parsed_response,
-                    messages=[],
-                )
-
-                ctx = make_framework_context(executor)
-                processed, should_stop, result, messages, feedbacks = executor._process_xml_calls(hook_input, framework_context=ctx)
-
-                # Batch results should be appended to the response
-                assert "batch_agent" in processed or "Batch processed" in processed
-                mock_batch.assert_called_once()
-                assert feedbacks == []
 
 
 class TestExecutorToolExecution:
@@ -1108,7 +1034,9 @@ class TestExecutorToolExecution:
 
         assert tool_name == "test_tool"
         assert is_error is False
-        assert "result" in result
+        assert isinstance(result, ToolExecutionResult)
+        assert result.raw_output["result"] == 10
+        assert result.llm_tool_output == 10
 
     def test_execute_tool_call_safe_error(self, mock_llm_config, agent_state):
         """Test tool execution with error."""
@@ -1148,72 +1076,8 @@ class TestExecutorToolExecution:
 
         assert tool_name == "error_tool"
         assert is_error is False
-        assert isinstance(result, dict)
-        assert result["error"] == "Tool error"
-
-
-class TestExecutorSubAgentExecution:
-    """Test sub-agent execution methods."""
-
-    def test_execute_sub_agent_call_safe_success(self, mock_llm_config, agent_state, agent_config):
-        """Test successful sub-agent execution."""
-        sub_agent_config = agent_config.model_copy(update={"name": "sub_agent", "agent_id": "sub_agent_123"})
-        executor = Executor(
-            agent_name="test_agent",
-            agent_id="test_id",
-            tool_registry=make_tool_registry(),
-            sub_agents={"sub_agent": sub_agent_config},
-            stop_tools=set(),
-            openai_client=Mock(),
-            llm_config=mock_llm_config,
-        )
-
-        sub_agent_call = SubAgentCall(
-            agent_name="sub_agent",
-            message="Test message",
-            raw_content="<sub_agent>...</sub_agent>",
-        )
-
-        # Mock the subagent manager
-        with patch.object(executor.subagent_manager, "call_sub_agent") as mock_call:
-            mock_call.return_value = "Sub-agent response"
-
-            agent_name, result, is_error = executor._execute_sub_agent_call_safe(
-                sub_agent_call, context=None, parent_agent_state=agent_state
-            )
-
-            assert agent_name == "sub_agent"
-            assert is_error is False
-            assert result == "Sub-agent response"
-
-    def test_execute_sub_agent_call_safe_error(self, mock_llm_config, agent_state):
-        """Test sub-agent execution with error."""
-        executor = Executor(
-            agent_name="test_agent",
-            agent_id="test_id",
-            tool_registry=make_tool_registry(),
-            sub_agents={},
-            stop_tools=set(),
-            openai_client=Mock(),
-            llm_config=mock_llm_config,
-        )
-
-        sub_agent_call = SubAgentCall(
-            agent_name="non_existent",
-            message="Test message",
-            raw_content="<sub_agent>...</sub_agent>",
-        )
-
-        # Mock the subagent manager to raise an error
-        with patch.object(executor.subagent_manager, "call_sub_agent") as mock_call:
-            mock_call.side_effect = Exception("Sub-agent not found")
-
-            agent_name, result, is_error = executor._execute_sub_agent_call_safe(
-                sub_agent_call, context=None, parent_agent_state=agent_state
-            )
-
-            assert agent_name == "non_existent"
-            assert is_error is True
+        assert isinstance(result, ToolExecutionResult)
+        assert result.raw_output["error"] == "Tool error"
 
 
 class TestExecutorCleanup:
@@ -1268,7 +1132,13 @@ class TestExecutorHelperMethods:
     """Test executor helper methods."""
 
     def test_structured_tool_payload_includes_sub_agents(self, mock_llm_config, agent_config):
-        """Structured payload should include sub-agent proxy definitions."""
+        """RFC-0015: Agent is a regular builtin tool, not a virtual definition.
+
+        Sub-agents configured on the executor should NOT generate virtual
+        sub-agent-{name} tool definitions. The Agent tool is registered
+        as a regular builtin tool in AgentConfig._finalize() and will appear
+        in structured_tool_payload only when it's in the ToolRegistry.
+        """
         tool = Tool(
             name="simple_tool",
             description="A simple tool",
@@ -1290,8 +1160,8 @@ class TestExecutorHelperMethods:
         payload_by_name = {spec["name"]: spec for spec in executor.structured_tool_payload}
 
         assert "simple_tool" in payload_by_name
-        assert "sub-agent-child" in payload_by_name
-        assert payload_by_name["sub-agent-child"]["description"] == "Delegate to child"
+        # RFC-0015: No virtual sub-agent-{name} definitions should be generated
+        assert "sub-agent-child" not in payload_by_name
 
     def test_structured_tool_payload_uses_skill_description(self, mock_llm_config):
         """Structured payload should use brief skill descriptions for as_skill tools."""
@@ -1378,8 +1248,6 @@ class TestExecutorStopToolHandling:
         parsed_response = ParsedResponse(
             original_response="Stopping",
             tool_calls=[tool_call],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
 
         ctx = make_framework_context(executor)
@@ -1451,8 +1319,6 @@ class TestExecutorParallelExecution:
         parsed_response = ParsedResponse(
             original_response="Using tools",
             tool_calls=[tool_call1, tool_call2],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
 
         processed, should_stop, result, feedbacks = executor._execute_parsed_calls(
@@ -1509,8 +1375,6 @@ class TestExecutorParallelExecution:
         parsed_response = ParsedResponse(
             original_response="Using tools",
             tool_calls=[tool_call1, tool_call2],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
 
         processed, should_stop, result, feedbacks = executor._execute_parsed_calls(
@@ -1564,8 +1428,6 @@ class TestExecutorWithHooks:
                 mock_parse.return_value = ParsedResponse(
                     original_response="Response",
                     tool_calls=[],
-                    sub_agent_calls=[],
-                    batch_agent_calls=[],
                 )
 
                 history = make_history("You are a helpful assistant.", "Hello")
@@ -1603,8 +1465,6 @@ class TestExecutorEdgeCases:
         parsed_response = ParsedResponse(
             original_response="Test",
             tool_calls=[tool_call],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
 
         processed, should_stop, result, feedbacks = executor._execute_parsed_calls(
@@ -1614,42 +1474,6 @@ class TestExecutorEdgeCases:
         # Should return early without executing
         assert should_stop is False
         assert feedbacks == []
-
-    def test_execute_batch_call(self, mock_llm_config, temp_dir):
-        """Test batch call execution."""
-        import os
-
-        executor = Executor(
-            agent_name="test_agent",
-            agent_id="test_id",
-            tool_registry=make_tool_registry(),
-            sub_agents={},
-            stop_tools=set(),
-            openai_client=Mock(),
-            llm_config=mock_llm_config,
-        )
-
-        # Create test data file
-        test_file = os.path.join(temp_dir, "batch_data.json")
-        with open(test_file, "w") as f:
-            json.dump([{"id": 1}], f)
-
-        batch_call = BatchAgentCall(
-            agent_name="sub_agent",
-            file_path=test_file,
-            data_format="json",
-            message_template="Process {id}",
-            raw_content="<batch_agent>...</batch_agent>",
-        )
-
-        # Mock batch processor
-        with patch.object(executor.batch_processor, "process_batch_data") as mock_batch:
-            mock_batch.return_value = "Batch result"
-
-            result = executor._execute_batch_call(batch_call)
-
-            assert result == "Batch result"
-            mock_batch.assert_called_once_with("sub_agent", test_file, "json", "Process {id}")
 
 
 class TestExecutorParallelExecutionId:
@@ -1705,8 +1529,6 @@ class TestExecutorParallelExecutionId:
                 ToolCall(tool_name="tool1", parameters={}),
                 ToolCall(tool_name="tool2", parameters={}),
             ],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
 
         # Execute the parsed response
@@ -1716,59 +1538,6 @@ class TestExecutorParallelExecutionId:
         assert len(captured_parallel_execution_ids) == 2
         assert captured_parallel_execution_ids[0] == captured_parallel_execution_ids[1]
         assert captured_parallel_execution_ids[0] is not None
-
-    def test_executor_assigns_same_parallel_execution_id_to_all_subagent_calls(self, mock_llm_config, agent_state):
-        """Test that all sub-agent calls in the same batch get the same parallel_execution_id."""
-        from nexau.archs.main_sub.config.config import AgentConfig
-
-        # Create sub-agent configs
-        sub_agent_config = AgentConfig(
-            name="test_sub_agent",
-            system_prompt="You are a test sub-agent",
-            llm_config=mock_llm_config,
-        )
-
-        captured_parallel_execution_ids = []
-
-        # Mock the sub-agent manager to capture parallel_execution_id
-        with patch("nexau.archs.main_sub.execution.executor.SubAgentManager") as mock_subagent_manager_cls:
-            mock_manager = Mock()
-
-            def mock_call_sub_agent(*args, **kwargs):
-                captured_parallel_execution_ids.append(kwargs.get("parallel_execution_id"))
-                return "sub agent result"
-
-            mock_manager.call_sub_agent = mock_call_sub_agent
-            mock_subagent_manager_cls.return_value = mock_manager
-
-            executor = Executor(
-                agent_name="test_agent",
-                agent_id="test_id",
-                tool_registry=make_tool_registry(),
-                sub_agents={"test_sub_agent": sub_agent_config},
-                stop_tools=set(),
-                openai_client=Mock(),
-                llm_config=mock_llm_config,
-            )
-
-            # Create parsed response with multiple sub-agent calls
-            parsed_response = ParsedResponse(
-                original_response="Test",
-                tool_calls=[],
-                sub_agent_calls=[
-                    SubAgentCall(agent_name="test_sub_agent", message="task1"),
-                    SubAgentCall(agent_name="test_sub_agent", message="task2"),
-                ],
-                batch_agent_calls=[],
-            )
-
-            # Execute the parsed response
-            executor._execute_parsed_calls(parsed_response, agent_state, framework_context=make_framework_context(executor))
-
-            # Verify all sub-agent calls received the same parallel_execution_id
-            assert len(captured_parallel_execution_ids) == 2
-            assert captured_parallel_execution_ids[0] == captured_parallel_execution_ids[1]
-            assert captured_parallel_execution_ids[0] is not None
 
     def test_executor_assigns_different_parallel_execution_ids_to_different_batches(self, mock_llm_config, agent_state):
         """Test that different execution batches get different parallel_execution_ids."""
@@ -1810,8 +1579,6 @@ class TestExecutorParallelExecutionId:
                 ToolCall(tool_name="test_tool", parameters={}),
                 ToolCall(tool_name="test_tool", parameters={}),
             ],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
         ctx = make_framework_context(executor)
         executor._execute_parsed_calls(parsed_response1, agent_state, framework_context=ctx)
@@ -1822,8 +1589,6 @@ class TestExecutorParallelExecutionId:
             tool_calls=[
                 ToolCall(tool_name="test_tool", parameters={}),
             ],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
         executor._execute_parsed_calls(parsed_response2, agent_state, framework_context=ctx)
 
@@ -1892,17 +1657,12 @@ class TestExecutorParallelExecutionId:
                 original_response="Test",
                 tool_calls=[
                     ToolCall(tool_name="test_tool", parameters={}),
+                    ToolCall(tool_name="Agent", parameters={"sub_agent_name": "test_sub_agent", "message": "task"}),
                 ],
-                sub_agent_calls=[
-                    SubAgentCall(agent_name="test_sub_agent", message="task"),
-                ],
-                batch_agent_calls=[],
             )
 
             # Execute the parsed response
             executor._execute_parsed_calls(parsed_response, agent_state, framework_context=make_framework_context(executor))
 
-            # Verify both tool call and sub-agent call received the same parallel_execution_id
+            # Verify tool call received parallel_execution_id
             assert captured_tool_parallel_id is not None
-            assert captured_subagent_parallel_id is not None
-            assert captured_tool_parallel_id == captured_subagent_parallel_id

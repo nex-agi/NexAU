@@ -1,0 +1,34 @@
+type: tool
+name: Agent
+description: >-
+  Use `Agent` for delegating work to sub-agents.
+
+  - To create a new sub-agent: provide `sub_agent_name` and `message`.
+  - To resume a previously finished sub-agent: provide `sub_agent_name`,
+    `sub_agent_id`, and `message`.
+
+  Available sub-agent names are listed in the tool description for your context.
+  `sub_agent_name` must match one of the parent agent's configured sub-agents.
+formatter: nexau.archs.tool.formatters.agent:format_agent_tool_output
+input_schema:
+  type: object
+  properties:
+    sub_agent_name:
+      type: string
+      description: >-
+        Name of the sub-agent to call. Must match one of the parent agent's
+        configured sub_agents.
+    message:
+      type: string
+      description: Task or question for the sub-agent.
+    sub_agent_id:
+      type: string
+      description: >-
+        Optional. Identifier of a previously finished sub-agent run to resume.
+        When provided, the sub-agent will restore its prior history and continue
+        from where it left off.
+  required:
+    - sub_agent_name
+    - message
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

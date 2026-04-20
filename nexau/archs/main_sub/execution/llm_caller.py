@@ -34,6 +34,7 @@ from typing import Any, Literal, cast
 import httpx
 import openai
 import requests
+from json_repair import repair_json
 from openai import AsyncStream, Stream
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
@@ -131,6 +132,24 @@ def _compact_scalar(value: Any, *, max_chars: int = 256) -> str:
     if len(text) <= max_chars:
         return text
     return f"{text[:max_chars]}...(truncated {len(text) - max_chars} chars)"
+
+
+def _extract_error_detail(payload: object) -> str:
+    """Extract error detail string from a raw LLM response payload.
+
+    Returns a string like `` (error_type: message)`` or empty string.
+    """
+    if isinstance(payload, Mapping):
+        payload_mapping = cast(Mapping[str, object], payload)
+        err = payload_mapping.get("error")
+        if isinstance(err, Mapping):
+            err_mapping = cast(Mapping[str, object], err)
+            err_type = str(err_mapping.get("type", "unknown"))
+            err_msg = str(err_mapping.get("message") or "")
+            return f" ({err_type}: {err_msg})"
+        if payload_mapping.get("type") == "error":
+            return f" (raw: {payload})"
+    return ""
 
 
 def _raw_message_metadata(payload: Any) -> dict[str, Any]:
@@ -387,7 +406,6 @@ class LLMCaller:
             xml_stop_sequences = [
                 "</tool_use>",
                 "</use_parallel_tool_calls>",
-                "</use_batch_agent>",
             ]
 
             # Merge with existing stop sequences if any
@@ -680,7 +698,9 @@ class LLMCaller:
                         response_content.usage.to_dict(),
                     )
                     logger.error("❌ Empty model raw_message_meta=%s", raw_message_meta)
-                    raise Exception("No response content or tool calls")
+                    # Extract error details from raw response if available
+                    error_detail = _extract_error_detail(response_content.raw_message)
+                    raise RuntimeError(f"No response content or tool calls{error_detail}")
 
             except Exception as e:
                 # RFC-0001: shutdown_event 已设置时不重试，直接返回 None
@@ -753,7 +773,7 @@ class LLMCaller:
                 api_params["tools"] = adapted_tools
 
         if not use_structured_tools:
-            xml_stop_sequences = ["</tool_use>", "</use_parallel_tool_calls>", "</use_batch_agent>"]
+            xml_stop_sequences = ["</tool_use>", "</use_parallel_tool_calls>"]
             existing_stop = api_params.get("stop", [])
             if isinstance(existing_stop, str):
                 existing_stop = [existing_stop]
@@ -2246,6 +2266,7 @@ class OpenAIChatStreamAggregator:
         self._content_parts: list[str] = []
         self._tool_calls: dict[int, dict[str, Any]] = {}
         self._reasoning_parts: list[str] = []
+        self._reasoning_details: list[dict[str, Any]] = []
         self.role: str = "assistant"
         self.model_name: str | None = None
         self.usage: Any | None = None
@@ -2279,6 +2300,8 @@ class OpenAIChatStreamAggregator:
                     if entry_text:
                         self._content_parts.append(str(entry_text))
 
+            # reasoning_content: DeepSeek / Qwen / vLLM style — a single aggregated reasoning
+            # string (may also arrive as a list of {text: ...} entries that we flatten).
             reasoning = delta.get("reasoning_content")
             if isinstance(reasoning, str):
                 self._reasoning_parts.append(reasoning)
@@ -2288,6 +2311,19 @@ class OpenAIChatStreamAggregator:
                     text = _safe_get(entry, "text")
                     if text:
                         self._reasoning_parts.append(str(text))
+
+            # reasoning_details: OpenRouter wire format — a list of structured blocks that
+            # MUST be echoed back unmodified on subsequent turns for multi-turn reasoning.
+            # Preserve the original shape verbatim (do not flatten into reasoning_content).
+            reasoning_details = delta.get("reasoning_details")
+            if isinstance(reasoning_details, list):
+                reasoning_details_list: list[Any] = cast(list[Any], reasoning_details)
+                for detail_entry in reasoning_details_list:
+                    if detail_entry is None:
+                        continue
+                    detail_dict = _to_serializable_dict(detail_entry)
+                    if detail_dict:
+                        self._reasoning_details.append(detail_dict)
 
             tool_calls: list[Any] = delta.get("tool_calls") or []
             for tool_delta in tool_calls:
@@ -2315,7 +2351,7 @@ class OpenAIChatStreamAggregator:
                     builder["function"]["arguments"] = f"{current}{arguments}"
 
     def finalize(self) -> dict[str, Any]:
-        if not self._content_parts and not self._tool_calls and not self._reasoning_parts:
+        if not self._content_parts and not self._tool_calls and not self._reasoning_parts and not self._reasoning_details:
             raise RuntimeError("No stream chunks were received from OpenAI chat completion")
 
         message: dict[str, Any] = {
@@ -2345,6 +2381,9 @@ class OpenAIChatStreamAggregator:
 
         if self._reasoning_parts:
             message["reasoning_content"] = "".join(self._reasoning_parts)
+
+        if self._reasoning_details:
+            message["reasoning_details"] = self._reasoning_details
 
         if self.model_name:
             message["model"] = self.model_name
@@ -2497,7 +2536,17 @@ class AnthropicStreamAggregator:
                         len(input_buffer),
                     )
                 except (json.JSONDecodeError, ValueError):
-                    block["input"] = input_buffer
+                    # 模型生成的 tool input 可能包含未转义的引号等 JSON 瑕疵；
+                    # 用 repair_json 尝试修复，与 OpenAI 路径 (ModelToolCall.from_openai) 保持一致。
+                    try:
+                        repaired = repair_json(input_buffer)
+                        block["input"] = json.loads(repaired)
+                        logger.warning(
+                            "⚠️ Anthropic tool input had malformed JSON; repaired successfully. raw length=%d",
+                            len(input_buffer),
+                        )
+                    except Exception:
+                        block["input"] = input_buffer
         self._completed_blocks.append(block)
 
     def _flush_active_blocks(self) -> None:

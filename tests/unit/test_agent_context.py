@@ -584,11 +584,9 @@ class TestAgentInitSessionState:
             session_id="new_session",
         )
 
-        # Should have empty storage (except for skill_registry which is always set)
+        # Should have empty storage (skill_registry is now per-agent on AgentState)
         storage_keys = set(agent.global_storage.to_dict().keys())
-        # skill_registry is set during agent init, so we exclude it
-        user_keys = storage_keys - {"skill_registry"}
-        assert user_keys == set()
+        assert storage_keys == set()
 
     def test_override_mode_empty_user_storage(self):
         """Test that empty user-provided storage still overrides session storage."""
@@ -628,10 +626,9 @@ class TestAgentInitSessionState:
 
         # Empty user storage should override session storage
         assert agent.global_storage.get("session_key") is None
-        # skill_registry is set during agent init, so we exclude it
+        # skill_registry is now per-agent on AgentState, not in global_storage
         storage_keys = set(agent.global_storage.to_dict().keys())
-        user_keys = storage_keys - {"skill_registry"}
-        assert user_keys == set()
+        assert storage_keys == set()
 
     def test_agent_id_reuse_for_root_agent(self):
         """Test that root agent reuses existing agent_id from session."""

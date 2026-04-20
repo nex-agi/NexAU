@@ -450,8 +450,6 @@ class TestCreateToolAfterApproveHook:
         parsed = ParsedResponse(
             original_response="",
             tool_calls=[Mock(tool_name="my_tool")],
-            sub_agent_calls=[],
-            batch_agent_calls=[],
         )
         hook_input = AfterModelHookInput(
             agent_state=agent_state,

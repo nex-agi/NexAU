@@ -62,6 +62,77 @@ def test_model_response_from_openai_message_rewrites_tool_call_arguments_to_vali
     assert json.loads(serialized_args) == {"file_path": "/workspace/MiniMax_Research_Report_2026.md"}
 
 
+def test_model_response_from_openai_message_preserves_reasoning_details_verbatim() -> None:
+    """OpenRouter requires `reasoning_details` to be echoed back unmodified on later turns.
+
+    The structured list must survive ModelResponse parsing and serialization without being
+    flattened into reasoning_content or otherwise mutated.
+    """
+    details = [
+        {
+            "type": "reasoning.summary",
+            "summary": "Analyzed by decomposition",
+            "id": "reasoning-summary-1",
+            "format": "anthropic-claude-v1",
+            "index": 0,
+        },
+        {
+            "type": "reasoning.text",
+            "text": "Step-by-step details here.",
+            "signature": None,
+            "id": "reasoning-text-1",
+            "format": "anthropic-claude-v1",
+            "index": 1,
+        },
+    ]
+    message = {
+        "role": "assistant",
+        "content": "Recommendation follows.",
+        "reasoning_details": details,
+    }
+
+    response = ModelResponse.from_openai_message(message)
+
+    # reasoning_content is NOT synthesized from details — the two fields are independent.
+    assert response.reasoning_content is None
+    assert response.reasoning_details == details
+
+    # Next-turn dict echoes the structured list back to the provider unchanged.
+    next_round = response.to_message_dict()
+    assert next_round["reasoning_details"] == details
+    assert "reasoning_content" not in next_round
+
+
+def test_model_response_from_openai_message_reasoning_content_and_details_coexist() -> None:
+    """Providers may send both (DeepSeek-style string + OpenRouter-style list) — keep both."""
+    details = [{"type": "reasoning.text", "text": "structured"}]
+    message = {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "flat string",
+        "reasoning_details": details,
+    }
+
+    response = ModelResponse.from_openai_message(message)
+
+    assert response.reasoning_content == "flat string"
+    assert response.reasoning_details == details
+
+
+def test_model_response_to_ump_message_carries_reasoning_details_in_metadata() -> None:
+    """to_ump_message must stash reasoning_details in Message.metadata for echo-back."""
+    details = [{"type": "reasoning.text", "text": "verbatim"}]
+    response = ModelResponse(
+        role="assistant",
+        content="ok",
+        reasoning_details=details,
+    )
+
+    msg = response.to_ump_message()
+
+    assert msg.metadata["reasoning_details"] == details
+
+
 def test_tool_call_from_response_item_repairs_malformed_arguments_and_serializes_valid_json() -> None:
     malformed = '{"file_path": "/workspace/MiniMax_Research_Report_2026.md"'
     item = {

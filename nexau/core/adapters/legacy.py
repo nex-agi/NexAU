@@ -223,6 +223,9 @@ def messages_from_legacy_openai_chat(messages: list[dict[str, Any]]) -> list[Mes
             metadata["response_items"] = raw.get("response_items")
         if "reasoning" in raw:
             metadata["reasoning"] = raw.get("reasoning")
+        if "reasoning_details" in raw:
+            # OpenRouter wire format — preserved verbatim for unmodified echo-back.
+            metadata["reasoning_details"] = raw.get("reasoning_details")
         if "thought_signature" in raw:
             metadata["thought_signature"] = raw.get("thought_signature")
 

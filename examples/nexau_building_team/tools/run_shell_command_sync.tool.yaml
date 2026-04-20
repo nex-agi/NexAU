@@ -1,5 +1,6 @@
 type: tool
 name: run_shell_command
+formatter: nexau.archs.tool.formatters.shell:format_run_shell_command_output
 description: >-
   This tool executes a given shell command synchronously as `bash -c <command>`.
   All commands run in the foreground and must complete before returning. Use this

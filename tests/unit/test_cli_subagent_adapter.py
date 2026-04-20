@@ -252,40 +252,11 @@ class TestCLIEnabledSubAgentManager:
         sub_agent.executor.middleware_manager = Mock()
         sub_agent.executor.middleware_manager.middlewares = []
         sub_agent.executor.subagent_manager = nested_manager
-        sub_agent.executor.batch_processor = None
 
         manager._inject_cli_hooks(sub_agent)
 
         # Verify nested manager was replaced with CLI-enabled version
         assert isinstance(sub_agent.executor.subagent_manager, CLIEnabledSubAgentManager)
-
-    def test_inject_cli_hooks_updates_batch_processor(self):
-        """Test _inject_cli_hooks updates batch_processor's subagent_manager."""
-        manager = CLIEnabledSubAgentManager(
-            agent_name="test_agent",
-            sub_agents={},
-            event_callback=Mock(),
-        )
-
-        nested_manager = SubAgentManager(
-            agent_name="nested_agent",
-            sub_agents={},
-        )
-
-        batch_processor = Mock()
-        batch_processor.subagent_manager = nested_manager
-
-        sub_agent = Mock()
-        sub_agent._cli_hooks_injected = False
-        sub_agent.executor.middleware_manager = Mock()
-        sub_agent.executor.middleware_manager.middlewares = []
-        sub_agent.executor.subagent_manager = nested_manager
-        sub_agent.executor.batch_processor = batch_processor
-
-        manager._inject_cli_hooks(sub_agent)
-
-        # Verify batch_processor's manager was also updated
-        assert isinstance(batch_processor.subagent_manager, CLIEnabledSubAgentManager)
 
     def test_call_sub_agent_raises_on_shutdown(self):
         """Test call_sub_agent raises RuntimeError when shutting down."""
@@ -498,7 +469,6 @@ class TestAttachCLIToAgent:
         middleware_manager.middlewares = []
         agent.executor.middleware_manager = middleware_manager
         agent.executor.subagent_manager = None
-        agent.executor.batch_processor = None
 
         progress_hook = Mock()
 
@@ -516,7 +486,6 @@ class TestAttachCLIToAgent:
         middleware_manager.middlewares = []
         agent.executor.middleware_manager = middleware_manager
         agent.executor.subagent_manager = None
-        agent.executor.batch_processor = None
 
         tool_hook = Mock()
 
@@ -532,7 +501,6 @@ class TestAttachCLIToAgent:
         agent._cli_hooks_attached = False
         agent.executor.middleware_manager = None
         agent.executor.subagent_manager = None
-        agent.executor.batch_processor = None
 
         # Should not raise
         attach_cli_to_agent(agent, Mock(), Mock(), Mock())
@@ -549,30 +517,9 @@ class TestAttachCLIToAgent:
             sub_agents={},
         )
         agent.executor.subagent_manager = regular_manager
-        agent.executor.batch_processor = None
 
         event_callback = Mock()
 
         attach_cli_to_agent(agent, None, None, event_callback)
 
         assert isinstance(agent.executor.subagent_manager, CLIEnabledSubAgentManager)
-
-    def test_updates_batch_processor_subagent_manager(self):
-        """Test attach_cli_to_agent updates batch_processor's subagent_manager."""
-        agent = Mock()
-        agent._cli_hooks_attached = False
-        agent.executor.middleware_manager = None
-
-        regular_manager = SubAgentManager(
-            agent_name="test",
-            sub_agents={},
-        )
-        agent.executor.subagent_manager = regular_manager
-
-        batch_processor = Mock()
-        batch_processor.subagent_manager = regular_manager
-        agent.executor.batch_processor = batch_processor
-
-        attach_cli_to_agent(agent, None, None, Mock())
-
-        assert isinstance(batch_processor.subagent_manager, CLIEnabledSubAgentManager)

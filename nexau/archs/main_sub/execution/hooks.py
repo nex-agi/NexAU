@@ -35,6 +35,8 @@ if TYPE_CHECKING:
     from ..token_trace_session import TokenTraceSession
     from .executor import AgentStopReason
 
+    from nexau.core.messages import ToolUseBlock
+
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,8 @@ class AfterAgentHookInput:
     messages: list[Message]
     agent_response: str
     stop_reason: AgentStopReason | None = None
+    # RFC-0018: Pending external tool calls when stop_reason == EXTERNAL_TOOL_CALL
+    pending_external_calls: list[ToolUseBlock] | None = None
 
 
 @dataclass
@@ -99,6 +103,7 @@ class HookResult:
     parsed_response: ParsedResponse | None = None
     force_continue: bool = False
     tool_output: Any | None = None
+    llm_tool_output: Any | None = None
     tool_input: dict[str, Any] | None = None
     agent_response: str | None = None
 
@@ -111,6 +116,9 @@ class HookResult:
     def has_tool_output(self) -> bool:
         return self.tool_output is not None
 
+    def has_llm_tool_output(self) -> bool:
+        return self.llm_tool_output is not None
+
     def has_agent_response(self) -> bool:
         return self.agent_response is not None
 
@@ -120,6 +128,7 @@ class HookResult:
             or self.has_parsed_response()
             or self.force_continue
             or self.has_tool_output()
+            or self.has_llm_tool_output()
             or self.tool_input is not None
             or self.has_agent_response()
         )
@@ -136,6 +145,7 @@ class HookResult:
         parsed_response: ParsedResponse | None = None,
         force_continue: bool = False,
         tool_output: Any | None = None,
+        llm_tool_output: Any | None = None,
         tool_input: dict[str, Any] | None = None,
         agent_response: str | None = None,
     ) -> HookResultT:
@@ -144,6 +154,7 @@ class HookResult:
             parsed_response=parsed_response,
             force_continue=force_continue,
             tool_output=tool_output,
+            llm_tool_output=llm_tool_output,
             tool_input=tool_input,
             agent_response=agent_response,
         )
@@ -191,6 +202,7 @@ class AfterToolHookInput(BeforeToolHookInput):
     """Input data passed to after_tool_hooks."""
 
     tool_output: Any = None
+    llm_tool_output: Any = None
 
 
 @dataclass
@@ -198,8 +210,13 @@ class AfterToolHookResult(HookResult):
     """Backward compatible alias for HookResult (after tool)."""
 
     @classmethod
-    def with_modifications(cls, tool_output: Any) -> AfterToolHookResult:  # type: ignore[override]
-        return cls(tool_output=tool_output)
+    def with_modifications(  # type: ignore[override]
+        cls,
+        *,
+        tool_output: Any | None = None,
+        llm_tool_output: Any | None = None,
+    ) -> AfterToolHookResult:
+        return cls(tool_output=tool_output, llm_tool_output=llm_tool_output)
 
 
 class BeforeModelHook(Protocol):
@@ -439,10 +456,7 @@ class LoggingMiddleware(Middleware):
         else:
             logger.info("Summary: %s", parsed.get_call_summary())
             logger.info("Tool calls: %s", len(parsed.tool_calls))
-            logger.info("Sub-agent calls: %s", len(parsed.sub_agent_calls))
-            logger.info("Batch agent calls: %s", len(parsed.batch_agent_calls))
             logger.info("Parallel tools: %s", parsed.is_parallel_tools)
-            logger.info("Parallel sub-agents: %s", parsed.is_parallel_sub_agents)
 
         logger.info("Message history: %s items", len(hook_input.messages))
         for idx, msg in enumerate(hook_input.messages[-3:]):
@@ -484,6 +498,14 @@ class LoggingMiddleware(Middleware):
             logger.info("🔧 Tool output (truncated): %s...", truncated)
         else:
             logger.info("🔧 Tool output: %s", output_preview)
+
+        if hook_input.llm_tool_output is not None:
+            llm_output_preview = str(hook_input.llm_tool_output)
+            if len(llm_output_preview) > self.tool_preview_chars:
+                llm_truncated = llm_output_preview[: self.tool_preview_chars]
+                logger.info("🔧 LLM tool output (truncated): %s...", llm_truncated)
+            else:
+                logger.info("🔧 LLM tool output: %s", llm_output_preview)
 
         logger.info(
             f"after_tool hook triggered "
@@ -658,21 +680,30 @@ class MiddlewareManager:
                 logger.warning(f"⚠️ After-model middleware {middleware} failed: {exc}")
         return current_parsed, current_messages, force_continue
 
-    def run_after_tool(self, hook_input: AfterToolHookInput, initial_output: Any) -> Any:
+    def run_after_tool(
+        self,
+        hook_input: AfterToolHookInput,
+        initial_output: Any,
+        initial_llm_output: Any | None = None,
+    ) -> tuple[Any, Any | None]:
         current_output = initial_output
+        current_llm_output = initial_llm_output
         for middleware in reversed(self.middlewares):
             handler = getattr(middleware, "after_tool", None)
             if handler is None:
                 continue
             try:
                 hook_input.tool_output = current_output
+                hook_input.llm_tool_output = current_llm_output
                 result = handler(hook_input)
                 hook_result = self._normalize_result(result)
                 if hook_result.tool_output is not None:
                     current_output = hook_result.tool_output
+                if hook_result.llm_tool_output is not None:
+                    current_llm_output = hook_result.llm_tool_output
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.warning(f"⚠️ After-tool middleware {middleware} failed: {exc}")
-        return current_output
+        return current_output, current_llm_output
 
     def run_before_tool(self, hook_input: BeforeToolHookInput) -> dict[str, Any]:
         current_input = hook_input.tool_input

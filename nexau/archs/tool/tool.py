@@ -39,11 +39,13 @@ from jsonschema.validators import validator_for
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 from pydantic import BaseModel, ConfigDict, Field
 
+from .formatters import ToolFormatter, ToolFormatterContext, resolve_tool_formatter
+
 logger = logging.getLogger(__name__)
 _UNRESOLVED_ANNOTATION = object()
 
 
-StructuredToolKind = Literal["tool", "sub_agent"]
+StructuredToolKind = Literal["tool", "sub_agent", "external"]
 
 
 class StructuredToolDefinition(TypedDict):
@@ -205,10 +207,26 @@ class ToolYamlSchema(BaseModel):
     template_override: str | None = None
     builtin: str | None = None
     binding: str | None = None
+    formatter: str | None = None
+    # RFC-0018: external tool — kind="external" 表示该 tool 没有本地 implementation，
+    # 由调用方在 agent loop 暂停时完成执行并回传 tool result。
+    kind: Literal["tool", "external"] | None = Field(default=None)
 
 
 class ConfigError(Exception):
     """Exception raised for configuration errors."""
+
+    pass
+
+
+class ExternalToolError(Exception):
+    """Raised when a caller attempts to execute an external tool locally.
+
+    RFC-0018: External Tool
+
+    External tool 没有本地 implementation，必须由 agent loop 上层识别并委托给
+    调用方完成；直接调用 ``execute()`` / ``execute_async()`` 视为使用错误。
+    """
 
     pass
 
@@ -229,10 +247,24 @@ class Tool:
         defer_loading: bool = False,
         search_hint: str | None = None,
         template_override: str | None = None,
+        formatter: str | ToolFormatter | None = None,
         extra_kwargs: dict[str, Any] | None = None,
         source_name: str | None = None,
+        kind: StructuredToolKind = "tool",
     ):
-        """Initialize a tool with schema and implementation."""
+        """Initialize a tool with schema and implementation.
+
+        RFC-0018: ``kind="external"`` 声明此 tool 无本地 implementation，
+        执行权归调用方；Tool 仍然持有 name / description / input_schema 用于
+        暴露给 LLM，但 ``execute()`` / ``execute_async()`` 会 raise
+        :class:`ExternalToolError`。
+        """
+        if kind == "external" and implementation is not None:
+            raise ConfigError(
+                f"Tool '{name}' is declared as external but has a local implementation; "
+                "external tools must not bind to a local callable or import path.",
+            )
+        self.kind: StructuredToolKind = kind
         self.name = name
         self.source_name = source_name
         self.description = description
@@ -256,6 +288,8 @@ class Tool:
         self.defer_loading = defer_loading
         self.search_hint = search_hint
         self.template_override = template_override
+        self.formatter = formatter
+        self._resolved_formatter: ToolFormatter | None = None
         self.disable_parallel = disable_parallel
         reserved_keys = {"agent_state", "global_storage", "ctx"}
         extra_kwargs = extra_kwargs or {}
@@ -315,8 +349,18 @@ class Tool:
         effective_defer_loading = yaml_defer_loading if defer_loading is None else defer_loading
         effective_lazy = yaml_lazy if lazy is None else lazy
 
+        # RFC-0018: external tool — YAML `kind: external` 且无 `binding` 声明无本地实现。
+        yaml_kind = tool_def.get("kind")
+        effective_kind: StructuredToolKind = "external" if yaml_kind == "external" else "tool"
+
         if binding is None and "binding" in tool_def:
             binding = tool_def.get("binding")
+
+        if effective_kind == "external" and binding is not None:
+            raise ConfigError(
+                f"Tool '{source_name}' is declared as external (kind: external) but a binding was provided "
+                f"in YAML or via the agent configuration; remove the binding or change kind.",
+            )
 
         if "global_storage" in input_schema:
             raise ValueError(
@@ -337,6 +381,7 @@ class Tool:
             )
 
         template_override = tool_def.get("template_override")
+        formatter = tool_def.get("formatter")
 
         # Create tool instance
         return cls(
@@ -352,8 +397,58 @@ class Tool:
             defer_loading=effective_defer_loading,
             search_hint=search_hint_val,
             template_override=template_override,
+            formatter=formatter,
             extra_kwargs=extra_kwargs,
+            kind=effective_kind,
         )
+
+    def resolve_formatter(self) -> ToolFormatter:
+        """Resolve and cache the formatter configured for this tool.
+
+        RFC-0017: formatter resolver
+
+        未显式配置时自动回退到 builtin `xml` formatter。
+        """
+
+        if self._resolved_formatter is None:
+            self._resolved_formatter = resolve_tool_formatter(self.formatter)
+        return self._resolved_formatter
+
+    def format_output_for_llm(
+        self,
+        *,
+        tool_input: dict[str, Any],
+        tool_output: object,
+        tool_call_id: str | None,
+        is_error: bool,
+    ) -> object:
+        """Format raw tool output into the LLM-facing representation.
+
+        RFC-0017: tool output flattening
+
+        先执行 formatter，再进入 after_tool middleware，保证后续截断与最终
+        模型输入始终作用于同一份 llm-facing output。
+        """
+
+        formatter_context = ToolFormatterContext(
+            tool_name=self.name,
+            tool_input=cast(dict[str, object], dict(tool_input)),
+            tool_output=tool_output,
+            tool_call_id=tool_call_id,
+            is_error=is_error,
+        )
+
+        formatter = self.resolve_formatter()
+        try:
+            return formatter(formatter_context)
+        except Exception:
+            logger.exception("Tool '%s' formatter failed; falling back to builtin XML formatter", self.name)
+            fallback_formatter = resolve_tool_formatter("xml")
+            try:
+                return fallback_formatter(formatter_context)
+            except Exception:
+                logger.exception("Tool '%s' builtin XML formatter failed; falling back to raw tool output", self.name)
+                return tool_output
 
     def _validate_reserved_param_annotations(self) -> None:
         """Validate reserved framework parameter annotations for tool implementations."""
@@ -431,6 +526,14 @@ class Tool:
         return False
 
     @property
+    def is_external(self) -> bool:
+        """Whether this tool is an external (caller-executed) tool.
+
+        RFC-0018: External Tool
+        """
+        return self.kind == "external"
+
+    @property
     def has_native_async_execute(self) -> bool:
         """Whether this tool has a native async execute_async() override.
 
@@ -443,6 +546,14 @@ class Tool:
 
     def execute(self, **params: Any) -> dict[str, Any]:
         """Execute the tool with given parameters."""
+
+        # RFC-0018: external tool 没有本地实现，必须由上层识别并暂停 agent loop；
+        # 直接 execute() 视为使用错误，以独立异常区别于"缺失实现"的普通错误。
+        if self.is_external:
+            raise ExternalToolError(
+                f"Tool '{self.name}' is external and must be executed by the caller; "
+                "the agent loop should intercept external tool calls before reaching execute().",
+            )
 
         if self.implementation is None:
             if self.implementation_import_path:
@@ -554,6 +665,13 @@ class Tool:
         对 sync tool 实现通过 asyncio.to_thread() 在线程池中执行（避免阻塞 event loop）。
         现有 execute() 方法保持不变，供 sync 调用方（如 ThreadPoolExecutor workers）使用。
         """
+        # RFC-0018: external tool 没有本地实现，执行权归调用方，见 execute() 注释。
+        if self.is_external:
+            raise ExternalToolError(
+                f"Tool '{self.name}' is external and must be executed by the caller; "
+                "the agent loop should intercept external tool calls before reaching execute_async().",
+            )
+
         if self.implementation is None:
             if self.implementation_import_path:
                 logger.info(f"Dynamic importing tool implementation '{self.name}': {self.implementation_import_path}")
@@ -679,12 +797,14 @@ class Tool:
             "description": self.description,
             "skill_description": self.skill_description,
             "input_schema": self.input_schema,
+            "formatter": self.formatter if isinstance(self.formatter, str) else None,
         }
 
     def __repr__(self) -> str:
         impl = self.implementation
         impl_name = getattr(impl, "__name__", repr(impl)) if impl is not None else "None"
-        return f"Tool(name='{self.name}', implementation={impl_name})"
+        formatter_name = self.formatter if isinstance(self.formatter, str) else getattr(self.formatter, "__name__", "xml")
+        return f"Tool(name='{self.name}', implementation={impl_name}, formatter={formatter_name})"
 
     def __str__(self) -> str:
         tool_str = f"Tool '{self.name}': {self.description[:50]}{'...' if len(self.description) > 50 else ''}"
@@ -715,13 +835,18 @@ class Tool:
 
         structured 模式下，Tool 先产出 neutral definition；provider-specific
         schema 在后续 LLM adapter 中按 ``api_type`` 再做延迟转换。
+
+        RFC-0018: external tool 对 LLM 完全透明 — 统一以 ``kind="tool"`` 暴露，
+        "external" 仅在 executor 内部作为暂停标记使用。
         """
+
+        effective_kind: StructuredToolKind = "tool" if self.is_external or kind == "external" else kind
 
         return build_structured_tool_definition(
             name=self.name,
             description=self.description if description is None else description,
             input_schema=self.get_schema(),
-            kind=kind,
+            kind=effective_kind,
         )
 
     def to_openai(self) -> ChatCompletionToolParam:

@@ -35,7 +35,6 @@ class XMLUtils:
             ("<tool_use>", "</tool_use>"),
             ("<parallel_tool>", "</parallel_tool>"),
             ("<use_parallel_tool_calls>", "</use_parallel_tool_calls>"),
-            ("<use_batch_agent>", "</use_batch_agent>"),
         ]
 
         for open_tag, close_tag in tag_pairs:

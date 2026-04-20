@@ -16,6 +16,7 @@
 Unit tests for OpenAI chat completion aggregator.
 """
 
+from typing import Literal
 from unittest.mock import Mock
 
 import pytest
@@ -31,6 +32,8 @@ from openai.types.chat.chat_completion_chunk import (
 
 from nexau.archs.llm.llm_aggregators import OpenAIChatCompletionAggregator
 from nexau.archs.llm.llm_aggregators.openai_chat_completion.openai_chat_completion_aggregator import _ToolCallAggregator
+
+_FinishReasonLiteral = Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
 
 
 class TestOpenAIChatCompletionAggregator:
@@ -1092,6 +1095,387 @@ class TestOpenAIChatCompletionAggregator:
         tc_ends = [e for e in events if type(e).__name__ == "ToolCallEndEvent"]
         assert len(tc_starts) == 1
         assert len(tc_ends) == 1
+
+
+class TestReasoningContentStreaming:
+    """Coverage for _extract_reasoning_delta / _aggregate_reasoning / _end_thinking_if_needed.
+
+    reasoning_content is a non-standard field (DeepSeek/Qwen/vLLM 实施标准) carried on
+    ChoiceDelta.model_extra. The aggregator maps it to UMP ThinkingTextMessage events.
+    """
+
+    @staticmethod
+    def _make_chunk(
+        delta_kwargs: dict[str, object],
+        finish_reason: _FinishReasonLiteral | None = None,
+    ) -> ChatCompletionChunk:
+        # model_validate 绕过 mypy 对非声明字段（reasoning_content）的 **kwargs 校验，
+        # 同时仍然保留 pydantic 的 extra='allow' 行为，extras 会进入 model_extra。
+        return ChatCompletionChunk(
+            id="chatcmpl-reasoning",
+            choices=[
+                ChatCompletionChunkChoice(
+                    index=0,
+                    delta=ChoiceDelta.model_validate(delta_kwargs),
+                    finish_reason=finish_reason,
+                )
+            ],
+            created=1700000000,
+            model="deepseek-reasoner",
+            object="chat.completion.chunk",
+        )
+
+    @staticmethod
+    def _events_of(mock: Mock, cls_name: str) -> list[object]:
+        return [c.args[0] for c in mock.call_args_list if c.args and c.args[0].__class__.__name__ == cls_name]
+
+    def test_reasoning_content_str_emits_start_and_content(self):
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-1")
+
+        agg.aggregate(self._make_chunk({"reasoning_content": "step 1"}))
+
+        starts = self._events_of(mock_on_event, "ThinkingTextMessageStartEvent")
+        contents = self._events_of(mock_on_event, "ThinkingTextMessageContentEvent")
+        ends = self._events_of(mock_on_event, "ThinkingTextMessageEndEvent")
+
+        assert len(starts) == 1
+        start = starts[0]
+        assert start.parent_message_id == "chatcmpl-reasoning"
+        assert start.thinking_message_id
+        assert start.run_id == "run-1"
+
+        assert len(contents) == 1
+        content = contents[0]
+        assert content.thinking_message_id == start.thinking_message_id
+        assert content.delta == "step 1"
+
+        assert ends == []
+
+    def test_reasoning_content_list_dict_text_concatenated(self):
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-2")
+
+        agg.aggregate(
+            self._make_chunk(
+                {"reasoning_content": [{"text": "first "}, {"text": "second"}]},
+            )
+        )
+
+        contents = self._events_of(mock_on_event, "ThinkingTextMessageContentEvent")
+        assert len(contents) == 1
+        assert contents[0].delta == "first second"
+
+    def test_reasoning_content_list_filters_invalid_entries(self):
+        """Non-dict entries, dicts without text, non-str text, empty-str text must be skipped."""
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-3")
+
+        reasoning = [
+            "bare-string-ignored",
+            {"text": "keep-me"},
+            {"text": 42},
+            {"text": ""},
+            {"other": "no-text-key"},
+            {"text": " tail"},
+        ]
+        agg.aggregate(self._make_chunk({"reasoning_content": reasoning}))
+
+        contents = self._events_of(mock_on_event, "ThinkingTextMessageContentEvent")
+        assert len(contents) == 1
+        assert contents[0].delta == "keep-me tail"
+
+    def test_reasoning_content_empty_list_emits_nothing(self):
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-4")
+
+        agg.aggregate(self._make_chunk({"reasoning_content": []}))
+
+        assert self._events_of(mock_on_event, "ThinkingTextMessageStartEvent") == []
+        assert self._events_of(mock_on_event, "ThinkingTextMessageContentEvent") == []
+
+    def test_reasoning_content_empty_string_emits_nothing(self):
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-5")
+
+        agg.aggregate(self._make_chunk({"reasoning_content": ""}))
+
+        assert self._events_of(mock_on_event, "ThinkingTextMessageStartEvent") == []
+
+    def test_reasoning_content_non_str_non_list_emits_nothing(self):
+        """e.g. provider returns reasoning_content=42 or a dict — must not crash or emit."""
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-6")
+
+        agg.aggregate(self._make_chunk({"reasoning_content": 42}))
+        agg.aggregate(self._make_chunk({"reasoning_content": {"nested": "dict"}}))
+
+        assert self._events_of(mock_on_event, "ThinkingTextMessageStartEvent") == []
+
+    def test_reasoning_content_absent_unrelated_extra_field(self):
+        """Extra fields other than reasoning_content must not trigger thinking events."""
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-7")
+
+        agg.aggregate(self._make_chunk({"something_else": "ignored"}))
+
+        assert self._events_of(mock_on_event, "ThinkingTextMessageStartEvent") == []
+
+    def test_reasoning_start_emitted_only_once_across_chunks(self):
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-8")
+
+        agg.aggregate(self._make_chunk({"reasoning_content": "a"}))
+        agg.aggregate(self._make_chunk({"reasoning_content": "b"}))
+        agg.aggregate(self._make_chunk({"reasoning_content": "c"}))
+
+        starts = self._events_of(mock_on_event, "ThinkingTextMessageStartEvent")
+        contents = self._events_of(mock_on_event, "ThinkingTextMessageContentEvent")
+        assert len(starts) == 1
+        assert [c.delta for c in contents] == ["a", "b", "c"]
+        tid = starts[0].thinking_message_id
+        assert all(c.thinking_message_id == tid for c in contents)
+
+    def test_reasoning_ignored_after_thinking_closed_by_content(self):
+        """Once real content closes thinking, late reasoning_content chunks must be dropped."""
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-9")
+
+        agg.aggregate(self._make_chunk({"reasoning_content": "pre"}))
+        agg.aggregate(self._make_chunk({"content": "real answer"}))
+        # Provider misbehaves: sends more reasoning after content started
+        agg.aggregate(self._make_chunk({"reasoning_content": "late"}))
+        agg.aggregate(self._make_chunk({}, finish_reason="stop"))
+
+        starts = self._events_of(mock_on_event, "ThinkingTextMessageStartEvent")
+        contents = self._events_of(mock_on_event, "ThinkingTextMessageContentEvent")
+        ends = self._events_of(mock_on_event, "ThinkingTextMessageEndEvent")
+
+        assert len(starts) == 1
+        assert [c.delta for c in contents] == ["pre"]
+        assert len(ends) == 1
+
+    def test_thinking_closed_on_finish_when_no_content(self):
+        """Reasoning-only stream closes thinking block on finish_reason."""
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-10")
+
+        agg.aggregate(self._make_chunk({"reasoning_content": "think only"}))
+        # Need at least one non-empty content/tool_calls for build(); emit finish with content
+        agg.aggregate(self._make_chunk({"content": "."}, finish_reason="stop"))
+
+        types_in_order = [c.args[0].__class__.__name__ for c in mock_on_event.call_args_list if c.args]
+        # Thinking end must precede TextMessageEnd
+        assert "ThinkingTextMessageEndEvent" in types_in_order
+        assert "TextMessageEndEvent" in types_in_order
+        assert types_in_order.index("ThinkingTextMessageEndEvent") < types_in_order.index("TextMessageEndEvent")
+
+    def test_thinking_closed_before_refusal(self):
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-11")
+
+        agg.aggregate(self._make_chunk({"reasoning_content": "considering"}))
+        agg.aggregate(self._make_chunk({"refusal": "I can't"}, finish_reason="stop"))
+
+        types_in_order = [c.args[0].__class__.__name__ for c in mock_on_event.call_args_list if c.args]
+        # Thinking end must fire before the first refusal TextMessageContentEvent
+        end_idx = types_in_order.index("ThinkingTextMessageEndEvent")
+        first_text_content_idx = types_in_order.index("TextMessageContentEvent")
+        assert end_idx < first_text_content_idx
+
+    def test_thinking_closed_before_tool_calls(self):
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-12")
+
+        agg.aggregate(self._make_chunk({"reasoning_content": "plan"}))
+        agg.aggregate(
+            self._make_chunk(
+                {
+                    "tool_calls": [
+                        ChoiceDeltaToolCall(
+                            index=0,
+                            id="call_1",
+                            function=ChoiceDeltaToolCallFunction(name="noop", arguments="{}"),
+                        )
+                    ]
+                },
+                finish_reason="tool_calls",
+            )
+        )
+
+        types_in_order = [c.args[0].__class__.__name__ for c in mock_on_event.call_args_list if c.args]
+        assert types_in_order.index("ThinkingTextMessageEndEvent") < types_in_order.index("ToolCallStartEvent")
+
+    def test_end_thinking_if_needed_noop_when_not_started(self):
+        """White-box: calling _end_thinking_if_needed without a started thinking block is a no-op."""
+        from nexau.archs.llm.llm_aggregators.openai_chat_completion.openai_chat_completion_aggregator import _ChoiceAggregator
+
+        mock_on_event = Mock()
+        choice_agg = _ChoiceAggregator(index=0, message_id="msg", on_event=mock_on_event, run_id="run-13")
+
+        choice_agg._end_thinking_if_needed()
+
+        assert self._events_of(mock_on_event, "ThinkingTextMessageEndEvent") == []
+
+    def test_end_thinking_if_needed_noop_when_already_ended(self):
+        """White-box: calling _end_thinking_if_needed twice emits exactly one end event."""
+        from nexau.archs.llm.llm_aggregators.openai_chat_completion.openai_chat_completion_aggregator import _ChoiceAggregator
+
+        mock_on_event = Mock()
+        choice_agg = _ChoiceAggregator(index=0, message_id="msg", on_event=mock_on_event, run_id="run-14")
+
+        # Start a thinking block via a reasoning chunk
+        choice_agg.aggregate(
+            ChatCompletionChunkChoice(
+                index=0,
+                delta=ChoiceDelta(reasoning_content="x"),
+                finish_reason=None,
+            )
+        )
+        choice_agg._end_thinking_if_needed()
+        choice_agg._end_thinking_if_needed()
+
+        assert len(self._events_of(mock_on_event, "ThinkingTextMessageEndEvent")) == 1
+
+    def test_clear_resets_thinking_state(self):
+        """After clear(), a new reasoning chunk should produce a fresh Start event (new thinking_message_id)."""
+        from nexau.archs.llm.llm_aggregators.openai_chat_completion.openai_chat_completion_aggregator import _ChoiceAggregator
+
+        mock_on_event = Mock()
+        choice_agg = _ChoiceAggregator(index=0, message_id="msg", on_event=mock_on_event, run_id="run-15")
+
+        choice_agg.aggregate(
+            ChatCompletionChunkChoice(
+                index=0,
+                delta=ChoiceDelta(reasoning_content="round1"),
+                finish_reason=None,
+            )
+        )
+        first_start = self._events_of(mock_on_event, "ThinkingTextMessageStartEvent")[0]
+
+        choice_agg.clear()
+        mock_on_event.reset_mock()
+
+        choice_agg.aggregate(
+            ChatCompletionChunkChoice(
+                index=0,
+                delta=ChoiceDelta(reasoning_content="round2"),
+                finish_reason=None,
+            )
+        )
+        second_start = self._events_of(mock_on_event, "ThinkingTextMessageStartEvent")[0]
+
+        assert first_start.thinking_message_id != second_start.thinking_message_id
+
+    def test_non_first_choice_thinking_events_suppressed(self):
+        """_noop_event_handler covers line 61: non-first choices must not emit thinking events."""
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-16")
+
+        chunk = ChatCompletionChunk(
+            id="chatcmpl-multi",
+            choices=[
+                ChatCompletionChunkChoice(
+                    index=1,
+                    delta=ChoiceDelta(reasoning_content="suppressed"),
+                    finish_reason=None,
+                )
+            ],
+            created=1700000000,
+            model="deepseek-reasoner",
+            object="chat.completion.chunk",
+        )
+        agg.aggregate(chunk)
+
+        assert self._events_of(mock_on_event, "ThinkingTextMessageStartEvent") == []
+        assert self._events_of(mock_on_event, "ThinkingTextMessageContentEvent") == []
+
+    def test_reasoning_details_list_dict_text_emits_content(self):
+        """reasoning_details is a provider alias for reasoning_content (e.g. OpenRouter).
+
+        Structured list entries carry a `text` field that must be surfaced as thinking deltas.
+        """
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-17")
+
+        agg.aggregate(
+            self._make_chunk(
+                {
+                    "reasoning_details": [
+                        {"type": "reasoning.text", "text": "plan "},
+                        {"type": "reasoning.text", "text": "phase"},
+                    ],
+                },
+            )
+        )
+
+        starts = self._events_of(mock_on_event, "ThinkingTextMessageStartEvent")
+        contents = self._events_of(mock_on_event, "ThinkingTextMessageContentEvent")
+        assert len(starts) == 1
+        assert len(contents) == 1
+        assert contents[0].delta == "plan phase"
+
+    def test_reasoning_details_str_shape_also_accepted(self):
+        """Some providers send reasoning_details as a bare string; treat it as reasoning text too."""
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-18")
+
+        agg.aggregate(self._make_chunk({"reasoning_details": "string-form"}))
+
+        contents = self._events_of(mock_on_event, "ThinkingTextMessageContentEvent")
+        assert len(contents) == 1
+        assert contents[0].delta == "string-form"
+
+    def test_reasoning_content_and_details_concatenated_same_chunk(self):
+        """If a provider emits both in one chunk, both texts are concatenated into one delta."""
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-19")
+
+        agg.aggregate(
+            self._make_chunk(
+                {
+                    "reasoning_content": "first ",
+                    "reasoning_details": [{"text": "second"}],
+                },
+            )
+        )
+
+        contents = self._events_of(mock_on_event, "ThinkingTextMessageContentEvent")
+        assert len(contents) == 1
+        assert contents[0].delta == "first second"
+
+    def test_reasoning_details_summary_type_text_surfaced(self):
+        """OpenRouter emits reasoning.summary entries with a `summary` field instead of `text`."""
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-20")
+
+        agg.aggregate(
+            self._make_chunk(
+                {
+                    "reasoning_details": [
+                        {
+                            "type": "reasoning.summary",
+                            "summary": "Analyzed by decomposition",
+                            "id": "reasoning-summary-1",
+                            "format": "anthropic-claude-v1",
+                            "index": 0,
+                        },
+                        {
+                            "type": "reasoning.text",
+                            "text": " then verified",
+                            "signature": None,
+                            "id": "reasoning-text-1",
+                            "format": "anthropic-claude-v1",
+                            "index": 1,
+                        },
+                    ],
+                },
+            )
+        )
+
+        contents = self._events_of(mock_on_event, "ThinkingTextMessageContentEvent")
+        assert len(contents) == 1
+        assert contents[0].delta == "Analyzed by decomposition then verified"
 
 
 if __name__ == "__main__":

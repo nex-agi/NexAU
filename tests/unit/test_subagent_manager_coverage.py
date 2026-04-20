@@ -61,6 +61,7 @@ class TestSubAgentManagerAsync:
         with patch("nexau.archs.main_sub.agent.Agent.create", new_callable=AsyncMock, return_value=mock_sub_agent):
             result = await subagent_manager.call_sub_agent_async("test_sub_agent", "test message")
 
+        assert "[sub_agent_id: sub-async-id]" in result
         assert "async result" in result
         assert "Sub-agent finished" in result
         assert subagent_manager.running_sub_agents == {}

@@ -31,7 +31,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import copy_context
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
 
@@ -39,12 +39,12 @@ from nexau.archs.llm.llm_aggregators.events import RetryEvent
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import AgentConfig
-from nexau.archs.main_sub.execution.batch_processor import BatchProcessor
 from nexau.archs.main_sub.execution.hooks import (
     AfterAgentHookInput,
     AfterModelHook,
     AfterModelHookInput,
     AfterToolHook,
+    AfterToolHookInput,
     BeforeAgentHookInput,
     BeforeModelHook,
     BeforeModelHookInput,
@@ -56,18 +56,15 @@ from nexau.archs.main_sub.execution.hooks import (
 from nexau.archs.main_sub.execution.llm_caller import LLMCaller
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.parse_structures import (
-    BatchAgentCall,
     ParsedResponse,
-    SubAgentCall,
     ToolCall,
 )
 from nexau.archs.main_sub.execution.response_parser import ResponseParser
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
-from nexau.archs.main_sub.execution.tool_executor import ToolExecutor
+from nexau.archs.main_sub.execution.tool_executor import ToolExecutionResult, ToolExecutor
 from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.main_sub.history_list import HistoryList
-from nexau.archs.main_sub.sub_agent_naming import build_sub_agent_tool_name
 from nexau.archs.main_sub.token_trace_session import TokenTraceContextOverflowError, TokenTraceSession
 from nexau.archs.main_sub.tool_call_modes import (
     STRUCTURED_TOOL_CALL_MODES,
@@ -77,11 +74,10 @@ from nexau.archs.main_sub.utils.token_counter import TokenCounter
 from nexau.archs.tool.tool import (
     StructuredToolDefinition,
     Tool,
-    build_structured_tool_definition,
 )
 from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
-from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, coerce_tool_result_content
+from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, ToolUseBlock, coerce_tool_result_content
 
 if TYPE_CHECKING:
     from nexau.archs.sandbox.base_sandbox import BaseSandbox
@@ -115,6 +111,9 @@ class _AsyncIterationState:
     runtime_client: object | None
     custom_llm_client_provider: Callable[[str], object] | None
     origin_history: list[Message] | list[dict[str, object]]
+    # RFC-0018: external tool — 累积当前 iteration 中被跳过的 external tool calls，
+    # 由上层作为 pending_tool_calls 暴露给调用方；loop 在 step 10 时据此决定暂停。
+    pending_external_calls: list[ToolUseBlock] = field(default_factory=list[ToolUseBlock])
 
 
 class Executor:
@@ -207,10 +206,6 @@ class Executor:
             user_id=user_id,
             session_id=session_id,
         )
-        self.batch_processor = BatchProcessor(
-            self.subagent_manager,
-            max_running_subagents,
-        )
         self.response_parser = ResponseParser()
         self.llm_caller = LLMCaller(
             openai_client,
@@ -247,10 +242,6 @@ class Executor:
                 )
                 for tool in self._tool_registry.compute_eager_tools()
             ]
-            for sub_agent_name, sub_agent_config in sub_agents.items():
-                self.structured_tool_definitions.append(
-                    self._build_sub_agent_tool_definition(sub_agent_name, sub_agent_config),
-                )
         else:
             self.structured_tool_definitions = []
 
@@ -442,16 +433,6 @@ class Executor:
                     ),
                 )
                 definition_names.add(tool.name)
-
-            # 2. 同步动态新增的 sub-agent 代理定义。
-            for sub_agent_name, sub_agent_config in self.subagent_manager.sub_agents.items():
-                sub_agent_tool_name = build_sub_agent_tool_name(sub_agent_name)
-                if sub_agent_tool_name in definition_names:
-                    continue
-                self.structured_tool_definitions.append(
-                    self._build_sub_agent_tool_definition(sub_agent_name, sub_agent_config),
-                )
-                definition_names.add(sub_agent_tool_name)
 
             return deepcopy(self.structured_tool_definitions)
 
@@ -805,8 +786,6 @@ class Executor:
 
                         if isinstance(call_obj, ToolCall):
                             call_id = call_obj.tool_call_id
-                        elif isinstance(call_obj, SubAgentCall):
-                            call_id = call_obj.tool_call_id or call_obj.sub_agent_call_id
                         else:
                             call_id = None
 
@@ -815,13 +794,20 @@ class Executor:
 
                         tool_result_block = ToolResultBlock(
                             tool_use_id=str(call_id),
-                            content=coerce_tool_result_content(output if output is not None else content, fallback_text=str(content)),
+                            content=coerce_tool_result_content(
+                                feedback.get("llm_tool_output", output if output is not None else content),
+                                fallback_text=None,
+                            ),
                             is_error=bool(feedback.get("is_error")),
                         )
+
+                        # micro-compact: 设置 created_at 时间戳
+                        from datetime import UTC, datetime
 
                         tool_result_message = Message(
                             role=Role.TOOL,
                             content=[tool_result_block],
+                            created_at=datetime.now(UTC),
                         )
                         messages.append(tool_result_message)
                         tool_result_messages.append(tool_result_message)
@@ -837,10 +823,15 @@ class Executor:
                     ).strip()
 
                 if tool_results:
+                    # micro-compact: 设置 created_at 时间戳
+                    from datetime import UTC, datetime
+
                     from nexau.core.messages import TextBlock
 
                     tool_result_feedback_message = Message(
-                        role=Role.USER, content=[TextBlock(text=f"Tool execution results:\n{tool_results}")]
+                        role=Role.USER,
+                        content=[TextBlock(text=f"Tool execution results:\n{tool_results}")],
+                        created_at=datetime.now(UTC),
                     )
                     messages.append(tool_result_feedback_message)
                     if token_trace_session is not None:
@@ -976,7 +967,7 @@ class Executor:
         *,
         runtime_client: Any | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
-    ) -> tuple[str, list[Message]]:
+    ) -> tuple[str, list[Message], list[ToolUseBlock]]:
         """Fully async execution — runs on the main event loop.
 
         async/sync 技术债修复: 理想状态的 async 执行器
@@ -988,6 +979,10 @@ class Executor:
         - History flush: 直接 create_task 或 await flush_async()
 
         sync execute() 保留给向后兼容的 sync 调用方和测试。
+
+        RFC-0018: 返回三元组 ``(response, messages, pending_external_calls)``。
+        ``pending_external_calls`` 仅在 ``AgentStopReason.EXTERNAL_TOOL_CALL`` 时非空；
+        其余正常结束路径均为 ``[]``，保持与旧形状在信息量上的等价。
         """
 
         # 1. 初始化执行状态
@@ -1030,7 +1025,7 @@ class Executor:
                         final_response=stop_response,
                         stop_reason=AgentStopReason.USER_INTERRUPTED,
                     )
-                    return stop_response, state.messages
+                    return stop_response, state.messages, []
 
                 outcome = await self._execute_iteration_async(state)
                 if outcome == _IterationOutcome.BREAK:
@@ -1047,10 +1042,13 @@ class Executor:
                 messages=state.messages,
                 final_response=state.final_response,
                 stop_reason=state.force_stop_reason,
+                pending_external_calls=list(state.pending_external_calls) or None,
             )
 
             self._store_token_trace(state.token_trace_session)
-            return state.final_response, state.messages
+            # RFC-0018: 只有 EXTERNAL_TOOL_CALL 暂停路径会携带 pending calls，
+            # 其余正常 / MAX_ITERATIONS / NO_MORE_TOOL_CALLS 等均为空列表。
+            return state.final_response, state.messages, list(state.pending_external_calls)
 
         except TokenTraceContextOverflowError as e:
             state.force_stop_reason = AgentStopReason.CONTEXT_TOKEN_LIMIT
@@ -1063,7 +1061,7 @@ class Executor:
                 stop_reason=state.force_stop_reason,
             )
             self._store_token_trace(state.token_trace_session)
-            return state.final_response, state.messages
+            return state.final_response, state.messages, []
 
         except Exception as e:
             state.force_stop_reason = AgentStopReason.ERROR_OCCURRED
@@ -1261,6 +1259,7 @@ class Executor:
             stop_tool_result,
             updated_messages,
             execution_feedbacks,
+            pending_external_calls,
         ) = await self._process_xml_calls_async(
             after_model_hook_input,
             custom_llm_client_provider=state.custom_llm_client_provider,
@@ -1269,7 +1268,7 @@ class Executor:
 
         state.messages = updated_messages
 
-        # 9. 构建工具结果消息
+        # 9. 构建工具结果消息（仅包含已执行的 local tool calls；external tool 由调用方补齐）
         self._append_tool_result_messages(
             state=state,
             execution_feedbacks=execution_feedbacks,
@@ -1277,6 +1276,14 @@ class Executor:
             assistant_content=assistant_content,
             processed_response=processed_response,
         )
+
+        # RFC-0018: 10a. 若本轮出现 external tool calls，先 append local results 后暂停 loop，
+        # 由调用方回传 tool results 再通过新的 run_async 继续。
+        if pending_external_calls:
+            state.pending_external_calls = pending_external_calls
+            state.force_stop_reason = AgentStopReason.EXTERNAL_TOOL_CALL
+            state.final_response = ""
+            return _IterationOutcome.BREAK
 
         # 10. 停止条件判断
         if should_stop and len(self.queued_messages) == 0:
@@ -1320,8 +1327,6 @@ class Executor:
 
                 if isinstance(call_obj, ToolCall):
                     call_id = call_obj.tool_call_id
-                elif isinstance(call_obj, SubAgentCall):
-                    call_id = call_obj.tool_call_id or call_obj.sub_agent_call_id
                 else:
                     call_id = None
 
@@ -1330,10 +1335,16 @@ class Executor:
 
                 tool_result_block = ToolResultBlock(
                     tool_use_id=str(call_id),
-                    content=coerce_tool_result_content(output if output is not None else content, fallback_text=str(content)),
+                    content=coerce_tool_result_content(
+                        feedback.get("llm_tool_output", output if output is not None else content),
+                        fallback_text=None,
+                    ),
                     is_error=bool(feedback.get("is_error")),
                 )
-                tool_result_message = Message(role=Role.TOOL, content=[tool_result_block])
+                # micro-compact: 设置 created_at 时间戳
+                from datetime import UTC, datetime
+
+                tool_result_message = Message(role=Role.TOOL, content=[tool_result_block], created_at=datetime.now(UTC))
                 state.messages.append(tool_result_message)
                 tool_result_messages.append(tool_result_message)
 
@@ -1394,11 +1405,13 @@ class Executor:
         *,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         framework_context: FrameworkContext,
-    ) -> tuple[str, bool, str | None, list[Message], list[dict[str, Any]]]:
+    ) -> tuple[str, bool, str | None, list[Message], list[dict[str, Any]], list[ToolUseBlock]]:
         """Async version of _process_xml_calls.
 
         Middleware hooks 通过 to_thread 调用（sync API），
         tool/sub-agent 通过 _execute_parsed_calls_async 异步执行。
+
+        RFC-0018: 透传来自 _execute_parsed_calls_async 的 pending_external_calls。
         """
 
         response_payload: str | ModelResponse = hook_input.model_response or hook_input.original_response
@@ -1419,18 +1432,31 @@ class Executor:
 
         if not parsed_response or not parsed_response.has_calls():
             if force_continue:
-                return hook_input.original_response, False, None, current_messages, []
+                return hook_input.original_response, False, None, current_messages, [], []
             else:
-                return hook_input.original_response, True, None, current_messages, []
+                return hook_input.original_response, True, None, current_messages, [], []
 
         assert parsed_response is not None
-        processed_response, should_stop, stop_tool_result, execution_feedbacks = await self._execute_parsed_calls_async(
+        (
+            processed_response,
+            should_stop,
+            stop_tool_result,
+            execution_feedbacks,
+            pending_external_calls,
+        ) = await self._execute_parsed_calls_async(
             parsed_response,
             hook_input.agent_state,
             custom_llm_client_provider=custom_llm_client_provider,
             framework_context=framework_context,
         )
-        return processed_response, should_stop, stop_tool_result, current_messages, execution_feedbacks
+        return (
+            processed_response,
+            should_stop,
+            stop_tool_result,
+            current_messages,
+            execution_feedbacks,
+            pending_external_calls,
+        )
 
     async def _execute_parsed_calls_async(
         self,
@@ -1439,37 +1465,23 @@ class Executor:
         *,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         framework_context: FrameworkContext,
-    ) -> tuple[str, bool, str | None, list[dict[str, Any]]]:
+    ) -> tuple[str, bool, str | None, list[dict[str, Any]], list[ToolUseBlock]]:
         """Async parallel tool/sub-agent execution via asyncio.gather.
 
         async tool → 直接 await tool.execute_async()
         sync tool / sub-agent → asyncio.to_thread 在线程池执行
+
+        RFC-0018: external tool 被识别后不参与执行，转换为 ToolUseBlock 加入
+        pending 列表一并返回；上层据此决定是否暂停 agent loop。
         """
 
         processed_response = parsed_response.original_response
 
         if self._shutdown_event.is_set():
-            return processed_response, False, None, []
+            return processed_response, False, None, [], []
 
-        # Batch agent calls (sync, not parallelized)
-        if parsed_response.batch_agent_calls:
-            for batch_call in parsed_response.batch_agent_calls:
-                try:
-                    batch_result = await asyncio.to_thread(self._execute_batch_call, batch_call)
-                    processed_response += (
-                        f"\n<tool_result>\n<tool_name>batch_agent</tool_name>\n<result>{batch_result}</result>\n</tool_result>\n"
-                    )
-                except Exception as e:
-                    processed_response += f"\n<tool_result>\n<tool_name>batch_agent</tool_name>\n<error>{str(e)}</error>\n</tool_result>\n"
-            return processed_response, False, None, []
-
-        if not parsed_response.tool_calls and not parsed_response.sub_agent_calls:
-            return processed_response, False, None, []
-
-        from ..agent_context import get_context
-
-        current_context = get_context()
-        context_dict = current_context.context.copy() if current_context else None
+        if not parsed_response.tool_calls:
+            return processed_response, False, None, [], []
 
         parallel_execution_id = str(uuid.uuid4())
 
@@ -1482,13 +1494,22 @@ class Executor:
             seen_tool_call_ids[base_id] += 1
             tool_call.parallel_execution_id = parallel_execution_id
 
-        seen_sub_agent_call_ids: defaultdict[str, int] = defaultdict(int)
-        for idx, sub_agent_call in enumerate(parsed_response.sub_agent_calls):
-            base_id = sub_agent_call.sub_agent_call_id or f"sub_agent_call_{idx}"
-            count = seen_sub_agent_call_ids[base_id]
-            sub_agent_call.sub_agent_call_id = f"{base_id}_{count}" if count else base_id
-            seen_sub_agent_call_ids[base_id] += 1
-            sub_agent_call.parallel_execution_id = parallel_execution_id
+        # RFC-0018: 在派发前识别 external tool calls 并从待执行列表中剥离。
+        # 未注册的 tool 交给下游 `_run_tool` 返回 tool-not-found 错误（保持原行为）。
+        pending_external_calls: list[ToolUseBlock] = []
+        executable_tool_calls: list[ToolCall] = []
+        for tool_call in parsed_response.tool_calls:
+            tool_obj = self._tool_registry.get_tool(tool_call.tool_name)
+            if tool_obj is not None and tool_obj.is_external:
+                pending_external_calls.append(
+                    ToolUseBlock(
+                        id=tool_call.tool_call_id or "",
+                        name=tool_call.tool_name,
+                        input=dict(tool_call.parameters),
+                    ),
+                )
+            else:
+                executable_tool_calls.append(tool_call)
 
         serial_tool_names = set(self._tool_registry.compute_serial_tool_names())
 
@@ -1508,11 +1529,15 @@ class Executor:
               run_async_function_sync()。
             """
             if self._shutdown_event.is_set():
-                return ("tool", tc, (tc.tool_name, "Shutdown in progress", True))
+                error_msg = "Shutdown in progress"
+                await asyncio.to_thread(self._emit_tool_error_result, tc, error_msg, agent_state)
+                return ("tool", tc, (tc.tool_name, error_msg, True))
 
             tool_obj = self._tool_registry.get_tool(tc.tool_name)
             if tool_obj is None:
-                return ("tool", tc, (tc.tool_name, f"Tool '{tc.tool_name}' not found", True))
+                error_msg = self._tool_not_found_msg(tc.tool_name)
+                await asyncio.to_thread(self._emit_tool_error_result, tc, error_msg, agent_state)
+                return ("tool", tc, (tc.tool_name, error_msg, True))
 
             # 检测 async tool: implementation 是 async def，
             # 或子类（如 MCPTool）声明了原生 async execute_async() 覆盖。
@@ -1567,90 +1592,53 @@ class Executor:
 
                 # Async tool: 直接 await（不经过 to_thread）
                 result = await tool_obj.execute_async(**exec_params)
+                execution_result = await asyncio.to_thread(
+                    self.tool_executor.finalize_tool_execution,
+                    agent_state=agent_state,
+                    sandbox=sandbox,
+                    tool=tool_obj,
+                    tool_name=tc.tool_name,
+                    tool_parameters=tool_parameters,
+                    tool_call_id=tc.tool_call_id or "",
+                    result=result,
+                    execution_error=None,
+                )
 
-                result_dict: dict[str, Any] = dict(result)
-
-                # 注入 _is_stop_tool 标记
-                if tc.tool_name in self.tool_executor.stop_tools:
-                    result_dict["_is_stop_tool"] = True
-
-                # after_tool middleware hook (sync hook → to_thread)
-                if self.middleware_manager:
-                    from nexau.archs.main_sub.execution.hooks import AfterToolHookInput
-
-                    hook_input = AfterToolHookInput(
-                        agent_state=agent_state,
-                        sandbox=sandbox,
-                        tool_name=tc.tool_name,
-                        tool_input=tool_parameters,
-                        tool_output=result_dict,
-                        tool_call_id=tc.tool_call_id or "",
-                    )
-                    after_result = await asyncio.to_thread(self.middleware_manager.run_after_tool, hook_input, result_dict)
-                    after_dict: dict[str, Any] = (
-                        cast(dict[str, Any], after_result) if isinstance(after_result, dict) else {"result": after_result}
-                    )
-                    result_dict = after_dict
-
-                    if result_dict.get("status") == "error" and result_dict.get("_is_stop_tool", False):
-                        result_dict["_is_stop_tool"] = False
-
-                return ("tool", tc, (tc.tool_name, result_dict, False))
+                return ("tool", tc, (tc.tool_name, execution_result, False))
             except Exception as e:
                 return ("tool", tc, (tc.tool_name, str(e), True))
 
-        async def _run_sub_agent(sac: SubAgentCall) -> tuple[str, SubAgentCall, tuple[str, str, bool]]:
-            try:
-                # P1 async/sync 修复: 直接 await async 路径，
-                # 避免 to_thread → Agent() → asyncio.run() 的间接 event loop 创建
-                result = await self.subagent_manager.call_sub_agent_async(
-                    sac.agent_name,
-                    sac.message,
-                    context=context_dict,
-                    parent_agent_state=agent_state,
-                    custom_llm_client_provider=custom_llm_client_provider,
-                    parallel_execution_id=sac.parallel_execution_id,
-                )
-                return ("sub_agent", sac, (sac.agent_name, result, False))
-            except Exception as e:
-                return ("sub_agent", sac, (sac.agent_name, str(e), True))
-
-        # serial tools 需要顺序执行，其余并行
+        # serial tools 需要顺序执行，其余并行。
+        # RFC-0018: external tool 已从 executable_tool_calls 中剥离，这里不会再被派发。
         serial_tasks: list[ToolCall] = []
         parallel_tool_tasks: list[ToolCall] = []
-        for tc in parsed_response.tool_calls:
+        for tc in executable_tool_calls:
             if tc.tool_name in serial_tool_names:
                 serial_tasks.append(tc)
             else:
                 parallel_tool_tasks.append(tc)
 
         # 结果类型: (call_type, call_obj, (name, result, is_error))
-        all_results: list[tuple[str, ToolCall, tuple[str, Any, bool]] | tuple[str, SubAgentCall, tuple[str, str, bool]]] = []
+        all_results: list[tuple[str, ToolCall, tuple[str, Any, bool]]] = []
 
         # 先执行 serial tools（顺序）
         for tc in serial_tasks:
             all_results.append(await _run_tool(tc))
 
-        # 再并行执行剩余 tools + sub-agents
+        # 再并行执行剩余 tools
         # 维护 call_origins 与 parallel_coros 索引一一对应，gather 异常时保留调用上下文
         parallel_coros: list[Any] = []
-        call_origins: list[tuple[str, ToolCall] | tuple[str, SubAgentCall]] = []
+        call_origins: list[tuple[str, ToolCall]] = []
         for tc in parallel_tool_tasks:
             parallel_coros.append(_run_tool(tc))
             call_origins.append(("tool", tc))
-        for sac in parsed_response.sub_agent_calls:
-            parallel_coros.append(_run_sub_agent(sac))
-            call_origins.append(("sub_agent", sac))
 
         if parallel_coros:
             parallel_results = await asyncio.gather(*parallel_coros, return_exceptions=True)
             for idx, r in enumerate(parallel_results):
                 if isinstance(r, BaseException):
                     _, origin_call = call_origins[idx]
-                    if isinstance(origin_call, SubAgentCall):
-                        all_results.append(("sub_agent", origin_call, (origin_call.agent_name, str(r), True)))
-                    else:
-                        all_results.append(("tool", origin_call, (origin_call.tool_name, str(r), True)))
+                    all_results.append(("tool", origin_call, (origin_call.tool_name, str(r), True)))
                 elif isinstance(r, tuple):
                     all_results.append(r)  # type: ignore[arg-type]
 
@@ -1662,64 +1650,56 @@ class Executor:
 
         for entry in all_results:
             call_type: str = entry[0]
-            call_obj: ToolCall | SubAgentCall = entry[1]
+            call_obj: ToolCall = entry[1]
             result_data: tuple[str, Any, bool] = entry[2]
-            if call_type == "sub_agent":
-                agent_name, result, is_error = result_data
-                execution_feedbacks.append(
-                    {"call_type": "sub_agent", "call": call_obj, "content": result, "output": result, "is_error": is_error}
-                )
-                # SubAgentCall.tool_call_id is set for OpenAI structured calls; absent means XML mode
-                should_append_xml = not (isinstance(call_obj, SubAgentCall) and call_obj.tool_call_id)
-                if is_error:
-                    if should_append_xml:
-                        tool_results.append(
-                            f"\n<tool_result>\n<tool_name>{agent_name}_sub_agent</tool_name>\n<error>{result}</error>\n</tool_result>\n"
-                        )
-                else:
-                    if should_append_xml:
-                        tool_results.append(
-                            f"\n<tool_result>\n<tool_name>{agent_name}_sub_agent</tool_name>\n<result>{result}</result>\n</tool_result>\n"
-                        )
-            elif call_type == "tool":
-                tool_name, result, is_error = result_data
-                result_str = result if isinstance(result, str) else json.dumps(result, indent=2, ensure_ascii=False)
-                execution_feedbacks.append(
-                    {"call_type": "tool", "call": call_obj, "content": result_str, "output": result, "is_error": is_error}
-                )
+            tool_name, result, is_error = result_data
+            raw_output, llm_tool_output = self._split_tool_outputs(result)
+            result_str = self._serialize_llm_tool_output(llm_tool_output)
+            execution_feedbacks.append(
+                {
+                    "call_type": call_type,
+                    "call": call_obj,
+                    "content": result_str,
+                    "output": raw_output,
+                    "llm_tool_output": llm_tool_output,
+                    "is_error": is_error,
+                }
+            )
 
-                # ToolCall.source indicates origin; "openai" means structured tool call (no XML append)
-                should_append_xml = not (isinstance(call_obj, ToolCall) and call_obj.source == "openai")
-                if is_error:
-                    if should_append_xml:
-                        tool_results.append(
-                            f"\n<tool_result>\n<tool_name>{tool_name}</tool_name>\n<error>{result_str}</error>\n</tool_result>\n"
-                        )
-                else:
-                    if should_append_xml:
-                        tool_results.append(
-                            f"\n<tool_result>\n<tool_name>{tool_name}</tool_name>\n<result>{result_str}</result>\n</tool_result>\n"
-                        )
-                    # 检查 stop tool
-                    try:
-                        parsed_result = json.loads(result_str)
-                        if isinstance(parsed_result, dict):
-                            parsed_result_dict = cast(dict[str, Any], parsed_result)
-                            if parsed_result_dict.get("_is_stop_tool"):
-                                stop_tool_detected = True
-                                self._last_stop_tool_name = tool_name
-                                actual_result: dict[str, Any] = {k: v for k, v in parsed_result_dict.items() if k != "_is_stop_tool"}
-                                if "result" in actual_result and len(actual_result) == 1:
-                                    stop_tool_result = json.dumps(actual_result["result"], ensure_ascii=False, indent=4)
-                                else:
-                                    stop_tool_result = json.dumps(actual_result or parsed_result, ensure_ascii=False, indent=4)
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+            # ToolCall.source indicates call format; structured tool calls do not append XML tool results.
+            should_append_xml = call_obj.source != "structured"
+            if is_error:
+                if should_append_xml:
+                    tool_results.append(
+                        f"\n<tool_result>\n<tool_name>{tool_name}</tool_name>\n<error>{result_str}</error>\n</tool_result>\n"
+                    )
+            else:
+                if should_append_xml:
+                    tool_results.append(
+                        f"\n<tool_result>\n<tool_name>{tool_name}</tool_name>\n<result>{result_str}</result>\n</tool_result>\n"
+                    )
+                # 检查 stop tool
+                try:
+                    if isinstance(raw_output, dict):
+                        raw_output_dict = cast(dict[str, Any], raw_output)
+                    else:
+                        raw_output_dict = None
+
+                    if raw_output_dict is not None and raw_output_dict.get("_is_stop_tool"):
+                        stop_tool_detected = True
+                        self._last_stop_tool_name = tool_name
+                        actual_result: dict[str, Any] = {key: value for key, value in raw_output_dict.items() if key != "_is_stop_tool"}
+                        if "result" in actual_result and len(actual_result) == 1:
+                            stop_tool_result = json.dumps(actual_result["result"], ensure_ascii=False, indent=4)
+                        else:
+                            stop_tool_result = json.dumps(actual_result or raw_output_dict, ensure_ascii=False, indent=4)
+                except TypeError:
+                    pass
 
         if tool_results:
             processed_response += "\n\n" + "\n\n".join(tool_results)
 
-        return processed_response, stop_tool_detected, stop_tool_result, execution_feedbacks
+        return processed_response, stop_tool_detected, stop_tool_result, execution_feedbacks, pending_external_calls
 
     def _store_token_trace(self, token_trace_session: TokenTraceSession | None) -> None:
         """Persist token trace data into shared trace memory."""
@@ -1738,6 +1718,7 @@ class Executor:
         messages: list[Message],
         final_response: str,
         stop_reason: AgentStopReason | None,
+        pending_external_calls: list[ToolUseBlock] | None = None,
     ) -> tuple[str, list[Message]]:
         """Run after-agent middleware hooks and return possibly updated values."""
 
@@ -1749,6 +1730,7 @@ class Executor:
             messages=messages,
             agent_response=final_response,
             stop_reason=stop_reason,
+            pending_external_calls=pending_external_calls,
         )
         try:
             return self.middleware_manager.run_after_agent(after_agent_hook_input)
@@ -1892,49 +1874,18 @@ class Executor:
             )
             return processed_response, False, None, []
 
-        # Handle batch agent calls first (they take priority and are not parallelized)
-        if parsed_response.batch_agent_calls:
-            for batch_call in parsed_response.batch_agent_calls:
-                try:
-                    batch_result = self._execute_batch_call(batch_call)
-                    processed_response += f"""
-<tool_result>
-<tool_name>batch_agent</tool_name>
-<result>{batch_result}</result>
-</tool_result>
-"""
-                except Exception as e:
-                    logger.error(f"❌ Batch agent call failed: {e}")
-                    processed_response += f"""
-<tool_result>
-<tool_name>batch_agent</tool_name>
-<error>{str(e)}</error>
-</tool_result>
-"""
+        # Execute tool calls in parallel
+        if not parsed_response.tool_calls:
             return processed_response, False, None, []
-
-        # Execute tool calls and sub-agent calls in parallel
-        if not parsed_response.tool_calls and not parsed_response.sub_agent_calls:
-            return processed_response, False, None, []
-
-        # Get current context to pass to sub-agents
-        from ..agent_context import get_context
-
-        current_context = get_context()
-        context_dict = current_context.context.copy() if current_context else None
 
         executor_id = str(uuid.uuid4())
         parallel_execution_id = str(uuid.uuid4())
 
         tool_executor = ThreadPoolExecutor()
-        subagent_executor = ThreadPoolExecutor(
-            max_workers=self.max_running_subagents,
-        )
 
         # Track executors for cleanup
         with self._executor_lock:
             self._running_executors[f"{executor_id}_tools"] = tool_executor
-            self._running_executors[f"{executor_id}_subagents"] = subagent_executor
 
         # Handle duplicate tool_call_ids by adding suffixes
         seen_tool_call_ids: defaultdict[str, int] = defaultdict(int)
@@ -1948,19 +1899,6 @@ class Executor:
             seen_tool_call_ids[base_id] += 1
             # Set parallel execution ID for grouping
             tool_call.parallel_execution_id = parallel_execution_id
-
-        # Handle duplicate sub_agent_call_ids by adding suffixes
-        seen_sub_agent_call_ids: defaultdict[str, int] = defaultdict(int)
-        for idx, sub_agent_call in enumerate(parsed_response.sub_agent_calls):
-            base_id = sub_agent_call.sub_agent_call_id or f"sub_agent_call_{idx}"
-            count = seen_sub_agent_call_ids[base_id]
-            if count:
-                sub_agent_call.sub_agent_call_id = f"{base_id}_{count}"
-            else:
-                sub_agent_call.sub_agent_call_id = base_id
-            seen_sub_agent_call_ids[base_id] += 1
-            # Set parallel execution ID for grouping
-            sub_agent_call.parallel_execution_id = parallel_execution_id
 
         serial_tool_names = set(self._tool_registry.compute_serial_tool_names())
 
@@ -1989,25 +1927,8 @@ class Executor:
                 if tool_call.tool_name in serial_tool_names:
                     future.result()
 
-            # Batch all context snapshots before any sub-agent task submission to prevent
-            # OTel context pollution between parallel sub-agent threads (fix-span-overlap)
-            sub_agent_snapshots = [(copy_context(), sub_agent_call) for sub_agent_call in parsed_response.sub_agent_calls]
-
-            # Submit sub-agent execution tasks using pre-created context snapshots
-            sub_agent_futures: dict[Future[tuple[str, str, bool]], tuple[str, SubAgentCall]] = {}
-            for task_ctx, sub_agent_call in sub_agent_snapshots:
-                future = subagent_executor.submit(
-                    task_ctx.run,
-                    self._execute_sub_agent_call_safe,
-                    sub_agent_call,
-                    context_dict,
-                    parent_agent_state=agent_state,
-                    custom_llm_client_provider=custom_llm_client_provider,
-                )
-                sub_agent_futures[future] = ("sub_agent", sub_agent_call)
-
             # Combine all futures
-            all_futures: dict[Future[tuple[str, Any, bool]], tuple[str, ToolCall | SubAgentCall]] = {**tool_futures, **sub_agent_futures}
+            all_futures: dict[Future[tuple[str, Any, bool]], tuple[str, ToolCall]] = {**tool_futures}
 
             # Collect results as they complete
             tool_results: list[str] = []
@@ -2019,130 +1940,85 @@ class Executor:
                 call_type, call_obj = all_futures[future]
                 try:
                     result_data = future.result()
-                    if call_type == "sub_agent" and isinstance(call_obj, SubAgentCall):
-                        agent_name, result, is_error = result_data
-                        result_str = result
-                        execution_feedbacks.append(
-                            {
-                                "call_type": "sub_agent",
-                                "call": call_obj,
-                                "content": result_str,
-                                "is_error": is_error,
-                            },
-                        )
-                        if is_error:
-                            logger.error(
-                                f"❌ Sub-agent '{agent_name}' error: {result}",
-                            )
-                            should_append_xml = not call_obj.tool_call_id
-                            if should_append_xml:
-                                tool_results.append(
-                                    f"""
-<tool_result>
-<tool_name>{agent_name}_sub_agent</tool_name>
-<error>{result}</error>
-</tool_result>
-""",
-                                )
-                        else:
-                            logger.info(
-                                f"📤 Sub-agent '{agent_name}' result: {result}",
-                            )
-                            should_append_xml = not call_obj.tool_call_id
-                            if should_append_xml:
-                                tool_results.append(
-                                    f"""
-<tool_result>
-<tool_name>{agent_name}_sub_agent</tool_name>
-<result>{result}</result>
-</tool_result>
-""",
-                                )
-                    elif not isinstance(call_obj, ToolCall):
+                    tool_name, result, is_error = result_data
+                    raw_output, llm_tool_output = self._split_tool_outputs(result)
+                    result_str = self._serialize_llm_tool_output(llm_tool_output)
+                    execution_feedbacks.append(
+                        {
+                            "call_type": "tool",
+                            "call": call_obj,
+                            "content": result_str,
+                            "output": raw_output,
+                            "llm_tool_output": llm_tool_output,
+                            "is_error": is_error,
+                        },
+                    )
+                    if is_error:
                         logger.error(
-                            f"❌ Unexpected call object type: {type(call_obj)} (call_type={call_type})",
+                            f"❌ Tool '{tool_name}' error: {result_str}",
                         )
-                        continue
-                    elif call_type == "tool":
-                        tool_name, result, is_error = result_data
-                        result_str = result if isinstance(result, str) else json.dumps(result, indent=2, ensure_ascii=False)
-                        execution_feedbacks.append(
-                            {
-                                "call_type": "tool",
-                                "call": call_obj,
-                                "content": result_str,
-                                "output": result,
-                                "is_error": is_error,
-                            },
-                        )
-                        if is_error:
-                            logger.error(
-                                f"❌ Tool '{tool_name}' error: {result_str}",
-                            )
-                            should_append_xml = call_obj.source != "openai"
-                            if should_append_xml:
-                                tool_results.append(
-                                    f"""
+                        should_append_xml = call_obj.source != "structured"
+                        if should_append_xml:
+                            tool_results.append(
+                                f"""
 <tool_result>
 <tool_name>{tool_name}</tool_name>
 <error>{result_str}</error>
 </tool_result>
 """,
-                                )
-                        else:
-                            logger.info(
-                                f"📤 Tool '{tool_name}' result: {result_str[:100]}",
                             )
-                            should_append_xml = call_obj.source != "openai"
-                            tool_result_xml = f"""
+                    else:
+                        logger.info(
+                            f"📤 Tool '{tool_name}' result: {result_str[:100]}",
+                        )
+                        should_append_xml = call_obj.source != "structured"
+                        tool_result_xml = f"""
 <tool_result>
 <tool_name>{tool_name}</tool_name>
 <result>{result_str}</result>
 </tool_result>
 """
-                            if should_append_xml:
-                                tool_results.append(tool_result_xml)
+                        if should_append_xml:
+                            tool_results.append(tool_result_xml)
 
-                            # Check if this tool result indicates a stop tool was executed
-                            try:
-                                parsed_result = json.loads(result_str)
-                                if isinstance(parsed_result, dict):
-                                    parsed_result_dict = cast(dict[str, Any], parsed_result)
-                                    if parsed_result_dict.get("_is_stop_tool"):
-                                        stop_tool_detected = True
-                                        self._last_stop_tool_name = tool_name
-                                        actual_result: dict[str, Any] = {
-                                            key: value for key, value in parsed_result_dict.items() if key != "_is_stop_tool"
-                                        }
-                                        if "result" in actual_result and len(actual_result) == 1:
-                                            stop_tool_result = json.dumps(
-                                                actual_result["result"],
-                                                ensure_ascii=False,
-                                                indent=4,
-                                            )
-                                        else:
-                                            stop_tool_result = (
-                                                json.dumps(
-                                                    actual_result,
-                                                    ensure_ascii=False,
-                                                    indent=4,
-                                                )
-                                                if actual_result
-                                                else json.dumps(
-                                                    parsed_result,
-                                                    ensure_ascii=False,
-                                                    indent=4,
-                                                )
-                                            )
-                                        logger.info(
-                                            f"🛑 Stop tool '{tool_name}' result detected, will terminate after processing",
+                        # Check if this tool result indicates a stop tool was executed
+                        try:
+                            if isinstance(raw_output, dict):
+                                raw_output_dict = cast(dict[str, Any], raw_output)
+                            else:
+                                raw_output_dict = None
+
+                            if raw_output_dict is not None and raw_output_dict.get("_is_stop_tool"):
+                                stop_tool_detected = True
+                                self._last_stop_tool_name = tool_name
+                                actual_result: dict[str, Any] = {
+                                    key: value for key, value in raw_output_dict.items() if key != "_is_stop_tool"
+                                }
+                                if "result" in actual_result and len(actual_result) == 1:
+                                    stop_tool_result = json.dumps(
+                                        actual_result["result"],
+                                        ensure_ascii=False,
+                                        indent=4,
+                                    )
+                                else:
+                                    stop_tool_result = (
+                                        json.dumps(
+                                            actual_result,
+                                            ensure_ascii=False,
+                                            indent=4,
                                         )
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-                    else:
-                        logger.error(
-                            f"❌ Unexpected call type '{call_type}' for object {type(call_obj)}",
-                        )
+                                        if actual_result
+                                        else json.dumps(
+                                            raw_output_dict,
+                                            ensure_ascii=False,
+                                            indent=4,
+                                        )
+                                    )
+                                logger.info(
+                                    f"🛑 Stop tool '{tool_name}' result detected, will terminate after processing",
+                                )
+                        except TypeError:
+                            pass
                 except Exception as e:
                     logger.error(
                         f"❌ Unexpected error processing {call_type}: {e}",
@@ -2165,17 +2041,56 @@ class Executor:
             with self._executor_lock:
                 try:
                     tool_executor.shutdown(wait=True, cancel_futures=False)
-                    subagent_executor.shutdown(wait=True, cancel_futures=False)
                 except Exception as e:
                     logger.error(f"❌ Error shutting down executors: {e}")
                 finally:
                     self._running_executors.pop(f"{executor_id}_tools", None)
-                    self._running_executors.pop(
-                        f"{executor_id}_subagents",
-                        None,
-                    )
 
         return processed_response, stop_tool_detected, stop_tool_result, execution_feedbacks
+
+    @staticmethod
+    def _tool_not_found_msg(tool_name: str) -> str:
+        return f"Tool '{tool_name}' not found"
+
+    def _emit_tool_error_result(
+        self,
+        tc: ToolCall,
+        error_msg: str,
+        agent_state: "AgentState",
+    ) -> None:
+        """Invoke after_tool middleware hooks for tool calls that bypass normal execution.
+
+        When a tool call is rejected early (tool not found, shutdown), the normal
+        finalize_tool_execution path is skipped, so after_tool middleware hooks —
+        most importantly AgentEventsMiddleware which emits ToolCallResultEvent —
+        are never invoked. This leaves the event stream missing the tool_call_result
+        event, causing downstream consumers (persistence layer, UI) to never
+        receive the tool result.
+        """
+        if not self.middleware_manager:
+            return
+        error_output: dict[str, Any] = {"status": "error", "error": error_msg}
+        hook_input = AfterToolHookInput(
+            agent_state=agent_state,
+            # sandbox 为 None：此时工具不存在或正在 shutdown，尚未进入 ToolExecutor，
+            # 无法也不需要获取 sandbox。当前所有 after_tool middleware（如
+            # LongToolOutputMiddleware）对短错误消息不会触及 sandbox 路径。
+            sandbox=None,
+            tool_name=tc.tool_name,
+            tool_call_id=tc.tool_call_id or "",
+            tool_input=tc.parameters,
+            tool_output=error_output,
+            llm_tool_output=error_output,
+        )
+        try:
+            self.middleware_manager.run_after_tool(hook_input, error_output, error_output)
+        except Exception:
+            logger.warning(
+                "Failed to emit error tool result for '%s' (tool_call_id=%s)",
+                tc.tool_name,
+                tc.tool_call_id,
+                exc_info=True,
+            )
 
     def _execute_tool_call_safe(
         self,
@@ -2184,6 +2099,15 @@ class Executor:
         framework_context: FrameworkContext,
     ) -> tuple[str, Any, bool]:
         """Safely execute a tool call."""
+        # Early check: emit error result event if tool is not registered.
+        # tool_executor.execute_tool_with_llm_output raises ValueError for
+        # missing tools, but that exception is caught by the broad except below
+        # which bypasses after_tool hooks (and ToolCallResultEvent emission).
+        if self._tool_registry.get_tool(tool_call.tool_name) is None:
+            error_msg = self._tool_not_found_msg(tool_call.tool_name)
+            self._emit_tool_error_result(tool_call, error_msg, agent_state)
+            return (tool_call.tool_name, error_msg, True)
+
         try:
             # Convert parameters to correct types and execute
             converted_params: dict[str, Any] = {}
@@ -2195,7 +2119,7 @@ class Executor:
                 )
 
             tool_call_id = tool_call.tool_call_id or f"tool_call_{uuid.uuid4()}"
-            result = self.tool_executor.execute_tool(
+            result = self.tool_executor.execute_tool_with_llm_output(
                 agent_state,
                 tool_call.tool_name,
                 converted_params,
@@ -2208,39 +2132,6 @@ class Executor:
 
         except Exception as e:
             return tool_call.tool_name, str(e), True
-
-    def _execute_sub_agent_call_safe(
-        self,
-        sub_agent_call: SubAgentCall,
-        context: dict[str, Any] | None = None,
-        parent_agent_state: AgentState | None = None,
-        *,
-        custom_llm_client_provider: Callable[[str], Any] | None = None,
-    ) -> tuple[str, str, bool]:
-        """Safely execute a sub-agent call."""
-        try:
-            result = self.subagent_manager.call_sub_agent(
-                sub_agent_call.agent_name,
-                sub_agent_call.message,
-                context=context,
-                parent_agent_state=parent_agent_state,
-                custom_llm_client_provider=custom_llm_client_provider,
-                parallel_execution_id=sub_agent_call.parallel_execution_id,
-            )
-
-            return sub_agent_call.agent_name, result, False
-
-        except Exception as e:
-            return sub_agent_call.agent_name, str(e), True
-
-    def _execute_batch_call(self, batch_call: BatchAgentCall) -> str:
-        """Execute a batch agent call."""
-        return self.batch_processor.process_batch_data(
-            batch_call.agent_name,
-            batch_call.file_path,
-            batch_call.data_format,
-            batch_call.message_template,
-        )
 
     def force_stop(self) -> None:
         """Force-stop the executor, breaking the team_mode forever-run loop.
@@ -2309,33 +2200,23 @@ class Executor:
         return tool.get_structured_description()
 
     @staticmethod
-    def _build_sub_agent_tool_definition(
-        name: str,
-        agent_config: AgentConfig,
-    ) -> StructuredToolDefinition:
-        """Build the neutral structured definition for a sub-agent proxy.
+    def _split_tool_outputs(result: Any) -> tuple[Any, Any]:
+        """Split raw and llm-facing outputs from the execution result."""
 
-        RFC-0006: 中性 Structured Tool Definitions
+        if isinstance(result, ToolExecutionResult):
+            return result.raw_output, result.llm_tool_output
+        return result, result
 
-        SubAgent 在 structured 模式下与普通 Tool 共享统一的 neutral definition
-        契约，provider-specific schema 继续延迟到 LLMCaller 请求边界生成。
-        """
+    @staticmethod
+    def _serialize_llm_tool_output(value: Any) -> str:
+        """Serialize llm-facing tool output for text-only feedback paths."""
 
-        return build_structured_tool_definition(
-            name=build_sub_agent_tool_name(name),
-            description=agent_config.description or f"Delegate work to sub-agent '{name}'.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string",
-                        "description": "Task or question for the sub-agent.",
-                    },
-                },
-                "required": ["message"],
-            },
-            kind="sub_agent",
-        )
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value, indent=2, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
 
     def add_tool(self, tool: Tool) -> None:
         """Add a tool to the executor.
@@ -2365,9 +2246,4 @@ class Executor:
             name: Name of the sub-agent
             agent_config: Config creates the agent
         """
-        with self._tool_registry_lock:
-            if self.use_structured_tool_calls:
-                self.structured_tool_definitions.append(
-                    self._build_sub_agent_tool_definition(name, agent_config),
-                )
         self.subagent_manager.add_sub_agent(name, agent_config)

@@ -40,11 +40,23 @@ class AgentResponse(BaseModel):
     """Response model for /query endpoint (non-streaming).
 
     Follows standard REST API success/error pattern.
+
+    RFC-0018: 当 agent 因 external tool 调用暂停时，``stop_reason`` 为
+    ``"EXTERNAL_TOOL_CALL"``，``pending_tool_calls`` 携带待执行的工具调用列表
+    （每项含 ``id``/``name``/``input``）。调用方处理完毕后通过同一 ``/query``
+    端点传入 ``ToolResultBlock`` 消息恢复执行。
     """
 
     status: str  # "success" or "error"
     response: str | None = None
     error: str | None = None
+    # RFC-0018: External tool 暂停时的扩展字段
+    stop_reason: str | None = None
+    pending_tool_calls: list[dict[str, Any]] | None = None
+    # RFC-0018 T7: 只读观测回显 — Agent 生成的 session-level trace_id，
+    # 客户端仅用于关联 Langfuse/OTel 等观测后端；resume 时无需回传
+    # (凭相同 session_id 由服务端从 SessionModel.current_trace_id 恢复)。
+    trace_id: str | None = None
 
 
 class StopRequest(BaseModel):

@@ -162,7 +162,12 @@ class TestAgent:
             assert sample_tool in agent.config.tools
 
     def test_tool_call_payload_includes_sub_agents_openai(self, sample_tool):
-        """Legacy structured aliases should still build neutral tool and sub-agent definitions."""
+        """RFC-0015: Agent is a regular builtin tool registered in ToolRegistry.
+
+        When sub_agents is configured, AgentConfig._finalize() injects an Agent
+        tool into self.tools. The tool_call_payload should include 'Agent' as
+        a regular tool name, not 'sub-agent-child'.
+        """
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
@@ -177,10 +182,11 @@ class TestAgent:
 
             agent = Agent(config=agent_config)
 
-            # Expect both tool and sub-agent proxy definitions in the neutral structured shape.
+            # RFC-0015: Agent is a regular builtin tool, not a virtual sub-agent-{name}
             tool_names = {spec["name"] for spec in agent.tool_call_payload}
             assert sample_tool.name in tool_names
-            assert "sub-agent-child" in tool_names
+            assert "Agent" in tool_names
+            assert "sub-agent-child" not in tool_names
 
     def test_tool_call_payload_uses_skill_description_for_as_skill_openai(self):
         """Structured payload should expose only the brief skill description for as_skill tools."""
@@ -370,7 +376,11 @@ class TestAgent:
         assert agent2.sandbox_manager._session_context.get("upload_assets", []) == []
 
     def test_tool_call_payload_anthropic_mode(self, sample_tool):
-        """Legacy structured aliases should still build neutral definitions with sub-agents."""
+        """RFC-0015: Agent is a regular builtin tool registered in ToolRegistry.
+
+        When sub_agents is configured, AgentConfig._finalize() injects an Agent
+        tool. The tool_call_payload should include 'Agent' as a regular tool.
+        """
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
@@ -387,7 +397,8 @@ class TestAgent:
 
             names = {spec["name"] for spec in agent.tool_call_payload}
             assert sample_tool.name in names
-            assert "sub-agent-child" in names
+            assert "Agent" in names
+            assert "sub-agent-child" not in names
 
     def test_token_counter_callable_is_wrapped(self, global_storage):
         """Callable token_counter should be wrapped into TokenCounter instance."""
@@ -422,7 +433,7 @@ class TestAgent:
 
             async def fake_execute(history, agent_state, *, runtime_client, custom_llm_client_provider=None):
                 captured_client["client"] = runtime_client
-                return "ok", history or []
+                return "ok", history or [], []
 
             agent.executor.execute_async = fake_execute  # type: ignore[method-assign]
 
@@ -442,7 +453,7 @@ class TestAgent:
 
             async def fake_execute(history, agent_state, *, runtime_client, custom_llm_client_provider=None):
                 captured_history["history"] = list(history) if history else []
-                return "ok", history or []
+                return "ok", history or [], []
 
             agent.executor.execute_async = fake_execute  # type: ignore[method-assign]
 
@@ -593,6 +604,7 @@ class TestAgent:
                         Message(role=Role.USER, content=[TextBlock(text="Test message")]),
                         Message(role=Role.ASSISTANT, content=[TextBlock(text="Test response")]),
                     ],
+                    [],
                 )
 
                 response = agent.run(message="Test message")
@@ -703,6 +715,7 @@ class TestAgent:
                         Message(role=Role.USER, content=[TextBlock(text="New message")]),
                         Message(role=Role.ASSISTANT, content=[TextBlock(text="New response")]),
                     ],
+                    [],
                 )
 
                 response = agent.run(message="New message", history=existing_history)
@@ -743,6 +756,7 @@ class TestAgent:
                         Message(role=Role.USER, content=[TextBlock(text="Message")]),
                         Message(role=Role.ASSISTANT, content=[TextBlock(text="Response")]),
                     ],
+                    [],
                 )
 
                 response = agent.run(
@@ -771,7 +785,7 @@ class TestAgent:
             def fake_execute(messages, agent_state, *, runtime_client, custom_llm_client_provider):
                 captured_kwargs["runtime_client"] = runtime_client
                 captured_kwargs["custom_llm_client_provider"] = custom_llm_client_provider
-                return "Test response", messages + [Message(role=Role.ASSISTANT, content=[TextBlock(text="Test response")])]
+                return "Test response", messages + [Message(role=Role.ASSISTANT, content=[TextBlock(text="Test response")])], []
 
             with patch.object(agent.executor, "execute_async", new_callable=AsyncMock, side_effect=fake_execute) as mock_execute:
                 response = agent.run(message="Test message", custom_llm_client_provider=provider)
@@ -801,7 +815,7 @@ class TestAgent:
             def fake_execute(messages, agent_state, *, runtime_client, custom_llm_client_provider):
                 captured_kwargs["runtime_client"] = runtime_client
                 captured_kwargs["custom_llm_client_provider"] = custom_llm_client_provider
-                return "Test response", messages + [Message(role=Role.ASSISTANT, content=[TextBlock(text="Test response")])]
+                return "Test response", messages + [Message(role=Role.ASSISTANT, content=[TextBlock(text="Test response")])], []
 
             with (
                 caplog.at_level("WARNING"),
@@ -840,7 +854,7 @@ class TestAgent:
             def fake_run_inner(agent_state, merged_context, *, runtime_client, custom_llm_client_provider, on_history_update=None):
                 called_args["runtime_client"] = runtime_client
                 called_args["custom_llm_client_provider"] = custom_llm_client_provider
-                return "Traced response"
+                return "Traced response", []
 
             class DummyTraceContext:
                 def __init__(self, tracer_arg, span_name, span_type, inputs, attributes):
@@ -1001,6 +1015,7 @@ class TestAgent:
                         Message(role=Role.USER, content=[TextBlock(text="Message")]),
                         Message(role=Role.ASSISTANT, content=[TextBlock(text="Response")]),
                     ],
+                    [],
                 )
 
                 response = agent.run(message="Message", parent_agent_state=parent_state)
@@ -1573,6 +1588,7 @@ class TestAgentHistoryManagement:
                         Message.user("New question"),
                         Message.assistant("New response"),
                     ],
+                    [],
                 )
 
                 response = agent.run(message="New question", history=message_history)

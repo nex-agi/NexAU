@@ -1,0 +1,41 @@
+type: tool
+name: run_shell_command
+kind: external
+description: >-
+  This tool executes a given shell command as `bash -c <command>`. To run a
+  command in the background, set the `is_background` parameter to true. Do NOT
+  use `&` to background commands.
+
+  The following information is returned:
+
+  Output: Combined stdout/stderr. Can be `(empty)` or partial on error.
+
+  Exit Code: Only included if non-zero (command failed).
+
+  Error: Only included if a process-level error occurred.
+
+  Signal: Only included if process was terminated by a signal.
+input_schema:
+  type: object
+  properties:
+    command:
+      type: string
+      description: Exact bash command to execute as `bash -c <command>`
+    description:
+      type: string
+      description: >-
+        Brief description of the command for the user. Be specific and concise.
+        Ideally a single sentence. No line breaks.
+    is_background:
+      type: boolean
+      description: >-
+        (OPTIONAL) Set to true if this command should be run in the background.
+    dir_path:
+      type: string
+      description: >-
+        (OPTIONAL) The path of the directory to run the command in. If not
+        provided, the project root directory is used.
+  required:
+    - command
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

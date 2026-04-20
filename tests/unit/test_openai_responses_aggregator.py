@@ -438,6 +438,58 @@ class TestOpenAIResponsesAggregator:
         # Should update _value with completed response
         assert aggregator._value.id == "resp_123"
 
+    def test_build_after_response_completed_with_empty_output(self):
+        """Test build() after response.completed preserves streamed output items."""
+        mock_on_event = Mock()
+        aggregator = OpenAIResponsesAggregator(on_event=mock_on_event, run_id="test-run")
+
+        msg_item = ResponseOutputMessage(
+            id="msg_1",
+            type="message",
+            role="assistant",
+            status="in_progress",
+            content=[],
+        )
+        add_event = ResponseOutputItemAddedEvent(
+            type="response.output_item.added",
+            item=msg_item,
+            output_index=0,
+            sequence_number=0,
+        )
+        aggregator.aggregate(add_event)
+
+        content_event = ResponseContentPartAddedEvent(
+            type="response.content_part.added",
+            part={"type": "output_text", "text": "test", "annotations": []},
+            content_index=0,
+            item_id="msg_1",
+            output_index=0,
+            sequence_number=1,
+        )
+        aggregator.aggregate(content_event)
+
+        completed_event = ResponseCompletedEvent(
+            type="response.completed",
+            response={
+                "id": "resp_123",
+                "model": "gpt-4",
+                "created_at": 1234567890,
+                "object": "response",
+                "output": [],
+                "parallel_tool_calls": True,
+                "tool_choice": "auto",
+                "tools": [],
+            },
+            sequence_number=2,
+        )
+        aggregator.aggregate(completed_event)
+
+        final_response = aggregator.build()
+
+        assert final_response.id == "resp_123"
+        assert len(final_response.output) == 1
+        assert final_response.output[0].id == "msg_1"
+
     def test_build(self):
         """Test building final response."""
         mock_on_event = Mock()

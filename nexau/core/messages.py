@@ -295,11 +295,13 @@ class Message(BaseModel):
 
     @classmethod
     def user(cls, text: str) -> Message:
-        return cls(role=Role.USER, content=[TextBlock(text=text)])
+        # micro-compact: 设置 created_at 时间戳
+        return cls(role=Role.USER, content=[TextBlock(text=text)], created_at=datetime.now())
 
     @classmethod
     def assistant(cls, text: str) -> Message:
-        return cls(role=Role.ASSISTANT, content=[TextBlock(text=text)])
+        # micro-compact: 设置 created_at 时间戳
+        return cls(role=Role.ASSISTANT, content=[TextBlock(text=text)], created_at=datetime.now())
 
     def get_text_content(self) -> str:
         return "".join(block.text for block in self.content if isinstance(block, TextBlock))

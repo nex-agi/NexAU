@@ -47,7 +47,7 @@ A middleware returns a `HookResult` describing any modifications. Common pattern
 - **Conversation** – supply `messages=[...]` to rewrite the next prompt (add reminders, system notes, or scratchpad content).
 - **Parsed response** – supply `parsed_response=...` to add/remove tool calls, toggle parallelism flags, or set `force_continue=True` to keep iterating without new calls.
 - **Tool input** – via `before_tool`, return `tool_input=...` to tweak parameters (add defaults, redact secrets) before the tool runs.
-- **Tool output** – supply `tool_output=...` to redact/reshape a tool result before it flows back into the conversation.
+- **Tool output** – supply `tool_output=...` to change the raw runtime tool result, or `llm_tool_output=...` to change what is sent back into the conversation for the model.
 - **Agent response** – via `after_agent`, return `agent_response="..."` to wrap, redact, or append metadata to the final assistant reply.
 - **Agent state** – `hook_input.agent_state` is mutable; you can stash counters, feature flags, or tracing IDs for later iterations.
 
@@ -87,7 +87,44 @@ class ClampInputMiddleware(Middleware):
         return HookResult.with_modifications(tool_input=updated)
 ```
 
+### Formatter Interaction in `after_tool`
+
+Since RFC-0017, tool execution keeps two channels after a tool finishes:
+
+- `tool_output`: raw normalized output from the tool runtime
+- `llm_tool_output`: formatter-produced output for the model
+
+Important ordering rule:
+
+1. tool executes
+2. formatter runs
+3. `after_tool` middlewares run
+
+That means your middleware usually sees an already-formatted `llm_tool_output`.
+
+Practical guidance:
+
+- mutate `tool_output` if you want to preserve or reshape the raw structured result
+- mutate `llm_tool_output` if you want to change the model-facing payload
+- if you only mutate `tool_output`, the model may still receive the original formatted result
+
+Example:
+
+```python
+from nexau.archs.main_sub.execution.hooks import HookResult, Middleware
+
+
+class RedactModelFacingToolOutput(Middleware):
+    def after_tool(self, hook_input):
+        llm_output = hook_input.llm_tool_output
+        if isinstance(llm_output, str):
+            return HookResult.with_modifications(
+                llm_tool_output=llm_output.replace("secret-token", "***"),
+            )
+        return HookResult.no_changes()
 ```
+
+For a deeper explanation of formatter behavior and custom formatter authoring, see [Tool Output Formatters](./tool-formatters.md).
 
 ### Working with Agent State
 
@@ -239,6 +276,8 @@ When a tool returns output whose serialized text exceeds a configurable characte
 2. **Saves** the full output to a temporary file via the Sandbox API (`sandbox.write_file`), so it works transparently with both local and remote (E2B) sandboxes.
 3. **Replaces** the original tool output with the truncated version plus a hint pointing to the temp file, so the model can `read_file` it if needed.
 
+Because formatters run before `after_tool`, this middleware usually truncates the **formatter-produced `llm_tool_output`**. If `llm_tool_output` is absent, it falls back to `tool_output`.
+
 **YAML configuration:**
 
 ```yaml
@@ -281,6 +320,7 @@ middleware = LongToolOutputMiddleware(
 
 **How it handles different output types:**
 
+- **Formatted `llm_tool_output` present**: truncates that model-facing output first.
 - **String output**: Directly truncated and appended with a hint.
 - **Dict with `content` key**: Truncates the `content` field; other keys (e.g. `returnDisplay`) are preserved.
 - **Dict with `result` key**: Same as `content`.

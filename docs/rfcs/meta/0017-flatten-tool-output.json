@@ -1,0 +1,115 @@
+{
+  "rfc": "0017",
+  "title": "工具输出扁平化（Flatten Tool Output）",
+  "status": "implemented",
+  "priority": "P1",
+  "tags": [
+    "architecture",
+    "dx",
+    "llm"
+  ],
+  "affects": "nexau core (tool yaml, tool executor, middleware, messages)",
+  "created": "2026-04-10",
+  "updated": "2026-04-10",
+  "requires": [],
+  "related": [
+    "0014",
+    "0015"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "扩展 ToolYamlSchema 与 Tool 构造器，支持 formatter 配置并默认回退到 xml",
+      "depends_on": [],
+      "status": "implemented",
+      "ref": "Implemented in workspace; verified via targeted pytest suites and make typecheck"
+    },
+    {
+      "id": "T2",
+      "title": "实现 formatter resolver，支持 builtin alias（首期仅 xml）与 import path",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "implemented",
+      "ref": "Implemented in workspace; verified via targeted pytest suites and make typecheck"
+    },
+    {
+      "id": "T3",
+      "title": "实现默认 XML formatter，并为 MCP / Python tool 的图片输出建立 bypass 规则",
+      "depends_on": [
+        "T2"
+      ],
+      "status": "implemented",
+      "ref": "Implemented in workspace; verified via targeted pytest suites and make typecheck"
+    },
+    {
+      "id": "T4",
+      "title": "扩展 AfterToolHookInput / HookResult / MiddlewareManager，支持 raw tool_output 与 llm_tool_output 双通道",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "implemented",
+      "ref": "Implemented in workspace; verified via targeted pytest suites and make typecheck"
+    },
+    {
+      "id": "T5",
+      "title": "在 tool 执行链路中先执行 formatter，再进入 after_tool middleware",
+      "depends_on": [
+        "T2",
+        "T4"
+      ],
+      "status": "implemented",
+      "ref": "Implemented in workspace; verified via targeted pytest suites and make typecheck"
+    },
+    {
+      "id": "T6",
+      "title": "修改 LongToolOutputMiddleware，优先对 llm_tool_output 做截断、持久化与提示注入",
+      "depends_on": [
+        "T4",
+        "T5"
+      ],
+      "status": "implemented",
+      "ref": "Implemented in workspace; verified via targeted pytest suites and make typecheck"
+    },
+    {
+      "id": "T7",
+      "title": "明确并实现 AgentEventsMiddleware / LoggingMiddleware 的双通道消费策略",
+      "depends_on": [
+        "T4"
+      ],
+      "status": "implemented",
+      "ref": "Implemented in workspace; verified via targeted pytest suites and make typecheck"
+    },
+    {
+      "id": "T8",
+      "title": "调整 ToolResultBlock 构建链路，仅消费最终 llm_tool_output，并移除 repr fallback",
+      "depends_on": [
+        "T5",
+        "T6"
+      ],
+      "status": "implemented",
+      "ref": "Implemented in workspace; verified via targeted pytest suites and make typecheck"
+    },
+    {
+      "id": "T9",
+      "title": "为 AgentTool 配置 custom formatter，并补充单元测试、集成测试与手动验证",
+      "depends_on": [
+        "T3",
+        "T6",
+        "T7",
+        "T8"
+      ],
+      "status": "implemented",
+      "ref": "Implemented in workspace; verified via targeted pytest suites and make typecheck"
+    },
+    {
+      "id": "T10",
+      "title": "验证 Sub-agent 长输出不再被 Dict 包裹且前端事件仍保留 raw output 语义",
+      "depends_on": [
+        "T9"
+      ],
+      "status": "implemented",
+      "ref": "Implemented in workspace; verified via targeted pytest suites and make typecheck"
+    }
+  ]
+}

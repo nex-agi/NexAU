@@ -203,9 +203,15 @@ class SSETransportServer(TransportBase[HTTPConfig]):
 
         @app.post("/query")
         async def query(request: AgentRequest):  # pyright: ignore[reportUnusedFunction]
-            """Synchronous query endpoint (non-streaming)."""
+            """Synchronous query endpoint (non-streaming).
+
+            RFC-0018: 当 agent 因 external tool 调用暂停时，返回扩展的
+            ``AgentResponse``（含 ``stop_reason`` 和 ``pending_tool_calls``）。
+            调用方可通过再次 POST ``/query``，在 ``messages`` 中传入
+            ``ToolResultBlock`` 消息（复用相同 ``user_id``/``session_id``）恢复执行。
+            """
             try:
-                response = await self.handle_request(
+                result = await self.handle_request(
                     message=request.messages,
                     user_id=request.user_id,
                     agent_config=self._default_agent_config,
@@ -213,7 +219,20 @@ class SSETransportServer(TransportBase[HTTPConfig]):
                     context=request.context,
                     variables=request.variables,
                 )
-                return AgentResponse(status="success", response=response)
+
+                # RFC-0018: handle_request 返回 tuple 表示 external tool 暂停
+                if isinstance(result, tuple):
+                    response_text, meta = result
+                    return AgentResponse(
+                        status="success",
+                        response=response_text,
+                        stop_reason=meta.get("stop_reason"),
+                        pending_tool_calls=meta.get("pending_tool_calls"),
+                        # RFC-0018 T7: Agent-owned trace_id, observe-only echo
+                        trace_id=meta.get("trace_id"),
+                    )
+
+                return AgentResponse(status="success", response=result)
             except Exception as e:
                 logger.error("POST /query failed (session_id: %s): %s", request.session_id, e)
                 raise HTTPException(status_code=500, detail=str(e))

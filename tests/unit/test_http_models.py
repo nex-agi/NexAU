@@ -87,3 +87,46 @@ class TestAgentResponse:
         assert response.status == "success"
         assert response.response is None
         assert response.error is None
+
+    # --- RFC-0018: External tool 暂停扩展字段 ---
+
+    def test_external_tool_pause_response(self):
+        """RFC-0018: AgentResponse with stop_reason and pending_tool_calls."""
+        pending = [
+            {"id": "call_abc", "name": "search", "input": {"query": "hello"}},
+            {"id": "call_def", "name": "read_file", "input": {"path": "/tmp/a.txt"}},
+        ]
+        response = AgentResponse(
+            status="success",
+            response="",
+            stop_reason="EXTERNAL_TOOL_CALL",
+            pending_tool_calls=pending,
+        )
+        assert response.status == "success"
+        assert response.response == ""
+        assert response.stop_reason == "EXTERNAL_TOOL_CALL"
+        assert response.pending_tool_calls is not None
+        assert len(response.pending_tool_calls) == 2
+        assert response.pending_tool_calls[0]["name"] == "search"
+        assert response.error is None
+
+    def test_backward_compat_no_external_fields(self):
+        """RFC-0018: Existing responses have stop_reason/pending_tool_calls as None."""
+        response = AgentResponse(status="success", response="Hello!")
+        assert response.stop_reason is None
+        assert response.pending_tool_calls is None
+
+    def test_external_tool_pause_json_roundtrip(self):
+        """RFC-0018: JSON serialization round-trip for external tool pause."""
+        pending = [{"id": "call_1", "name": "ext_tool", "input": {"x": 42}}]
+        original = AgentResponse(
+            status="success",
+            response="",
+            stop_reason="EXTERNAL_TOOL_CALL",
+            pending_tool_calls=pending,
+        )
+        json_str = original.model_dump_json()
+        restored = AgentResponse.model_validate_json(json_str)
+        assert restored.stop_reason == "EXTERNAL_TOOL_CALL"
+        assert restored.pending_tool_calls == pending
+        assert restored.response == ""

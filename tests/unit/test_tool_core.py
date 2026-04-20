@@ -9,7 +9,7 @@ from pytest import LogCaptureFixture
 
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.framework_context import FrameworkContext
-from nexau.archs.tool.tool import ConfigError, Tool, normalize_structured_tool_definition
+from nexau.archs.tool.tool import ConfigError, ExternalToolError, Tool, normalize_structured_tool_definition
 
 
 @pytest.fixture
@@ -61,6 +61,22 @@ def test_from_yaml_prefers_agent_binding_over_yaml_binding(tmp_path: Path):
 
     assert tool.implementation is agent_binding
     assert tool.implementation_import_path is None
+
+
+def test_from_yaml_reads_formatter_field(tmp_path: Path):
+    yaml_path = tmp_path / "yaml_formatter.tool.yaml"
+    yaml_content = {
+        "type": "tool",
+        "name": "yaml_formatter",
+        "description": "desc",
+        "formatter": "xml",
+        "input_schema": {"type": "object", "properties": {}},
+    }
+    yaml_path.write_text(yaml.safe_dump(yaml_content))
+
+    tool = Tool.from_yaml(str(yaml_path), binding=lambda **_: {"result": "ok"})
+
+    assert tool.formatter == "xml"
 
 
 @pytest.mark.parametrize("reserved_field", ["global_storage", "agent_state", "ctx"])
@@ -191,6 +207,87 @@ def test_get_info_and_string_helpers():
     assert "implementation=impl" in repr(tool)
 
 
+def test_tool_defaults_to_xml_formatter() -> None:
+    tool = Tool(
+        name="xml_default",
+        description="desc",
+        input_schema={"type": "object", "properties": {}},
+        implementation=lambda: {"result": "Hello from tool\nSecond line"},
+    )
+
+    formatted = tool.format_output_for_llm(
+        tool_input={},
+        tool_output={"result": "Hello from tool\nSecond line", "status": "success"},
+        tool_call_id="call_1",
+        is_error=False,
+    )
+
+    assert isinstance(formatted, str)
+    assert "<tool_result>" in formatted
+    assert '<body field="result">' in formatted
+    assert "Hello from tool" in formatted
+
+
+def test_tool_xml_formatter_unwraps_single_content_field() -> None:
+    tool = Tool(
+        name="content_only",
+        description="desc",
+        input_schema={"type": "object", "properties": {}},
+        implementation=lambda: {"content": "Plain content for llm"},
+    )
+
+    formatted = tool.format_output_for_llm(
+        tool_input={},
+        tool_output={"content": "Plain content for llm"},
+        tool_call_id="call_1",
+        is_error=False,
+    )
+
+    assert formatted == "Plain content for llm"
+
+
+def test_tool_xml_formatter_unwraps_single_result_field() -> None:
+    tool = Tool(
+        name="result_only",
+        description="desc",
+        input_schema={"type": "object", "properties": {}},
+        implementation=lambda: {"result": "Plain result for llm"},
+    )
+
+    formatted = tool.format_output_for_llm(
+        tool_input={},
+        tool_output={"result": "Plain result for llm"},
+        tool_call_id="call_1",
+        is_error=False,
+    )
+
+    assert formatted == "Plain result for llm"
+
+
+def test_tool_import_path_formatter_is_used() -> None:
+    tool = Tool(
+        name="agent_tool",
+        description="desc",
+        input_schema={"type": "object", "properties": {}},
+        implementation=lambda: {"status": "success"},
+        formatter="nexau.archs.tool.formatters.agent:format_agent_tool_output",
+    )
+
+    formatted = tool.format_output_for_llm(
+        tool_input={},
+        tool_output={
+            "status": "success",
+            "sub_agent_name": "explore",
+            "sub_agent_id": "sub-123",
+            "result": "## Answer\n\nDone.",
+        },
+        tool_call_id="call_1",
+        is_error=False,
+    )
+
+    assert formatted == "Sub-agent finished (sub_agent_name: explore, sub_agent_id: sub-123).\n\n## Answer\n\nDone."
+
+
 @pytest.mark.parametrize(
     "tool_kwargs, expected_props",
     [
@@ -260,3 +357,167 @@ def test_normalize_structured_tool_definition_accepts_legacy_openai_shape():
         "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
         "kind": "tool",
     }
+
+
+# --- RFC-0018: External Tool ---
+
+
+def test_external_tool_python_api_creates_without_implementation():
+    tool = Tool(
+        name="remote_search",
+        description="Executed by caller",
+        input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+        implementation=None,
+        kind="external",
+    )
+
+    assert tool.is_external is True
+    assert tool.kind == "external"
+    assert tool.implementation is None
+
+
+def test_external_tool_rejects_implementation_binding():
+    with pytest.raises(ConfigError, match="external"):
+        Tool(
+            name="bad_external",
+            description="desc",
+            input_schema={},
+            implementation=lambda: None,
+            kind="external",
+        )
+
+
+def test_default_tool_is_not_external():
+    tool = Tool(
+        name="local",
+        description="desc",
+        input_schema={},
+        implementation=lambda: "ok",
+    )
+
+    assert tool.is_external is False
+    assert tool.kind == "tool"
+
+
+def test_external_tool_execute_raises_external_tool_error():
+    tool = Tool(
+        name="remote_exec",
+        description="desc",
+        input_schema={},
+        implementation=None,
+        kind="external",
+    )
+
+    with pytest.raises(ExternalToolError, match="remote_exec"):
+        tool.execute()
+
+
+@pytest.mark.anyio
+async def test_external_tool_execute_async_raises_external_tool_error():
+    tool = Tool(
+        name="remote_exec_async",
+        description="desc",
+        input_schema={},
+        implementation=None,
+        kind="external",
+    )
+
+    with pytest.raises(ExternalToolError, match="remote_exec_async"):
+        await tool.execute_async()
+
+
+def test_external_tool_structured_definition_exposes_kind_tool():
+    tool = Tool(
+        name="remote_tool",
+        description="Executed by caller",
+        input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+        implementation=None,
+        kind="external",
+    )
+
+    structured = tool.to_structured_definition()
+
+    assert structured["kind"] == "tool"
+    assert structured["name"] == "remote_tool"
+    assert structured["description"] == "Executed by caller"
+
+
+def test_external_tool_structured_definition_coerces_explicit_external_kind():
+    tool = Tool(
+        name="remote_tool",
+        description="desc",
+        input_schema={},
+        implementation=None,
+        kind="external",
+    )
+
+    # Even if caller forwards kind="external", the outgoing definition must
+    # still be "tool" so the LLM never sees the internal marker.
+    structured = tool.to_structured_definition(kind="external")
+
+    assert structured["kind"] == "tool"
+
+
+def test_from_yaml_creates_external_tool_without_binding(tmp_path: Path):
+    yaml_path = tmp_path / "external.tool.yaml"
+    yaml_content = {
+        "type": "tool",
+        "name": "external_search",
+        "description": "remote search",
+        "kind": "external",
+        "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
+    }
+    yaml_path.write_text(yaml.safe_dump(yaml_content))
+
+    tool = Tool.from_yaml(str(yaml_path), binding=None)
+
+    assert tool.is_external is True
+    assert tool.implementation is None
+    assert tool.implementation_import_path is None
+
+
+def test_from_yaml_external_tool_rejects_binding_argument(tmp_path: Path):
+    yaml_path = tmp_path / "external_with_binding.tool.yaml"
+    yaml_content = {
+        "type": "tool",
+        "name": "bad_external",
+        "description": "desc",
+        "kind": "external",
+        "input_schema": {},
+    }
+    yaml_path.write_text(yaml.safe_dump(yaml_content))
+
+    with pytest.raises(ConfigError, match="external"):
+        Tool.from_yaml(str(yaml_path), binding=lambda **_: None)
+
+
+def test_from_yaml_external_tool_rejects_binding_in_yaml(tmp_path: Path):
+    yaml_path = tmp_path / "external_yaml_binding.tool.yaml"
+    yaml_content = {
+        "type": "tool",
+        "name": "bad_external",
+        "description": "desc",
+        "kind": "external",
+        "binding": "pkg.module:func",
+        "input_schema": {},
+    }
+    yaml_path.write_text(yaml.safe_dump(yaml_content))
+
+    with pytest.raises(ConfigError, match="external"):
+        Tool.from_yaml(str(yaml_path), binding=None)
+
+
+def test_from_yaml_default_kind_is_tool(tmp_path: Path):
+    yaml_path = tmp_path / "plain.tool.yaml"
+    yaml_content = {
+        "type": "tool",
+        "name": "plain",
+        "description": "desc",
+        "input_schema": {},
+    }
+    yaml_path.write_text(yaml.safe_dump(yaml_content))
+
+    tool = Tool.from_yaml(str(yaml_path), binding=lambda: "ok")
+
+    assert tool.is_external is False
+    assert tool.kind == "tool"

@@ -22,13 +22,14 @@ from .compact_stratigies import (
 )
 from .config import CompactionConfig
 from .middleware import ContextCompactionMiddleware
-from .trigger_strategies import TokenThresholdTrigger, TriggerStrategy
+from .trigger_strategies import TimeBasedTrigger, TokenThresholdTrigger, TriggerStrategy
 
 __all__ = [
     "ContextCompactionMiddleware",
     "CompactionConfig",
     "TriggerStrategy",
     "CompactionStrategy",
+    "TimeBasedTrigger",
     "TokenThresholdTrigger",
     "SlidingWindowCompaction",
     "ToolResultCompaction",

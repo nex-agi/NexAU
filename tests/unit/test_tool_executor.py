@@ -36,7 +36,7 @@ from nexau.archs.main_sub.execution.hooks import (
     HookResult,
     MiddlewareManager,
 )
-from nexau.archs.main_sub.execution.tool_executor import ToolExecutor
+from nexau.archs.main_sub.execution.tool_executor import ToolExecutionResult, ToolExecutor
 from nexau.archs.main_sub.skill import Skill, load_skill
 from nexau.archs.tool.tool import ConfigError as ToolConfigError
 from nexau.archs.tool.tool import Tool
@@ -155,17 +155,14 @@ class TestToolExecutorExecution:
             tool_registry=ToolRegistry(),
             sandbox_manager=sandbox_manager,
         )
-        local_agent_state.set_global_value(
-            "skill_registry",
-            {
-                "memory-skill": Skill(
-                    name="memory-skill",
-                    description="Skill stored in memory",
-                    detail="Detailed skill content",
-                    folder="",
-                )
-            },
-        )
+        local_agent_state.skill_registry = {
+            "memory-skill": Skill(
+                name="memory-skill",
+                description="Skill stored in memory",
+                detail="Detailed skill content",
+                folder="",
+            )
+        }
 
         load_skill_tool = Tool(
             name="LoadSkill",
@@ -482,6 +479,7 @@ class TestToolExecutorHooks:
         assert isinstance(call_args, AfterToolHookInput)
         assert call_args.tool_name == "simple_tool"
         assert call_args.tool_input == {"x": 5}
+        assert call_args.llm_tool_output == 10
         assert result["modified"] is True
 
     def test_execute_tool_without_hook(self, agent_state):
@@ -513,6 +511,99 @@ class TestToolExecutorHooks:
         # Result should not be modified
         assert result["result"] == 10
         assert "modified" not in result
+
+    def test_execute_tool_with_llm_output_channel(self, agent_state):
+        """The richer execution API should expose both raw and llm outputs."""
+
+        def simple_tool(x: int, agent_state=None) -> dict:
+            return {"result": x * 2}
+
+        tool = Tool(
+            name="simple_tool",
+            description="A simple tool",
+            input_schema={"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]},
+            implementation=simple_tool,
+        )
+
+        executor = ToolExecutor(
+            tool_registry=make_tool_registry({"simple_tool": tool}),
+            stop_tools=set(),
+        )
+
+        result = executor.execute_tool_with_llm_output(
+            agent_state=agent_state,
+            tool_name="simple_tool",
+            parameters={"x": 5},
+            tool_call_id="call_123",
+        )
+
+        assert isinstance(result, ToolExecutionResult)
+        assert result.raw_output["result"] == 10
+        assert result.llm_tool_output == 10
+
+    def test_execute_tool_with_llm_output_infers_error_channel_from_error_dict(self, agent_state):
+        """Error dicts should still render through the formatter error path."""
+
+        async def error_tool(agent_state=None) -> dict:
+            raise ValueError("Tool error")
+
+        tool = Tool(
+            name="error_tool",
+            description="An async tool that errors",
+            input_schema={"type": "object", "properties": {}},
+            implementation=error_tool,
+        )
+
+        executor = ToolExecutor(
+            tool_registry=make_tool_registry({"error_tool": tool}),
+            stop_tools=set(),
+        )
+
+        result = executor.execute_tool_with_llm_output(
+            agent_state=agent_state,
+            tool_name="error_tool",
+            parameters={},
+            tool_call_id="call_error_123",
+        )
+
+        assert result.raw_output["error"] == "Tool error"
+        assert isinstance(result.llm_tool_output, str)
+        assert '<body field="error">' in result.llm_tool_output
+        assert "Tool error" in result.llm_tool_output
+
+    def test_after_tool_middleware_can_change_only_llm_output(self, agent_state):
+        """after_tool may rewrite just the llm-facing channel."""
+
+        def simple_tool(agent_state=None) -> dict:
+            return {"result": "raw result"}
+
+        tool = Tool(
+            name="simple_tool",
+            description="A simple tool",
+            input_schema={"type": "object", "properties": {}},
+            implementation=simple_tool,
+        )
+
+        def after_hook(hook_input: AfterToolHookInput) -> HookResult:
+            assert hook_input.tool_output == {"result": "raw result"}
+            assert isinstance(hook_input.llm_tool_output, str)
+            return HookResult.with_modifications(llm_tool_output="formatted result")
+
+        executor = ToolExecutor(
+            tool_registry=make_tool_registry({"simple_tool": tool}),
+            stop_tools=set(),
+            middleware_manager=MiddlewareManager([FunctionMiddleware(after_tool_hook=after_hook)]),
+        )
+
+        result = executor.execute_tool_with_llm_output(
+            agent_state=agent_state,
+            tool_name="simple_tool",
+            parameters={},
+            tool_call_id="call_123",
+        )
+
+        assert result.raw_output == {"result": "raw result"}
+        assert result.llm_tool_output == "formatted result"
 
     def test_execute_tool_with_before_tool_middleware(self, agent_state):
         """Test that before-tool middleware can modify parameters."""
@@ -1236,6 +1327,36 @@ class TestToolExecutorReturnDisplayStripping:
         # But final result does not contain it (for LLM)
         assert "returnDisplay" not in result
         assert result["content"] == "data"
+
+    def test_return_display_stripped_from_llm_output(self, agent_state):
+        """The llm-facing channel should not retain returnDisplay-only metadata."""
+
+        def tool_with_display(agent_state=None) -> dict:
+            return {
+                "content": "file contents here",
+                "returnDisplay": "Read 42 lines",
+            }
+
+        tool = Tool(
+            name="read_tool",
+            description="A tool that returns returnDisplay",
+            input_schema={"type": "object", "properties": {}},
+            implementation=tool_with_display,
+        )
+
+        executor = ToolExecutor(
+            tool_registry=make_tool_registry({"read_tool": tool}),
+            stop_tools=set(),
+        )
+
+        result = executor.execute_tool_with_llm_output(
+            agent_state=agent_state,
+            tool_name="read_tool",
+            parameters={},
+            tool_call_id="call_123",
+        )
+
+        assert result.llm_tool_output == "file contents here"
 
     def test_no_return_display_is_noop(self, agent_state):
         """Tools without returnDisplay should work unchanged."""

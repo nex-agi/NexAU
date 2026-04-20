@@ -1,5 +1,6 @@
 type: tool
 name: run_shell_command
+formatter: nexau.archs.tool.formatters.shell:format_run_shell_command_output
 description: >-
   This tool executes a given shell command as `bash -c <command>`. To run a
   command in the background, set the `is_background` parameter to true. Do NOT

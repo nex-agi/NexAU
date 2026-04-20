@@ -87,6 +87,9 @@ def serialize_ump_to_openai_chat_payload(
             entry["response_items"] = msg.metadata["response_items"]
         if "reasoning" in msg.metadata:
             entry["reasoning"] = msg.metadata["reasoning"]
+        if "reasoning_details" in msg.metadata:
+            # OpenRouter requires this to be echoed back unmodified for multi-turn reasoning.
+            entry["reasoning_details"] = msg.metadata["reasoning_details"]
         if "thought_signature" in msg.metadata:
             entry["thought_signature"] = msg.metadata["thought_signature"]
 

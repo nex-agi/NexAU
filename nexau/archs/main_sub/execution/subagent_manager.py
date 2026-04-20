@@ -83,7 +83,7 @@ class SubAgentManager:
             context: Optional context to pass
 
         Returns:
-            Result from the sub-agent
+            Result from the sub-agent, prefixed with sub_agent_id
 
         Raises:
             RuntimeError: If agent is shutting down
@@ -111,7 +111,8 @@ class SubAgentManager:
         sub_agent_config = self.sub_agents[sub_agent_name]
 
         # Recall existing sub-agent by ID (will restore history from agent_repo)
-        if sub_agent_id is not None:
+        # 防御性检查：空字符串视为 None（创建新子代理）
+        if sub_agent_id:
             logger.info(
                 f"🔄🤖 Recall sub-agent '{sub_agent_name}' with id '{sub_agent_id}' - history will be restored from storage",
             )
@@ -137,7 +138,8 @@ class SubAgentManager:
                 is_root=False,
             )
 
-        self.running_sub_agents[sub_agent.agent_id] = sub_agent
+        actual_sub_agent_id = sub_agent.agent_id
+        self.running_sub_agents[actual_sub_agent_id] = sub_agent
 
         try:
             effective_context = None
@@ -161,9 +163,9 @@ class SubAgentManager:
                 custom_llm_client_provider=custom_llm_client_provider,
             )
             result = (
-                f"{result}\n"
+                f"[sub_agent_id: {actual_sub_agent_id}] {result}\n"
                 f"Sub-agent finished (sub_agent_name: {sub_agent.agent_name}, "
-                f"sub_agent_id: {sub_agent.agent_id}. Recall this agent if needed)."
+                f"sub_agent_id: {actual_sub_agent_id}. Use the Agent tool with this sub_agent_id to resume if needed)."
             )
 
             logger.info(
@@ -174,9 +176,12 @@ class SubAgentManager:
 
         except Exception as e:
             logger.error(f"❌ Sub-agent '{sub_agent_name}' failed: {e}")
-            raise
+            # RFC-0015: 无论成功或失败，返回消息都包含 sub_agent_id
+            raise RuntimeError(
+                f"[sub_agent_id: {actual_sub_agent_id}] Sub-agent '{sub_agent_name}' (id: {actual_sub_agent_id}) failed: {e}"
+            ) from e
         finally:
-            self.running_sub_agents.pop(sub_agent.agent_id, None)
+            self.running_sub_agents.pop(actual_sub_agent_id, None)
 
     def shutdown(self) -> None:
         """Signal shutdown to prevent new sub-agent tasks."""
@@ -229,6 +234,10 @@ class SubAgentManager:
 
         sub_agent_config = self.sub_agents[sub_agent_name]
 
+        # 防御性检查：空字符串视为 None（创建新子代理，自动生成 ID）
+        if not sub_agent_id:
+            sub_agent_id = None
+
         # 使用 Agent.create() async factory 创建 sub-agent，复用主事件循环
         sub_agent = await Agent.create(
             config=sub_agent_config,
@@ -240,7 +249,8 @@ class SubAgentManager:
             is_root=False,
         )
 
-        self.running_sub_agents[sub_agent.agent_id] = sub_agent
+        actual_sub_agent_id = sub_agent.agent_id
+        self.running_sub_agents[actual_sub_agent_id] = sub_agent
 
         try:
             effective_context = None
@@ -261,9 +271,9 @@ class SubAgentManager:
                 custom_llm_client_provider=custom_llm_client_provider,
             )
             result = (
-                f"{result}\n"
+                f"[sub_agent_id: {actual_sub_agent_id}] {result}\n"
                 f"Sub-agent finished (sub_agent_name: {sub_agent.agent_name}, "
-                f"sub_agent_id: {sub_agent.agent_id}. Recall this agent if needed)."
+                f"sub_agent_id: {actual_sub_agent_id}. Use the Agent tool with this sub_agent_id to resume if needed)."
             )
 
             logger.info(
@@ -273,9 +283,12 @@ class SubAgentManager:
 
         except Exception as e:
             logger.error(f"❌ Sub-agent '{sub_agent_name}' failed (async): {e}")
-            raise
+            # RFC-0015: 无论成功或失败，返回消息都包含 sub_agent_id
+            raise RuntimeError(
+                f"[sub_agent_id: {actual_sub_agent_id}] Sub-agent '{sub_agent_name}' (id: {actual_sub_agent_id}) failed: {e}"
+            ) from e
         finally:
-            self.running_sub_agents.pop(sub_agent.agent_id, None)
+            self.running_sub_agents.pop(actual_sub_agent_id, None)
 
     def add_sub_agent(self, name: str, agent_config: AgentConfig) -> None:
         """Add a sub-agent config.
