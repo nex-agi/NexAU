@@ -188,28 +188,6 @@ class TestTransportBase:
             call_kwargs = mock_agent.run_async.call_args[1]
             assert call_kwargs["context"] == {"key": "value"}
 
-    def test_handle_request_external_tool_pause(self, transport):
-        """RFC-0018: handle_request passes through tuple return for external tool pause."""
-        pending = [{"id": "call_abc", "name": "ext_search", "input": {"q": "test"}}]
-        mock_return = ("", {"stop_reason": "EXTERNAL_TOOL_CALL", "pending_tool_calls": pending})
-        with patch("nexau.archs.transports.base.Agent") as mock_agent_cls:
-            mock_agent = Mock()
-            mock_agent.run_async = AsyncMock(return_value=mock_return)
-            mock_agent_cls.create = AsyncMock(return_value=mock_agent)
-
-            result = asyncio.run(
-                transport.handle_request(
-                    message="Use ext_search",
-                    user_id="user_123",
-                )
-            )
-
-            assert isinstance(result, tuple)
-            response_text, meta = result
-            assert response_text == ""
-            assert meta["stop_reason"] == "EXTERNAL_TOOL_CALL"
-            assert meta["pending_tool_calls"] == pending
-
     def test_handle_streaming_request(self, transport):
         """Test handle_streaming_request method."""
         with patch("nexau.archs.transports.base.Agent") as mock_agent_cls:

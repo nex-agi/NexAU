@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from .tool import (
-    ExternalToolError,
     StructuredToolDefinition,
     Tool,
     build_structured_tool_definition,
@@ -27,7 +26,6 @@ __all__ = [
     "Tool",
     "ToolRegistry",
     "StructuredToolDefinition",
-    "ExternalToolError",
     "build_structured_tool_definition",
     "normalize_structured_tool_definition",
     "structured_tool_definition_to_anthropic",

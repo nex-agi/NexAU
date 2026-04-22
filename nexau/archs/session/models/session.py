@@ -78,9 +78,3 @@ class SessionModel(SQLModel, table=True):
 
     # Root agent ID (for quick access to main agent)
     root_agent_id: str | None = Field(default=None)
-
-    # RFC-0018 T7: Session-level trace_id (Agent-owned, Tracer-agnostic).
-    # 由 Agent 在每次 user-triggered run 开始时生成或复用；
-    # EXTERNAL_TOOL_CALL 暂停时保留，其他 stop_reason 结束时清空。
-    # Tracer 是否启用不影响此字段的生命周期。
-    current_trace_id: str | None = Field(default=None)

@@ -170,56 +170,7 @@ uv sync
     ```
     通过 `dotenv run uv run code_agent.py` 来运行 Agent
 
-4. **External Tool（调用方执行的工具）**
-
-    工具也可以声明为 `kind: external` 且不绑定本地实现。NexAU 只把工具 schema 注册给
-    LLM；当模型调用 external tool 时，Agent loop 会自动暂停并把 pending tool call
-    返回给调用方，调用方自行执行后回传结果即可恢复执行。适用于远程工具执行（IDE 插件、
-    跨语言工具、沙箱隔离、LLM API 透传）等场景。
-
-    **工具 YAML：** 声明 `kind: external`，且**不要**写 `binding`：
-
-    ```yaml
-    type: tool
-    name: read_file
-    kind: external
-    description: Reads the content of a text file.
-    input_schema:
-      type: object
-      properties:
-        file_path: { type: string }
-      required: [file_path]
-    ```
-
-    **Agent YAML：** 像普通工具一样列出，省略 `binding` 即可（`kind: external` 由工具自身的
-    YAML 声明）：
-
-    ```yaml
-    tools:
-      - name: read_file
-        yaml_path: ./tools/read_file.tool.yaml
-        # 不写 binding
-    ```
-
-    **Python `AgentConfig`：** 用 `Tool.from_yaml` 加载但不传 `binding`，可与本地工具混用：
-
-    ```python
-    from nexau import Agent, AgentConfig, Tool
-
-    tools = [
-        Tool.from_yaml("tools/read_file.tool.yaml"),                  # external
-        Tool.from_yaml("tools/search.tool.yaml", binding=my_search),  # 本地工具
-    ]
-    agent = Agent(config=AgentConfig(name="mixed_agent", tools=tools, ...))
-    ```
-
-    **暂停 / 恢复：** 当命中 external tool 时，`agent.run_async()` 会返回
-    `(response, {"stop_reason": "EXTERNAL_TOOL_CALL", "pending_tool_calls": [...], "trace_id": ...})`；
-    调用方执行完后用 `Role.TOOL` + `ToolResultBlock` 再次调用 `run_async` 即可恢复。
-    完整调度器示例见 [`examples/code_agent_external_tool/`](./examples/code_agent_external_tool/)，
-    设计与 HTTP 协议细节见 [`docs/core-concepts/tools.md`](./docs/core-concepts/tools.md#external-tools-caller-executed)。
-
-5. **使用 NexAU CLI 运行**
+4. **使用 NexAU CLI 运行**
 
     **使用 run-agent 脚本（推荐）**
     ```bash

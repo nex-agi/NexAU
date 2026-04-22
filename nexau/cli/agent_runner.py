@@ -404,7 +404,8 @@ class CliSessionStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         cache_key = str(path.resolve())
         previous_history_count = self._latest_history_count_in_jsonl(path, checkpoint_path=checkpoint_path)
-        history_payload = payload.get("history") if isinstance(payload.get("history"), list) else []
+        history_raw = payload.get("history")
+        history_payload: list[object] = history_raw if isinstance(history_raw, list) else []
 
         start_index = previous_history_count
         if previous_history_count > len(history_payload):
@@ -638,11 +639,7 @@ class CliSessionStore:
                 [entry for entry in manifest.get("sessions", []) if isinstance(entry, dict)],
                 current_session_id="",
             )
-            cwd_entries = [
-                entry
-                for entry in ordered_entries
-                if isinstance(entry.get("cwd"), str) and entry.get("cwd") == target_cwd
-            ]
+            cwd_entries = [entry for entry in ordered_entries if isinstance(entry.get("cwd"), str) and entry.get("cwd") == target_cwd]
             candidate_entries = cwd_entries if cwd_entries else ordered_entries
             for entry in candidate_entries:
                 session_id = entry.get("session_id")
@@ -751,15 +748,13 @@ class CliSessionStore:
 
         manifest = self._load_manifest()
         existing_entry = next(
-            (
-                entry
-                for entry in manifest.get("sessions", [])
-                if isinstance(entry, dict) and entry.get("session_id") == session_id
-            ),
+            (entry for entry in manifest.get("sessions", []) if isinstance(entry, dict) and entry.get("session_id") == session_id),
             None,
         )
         existing_created_at = existing_entry.get("created_at") if isinstance(existing_entry, dict) else ""
-        payload["created_at"] = existing_created_at if isinstance(existing_created_at, str) and existing_created_at else payload["updated_at"]
+        payload["created_at"] = (
+            existing_created_at if isinstance(existing_created_at, str) and existing_created_at else payload["updated_at"]
+        )
 
         if paths.file_path.suffix == ".jsonl":
             self._append_jsonl_snapshot(
@@ -777,9 +772,7 @@ class CliSessionStore:
 
         updated_entry = self._snapshot_entry(payload=payload, paths=paths)
         existing_sessions = [
-            entry
-            for entry in manifest.get("sessions", [])
-            if isinstance(entry, dict) and entry.get("session_id") != session_id
+            entry for entry in manifest.get("sessions", []) if isinstance(entry, dict) and entry.get("session_id") != session_id
         ]
         manifest["updated_at"] = payload["updated_at"]
         manifest["current_session_id"] = session_id
@@ -972,11 +965,7 @@ class CliAgentRuntime:
             if self._requested_session_id
             else self._session_store.load_current()
         )
-        self.initial_session_id = (
-            self._requested_session_id
-            or (self._restored_snapshot or {}).get("session_id")
-            or None
-        )
+        self.initial_session_id = self._requested_session_id or (self._restored_snapshot or {}).get("session_id") or None
         self._agent: Agent | None = None
         self._run_thread: threading.Thread | None = None
         self._state_lock = threading.Lock()
@@ -1071,6 +1060,7 @@ class CliAgentRuntime:
             session_id=snapshot.get("session_id") if isinstance(snapshot.get("session_id"), str) else session_id,
         )
         self._persist_state()
+        assert self._agent is not None
         self._emit_session_event(
             restored=True,
             reset_ui=True,
@@ -1106,11 +1096,7 @@ class CliAgentRuntime:
         sessions = self._session_store.list_sessions()
         current_session_id = getattr(self._agent, "_session_id", None) or ""
         if not sessions:
-            return (
-                "No saved sessions yet.\n"
-                f"Raw index: {self._session_store.manifest_path}\n"
-                "Use /resume to choose or start a session."
-            )
+            return f"No saved sessions yet.\nRaw index: {self._session_store.manifest_path}\nUse /resume to choose or start a session."
 
         lines = [
             f"Saved sessions for {self.config_path.name} / {self.user_id}:",
@@ -1124,9 +1110,7 @@ class CliAgentRuntime:
             updated_at = entry.get("updated_at", "") or "unknown"
             created_at = entry.get("created_at", "") or updated_at
             message_count = entry.get("message_count", 0)
-            lines.append(
-                f"{index}. {session_id}{current_marker} | created {created_at} | updated {updated_at} | messages {message_count}"
-            )
+            lines.append(f"{index}. {session_id}{current_marker} | created {created_at} | updated {updated_at} | messages {message_count}")
             preview = entry.get("preview", "")
             if isinstance(preview, str) and preview:
                 lines.append(f"  {preview}")
@@ -1641,6 +1625,7 @@ class CliAgentRuntime:
                 self._last_stop_result = None
 
             if was_interrupted:
+                assert interrupted_result is not None
                 self._rebuild_agent_from_current_session()
                 send_message(
                     "interrupted",

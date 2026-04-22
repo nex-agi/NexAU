@@ -25,8 +25,8 @@ from nexau.cli.agent_runner import CliAgentRuntime, CliSessionStore
 
 def _build_runtime_stub() -> CliAgentRuntime:
     runtime = CliAgentRuntime.__new__(CliAgentRuntime)
-    runtime._session_metadata = Mock(return_value={"session_id": "sess-1"})
-    runtime.resume = Mock()
+    object.__setattr__(runtime, "_session_metadata", Mock(return_value={"session_id": "sess-1"}))
+    object.__setattr__(runtime, "resume", Mock())
     return runtime
 
 
