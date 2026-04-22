@@ -170,6 +170,8 @@ def structured_tool_definition_to_openai(
 
 def structured_tool_definition_to_anthropic(
     tool_definition: StructuredToolDefinitionLike,
+    *,
+    tool_streaming: bool = True,
 ) -> ToolParam:
     """Convert a neutral or compatible tool definition into Anthropic schema.
 
@@ -177,17 +179,30 @@ def structured_tool_definition_to_anthropic(
 
     Anthropic tool schema 仅在 provider 边界生成，保持 Agent / Executor 内部
     仍以 neutral structured definition 作为唯一上游表示。
+
+    Parameters
+    ----------
+    tool_definition:
+        The neutral structured tool definition to convert.
+    tool_streaming:
+        When *True* (default), include ``eager_input_streaming: True`` to
+        enable fine-grained tool streaming and reduce first-token latency for
+        large arguments.  Set to *False* to omit the field entirely — some
+        non-Anthropic providers that share the schema shape reject unknown
+        fields.
     """
 
     normalized = normalize_structured_tool_definition(tool_definition)
-    return {
+    result: ToolParam = {
         "name": normalized["name"],
         "description": normalized["description"],
         "input_schema": normalize_input_schema(normalized["input_schema"]),
+    }
+    if tool_streaming:
         # 启用 fine-grained tool streaming，减少大参数（如写入长文件）的首 token 延迟，
         # 避免 SSE 超时断联。
-        "eager_input_streaming": True,
-    }
+        result["eager_input_streaming"] = True
+    return result
 
 
 class ToolYamlSchema(BaseModel):
@@ -793,13 +808,23 @@ class Tool:
 
         return structured_tool_definition_to_openai(self.to_structured_definition())
 
-    def to_anthropic(self) -> ToolParam:
+    def to_anthropic(self, *, tool_streaming: bool = True) -> ToolParam:
         """Return the Anthropic-compatible tool schema.
 
         RFC-0006: Provider 延迟适配兼容包装
 
         该方法保留为兼容入口，内部委托 neutral structured definition →
         Anthropic adapter，而不是在 Tool 层直接持有 Anthropic 主形状。
+
+        Parameters
+        ----------
+        tool_streaming:
+            Forward to :func:`structured_tool_definition_to_anthropic`.  When
+            *False*, the ``eager_input_streaming`` field is omitted from the
+            returned schema.
         """
 
-        return structured_tool_definition_to_anthropic(self.to_structured_definition())
+        return structured_tool_definition_to_anthropic(
+            self.to_structured_definition(),
+            tool_streaming=tool_streaming,
+        )

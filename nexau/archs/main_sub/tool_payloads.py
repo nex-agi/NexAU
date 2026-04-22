@@ -52,12 +52,20 @@ def build_openai_tool_payload(
 def build_anthropic_tool_payload(
     *,
     eager_tools: Sequence[Tool],
+    tool_streaming: bool = True,
 ) -> list[ToolParam]:
-    """Build Anthropic-compatible structured tool payload."""
+    """Build Anthropic-compatible structured tool payload.
+
+    Parameters
+    ----------
+    tool_streaming:
+        Forwarded to :meth:`Tool.to_anthropic`.  When *False*,
+        ``eager_input_streaming`` is omitted from the tool schema.
+    """
     tools_payload: list[ToolParam] = []
 
     for tool in eager_tools:
-        tool_spec = tool.to_anthropic()
+        tool_spec = tool.to_anthropic(tool_streaming=tool_streaming)
         try:
             tool_spec["description"] = structured_tool_description(tool)
         except (KeyError, TypeError):
