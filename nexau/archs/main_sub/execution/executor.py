@@ -64,6 +64,8 @@ from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
 from nexau.archs.main_sub.execution.tool_executor import ToolExecutionResult, ToolExecutor
 from nexau.archs.main_sub.framework_context import FrameworkContext
+from nexau.archs.tracer.context import TraceContext
+from nexau.archs.tracer.core import BaseTracer, SpanType
 from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.token_trace_session import TokenTraceContextOverflowError, TokenTraceSession
 from nexau.archs.main_sub.tool_call_modes import (
@@ -1536,21 +1538,58 @@ class Executor:
                 exec_params["sandbox"] = sandbox
                 exec_params["ctx"] = framework_context
 
-                # Async tool: 直接 await（不经过 to_thread）
-                result = await tool_obj.execute_async(**exec_params)
-                execution_result = await asyncio.to_thread(
-                    self.tool_executor.finalize_tool_execution,
-                    agent_state=agent_state,
-                    sandbox=sandbox,
-                    tool=tool_obj,
-                    tool_name=tc.tool_name,
-                    tool_parameters=tool_parameters,
-                    tool_call_id=tc.tool_call_id or "",
-                    result=result,
-                    execution_error=None,
-                )
+                # 获取 tracer 以生成 Langfuse span（与 sync 路径对齐）
+                tracer: BaseTracer | None = agent_state.get_global_value("tracer")
+                tool_call_id = tc.tool_call_id or ""
 
-                return ("tool", tc, (tc.tool_name, execution_result, False))
+                # Async tool: 直接 await（不经过 to_thread），
+                # 用 TraceContext 包裹以记录 tool span
+                if tracer:
+                    span_name = f"Tool: {tc.tool_name}"
+                    trace_inputs: dict[str, Any] = {
+                        "parameters": tool_parameters,
+                        "tool_call_id": tool_call_id,
+                    }
+                    trace_attrs: dict[str, Any] = {
+                        "agent_name": agent_state.agent_name,
+                        "agent_id": agent_state.agent_id,
+                    }
+                    trace_ctx = TraceContext(tracer, span_name, SpanType.TOOL, trace_inputs, trace_attrs)
+                    trace_ctx.__enter__()
+                    try:
+                        result = await tool_obj.execute_async(**exec_params)
+                        execution_result = await asyncio.to_thread(
+                            self.tool_executor.finalize_tool_execution,
+                            agent_state=agent_state,
+                            sandbox=sandbox,
+                            tool=tool_obj,
+                            tool_name=tc.tool_name,
+                            tool_parameters=tool_parameters,
+                            tool_call_id=tool_call_id,
+                            result=result,
+                            execution_error=None,
+                        )
+                        trace_ctx.set_outputs({"result": execution_result.raw_output})
+                        trace_ctx.__exit__(None, None, None)
+                        return ("tool", tc, (tc.tool_name, execution_result, False))
+                    except Exception as e:
+                        trace_ctx.set_outputs({"result": {"status": "error", "error": str(e), "error_type": type(e).__name__}})
+                        trace_ctx.__exit__(type(e), e, e.__traceback__)
+                        return ("tool", tc, (tc.tool_name, str(e), True))
+                else:
+                    result = await tool_obj.execute_async(**exec_params)
+                    execution_result = await asyncio.to_thread(
+                        self.tool_executor.finalize_tool_execution,
+                        agent_state=agent_state,
+                        sandbox=sandbox,
+                        tool=tool_obj,
+                        tool_name=tc.tool_name,
+                        tool_parameters=tool_parameters,
+                        tool_call_id=tool_call_id,
+                        result=result,
+                        execution_error=None,
+                    )
+                    return ("tool", tc, (tc.tool_name, execution_result, False))
             except Exception as e:
                 return ("tool", tc, (tc.tool_name, str(e), True))
 

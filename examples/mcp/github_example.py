@@ -91,13 +91,14 @@ Explain what you're doing and provide context for the results.""",
         agent = Agent(config=agent_config)
 
         print("✅ Agent created successfully!")
-        print(f"   Agent name: {agent.name}")
-        print(f"   Total tools available: {len(agent.tools)}")
+        print(f"   Agent name: {agent.config.name}")
+        all_tools = agent.tool_registry
+        print(f"   Total tools available: {len(all_tools)}")
 
-        # List available tools
-        if agent.tools:
+        # List available tools (tool_registry includes MCP tools)
+        if all_tools:
             print("\n🗺️  Available Github tools:")
-            for tool in agent.tools:
+            for tool in all_tools.values():
                 print(
                     f"   - {tool.name}: {getattr(tool, 'description', 'No description')}",
                 )
@@ -105,7 +106,7 @@ Explain what you're doing and provide context for the results.""",
             print("\n⚠️  No tools available")
 
         response = agent.run(
-            "https://github.com/nex-agi/NexAU/tree/main 的代码结构是什么样的？",
+            message="https://github.com/nex-agi/NexAU/tree/main 的代码结构是什么样的？",
         )
         print(response)
 
