@@ -19,7 +19,7 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -761,6 +761,150 @@ class TestAgentConfigBuilderCore:
             with pytest.raises(ConfigConfigError, match="Error loading sub-agent 'child'"):
                 builder.build_sub_agents()
 
+    def test_build_skills_pkg_resource(self, temp_dir):
+        """pkg:resource skill paths are resolved via _resolve_config_path."""
+        from nexau.archs.main_sub.skill import Skill
+
+        skill_folder = Path(temp_dir) / "resolved_skill"
+        skill_folder.mkdir()
+        skill_folder.joinpath("SKILL.md").write_text(
+            "---\nname: pkg-skill\ndescription: Pkg skill\n---\nDetails.\n",
+        )
+
+        mock_skill = MagicMock(spec=Skill)
+        mock_skill.name = "pkg-skill"
+
+        with (
+            patch(
+                "nexau.archs.main_sub.config.config._resolve_config_path",
+                return_value=skill_folder,
+            ) as mock_resolve,
+            patch(
+                "nexau.archs.main_sub.config.config.Skill.from_folder",
+                return_value=mock_skill,
+            ),
+        ):
+            builder = AgentConfigBuilder(
+                {"skills": ["my_pkg:skills/test_skill"]},
+                Path(temp_dir),
+            )
+            builder.build_skills()
+
+            mock_resolve.assert_called_once_with("my_pkg:skills/test_skill", Path(temp_dir))
+            assert mock_skill in builder.agent_params["skills"]
+
+    def test_build_sub_agents_pkg_resource(self, temp_dir):
+        """pkg:resource config_path for sub-agents is resolved via _resolve_config_resource."""
+        from contextlib import nullcontext
+
+        resolved_path = Path(temp_dir) / "resolved_sub.yaml"
+
+        with (
+            patch(
+                "nexau.archs.main_sub.config.config._resolve_config_resource",
+                return_value=nullcontext(resolved_path),
+            ) as mock_resolve,
+            patch(
+                "nexau.archs.main_sub.config.config.AgentConfig.from_yaml",
+                return_value=AgentConfig(name="sub"),
+            ) as mock_from_yaml,
+        ):
+            builder = AgentConfigBuilder(
+                {"sub_agents": [{"name": "sub", "config_path": "my_pkg:agents/sub.yaml"}]},
+                Path(temp_dir),
+            )
+            builder.build_sub_agents()
+
+            mock_resolve.assert_called_once_with("my_pkg:agents/sub.yaml", Path(temp_dir))
+            mock_from_yaml.assert_called_once_with(resolved_path, None)
+            assert "sub" in builder.agent_params["sub_agents"]
+
+    def test_build_system_prompt_path_pkg_resource_single(self, temp_dir):
+        """Single pkg:resource system_prompt path is resolved correctly."""
+        prompt_file = Path(temp_dir) / "resolved_prompt.md"
+        prompt_file.write_text("system prompt content")
+
+        with patch(
+            "nexau.archs.main_sub.config.config._resolve_config_path",
+            return_value=prompt_file,
+        ) as mock_resolve:
+            builder = AgentConfigBuilder(
+                {"name": "agent", "system_prompt": "my_pkg:prompts/system.md", "system_prompt_type": "file"},
+                Path(temp_dir),
+            )
+            builder.build_core_properties().build_system_prompt_path()
+
+            mock_resolve.assert_called_once_with("my_pkg:prompts/system.md", Path(temp_dir))
+            assert builder.agent_params["system_prompt"] == str(prompt_file)
+
+    def test_build_system_prompt_path_pkg_resource_list(self, temp_dir):
+        """List of pkg:resource system_prompt paths are resolved correctly."""
+        from nexau.archs.main_sub.config.base import SystemPromptBlock
+
+        f1 = Path(temp_dir) / "a.md"
+        f2 = Path(temp_dir) / "b.md"
+        f1.write_text("prompt a")
+        f2.write_text("prompt b")
+
+        def resolve_side_effect(raw_path: str, base_path: Path) -> Path:
+            mapping = {
+                "my_pkg:prompts/a.md": f1,
+                "my_pkg:prompts/b.md": f2,
+            }
+            return mapping[raw_path]
+
+        with patch(
+            "nexau.archs.main_sub.config.config._resolve_config_path",
+            side_effect=resolve_side_effect,
+        ):
+            builder = AgentConfigBuilder(
+                {
+                    "name": "agent",
+                    "system_prompt": ["my_pkg:prompts/a.md", "my_pkg:prompts/b.md"],
+                    "system_prompt_type": "file",
+                },
+                Path(temp_dir),
+            )
+            builder.build_core_properties().build_system_prompt_path()
+
+        result = builder.agent_params["system_prompt"]
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert isinstance(result[0], SystemPromptBlock)
+        assert result[0].content == str(f1)
+        assert isinstance(result[1], SystemPromptBlock)
+        assert result[1].content == str(f2)
+
+    def test_load_tool_from_config_pkg_resource(self, temp_dir):
+        """Tool yaml_path with pkg:resource format is resolved via _resolve_config_path."""
+        tool_yaml = Path(temp_dir) / "resolved_tool.yaml"
+        tool_yaml.write_text(
+            textwrap.dedent(
+                """
+                name: pkg_tool
+                description: Tool from package
+                input_schema:
+                  type: object
+                """,
+            ),
+        )
+
+        with patch(
+            "nexau.archs.main_sub.config.config._resolve_config_path",
+            return_value=tool_yaml,
+        ) as mock_resolve:
+            builder = AgentConfigBuilder(
+                {"tools": [{"name": "pkg_tool", "yaml_path": "my_pkg:tools/tool.yaml", "binding": "builtins:print"}]},
+                Path(temp_dir),
+            )
+            builder.build_tools()
+
+            mock_resolve.assert_called_once_with("my_pkg:tools/tool.yaml", Path(temp_dir))
+
+        tool = builder.agent_params["tools"][0]
+        assert isinstance(tool, Tool)
+        assert tool.name == "pkg_tool"
+
 
 class TestExecutionConfig:
     """Lightweight validation of ExecutionConfig wiring."""
@@ -818,3 +962,115 @@ class TestSkillToolIngestion:
 
         assert [s.name for s in cfg.skills] == ["my-skill"]
         assert any(t.name == "LoadSkill" for t in cfg.tools)
+
+
+class TestResolveConfigPath:
+    """Tests for _resolve_config_path helper."""
+
+    def test_resolve_config_path_absolute(self):
+        """Absolute paths are returned as-is without joining base_path."""
+        from nexau.archs.main_sub.config.config import _resolve_config_path
+
+        result = _resolve_config_path("/absolute/path.yaml", Path("/some/base"))
+
+        assert result == Path("/absolute/path.yaml")
+
+    def test_resolve_config_path_relative(self, temp_dir):
+        """Relative paths are resolved against base_path."""
+        from nexau.archs.main_sub.config.config import _resolve_config_path
+
+        result = _resolve_config_path("relative/path.yaml", Path(temp_dir))
+
+        assert result == Path(temp_dir) / "relative/path.yaml"
+
+    def test_resolve_config_path_pkg_resource(self):
+        """pkg:resource format resolves through importlib.resources.files."""
+        from nexau.archs.main_sub.config.config import _resolve_config_path
+
+        mock_traversable = MagicMock()
+        mock_traversable.joinpath.return_value = "/fake/pkg/resource/path.yaml"
+
+        with patch("importlib.resources.files", return_value=mock_traversable) as mock_files:
+            result = _resolve_config_path("some_pkg:resource/path.yaml", Path("/base"))
+
+        mock_files.assert_called_once_with("some_pkg")
+        mock_traversable.joinpath.assert_called_once_with("resource/path.yaml")
+        assert result == Path("/fake/pkg/resource/path.yaml")
+
+    def test_resolve_config_path_windows_absolute(self):
+        """Windows absolute paths (containing ':') are not misinterpreted as pkg:resource."""
+        from nexau.archs.main_sub.config.config import _resolve_config_path
+
+        with patch.object(Path, "is_absolute", return_value=True):
+            result = _resolve_config_path("C:\\Users\\path.yaml", Path("/base"))
+
+        assert result == Path("C:\\Users\\path.yaml")
+
+
+class TestResolveConfigResource:
+    """Tests for _resolve_config_resource context-manager helper."""
+
+    def test_absolute_path_yields_unchanged(self):
+        """Absolute paths are yielded as-is without joining base_path."""
+        from nexau.archs.main_sub.config.config import _resolve_config_resource
+
+        with _resolve_config_resource("/absolute/path.yaml", Path("/some/base")) as result:
+            assert result == Path("/absolute/path.yaml")
+
+    def test_relative_path_yields_resolved(self, temp_dir):
+        """Relative paths are resolved against base_path."""
+        from nexau.archs.main_sub.config.config import _resolve_config_resource
+
+        with _resolve_config_resource("relative/path.yaml", Path(temp_dir)) as result:
+            assert result == Path(temp_dir) / "relative/path.yaml"
+
+    def test_pkg_resource_delegates_to_as_file(self):
+        """pkg:resource format uses importlib.resources.as_file for materialisation."""
+        from nexau.archs.main_sub.config.config import _resolve_config_resource
+
+        mock_traversable = MagicMock()
+        mock_traversable.joinpath.return_value = MagicMock(name="joined_resource")
+
+        mock_real_path = Path("/tmp/materialised/resource.yaml")
+
+        with (
+            patch("importlib.resources.files", return_value=mock_traversable) as mock_files,
+            patch("importlib.resources.as_file") as mock_as_file,
+        ):
+            mock_as_file.return_value.__enter__ = MagicMock(return_value=mock_real_path)
+            mock_as_file.return_value.__exit__ = MagicMock(return_value=False)
+
+            with _resolve_config_resource("some_pkg:resource/path.yaml", Path("/base")) as result:
+                assert result == mock_real_path
+
+            mock_files.assert_called_once_with("some_pkg")
+            mock_traversable.joinpath.assert_called_once_with("resource/path.yaml")
+            mock_as_file.assert_called_once_with(mock_traversable.joinpath.return_value)
+
+    def test_pkg_resource_cleanup_called(self):
+        """as_file context manager __exit__ is invoked after the with-block."""
+        from nexau.archs.main_sub.config.config import _resolve_config_resource
+
+        mock_traversable = MagicMock()
+        mock_cm = MagicMock()
+        mock_cm.__enter__ = MagicMock(return_value=Path("/tmp/temp_resource.yaml"))
+        mock_cm.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch("importlib.resources.files", return_value=mock_traversable),
+            patch("importlib.resources.as_file", return_value=mock_cm),
+        ):
+            with _resolve_config_resource("pkg:res.yaml", Path("/base")):
+                # Inside the context, __exit__ has NOT been called yet
+                mock_cm.__exit__.assert_not_called()
+
+            # After the context, __exit__ must have been called
+            mock_cm.__exit__.assert_called_once()
+
+    def test_windows_absolute_not_misinterpreted(self):
+        """Windows absolute paths (containing ':') are not treated as pkg:resource."""
+        from nexau.archs.main_sub.config.config import _resolve_config_resource
+
+        with patch.object(Path, "is_absolute", return_value=True):
+            with _resolve_config_resource("C:\\Users\\path.yaml", Path("/base")) as result:
+                assert result == Path("C:\\Users\\path.yaml")

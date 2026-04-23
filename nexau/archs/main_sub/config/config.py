@@ -20,6 +20,7 @@ import inspect
 import logging
 import warnings
 from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -82,6 +83,54 @@ def _empty_tool_list() -> list[Tool]:
 
 def _empty_skill_list() -> list[Skill]:
     return []
+
+
+def _resolve_config_path(raw_path: str, base_path: Path) -> Path:
+    """Resolve a config path that may be a pkg:resource, relative, or absolute path.
+
+    Supports:
+      - "some_package:relative/path.yaml"  -> importlib.resources
+      - "/absolute/path.yaml"              -> as-is
+      - "relative/path.yaml"               -> resolved against base_path
+
+    On Windows absolute paths like "C:\\path" also contain ":", so we
+    check ``is_absolute()`` first to avoid misinterpreting them as
+    package resources.
+
+    Note: for package resources inside zip archives, the returned Path may not
+    exist on the real filesystem.  Use :func:`_resolve_config_resource` instead
+    when the path must be immediately opened for reading.
+    """
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    if ":" in raw_path:
+        pkg, resource_path = raw_path.split(":", 1)
+        from importlib.resources import files
+
+        return Path(str(files(pkg).joinpath(resource_path)))
+    return base_path / raw_path
+
+
+def _resolve_config_resource(raw_path: str, base_path: Path) -> AbstractContextManager[Path]:
+    """Resolve a config path, ensuring the result is readable on the filesystem.
+
+    Like :func:`_resolve_config_path`, but wraps package resources with
+    ``importlib.resources.as_file`` so that resources inside zip archives are
+    materialised to a temporary file for the duration of the context.
+
+    Use this instead of ``_resolve_config_path`` when the resolved path must be
+    opened for reading within a well-defined scope (e.g. loading a YAML config).
+    """
+    path = Path(raw_path)
+    if path.is_absolute():
+        return nullcontext(path)
+    if ":" in raw_path:
+        pkg, resource_path = raw_path.split(":", 1)
+        from importlib.resources import as_file, files
+
+        return as_file(files(pkg).joinpath(resource_path))
+    return nullcontext(base_path / raw_path)
 
 
 def _require_dict(value: object, *, context: str) -> dict[str, Any]:
@@ -694,8 +743,7 @@ class AgentConfigBuilder:
         skill_configs = self.config.get("skills", [])
         for skill_folder in skill_configs:
             try:
-                if not Path(skill_folder).is_absolute():
-                    skill_folder = self.base_path / skill_folder
+                skill_folder = _resolve_config_path(str(skill_folder), self.base_path)
                 skill = Skill.from_folder(skill_folder)
                 skills.append(skill)
             except Exception as e:
@@ -737,20 +785,8 @@ class AgentConfigBuilder:
                 if not isinstance(sub_agent_config_path_raw, str) or not sub_agent_config_path_raw:
                     raise ConfigError("Sub-agent configuration missing 'config_path' field")
 
-                # Support both filesystem paths and importlib resources:
-                #   - "some_package:relative/path.yaml"
-                #   - "/abs/path.yaml" or "relative/path.yaml"
-                if ":" in sub_agent_config_path_raw:
-                    pkg, resource_path = sub_agent_config_path_raw.split(":", 1)
-                    from importlib.resources import as_file, files
-
-                    resource = files(pkg).joinpath(resource_path)
-                    with as_file(resource) as config_path:
-                        sub_agent_config = AgentConfig.from_yaml(config_path, overrides)
-                else:
-                    config_path = Path(sub_agent_config_path_raw)
-                    if not config_path.is_absolute():
-                        config_path = self.base_path / config_path
+                config_path_cm = _resolve_config_resource(sub_agent_config_path_raw, self.base_path)
+                with config_path_cm as config_path:
                     sub_agent_config = AgentConfig.from_yaml(config_path, overrides)
 
                 if sub_agent_config.name is None:
@@ -880,19 +916,20 @@ class AgentConfigBuilder:
                         cache = True
 
                     if not Path(path_str).is_absolute():
-                        abs_path: str = str(self.base_path / path_str)
-                        if not Path(abs_path).exists():
+                        resolved_path = _resolve_config_path(path_str, self.base_path)
+                        if not resolved_path.exists():
                             raise ConfigError(
-                                f"System prompt file not found: {abs_path}",
+                                f"System prompt file not found: {resolved_path}",
                             )
+                        abs_path: str = str(resolved_path)
                         resolved.append(SystemPromptBlock(content=abs_path, cache=cache))
                     else:
                         # Wrap all items consistently as SystemPromptBlock
                         resolved.append(SystemPromptBlock(content=path_str, cache=cache))
                 self.agent_params["system_prompt"] = resolved
             elif not Path(system_prompt).is_absolute():
-                system_prompt = self.base_path / system_prompt
-                if not Path(system_prompt).exists():
+                system_prompt = _resolve_config_path(str(system_prompt), self.base_path)
+                if not system_prompt.exists():
                     raise ConfigError(
                         f"System prompt file not found: {system_prompt}",
                     )
@@ -972,14 +1009,7 @@ class AgentConfigBuilder:
             )
 
         # Resolve YAML path
-        if not Path(yaml_path).is_absolute():
-            if ":" in yaml_path:
-                res = yaml_path.split(":")
-                from importlib.resources import files
-
-                yaml_path = files(res[0]).joinpath(res[1])
-            else:
-                yaml_path = base_path / yaml_path
+        yaml_path = str(_resolve_config_path(yaml_path, base_path))
 
         # Create tool with effective config-level overrides
         return Tool.from_yaml(
