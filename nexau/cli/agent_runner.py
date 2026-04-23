@@ -404,8 +404,8 @@ class CliSessionStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         cache_key = str(path.resolve())
         previous_history_count = self._latest_history_count_in_jsonl(path, checkpoint_path=checkpoint_path)
-        history_raw = payload.get("history")
-        history_payload: list[object] = history_raw if isinstance(history_raw, list) else []
+        raw_history = payload.get("history")
+        history_payload: list[Any] = raw_history if isinstance(raw_history, list) else []
 
         start_index = previous_history_count
         if previous_history_count > len(history_payload):
@@ -1617,15 +1617,13 @@ class CliAgentRuntime:
         finally:
             self._persist_state()
             interrupted_result = self._last_stop_result
-            was_interrupted = interrupted_result is not None
 
             with self._state_lock:
                 self._run_thread = None
                 self._interrupt_requested = False
                 self._last_stop_result = None
 
-            if was_interrupted:
-                assert interrupted_result is not None
+            if interrupted_result is not None:
                 self._rebuild_agent_from_current_session()
                 send_message(
                     "interrupted",

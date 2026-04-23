@@ -142,7 +142,7 @@ graph LR
 
 **T1: `team.run()` 并发保护**
 - **范围**: 在 `AgentTeam.run()` 开头添加 `_is_running` 检查，抛出 `RuntimeError`
-- **验收标准**: 
+- **验收标准**:
   - `team.run()` 在已运行时调用抛出 `RuntimeError("Team is already running")`
   - 新增单元测试覆盖此场景
   - 不影响正常的首次 `run()` 调用

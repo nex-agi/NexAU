@@ -23,21 +23,19 @@ from nexau.cli.agent_runner import CliAgentRuntime
 
 def _build_runtime_stub() -> CliAgentRuntime:
     runtime = CliAgentRuntime.__new__(CliAgentRuntime)
-    object.__setattr__(runtime, "is_busy", Mock(return_value=False))
-    object.__setattr__(runtime, "_session_metadata", Mock(return_value={"session_id": "sess-1"}))
-    object.__setattr__(runtime, "format_model_list", Mock(return_value="Available models:\n1. gpt-4o-mini [current]\n2. gpt-4.1"))
-    object.__setattr__(runtime, "_resolve_model_inventory", Mock(return_value=("gpt-4o-mini", ("gpt-4o-mini", "gpt-4.1"))))
-    object.__setattr__(
-        runtime,
-        "list_model_options",
-        Mock(
-            return_value=[
-                {"index": 1, "name": "gpt-4o-mini", "current": True, "profile_alias": ""},
-                {"index": 2, "name": "gpt-4.1", "current": False, "profile_alias": "nex"},
-            ]
-        ),
+    runtime.is_busy = Mock(return_value=False)  # type: ignore[method-assign]
+    runtime._session_metadata = Mock(return_value={"session_id": "sess-1"})  # type: ignore[method-assign]
+    runtime.format_model_list = Mock(  # type: ignore[method-assign]
+        return_value="Available models:\n1. gpt-4o-mini [current]\n2. gpt-4.1"
     )
-    object.__setattr__(runtime, "switch_model", Mock())
+    runtime._resolve_model_inventory = Mock(return_value=("gpt-4o-mini", ("gpt-4o-mini", "gpt-4.1")))  # type: ignore[method-assign]
+    runtime.list_model_options = Mock(  # type: ignore[method-assign]
+        return_value=[
+            {"index": 1, "name": "gpt-4o-mini", "current": True, "profile_alias": ""},
+            {"index": 2, "name": "gpt-4.1", "current": False, "profile_alias": "nex"},
+        ]
+    )
+    runtime.switch_model = Mock()  # type: ignore[method-assign]
     return runtime
 
 

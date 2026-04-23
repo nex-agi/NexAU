@@ -266,7 +266,7 @@ failover = LLMFailoverMiddleware(
 
 - Fallback `llm_config` fields are merged on top of the primary config — unspecified fields are inherited
 - The `model` field is inherited from primary unless explicitly overridden in the fallback
-- See [RFC-0003](../../rfcs/0003-llm-failover-middleware.md) for the full design rationale
+- See [RFC-0003](../rfcs/0003-llm-failover-middleware.md) for the full design rationale
 
 ### LongToolOutputMiddleware
 

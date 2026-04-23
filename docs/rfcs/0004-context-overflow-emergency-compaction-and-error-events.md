@@ -60,12 +60,12 @@
 
 当前实现仅保留 emergency fallback 开关，并移除本地硬停：
 
-1. `emergency_compact_enabled`（ContextCompactionMiddleware 层）  
-   - 控制 `wrap_model_call` 的 emergency fallback 是否可触发；  
+1. `emergency_compact_enabled`（ContextCompactionMiddleware 层）
+   - 控制 `wrap_model_call` 的 emergency fallback 是否可触发；
    - 不控制常规 `before_model` / `after_model` 压缩。
 
-2. 本地预检查不再硬停  
-   - `current_prompt_tokens > max_context_tokens` 仅记录 warning；  
+2. 本地预检查不再硬停
+   - `current_prompt_tokens > max_context_tokens` 仅记录 warning；
    - `available_tokens` 仍用于 `max_tokens` 预算，并保证最小为 `1`。
 
 ### C. 常规压缩与 emergency fallback 边界
@@ -229,10 +229,10 @@ def counter(messages: list[Message], tools: list[dict[str, Any]] | None = None) 
 
 ## 已知限制与未解决问题
 
-1. `wrap_model_call` fallback 目前只在识别到“provider 上下文溢出”错误文本时触发；  
+1. `wrap_model_call` fallback 目前只在识别到“provider 上下文溢出”错误文本时触发；
    对“结构合法但空内容响应”不会自动判定为 overflow。
 
-2. emergency 压缩是固定两段+merge 的单次流程，不含多 attempt 递增强度循环；  
+2. emergency 压缩是固定两段+merge 的单次流程，不含多 attempt 递增强度循环；
    若压缩后仍超限，当前直接走失败收敛。
 
 3. 图片 token 固定值（85）仍是工程近似，后续可考虑按模型分桶。
