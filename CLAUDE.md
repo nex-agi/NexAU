@@ -13,6 +13,7 @@ For detailed implementation guides for each module, see:
 - **[Session Management](./nexau/archs/session/CLAUDE.md)** - ORM, repositories, history persistence
 - **[Transport System](./nexau/archs/transports/CLAUDE.md)** - HTTP, stdio, WebSocket, gRPC
 - **[LLM Aggregators](./nexau/archs/llm/llm_aggregators/CLAUDE.md)** - Event streaming, providers
+- **[Cross-Platform Guidelines](./docs/cross-platform-guidelines.md)** - Platform abstraction, path handling, degradation strategy (RFC-0019/0020)
 
 ### User Documentation
 
