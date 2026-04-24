@@ -320,36 +320,38 @@ class TestAgentConfigBuilderCore:
         assert builder.agent_params["after_model_hooks"][1]() == 5
         assert builder.agent_params["middlewares"][0](value=1) == 1
 
-    def test_build_hooks_rejects_bad_types(self, temp_dir):
+    def test_build_hooks_bad_types(self, temp_dir):
         builder = AgentConfigBuilder({"after_model_hooks": "oops"}, Path(temp_dir))
 
         with pytest.raises(ConfigConfigError, match="'after_model_hooks' must be a list"):
             builder.build_hooks()
 
         builder_bad_entry = AgentConfigBuilder({"before_tool_hooks": [123]}, Path(temp_dir))
-        with pytest.raises(ConfigConfigError, match="before_tool_hooks entry 0"):
-            builder_bad_entry.build_hooks()
+        builder_bad_entry.build_hooks()  # should not raise
+        assert len(builder_bad_entry._skipped_components) >= 1
+        assert any("before_tool_hooks" in msg for msg in builder_bad_entry._skipped_components)
+        assert builder_bad_entry.agent_params["before_tool_hooks"] == []
 
-    def test_build_hooks_requires_import_field(self, temp_dir):
+    def test_build_hooks_skips_missing_import_field(self, temp_dir):
         builder = AgentConfigBuilder({"after_tool_hooks": [{"params": {}}]}, Path(temp_dir))
 
-        with pytest.raises(ConfigConfigError, match="missing 'import' field"):
-            builder.build_hooks()
+        builder.build_hooks()  # should not raise
+        assert len(builder._skipped_components) >= 1
+        assert any("import" in msg for msg in builder._skipped_components)
+        assert builder.agent_params["after_tool_hooks"] == []
 
-    def test_build_hooks_wraps_import_errors(self, temp_dir):
+    def test_build_hooks_skips_import_errors(self, temp_dir):
         builder = AgentConfigBuilder({"middlewares": ["nexau.invalid.module:missing"]}, Path(temp_dir))
 
-        with pytest.raises(ConfigConfigError, match="Error loading middleware 0"):
-            builder.build_hooks()
+        builder.build_hooks()  # should not raise
+        assert len(builder._skipped_components) >= 1
+        assert any("middleware" in msg.lower() for msg in builder._skipped_components)
+        assert builder.agent_params["middlewares"] == []
 
-    def test_build_hooks_params_must_be_mapping(self, temp_dir):
+    def test_build_hooks_skips_bad_params(self, temp_dir):
         hook_dict = {"import": f"{MODULE_PATH}:sample_hook_fn", "params": "oops"}
         builder = AgentConfigBuilder({"after_tool_hooks": [hook_dict]}, Path(temp_dir))
 
-        with pytest.raises(ConfigConfigError, match="params"):
-            builder.build_hooks()
-
-    def test_build_hooks_non_callable_with_params(self, temp_dir):
         class NotCallable:
             pass
 
@@ -357,8 +359,10 @@ class TestAgentConfigBuilderCore:
             hook_dict = {"import": "module:obj", "params": {"x": 1}}
             builder = AgentConfigBuilder({"before_model_hooks": [hook_dict]}, Path(temp_dir))
 
-            with pytest.raises(ConfigConfigError, match="not callable"):
-                builder.build_hooks()
+            builder.build_hooks()  # should not raise
+            assert len(builder._skipped_components) >= 1
+            assert any("callable" in msg.lower() for msg in builder._skipped_components)
+            assert builder.agent_params["before_model_hooks"] == []
 
     def test_build_tracers_accepts_instances_and_import_strings(self, temp_dir):
         tracer_import = f"{MODULE_PATH}:ImportableTracer"
@@ -372,31 +376,39 @@ class TestAgentConfigBuilderCore:
         assert isinstance(tracers[0], ConfigDummyTracer)
         assert isinstance(tracers[1], ImportableTracer)
 
-    def test_build_tracers_rejects_invalid_entries(self, temp_dir):
+    def test_build_tracers_skips_invalid_entries(self, temp_dir):
         builder = AgentConfigBuilder({"tracers": "bad"}, Path(temp_dir))
         with pytest.raises(ConfigConfigError, match="'tracers' must be a list"):
             builder.build_tracers()
 
         builder_bad = AgentConfigBuilder({"tracers": [123]}, Path(temp_dir))
-        with pytest.raises(ConfigConfigError, match="Tracer entry must be"):
-            builder_bad.build_tracers()
+        builder_bad.build_tracers()  # should not raise
+        assert len(builder_bad._skipped_components) >= 1
+        assert any("Tracer" in msg or "tracer" in msg for msg in builder_bad._skipped_components)
+        assert builder_bad.agent_params["tracers"] == []
 
         builder_not_tracer = AgentConfigBuilder({"tracers": [f"{MODULE_PATH}:sample_hook_fn"]}, Path(temp_dir))
-        with pytest.raises(ConfigConfigError, match="Tracer must be an instance"):
-            builder_not_tracer.build_tracers()
+        builder_not_tracer.build_tracers()  # should not raise
+        assert len(builder_not_tracer._skipped_components) >= 1
+        assert any("Tracer" in msg or "tracer" in msg for msg in builder_not_tracer._skipped_components)
+        assert builder_not_tracer.agent_params["tracers"] == []
 
-    def test_build_tracers_null_entry(self, temp_dir):
+    def test_build_tracers_skips_null_entry(self, temp_dir):
         builder = AgentConfigBuilder({"tracers": [None]}, Path(temp_dir))
 
-        with pytest.raises(ConfigConfigError, match="cannot be null"):
-            builder.build_tracers()
+        builder.build_tracers()  # should not raise
+        assert len(builder._skipped_components) >= 1
+        assert any("null" in msg.lower() or "none" in msg.lower() for msg in builder._skipped_components)
+        assert builder.agent_params["tracers"] == []
 
-    def test_build_tracers_wraps_import_errors(self, temp_dir):
+    def test_build_tracers_skips_import_errors(self, temp_dir):
         with patch.object(AgentConfigBuilder, "_import_and_instantiate", side_effect=RuntimeError("boom")):
             builder = AgentConfigBuilder({"tracers": ["module:Tracer"]}, Path(temp_dir))
 
-            with pytest.raises(ConfigConfigError, match="Error loading tracer"):
-                builder.build_tracers()
+            builder.build_tracers()  # should not raise
+            assert len(builder._skipped_components) >= 1
+            assert any("tracer" in msg.lower() for msg in builder._skipped_components)
+            assert builder.agent_params["tracers"] == []
 
     def test_build_llm_config_and_token_counter(self, temp_dir):
         builder = AgentConfigBuilder(
@@ -440,15 +452,18 @@ class TestAgentConfigBuilderCore:
 
         assert builder.agent_params["system_prompt"] == str(prompt_file)
 
-    def test_build_system_prompt_path_missing_file_raises(self, temp_dir):
+    def test_build_system_prompt_path_skips_missing_file(self, temp_dir):
         builder = AgentConfigBuilder(
             {"name": "agent", "system_prompt": "missing.txt", "system_prompt_type": "file"},
             Path(temp_dir),
+            strict=False,
         )
 
         builder.build_core_properties()
-        with pytest.raises(ConfigConfigError, match="System prompt file not found"):
-            builder.build_system_prompt_path()
+        builder.build_system_prompt_path()  # should not raise
+        assert len(builder._skipped_components) >= 1
+        assert any("System prompt file not found" in msg or "missing.txt" in msg for msg in builder._skipped_components)
+        assert builder.agent_params["system_prompt"] == ""
 
     def test_build_system_prompt_path_list_of_strings(self, temp_dir):
         """Test path resolution for list[str] system_prompt with file type."""
@@ -509,19 +524,24 @@ class TestAgentConfigBuilderCore:
         assert result[1].content == str(f2)
         assert result[1].cache is False
 
-    def test_build_system_prompt_path_list_missing_file_raises(self, temp_dir):
-        """Test that missing file in list raises ConfigError."""
+    def test_build_system_prompt_path_list_skips_missing_file(self, temp_dir):
+        """Test that missing file in list is skipped with warning."""
         f1 = Path(temp_dir) / "exists.md"
         f1.write_text("ok")
 
         builder = AgentConfigBuilder(
             {"name": "agent", "system_prompt": ["exists.md", "missing.md"], "system_prompt_type": "file"},
             Path(temp_dir),
+            strict=False,
         )
 
         builder.build_core_properties()
-        with pytest.raises(ConfigConfigError, match="System prompt file not found"):
-            builder.build_system_prompt_path()
+        builder.build_system_prompt_path()  # should not raise
+        assert len(builder._skipped_components) >= 1
+        assert any("System prompt file not found" in msg or "missing.md" in msg for msg in builder._skipped_components)
+        result = builder.agent_params["system_prompt"]
+        assert isinstance(result, list)
+        assert len(result) == 1
 
     def test_build_system_prompt_path_string_type_skips_resolution(self, temp_dir):
         """Test that system_prompt_type='string' skips file path resolution for lists."""
@@ -626,7 +646,7 @@ class TestAgentConfigBuilderCore:
         assert isinstance(tool, Tool)
         assert tool.defer_loading is False
 
-    def test_build_tools_rejects_non_bool_defer_loading(self, temp_dir):
+    def test_build_tools_skips_non_bool_defer_loading(self, temp_dir):
         tool_yaml = Path(temp_dir) / "tool.yaml"
         tool_yaml.write_text(
             textwrap.dedent(
@@ -650,12 +670,15 @@ class TestAgentConfigBuilderCore:
                 ]
             },
             Path(temp_dir),
+            strict=False,
         )
 
-        with pytest.raises(ConfigConfigError, match="field 'defer_loading' must be a boolean"):
-            builder.build_tools()
+        builder.build_tools()  # should not raise
+        assert len(builder._skipped_components) >= 1
+        assert any("defer_loading" in msg for msg in builder._skipped_components)
+        assert builder.agent_params["tools"] == []
 
-    def test_build_tools_rejects_reserved_extra_kwargs(self, temp_dir):
+    def test_build_tools_skips_reserved_extra_kwargs(self, temp_dir):
         tool_yaml = Path(temp_dir) / "tool.yaml"
         tool_yaml.write_text(
             textwrap.dedent(
@@ -679,18 +702,23 @@ class TestAgentConfigBuilderCore:
                 ]
             },
             Path(temp_dir),
+            strict=False,
         )
 
-        with pytest.raises(ConfigConfigError, match="reserved keys"):
-            builder.build_tools()
+        builder.build_tools()  # should not raise
+        assert len(builder._skipped_components) >= 1
+        assert any("reserved" in msg.lower() for msg in builder._skipped_components)
+        assert builder.agent_params["tools"] == []
 
-    def test_build_tools_missing_yaml_path(self, temp_dir):
-        builder = AgentConfigBuilder({"tools": [{"name": "missing"}]}, Path(temp_dir))
+    def test_build_tools_skips_missing_yaml_path(self, temp_dir):
+        builder = AgentConfigBuilder({"tools": [{"name": "missing"}]}, Path(temp_dir), strict=False)
 
-        with pytest.raises(ConfigConfigError, match="missing 'yaml_path'"):
-            builder.build_tools()
+        builder.build_tools()  # should not raise
+        assert len(builder._skipped_components) >= 1
+        assert any("yaml_path" in msg for msg in builder._skipped_components)
+        assert builder.agent_params["tools"] == []
 
-    def test_build_tools_wraps_load_errors(self, temp_dir):
+    def test_build_tools_skips_load_errors(self, temp_dir):
         tool_yaml = Path(temp_dir) / "tool.yaml"
         tool_yaml.write_text(
             textwrap.dedent(
@@ -703,10 +731,12 @@ class TestAgentConfigBuilderCore:
             ),
         )
         with patch("nexau.archs.main_sub.config.config.Tool.from_yaml", side_effect=ValueError("boom")):
-            builder = AgentConfigBuilder({"tools": [{"name": "alias_tool", "yaml_path": str(tool_yaml)}]}, Path(temp_dir))
+            builder = AgentConfigBuilder({"tools": [{"name": "alias_tool", "yaml_path": str(tool_yaml)}]}, Path(temp_dir), strict=False)
 
-            with pytest.raises(ConfigConfigError, match="Error loading tool 'alias_tool'"):
-                builder.build_tools()
+            builder.build_tools()  # should not raise
+            assert len(builder._skipped_components) >= 1
+            assert any("alias_tool" in msg or "tool" in msg.lower() for msg in builder._skipped_components)
+            assert builder.agent_params["tools"] == []
 
     def test_build_skills_from_folders_and_tools(self, temp_dir):
         skill_folder = Path(temp_dir) / "skill"
@@ -733,11 +763,13 @@ class TestAgentConfigBuilderCore:
         tool_skill = next(s for s in skills if s.name == "skill_tool")
         assert "## Detailed Description" in (tool_skill.detail or "")
 
-    def test_build_skills_invalid_folder_raises(self, temp_dir):
-        builder = AgentConfigBuilder({"skills": [str(Path(temp_dir) / "missing")]}, Path(temp_dir))
+    def test_build_skills_skips_invalid_folder(self, temp_dir):
+        builder = AgentConfigBuilder({"skills": [str(Path(temp_dir) / "missing")]}, Path(temp_dir), strict=False)
 
-        with pytest.raises(ConfigConfigError, match="Error loading skill"):
-            builder.build_skills()
+        builder.build_skills()  # should not raise
+        assert len(builder._skipped_components) >= 1
+        assert any("skill" in msg.lower() for msg in builder._skipped_components)
+        assert builder.agent_params["skills"] == []
 
     def test_build_sub_agents_uses_agent_config_from_yaml(self, temp_dir):
         sub_path = Path(temp_dir) / "child.yaml"
@@ -752,14 +784,15 @@ class TestAgentConfigBuilderCore:
             assert "child" in builder.agent_params["sub_agents"]
             mock_from_yaml.assert_called_once()
 
-    def test_build_sub_agents_wraps_errors(self, temp_dir):
+    def test_build_sub_agents_skips_errors(self, temp_dir):
         sub_path = Path(temp_dir) / "child.yaml"
         sub_path.write_text("name: child\n")
 
         with patch("nexau.archs.main_sub.config.config.AgentConfig.from_yaml", side_effect=ConfigConfigError("boom")):
-            builder = AgentConfigBuilder({"sub_agents": [{"name": "child", "config_path": str(sub_path)}]}, Path(temp_dir))
-            with pytest.raises(ConfigConfigError, match="Error loading sub-agent 'child'"):
-                builder.build_sub_agents()
+            builder = AgentConfigBuilder({"sub_agents": [{"name": "child", "config_path": str(sub_path)}]}, Path(temp_dir), strict=False)
+            builder.build_sub_agents()  # should not raise
+            assert len(builder._skipped_components) >= 1
+            assert any("child" in msg for msg in builder._skipped_components)
 
     def test_build_skills_pkg_resource(self, temp_dir):
         """pkg:resource skill paths are resolved via _resolve_config_path."""

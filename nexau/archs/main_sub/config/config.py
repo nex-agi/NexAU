@@ -42,7 +42,7 @@ from nexau.archs.tool import Tool
 from nexau.archs.tracer.composite import CompositeTracer
 from nexau.archs.tracer.core import BaseTracer
 
-from .base import AgentConfigBase, HookCallable, HookDefinition
+from .base import AgentConfigBase, AgentConfigLoadOptions, HookCallable, HookDefinition
 from .schema import AgentConfigSchema
 
 if TYPE_CHECKING:
@@ -194,6 +194,7 @@ class AgentConfig(
         cls,
         config_path: Path,
         overrides: dict[str, Any] | None = None,
+        options: AgentConfigLoadOptions | None = None,
     ) -> AgentConfig:
         """
         Load a sub-agent factory from configuration.
@@ -202,6 +203,7 @@ class AgentConfig(
             sub_config: Sub-agent configuration dictionary
             base_path: Base path for resolving relative paths
             overrides: Dictionary of configuration overrides to pass through
+            options: Configuration loading options (e.g. strict mode)
 
         Returns:
             Tuple of (agent_name, agent_factory)
@@ -215,6 +217,8 @@ class AgentConfig(
                 stacklevel=2,
             )
 
+        effective_options = options or AgentConfigLoadOptions()
+
         agent_config_schema = AgentConfigSchema.from_yaml(str(config_path), overrides)
 
         agent_builder = AgentConfigBuilder(
@@ -224,6 +228,7 @@ class AgentConfig(
                 exclude_none=True,
             ),
             config_path.parent,
+            strict=effective_options.strict,
         )
         agent_config = (
             agent_builder.set_overrides(overrides)
@@ -380,17 +385,32 @@ class ExecutionConfig:
 class AgentConfigBuilder:
     """Builder class for constructing agents from configuration data."""
 
-    def __init__(self, config: dict[str, Any], base_path: Path):
+    def __init__(self, config: dict[str, Any], base_path: Path, *, strict: bool = True):
         """Initialize the builder with configuration and base path.
 
         Args:
             config: The agent configuration dictionary
             base_path: Base path for resolving relative paths
+            strict: If True (default), raise ConfigError on component load failures;
+                    if False, log a warning and skip the failed component.
         """
         self.config: dict[str, Any] = config
         self.base_path: Path = base_path
+        self.strict: bool = strict
         self.agent_params: dict[str, Any] = {}
         self.overrides: dict[str, Any] | None = None
+        self._skipped_components: list[str] = []
+
+    def _handle_component_error(self, msg: str, error: Exception | None = None) -> None:
+        """Handle a component loading error according to the strict mode.
+
+        In strict mode, raise ConfigError immediately.
+        In non-strict mode, log a warning and record for the build summary.
+        """
+        if self.strict:
+            raise ConfigError(msg) from error
+        logger.warning(msg)
+        self._skipped_components.append(msg)
 
     def _import_and_instantiate(
         self,
@@ -576,13 +596,15 @@ class AgentConfigBuilder:
             middleware_config_list = cast(list[HookConfig], middleware_configs)
 
             for i, middleware_config in enumerate(middleware_config_list):
-                if not isinstance(middleware_config, (str, dict)) and not callable(middleware_config):
-                    raise ConfigError(f"Middleware {i} must be a string, dict, or callable")
                 try:
+                    if not isinstance(middleware_config, (str, dict)) and not callable(middleware_config):
+                        raise ConfigError(f"Middleware {i} must be a string, dict, or callable")
                     middleware = self._import_and_instantiate(cast(HookConfig, middleware_config))
                     middlewares.append(middleware)
                 except Exception as e:
-                    raise ConfigError(f"Error loading middleware {i}: {e}")
+                    msg = f"Skipped middleware {i}: {e}"
+                    logger.warning(msg)
+                    self._skipped_components.append(msg)
 
         self.agent_params["middlewares"] = middlewares
 
@@ -598,13 +620,15 @@ class AgentConfigBuilder:
             hooks_config_list = cast(list[HookConfig], hooks_config)
 
             for i, hook_config in enumerate(hooks_config_list):
-                if not isinstance(hook_config, (str, dict)) and not callable(hook_config):
-                    raise ConfigError(f"after_model_hooks entry {i} must be a string, dict, or callable")
                 try:
+                    if not isinstance(hook_config, (str, dict)) and not callable(hook_config):
+                        raise ConfigError(f"after_model_hooks entry {i} must be a string, dict, or callable")
                     hook_func = self._import_and_instantiate(cast(HookConfig, hook_config))
                     after_model_hooks.append(hook_func)
                 except Exception as e:
-                    raise ConfigError(f"Error loading hook {i}: {e}")
+                    msg = f"Skipped after_model_hook {i}: {e}"
+                    logger.warning(msg)
+                    self._skipped_components.append(msg)
 
         self.agent_params["after_model_hooks"] = after_model_hooks
 
@@ -620,13 +644,15 @@ class AgentConfigBuilder:
             hooks_config_list = cast(list[HookConfig], hooks_config)
 
             for i, hook_config in enumerate(hooks_config_list):
-                if not isinstance(hook_config, (str, dict)) and not callable(hook_config):
-                    raise ConfigError(f"after_tool_hooks entry {i} must be a string, dict, or callable")
                 try:
+                    if not isinstance(hook_config, (str, dict)) and not callable(hook_config):
+                        raise ConfigError(f"after_tool_hooks entry {i} must be a string, dict, or callable")
                     hook_func = self._import_and_instantiate(cast(HookConfig, hook_config))
                     after_tool_hooks.append(hook_func)
                 except Exception as e:
-                    raise ConfigError(f"Error loading tool hook {i}: {e}")
+                    msg = f"Skipped after_tool_hook {i}: {e}"
+                    logger.warning(msg)
+                    self._skipped_components.append(msg)
 
         self.agent_params["after_tool_hooks"] = after_tool_hooks
 
@@ -642,13 +668,15 @@ class AgentConfigBuilder:
             hooks_config_list = cast(list[HookConfig], hooks_config)
 
             for i, hook_config in enumerate(hooks_config_list):
-                if not isinstance(hook_config, (str, dict)) and not callable(hook_config):
-                    raise ConfigError(f"before_model_hooks entry {i} must be a string, dict, or callable")
                 try:
+                    if not isinstance(hook_config, (str, dict)) and not callable(hook_config):
+                        raise ConfigError(f"before_model_hooks entry {i} must be a string, dict, or callable")
                     hook_func = self._import_and_instantiate(cast(HookConfig, hook_config))
                     before_model_hooks.append(hook_func)
                 except Exception as e:
-                    raise ConfigError(f"Error loading before model hook {i}: {e}")
+                    msg = f"Skipped before_model_hook {i}: {e}"
+                    logger.warning(msg)
+                    self._skipped_components.append(msg)
 
         self.agent_params["before_model_hooks"] = before_model_hooks
 
@@ -664,13 +692,15 @@ class AgentConfigBuilder:
             hooks_config_list = cast(list[HookConfig], hooks_config)
 
             for i, hook_config in enumerate(hooks_config_list):
-                if not isinstance(hook_config, (str, dict)) and not callable(hook_config):
-                    raise ConfigError(f"before_tool_hooks entry {i} must be a string, dict, or callable")
                 try:
+                    if not isinstance(hook_config, (str, dict)) and not callable(hook_config):
+                        raise ConfigError(f"before_tool_hooks entry {i} must be a string, dict, or callable")
                     hook_func = self._import_and_instantiate(cast(HookConfig, hook_config))
                     before_tool_hooks.append(hook_func)
                 except Exception as e:
-                    raise ConfigError(f"Error loading before tool hook {i}: {e}")
+                    msg = f"Skipped before_tool_hook {i}: {e}"
+                    logger.warning(msg)
+                    self._skipped_components.append(msg)
 
         self.agent_params["before_tool_hooks"] = before_tool_hooks
 
@@ -690,7 +720,10 @@ class AgentConfigBuilder:
         resolved_tracers: list[BaseTracer] = []
         for entry in tracer_config_list:
             if entry is None:
-                raise ConfigError("Tracer entries cannot be null")
+                msg = "Skipped null tracer entry"
+                logger.warning(msg)
+                self._skipped_components.append(msg)
+                continue
 
             if isinstance(entry, BaseTracer):
                 tracer = entry
@@ -698,14 +731,21 @@ class AgentConfigBuilder:
                 try:
                     tracer = self._import_and_instantiate(cast(HookConfig, entry))
                 except Exception as e:
-                    raise ConfigError(f"Error loading tracer: {e}")
+                    msg = f"Skipped tracer '{entry}': {e}"
+                    logger.warning(msg)
+                    self._skipped_components.append(msg)
+                    continue
             else:
-                raise ConfigError(f"Tracer entry must be BaseTracer, string, dict, or callable, got {type(entry)}")
+                msg = f"Skipped tracer entry with unsupported type {type(entry)}"
+                logger.warning(msg)
+                self._skipped_components.append(msg)
+                continue
 
             if not isinstance(tracer, BaseTracer):
-                raise ConfigError(
-                    f"Tracer must be an instance of BaseTracer, got {type(tracer)}",
-                )
+                msg = f"Skipped tracer: expected BaseTracer instance, got {type(tracer)}"
+                logger.warning(msg)
+                self._skipped_components.append(msg)
+                continue
             resolved_tracers.append(tracer)
 
         self.agent_params["tracers"] = resolved_tracers
@@ -724,9 +764,8 @@ class AgentConfigBuilder:
                 tool = self._load_tool_from_config(tool_config, self.base_path)
                 tools.append(tool)
             except Exception as e:
-                raise ConfigError(
-                    f"Error loading tool '{tool_config.get('name', 'unknown')}': {e}",
-                )
+                tool_name = cast(dict[str, str], tool_config).get("name", "unknown") if isinstance(tool_config, dict) else "unknown"
+                self._handle_component_error(f"Skipped tool '{tool_name}': {e}", e)
 
         self.agent_params["tools"] = tools
         return self
@@ -747,9 +786,7 @@ class AgentConfigBuilder:
                 skill = Skill.from_folder(skill_folder)
                 skills.append(skill)
             except Exception as e:
-                raise ConfigError(
-                    f"Error loading skill '{skill_folder}': {e}",
-                )
+                self._handle_component_error(f"Skipped skill '{skill_folder}': {e}", e)
 
         # add tool-based skills
         tool_call_mode = self.agent_params.get(
@@ -795,9 +832,8 @@ class AgentConfigBuilder:
                     )
                 sub_agents[sub_agent_config.name] = sub_agent_config
             except Exception as e:
-                raise ConfigError(
-                    f"Error loading sub-agent '{sub_config.get('name', 'unknown')}': {e}",
-                )
+                sub_name = cast(dict[str, str], sub_config).get("name", "unknown") if isinstance(sub_config, dict) else "unknown"
+                self._handle_component_error(f"Skipped sub-agent '{sub_name}': {e}", e)
 
         self.agent_params["sub_agents"] = sub_agents
         return self
@@ -917,11 +953,10 @@ class AgentConfigBuilder:
 
                     if not Path(path_str).is_absolute():
                         resolved_path = _resolve_config_path(path_str, self.base_path)
-                        if not resolved_path.exists():
-                            raise ConfigError(
-                                f"System prompt file not found: {resolved_path}",
-                            )
                         abs_path: str = str(resolved_path)
+                        if not resolved_path.exists():
+                            self._handle_component_error(f"Skipped system prompt file (not found): {abs_path}")
+                            continue
                         resolved.append(SystemPromptBlock(content=abs_path, cache=cache))
                     else:
                         # Wrap all items consistently as SystemPromptBlock
@@ -930,10 +965,12 @@ class AgentConfigBuilder:
             elif not Path(system_prompt).is_absolute():
                 system_prompt = _resolve_config_path(str(system_prompt), self.base_path)
                 if not system_prompt.exists():
-                    raise ConfigError(
-                        f"System prompt file not found: {system_prompt}",
-                    )
-                self.agent_params["system_prompt"] = str(system_prompt)
+                    self._handle_component_error(f"Skipped system prompt file (not found): {system_prompt}")
+                    # non-strict fallback: default to empty string prompt
+                    self.agent_params["system_prompt"] = ""
+                    self.agent_params["system_prompt_type"] = "string"
+                else:
+                    self.agent_params["system_prompt"] = str(system_prompt)
 
         return self
 
@@ -965,7 +1002,16 @@ class AgentConfigBuilder:
         Returns:
             Agent configuration dictionary
         """
-        # todo
+        if self._skipped_components:
+            agent_name = self.agent_params.get("name", "unknown")
+            summary = "\n  - ".join(self._skipped_components)
+            logger.warning(
+                "Agent '%s' initialized with %d skipped component(s):\n  - %s",
+                agent_name,
+                len(self._skipped_components),
+                summary,
+            )
+        self.agent_params["skipped_components"] = self._skipped_components
         return AgentConfig(**self.agent_params)
 
     def _load_tool_from_config(self, tool_config: dict[str, Any], base_path: Path) -> Tool:
