@@ -217,15 +217,15 @@ class TestTwoTurnPayloadMatrix:
         assert reasoning_items[0]["summary"][0]["text"] == expected_reasoning_text
 
     @pytest.mark.parametrize(
-        ("source_name", "expects_thinking_block", "expected_first_text"),
+        ("source_name", "expected_thinking_text", "expected_signature"),
         [
-            ("completion", False, "completion reasoning"),
-            ("responses", False, "responses reasoning summary"),
-            ("claude", True, None),
-            ("gemini", False, "gemini thought"),
+            ("completion", "completion reasoning", None),
+            ("responses", "responses reasoning summary", None),
+            ("claude", "claude thinking", "claude_sig"),
+            ("gemini", "gemini thought", None),
         ],
     )
-    def test_two_turn_claude_payload_behavior(self, source_name, expects_thinking_block, expected_first_text):
+    def test_two_turn_claude_payload_behavior(self, source_name, expected_thinking_text, expected_signature):
         history = _build_two_turn_history(source_name)
 
         system_blocks, convo = AnthropicMessagesAdapter().to_vendor_format(history)
@@ -238,16 +238,14 @@ class TestTwoTurnPayloadMatrix:
         thinking_blocks = [block for block in assistant_blocks if block.get("type") == "thinking"]
         text_blocks = [block for block in assistant_blocks if block.get("type") == "text"]
 
-        if expects_thinking_block:
-            assert len(thinking_blocks) == 1
-            assert thinking_blocks[0]["thinking"] == "claude thinking"
-            assert thinking_blocks[0]["signature"] == "claude_sig"
-            assert text_blocks[-1]["text"] == "Final A: 34"
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0]["thinking"] == expected_thinking_text
+        if expected_signature is None:
+            assert "signature" not in thinking_blocks[0]
         else:
-            assert thinking_blocks == []
-            expected_text = "35 × 11 = 385\n385 + 57 = 442\n442 ÷ 13 = 34\n\nFinal A: 34" if source_name == "completion" else "Final A: 34"
-            assert text_blocks[0]["text"] == expected_first_text
-            assert text_blocks[-1]["text"] == expected_text
+            assert thinking_blocks[0]["signature"] == expected_signature
+        expected_text = "35 × 11 = 385\n385 + 57 = 442\n442 ÷ 13 = 34\n\nFinal A: 34" if source_name == "completion" else "Final A: 34"
+        assert text_blocks[-1]["text"] == expected_text
 
     @pytest.mark.parametrize(
         ("source_name", "expected_thought_text", "expected_signature"),
@@ -282,11 +280,11 @@ class TestTwoTurnPayloadMatrix:
         [
             ("completion", "completion", "reasoning_content"),
             ("completion", "responses", "reconstructed_reasoning_replay"),
-            ("completion", "claude", "downgrade_to_text"),
+            ("completion", "claude", "unsigned_thinking"),
             ("completion", "gemini", "thought_part"),
             ("responses", "completion", "response_items_plus_reasoning_content"),
             ("responses", "responses", "typed_reasoning_replay"),
-            ("responses", "claude", "downgrade_to_text"),
+            ("responses", "claude", "unsigned_thinking"),
             ("responses", "gemini", "thought_part"),
             ("claude", "completion", "reasoning_content_plus_signature"),
             ("claude", "responses", "reconstructed_reasoning_replay"),
@@ -294,7 +292,7 @@ class TestTwoTurnPayloadMatrix:
             ("claude", "gemini", "thought_part"),
             ("gemini", "completion", "reasoning_content_plus_thought_signature"),
             ("gemini", "responses", "reconstructed_reasoning_replay"),
-            ("gemini", "claude", "downgrade_to_text"),
+            ("gemini", "claude", "unsigned_thinking"),
             ("gemini", "gemini", "thought_part_with_signature"),
         ],
     )
@@ -340,14 +338,13 @@ class TestTwoTurnPayloadMatrix:
             _system, payload = AnthropicMessagesAdapter().to_vendor_format(history)
             assistant_blocks = payload[1]["content"]
             thinking_blocks = [block for block in assistant_blocks if block.get("type") == "thinking"]
-            text_blocks = [block for block in assistant_blocks if block.get("type") == "text"]
             if expected_policy == "signed_thinking":
                 assert len(thinking_blocks) == 1
                 assert thinking_blocks[0]["signature"] == "claude_sig"
-            elif expected_policy == "downgrade_to_text":
-                assert thinking_blocks == []
-                assert len(text_blocks) >= 2
-                assert text_blocks[0]["text"] in {"completion reasoning", "responses reasoning summary", "gemini thought"}
+            elif expected_policy == "unsigned_thinking":
+                assert len(thinking_blocks) == 1
+                assert "signature" not in thinking_blocks[0]
+                assert thinking_blocks[0]["thinking"] in {"completion reasoning", "responses reasoning summary", "gemini thought"}
             else:
                 raise AssertionError(f"Unexpected claude policy {expected_policy}")
             return
@@ -367,17 +364,10 @@ class TestTwoTurnPayloadMatrix:
 
         raise AssertionError(f"Unexpected target {target_name}")
 
-    @pytest.mark.parametrize(
-        ("source_name", "expected_downgraded_reasoning_text"),
-        [
-            ("completion", "completion reasoning"),
-            ("responses", "responses reasoning summary"),
-            ("gemini", "gemini thought"),
-        ],
-    )
-    def test_two_turn_claude_target_downgrades_unsigned_reasoning_to_text(self, source_name: str, expected_downgraded_reasoning_text: str):
-        """Anthropic target must never emit unsigned thinking blocks from non-Anthropic sources."""
-        history = _build_two_turn_history(source_name)
+    def test_claude_target_downgrades_unsigned_reasoning_only_to_text(self):
+        """Only reasoning_content is downgraded when no answer content or tool calls exist."""
+        response = ModelResponse(reasoning_content="standalone reasoning")
+        history = [Message.user(_TASK_A), response.to_ump_message(), Message.user(_TASK_B)]
 
         _system, payload = AnthropicMessagesAdapter().to_vendor_format(history)
         assistant_blocks = payload[1]["content"]
@@ -386,4 +376,4 @@ class TestTwoTurnPayloadMatrix:
         assert thinking_blocks == []
 
         text_blocks = [block for block in assistant_blocks if block.get("type") == "text"]
-        assert text_blocks[0]["text"] == expected_downgraded_reasoning_text
+        assert text_blocks[0]["text"] == "standalone reasoning"

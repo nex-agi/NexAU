@@ -402,12 +402,8 @@ class TestAnthropicThinkingOnlyStreamingIntegration:
         assert thinking_blocks[0]["thinking"] == "Very long thinking..."
         assert thinking_blocks[0]["signature"] == "EpybBQ_test_signature"
 
-    def test_ump_roundtrip_demotes_thinking_without_signature(self) -> None:
-        """When stream is interrupted (no signature), thinking should be demoted to text block.
-
-        Anthropic requires 'signature' on thinking blocks. If streaming was interrupted before
-        the signature_delta arrives, the adapter should demote thinking to text to avoid 400 error.
-        """
+    def test_ump_roundtrip_keeps_unsigned_thinking_with_companion_content(self) -> None:
+        """When assistant output accompanies unsigned thinking, preserve it as thinking."""
         from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
         from nexau.core.messages import Message
 
@@ -443,12 +439,12 @@ class TestAnthropicThinkingOnlyStreamingIntegration:
         assistant_msg = next(m for m in convo if m["role"] == "assistant")
         content_blocks = assistant_msg["content"]
 
-        # 无签名的 thinking block 应被降级为 text block，避免 Anthropic 400 错误
         thinking_blocks = [b for b in content_blocks if b.get("type") == "thinking"]
-        assert len(thinking_blocks) == 0
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0] == {"type": "thinking", "thinking": "Interrupted thinking..."}
 
         text_blocks = [b for b in content_blocks if b.get("type") == "text"]
-        assert any(b["text"] == "Interrupted thinking..." for b in text_blocks)
+        assert any(b["text"] == "\n" for b in text_blocks)
 
 
 # ---------------------------------------------------------------------------

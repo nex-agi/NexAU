@@ -54,6 +54,11 @@ def serialize_ump_to_anthropic_messages_payload(
                 system_blocks.append(sys_block)
             continue
 
+        has_companion_assistant_output = any(
+            (isinstance(existing_block, TextBlock) and bool(existing_block.text)) or isinstance(existing_block, (ImageBlock, ToolUseBlock))
+            for existing_block in msg.content
+        )
+
         content_blocks: list[dict[str, Any]] = []
         for block in msg.content:
             if isinstance(block, TextBlock):
@@ -64,6 +69,8 @@ def serialize_ump_to_anthropic_messages_payload(
                     content_blocks.append({"type": "redacted_thinking", "data": block.redacted_data})
                 elif block.signature:
                     content_blocks.append({"type": "thinking", "thinking": block.text, "signature": block.signature})
+                elif has_companion_assistant_output:
+                    content_blocks.append({"type": "thinking", "thinking": block.text})
                 elif block.text:
                     content_blocks.append({"type": "text", "text": block.text})
             elif isinstance(block, ToolUseBlock):

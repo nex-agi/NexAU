@@ -92,6 +92,32 @@ def test_legacy_roundtrip_preserves_reasoning_details() -> None:
     assert payload == legacy
 
 
+def test_legacy_roundtrip_preserves_empty_reasoning_content() -> None:
+    """DeepSeek requires explicit blank reasoning_content to survive history replay."""
+
+    legacy: list[dict[str, Any]] = [
+        {"role": "user", "content": "Use a tool."},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "calculator", "arguments": '{"expr":"2+2"}'},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "4"},
+    ]
+
+    ump = messages_from_legacy_openai_chat(legacy)
+    payload = serialize_ump_to_openai_chat_payload(ump)
+
+    assert payload == legacy
+
+
 def test_anthropic_serializer_uses_blocks_from_legacy_input() -> None:
     legacy: list[dict[str, Any]] = [
         {"role": "system", "content": "sys"},
