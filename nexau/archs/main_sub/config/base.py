@@ -22,6 +22,19 @@ class SystemPromptBlock(BaseModel):
     cache: bool = True
 
 
+class AgentConfigLoadOptions(BaseModel):
+    """Options for loading agent configuration via AgentConfig.from_yaml().
+
+    Attributes:
+        strict: If True (default), raise ConfigError when resource path resolution
+                fails; if False, log a warning and skip the failed component.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    strict: bool = True
+
+
 class HookImportConfig(BaseModel):
     """Configuration block for importing a hook callable."""
 
@@ -79,3 +92,4 @@ class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
     retry_backoff_max_seconds: int = Field(default=30, ge=1)
     timeout: int = Field(default=300, ge=1)
     tracers: list[Any] = Field(default_factory=list)
+    skipped_components: list[str] = Field(default_factory=list)

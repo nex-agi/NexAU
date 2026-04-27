@@ -33,7 +33,6 @@ from nexau.archs.llm.llm_aggregators import (
 )
 from nexau.archs.llm.llm_aggregators.events import (
     Event,
-    ExternalToolCallEvent,
     RunErrorEvent,
     RunFinishedEvent,
     RunStartedEvent,
@@ -183,8 +182,6 @@ class AgentEventsMiddleware(Middleware):
 
         Emits RunFinishedEvent to signal the completion of an agent run.
         If the agent stopped due to an error, emits RunErrorEvent instead.
-        If the agent paused for external tool calls (RFC-0018), emits
-        ExternalToolCallEvent before RunFinishedEvent.
 
         Args:
             hook_input: Input containing agent state, messages and response
@@ -206,21 +203,6 @@ class AgentEventsMiddleware(Middleware):
                 )
             )
         else:
-            # RFC-0018: Emit ExternalToolCallEvent before RunFinishedEvent when
-            # the agent loop paused waiting for external tool results.
-            if hook_input.stop_reason == AgentStopReason.EXTERNAL_TOOL_CALL and hook_input.pending_external_calls:
-                self.on_event(
-                    ExternalToolCallEvent(
-                        run_id=agent_state.run_id,
-                        tool_calls=[
-                            block.model_dump(mode="json", include={"id", "name", "input"}) for block in hook_input.pending_external_calls
-                        ],
-                        timestamp=int(datetime.now().timestamp() * 1000),
-                        # RFC-0018 T7: 从 agent_state 读取 Agent-owned trace_id (observe-only echo)
-                        trace_id=agent_state.trace_id,
-                    )
-                )
-
             self.on_event(
                 RunFinishedEvent(
                     thread_id=self.session_id,

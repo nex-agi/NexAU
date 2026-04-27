@@ -33,6 +33,31 @@ def test_openai_responses_serializer_prepares_reasoning_replay_and_instructions(
     ]
 
 
+def test_openai_responses_serializer_preserves_empty_reasoning_content() -> None:
+    prepared, instructions = prepare_openai_responses_api_input(
+        [
+            {
+                "role": "assistant",
+                "content": "Final: 34",
+                "reasoning_content": "",
+            },
+        ]
+    )
+
+    assert instructions is None
+    assert prepared == [
+        {
+            "type": "reasoning",
+            "summary": [{"type": "summary_text", "text": ""}],
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Final: 34"}],
+        },
+    ]
+
+
 def test_openai_responses_serializer_sanitizes_multimodal_function_call_output() -> None:
     sanitized = sanitize_openai_responses_items_for_input(
         [

@@ -330,7 +330,7 @@ middlewares:
 - A new SDK client is built per fallback via `LLMConfig.to_client_kwargs()`
 - `tools`, `tool_choice`, `stop`, `max_tokens` are preserved from the original params
 
-See [RFC-0003](../../../rfcs/0003-llm-failover-middleware.md) for full design rationale.
+See [RFC-0003](../../../docs/rfcs/0003-llm-failover-middleware.md) for full design rationale.
 
 ### Sub-Agent System (`execution/subagent_manager.py`)
 

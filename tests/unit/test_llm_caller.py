@@ -309,6 +309,27 @@ class TestLLMCallerBasicCalls:
         assert response.response_items == []
         assert response.usage.total_tokens == 125
 
+    def test_model_response_preserves_empty_completion_reasoning_content(self):
+        """DeepSeek requires explicit blank reasoning_content to be echoed on later turns."""
+
+        response = ModelResponse.from_openai_message(
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "",
+            },
+        )
+
+        assert response.reasoning_content == ""
+        assert response.to_message_dict()["reasoning_content"] == ""
+        assert serialize_ump_to_openai_chat_payload([response.to_ump_message()]) == [
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "",
+            }
+        ]
+
     def test_model_response_from_responses_reasoning_shape(self):
         """Responses API reasoning items should preserve summary text and encrypted replay artifacts."""
 
@@ -343,6 +364,32 @@ class TestLLMCallerBasicCalls:
         assert response.response_items[0]["type"] == "reasoning"
         assert response.response_items[0]["encrypted_content"] == "encrypted_blob"
         assert response.usage.reasoning_tokens == 38
+
+    def test_model_response_from_responses_preserves_empty_reasoning_content(self):
+        """Responses API blank reasoning summaries should remain replayable as empty strings."""
+
+        response = ModelResponse.from_openai_response(
+            {
+                "output": [
+                    {
+                        "id": "rs_blank",
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": ""}],
+                    },
+                    {
+                        "id": "msg_real",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "Final: 34"}],
+                    },
+                ],
+            }
+        )
+
+        assert response.content == "Final: 34"
+        assert response.reasoning_content == ""
+        assert response.to_message_dict()["reasoning_content"] == ""
 
     def test_prepare_responses_input_reuses_encrypted_reasoning_response_items(self):
         """Stored Responses API reasoning items should be replayed with encrypted_content intact."""
@@ -1840,6 +1887,44 @@ class TestLLMCallerIntegration:
         assert call_args[1]["max_tokens"] == 200
         assert "custom_stop" in call_args[1]["stop"]
         assert "</tool_use>" in call_args[1]["stop"]
+
+    def test_call_llm_preserves_empty_reasoning_content_in_history(self, mock_openai_client, mock_llm_config, agent_state):
+        """DeepSeek thinking mode requires prior assistant reasoning_content to be echoed, even blank."""
+
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message.content = "follow up"
+        mock_response.choices[0].message.tool_calls = []
+        mock_response.choices[0].message.reasoning_content = None
+        mock_response.usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+        mock_openai_client.chat.completions.create.return_value = mock_response
+
+        mock_llm_config.to_openai_params = Mock(return_value={"model": "gpt-4o-mini", "temperature": 0.7})
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=mock_llm_config,
+            retry_attempts=1,
+        )
+
+        prior_assistant = ModelResponse.from_openai_message(
+            {
+                "role": "assistant",
+                "content": "previous answer",
+                "reasoning_content": "",
+            },
+        ).to_ump_message()
+        messages = [Message.user("first"), prior_assistant, Message.user("again")]
+
+        caller.call_llm(
+            messages,
+            max_tokens=200,
+            force_stop_reason=AgentStopReason.SUCCESS,
+            agent_state=agent_state,
+        )
+
+        sent_messages = mock_openai_client.chat.completions.create.call_args[1]["messages"]
+        assert sent_messages[1]["role"] == "assistant"
+        assert sent_messages[1]["reasoning_content"] == ""
 
 
 class TestAnthropicCacheControl:

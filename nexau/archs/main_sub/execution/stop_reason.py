@@ -25,5 +25,3 @@ class AgentStopReason(Enum):
     SUCCESS = auto()
     NO_MORE_TOOL_CALLS = auto()
     USER_INTERRUPTED = auto()
-    # RFC-0018: Agent loop 暂停等待调用方回传 external tool results。
-    EXTERNAL_TOOL_CALL = auto()

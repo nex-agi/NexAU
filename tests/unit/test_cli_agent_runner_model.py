@@ -23,17 +23,19 @@ from nexau.cli.agent_runner import CliAgentRuntime
 
 def _build_runtime_stub() -> CliAgentRuntime:
     runtime = CliAgentRuntime.__new__(CliAgentRuntime)
-    runtime.is_busy = Mock(return_value=False)
-    runtime._session_metadata = Mock(return_value={"session_id": "sess-1"})
-    runtime.format_model_list = Mock(return_value="Available models:\n1. gpt-4o-mini [current]\n2. gpt-4.1")
-    runtime._resolve_model_inventory = Mock(return_value=("gpt-4o-mini", ("gpt-4o-mini", "gpt-4.1")))
-    runtime.list_model_options = Mock(
+    runtime.is_busy = Mock(return_value=False)  # type: ignore[method-assign]
+    runtime._session_metadata = Mock(return_value={"session_id": "sess-1"})  # type: ignore[method-assign]
+    runtime.format_model_list = Mock(  # type: ignore[method-assign]
+        return_value="Available models:\n1. gpt-4o-mini [current]\n2. gpt-4.1"
+    )
+    runtime._resolve_model_inventory = Mock(return_value=("gpt-4o-mini", ("gpt-4o-mini", "gpt-4.1")))  # type: ignore[method-assign]
+    runtime.list_model_options = Mock(  # type: ignore[method-assign]
         return_value=[
             {"index": 1, "name": "gpt-4o-mini", "current": True, "profile_alias": ""},
             {"index": 2, "name": "gpt-4.1", "current": False, "profile_alias": "nex"},
         ]
     )
-    runtime.switch_model = Mock()
+    runtime.switch_model = Mock()  # type: ignore[method-assign]
     return runtime
 
 
@@ -63,8 +65,8 @@ class TestModelCommands:
 
     def test_list_model_options_returns_structured_items(self):
         runtime = CliAgentRuntime.__new__(CliAgentRuntime)
-        runtime.is_busy = Mock(return_value=False)
-        runtime._resolve_model_inventory = Mock(return_value=("gpt-4o-mini", ("gpt-4o-mini", "gpt-4.1")))
+        object.__setattr__(runtime, "is_busy", Mock(return_value=False))
+        object.__setattr__(runtime, "_resolve_model_inventory", Mock(return_value=("gpt-4o-mini", ("gpt-4o-mini", "gpt-4.1"))))
         runtime._discover_llm_profiles = Mock(
             return_value={
                 "nex": {
@@ -85,8 +87,8 @@ class TestModelCommands:
 
     def test_list_model_options_includes_profile_only_models(self):
         runtime = CliAgentRuntime.__new__(CliAgentRuntime)
-        runtime.is_busy = Mock(return_value=False)
-        runtime._resolve_model_inventory = Mock(return_value=("kimi-model", ("kimi-model",)))
+        object.__setattr__(runtime, "is_busy", Mock(return_value=False))
+        object.__setattr__(runtime, "_resolve_model_inventory", Mock(return_value=("kimi-model", ("kimi-model",))))
         runtime._discover_llm_profiles = Mock(
             return_value={
                 "nex": {
@@ -107,8 +109,8 @@ class TestModelCommands:
 
     def test_switch_model_updates_override_and_rebuilds_agent(self):
         runtime = CliAgentRuntime.__new__(CliAgentRuntime)
-        runtime.is_busy = Mock(return_value=False)
-        runtime._resolve_model_inventory = Mock(return_value=("gpt-4o-mini", ("gpt-4o-mini", "gpt-4.1")))
+        object.__setattr__(runtime, "is_busy", Mock(return_value=False))
+        object.__setattr__(runtime, "_resolve_model_inventory", Mock(return_value=("gpt-4o-mini", ("gpt-4o-mini", "gpt-4.1"))))
         runtime._discover_llm_profiles = Mock(
             return_value={
                 "nex": {
@@ -150,8 +152,8 @@ class TestModelCommands:
 
     def test_switch_model_rejects_unknown_model_name(self):
         runtime = CliAgentRuntime.__new__(CliAgentRuntime)
-        runtime.is_busy = Mock(return_value=False)
-        runtime._resolve_model_inventory = Mock(return_value=("gpt-4o-mini", ("gpt-4o-mini", "gpt-4.1")))
+        object.__setattr__(runtime, "is_busy", Mock(return_value=False))
+        object.__setattr__(runtime, "_resolve_model_inventory", Mock(return_value=("gpt-4o-mini", ("gpt-4o-mini", "gpt-4.1"))))
         runtime._discover_llm_profiles = Mock(return_value={})
         runtime._agent = Mock()
         runtime._agent._session_id = "sess-1"
@@ -165,8 +167,8 @@ class TestModelCommands:
 
     def test_switch_model_by_profile_alias_switches_model_and_credentials(self):
         runtime = CliAgentRuntime.__new__(CliAgentRuntime)
-        runtime.is_busy = Mock(return_value=False)
-        runtime._resolve_model_inventory = Mock(return_value=("kimi-model", ("kimi-model", "nex-model")))
+        object.__setattr__(runtime, "is_busy", Mock(return_value=False))
+        object.__setattr__(runtime, "_resolve_model_inventory", Mock(return_value=("kimi-model", ("kimi-model", "nex-model"))))
         runtime._discover_llm_profiles = Mock(
             return_value={
                 "nex": {

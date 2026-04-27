@@ -367,7 +367,7 @@ class ModelResponse:
             tool_calls=tool_calls,
             role=role,
             raw_message=message,
-            reasoning_content=reasoning_content if reasoning_content else None,
+            reasoning_content=reasoning_content if isinstance(reasoning_content, str) else None,
             reasoning_details=reasoning_details,
             usage=_normalize_usage(final_usage, "openai_chat_completion"),
         )
@@ -559,6 +559,7 @@ class ModelResponse:
         reasoning_content: str | None = None
         # Collect reasoning content from reasoning items
         reasoning_parts: list[str] = []
+        saw_reasoning_text = False
         for raw_item in output_items:
             item_dict = _to_serializable_dict(raw_item)
             if item_dict.get("type") == "reasoning":
@@ -568,8 +569,9 @@ class ModelResponse:
                 )
                 for block in content_blocks_reasoning:
                     text = _item_get(block, "text")
-                    if text:
-                        reasoning_parts.append(str(text))
+                    if isinstance(text, str):
+                        reasoning_parts.append(text)
+                        saw_reasoning_text = True
 
                 reasoning_summaries_raw = item_dict.get("summary", []) or []
                 reasoning_summaries_list: list[Any] = (
@@ -577,10 +579,11 @@ class ModelResponse:
                 )
                 for summary in reasoning_summaries_list:
                     text = _item_get(summary, "text")
-                    if text:
-                        reasoning_parts.append(str(text))
+                    if isinstance(text, str):
+                        reasoning_parts.append(text)
+                        saw_reasoning_text = True
 
-        if reasoning_parts:
+        if saw_reasoning_text:
             reasoning_content = "\n".join(reasoning_parts)
 
         # Extract usage information from the response
@@ -770,7 +773,7 @@ class ModelResponse:
             message["tool_calls"] = [call.to_openai_dict() for call in self.tool_calls]
         if self.response_items:
             message["response_items"] = self.response_items
-        if self.reasoning_content:
+        if self.reasoning_content is not None:
             message["reasoning_content"] = self.reasoning_content
         if self.reasoning_details:
             message["reasoning_details"] = self.reasoning_details
@@ -796,7 +799,7 @@ class ModelResponse:
         blocks: list[Any] = []
 
         # Insert reasoning block BEFORE text content (Anthropic requires thinking first)
-        if self.reasoning_content:
+        if self.reasoning_content is not None:
             blocks.append(
                 ReasoningBlock(
                     text=self.reasoning_content,

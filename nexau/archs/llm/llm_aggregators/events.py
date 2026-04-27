@@ -337,31 +337,6 @@ class RetryEvent(BaseEvent):
     error_message: str
 
 
-# ============= EXTERNAL TOOL CALL EVENT =============
-
-
-class ExternalToolCallEvent(BaseEvent):
-    """Event emitted when the agent loop pauses waiting for external tool results.
-
-    RFC-0018: ExternalToolCallEvent — SSE/WS 流式事件
-
-    When the LLM invokes external tools (kind="external"), the executor pauses
-    and this event is emitted so callers can provide tool results and resume.
-
-    Attributes:
-        run_id: ID of the agent run that produced this event
-        tool_calls: Pending external tool calls (serialized ToolUseBlock dicts,
-                    each containing "id", "name", "input" fields)
-    """
-
-    type: Literal["EXTERNAL_TOOL_CALL"] = "EXTERNAL_TOOL_CALL"  # type: ignore[assignment]
-    run_id: str
-    tool_calls: list[dict[str, object]]
-    # RFC-0018 T7: 只读观测回显 — Agent 生成的 session-level trace_id，
-    # 客户端仅用于日志关联，resume 时无需回传 (凭 session_id 即可)。
-    trace_id: str | None = None
-
-
 # ============= UNION TYPES =============
 
 # Unified Event type that includes all AG UI core events and multimodal events
@@ -380,8 +355,6 @@ Event = (
     | ToolCallEndEvent
     # Tool result event (has run_id since it's emitted by middleware, not aggregator)
     | ToolCallResultEvent
-    # External tool call event (RFC-0018: agent loop paused for external tool results)
-    | ExternalToolCallEvent
     # Run lifecycle events
     | RunStartedEvent
     | RunFinishedEvent
@@ -425,7 +398,6 @@ __all__ = [
     "ToolCallArgsEvent",
     "ToolCallEndEvent",
     "ToolCallResultEvent",
-    "ExternalToolCallEvent",
     # Image events
     "ImageMessageStartEvent",
     "ImageMessageContentEvent",

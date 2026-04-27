@@ -273,6 +273,49 @@ class TestLLMConfig:
             config = LLMConfig()
             assert config.api_key == "llm-key"  # Highest priority
 
+    # -----------------------------------------------------------------------
+    # tool_streaming
+    # -----------------------------------------------------------------------
+
+    def test_tool_streaming_defaults_to_true(self):
+        """tool_streaming defaults to True for all api_types."""
+        config = LLMConfig(model="m", base_url="http://x", api_key="k")
+        assert config.tool_streaming is True
+
+    def test_tool_streaming_false_allowed_for_anthropic(self):
+        """Disabling tool_streaming is allowed for anthropic_chat_completion."""
+        config = LLMConfig(
+            model="claude-3-5-sonnet",
+            base_url="http://x",
+            api_key="k",
+            api_type="anthropic_chat_completion",
+            tool_streaming=False,
+        )
+        assert config.tool_streaming is False
+
+    def test_tool_streaming_false_rejected_for_non_anthropic(self):
+        """Setting tool_streaming=False on non-Anthropic api_type raises ValueError."""
+        with pytest.raises(ValueError, match="tool_streaming is only supported"):
+            LLMConfig(
+                model="gpt-4o",
+                base_url="http://x",
+                api_key="k",
+                api_type="openai_chat_completion",
+                tool_streaming=False,
+            )
+
+    def test_tool_streaming_preserved_in_copy(self):
+        """copy() must preserve tool_streaming=False."""
+        original = LLMConfig(
+            model="claude-3-5-sonnet",
+            base_url="http://x",
+            api_key="k",
+            api_type="anthropic_chat_completion",
+            tool_streaming=False,
+        )
+        copied = original.copy()
+        assert copied.tool_streaming is False
+
     def test_invalid_temperature(self):
         """Test validation of temperature parameter."""
         config = LLMConfig(temperature=1.5)  # Should be valid (0.0-2.0)

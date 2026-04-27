@@ -145,19 +145,20 @@ Today is {{date}}.
 
         print("✅ Agent created successfully!")
         print(f"   Agent name: {agent.config.name}")
-        print(f"   Total tools available: {len(agent.config.tools)}")
+        all_tools = agent.tool_registry
+        print(f"   Total tools available: {len(all_tools)}")
 
-        # List available tools
-        if agent.config.tools:
+        # List available tools (tool_registry includes MCP tools)
+        if all_tools:
             print("\n🗺️  Available MiniMax tools:")
-            for tool in agent.config.tools:
+            for tool in all_tools.values():
                 print(
                     f"   - {tool.name}: {getattr(tool, 'description', 'No description')}",
                 )
         else:
             print("\n⚠️  No tools available")
         response = agent.run(
-            "WebSearch 和 WebRead 工具，搜索并整理今天的最新的 LLM 相关的资讯，然后用MiniMax的生成语音，并发语音消息到飞书的 bot测试群 里",
+            message="WebSearch 和 WebRead 工具，搜索并整理今天的最新的 LLM 相关的资讯，然后用MiniMax的生成语音，并发语音消息到飞书的 bot测试群 里",
             context={
                 "date": "2025年 8 月 27 日",
             },

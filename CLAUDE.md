@@ -13,6 +13,7 @@ For detailed implementation guides for each module, see:
 - **[Session Management](./nexau/archs/session/CLAUDE.md)** - ORM, repositories, history persistence
 - **[Transport System](./nexau/archs/transports/CLAUDE.md)** - HTTP, stdio, WebSocket, gRPC
 - **[LLM Aggregators](./nexau/archs/llm/llm_aggregators/CLAUDE.md)** - Event streaming, providers
+- **[Cross-Platform Guidelines](./docs/cross-platform-guidelines.md)** - Platform abstraction, path handling, degradation strategy (RFC-0019/0020)
 
 ### User Documentation
 
@@ -324,9 +325,9 @@ class GetUploadUrlRequest:
 
 ### RFC 生成流程
 
-1. **参考模板**: 使用 `rfcs/0000-template.md` 作为模板
-2. **编号规则**: 查看 `rfcs/` 目录下现有 RFC，使用下一个可用编号（如 `0023`）
-3. **文件命名**: `rfcs/XXXX-feature-name.md`（使用短横线分隔的小写英文）
+1. **参考模板**: 使用 `docs/rfcs/0000-template.md` 作为模板
+2. **编号规则**: 查看 `docs/rfcs/` 目录下现有 RFC，使用下一个可用编号（如 `0023`）
+3. **文件命名**: `docs/rfcs/XXXX-feature-name.md`（使用短横线分隔的小写英文）
 4. **必填字段**:
    - 状态: `draft`（初始状态）
    - 优先级: P0-P3

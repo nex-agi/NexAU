@@ -47,6 +47,7 @@ class LLMConfig:
         tokenizer_path: str | None = None,
         stream_idle_timeout_ms: int | None = None,
         connect_timeout_ms: int | None = None,
+        tool_streaming: bool = True,
         **kwargs: Any,
     ):
         """
@@ -74,6 +75,8 @@ class LLMConfig:
             connect_timeout_ms: Connection-phase timeout in ms.
                 Applied to the initial HTTP/WS handshake before any data flows.
                 None → DEFAULT_CONNECT_TIMEOUT_MS (15_000ms = 15 s).
+            tool_streaming: Enable Anthropic eager_input_streaming for tool calls.
+                Only valid for api_type='anthropic_chat_completion'. Default True.
             **kwargs: Additional model-specific parameters
         """
         self.model = model or self._get_model_from_env()
@@ -95,6 +98,11 @@ class LLMConfig:
         self.tokenizer_path: str | None = tokenizer_path
         self.stream_idle_timeout_ms: int | None = stream_idle_timeout_ms
         self.connect_timeout_ms: int | None = connect_timeout_ms
+        self.tool_streaming = tool_streaming
+
+        # tool_streaming 仅适用于 Anthropic
+        if tool_streaming is not True and api_type != "anthropic_chat_completion":
+            raise ValueError("tool_streaming is only supported for api_type='anthropic_chat_completion'")
 
         # Store additional parameters
         self.extra_params = kwargs
@@ -269,6 +277,7 @@ class LLMConfig:
             tokenizer_path=self.tokenizer_path,
             stream_idle_timeout_ms=self.stream_idle_timeout_ms,
             connect_timeout_ms=self.connect_timeout_ms,
+            tool_streaming=self.tool_streaming,
             **self.extra_params,
         )
 

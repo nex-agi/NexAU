@@ -243,7 +243,7 @@ def reconstruct_openai_responses_reasoning_items_from_message(message: Mapping[s
     reasoning_content = message.get("reasoning_content")
     reasoning_redacted_data = message.get("reasoning_redacted_data")
 
-    has_reasoning_text = isinstance(reasoning_content, str) and bool(reasoning_content)
+    has_reasoning_text = isinstance(reasoning_content, str)
     has_redacted_reasoning = isinstance(reasoning_redacted_data, str) and bool(reasoning_redacted_data)
     if not has_reasoning_text and not has_redacted_reasoning:
         return []

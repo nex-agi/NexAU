@@ -170,60 +170,7 @@ uv sync
     ```
     Run it with `dotenv run uv run code_agent.py`
 
-4. **External tools (caller-executed)**
-
-    Tools can also be declared with `kind: external` and no local binding. NexAU
-    registers the schema with the LLM; when the model calls one, the agent loop
-    pauses and returns the pending call to the caller, who executes it and feeds
-    the result back to resume the loop. Useful for remote tool execution (IDE
-    plugins, cross-language tools, sandboxed execution, LLM API pass-through).
-
-    **Tool YAML** — set `kind: external` and leave out `binding`:
-
-    ```yaml
-    type: tool
-    name: read_file
-    kind: external
-    description: Reads the content of a text file.
-    input_schema:
-      type: object
-      properties:
-        file_path: { type: string }
-      required: [file_path]
-    ```
-
-    **Agent YAML** — list it like any other tool, just omit `binding` (the
-    `kind: external` declaration lives in the tool YAML itself):
-
-    ```yaml
-    tools:
-      - name: read_file
-        yaml_path: ./tools/read_file.tool.yaml
-        # no binding
-    ```
-
-    **Python `AgentConfig`** — build the `Tool` via `Tool.from_yaml` with no
-    binding; local and external tools can coexist in the same agent:
-
-    ```python
-    from nexau import Agent, AgentConfig, Tool
-
-    tools = [
-        Tool.from_yaml("tools/read_file.tool.yaml"),                  # external
-        Tool.from_yaml("tools/search.tool.yaml", binding=my_search),  # local tool
-    ]
-    agent = Agent(config=AgentConfig(name="mixed_agent", tools=tools, ...))
-    ```
-
-    **Pause / resume** — when an external tool is called, `agent.run_async()`
-    returns `(response, {"stop_reason": "EXTERNAL_TOOL_CALL", "pending_tool_calls": [...], "trace_id": ...})`;
-    the caller executes the pending calls and resumes with a `Role.TOOL` +
-    `ToolResultBlock` message on the next `run_async`. A full driver example lives
-    at [`examples/code_agent_external_tool/`](./examples/code_agent_external_tool/);
-    design and HTTP contract details are in
-    [`docs/core-concepts/tools.md`](./docs/core-concepts/tools.md#external-tools-caller-executed).
-
-5. **Use NexAU CLI to run**
+4. **Use NexAU CLI to run**
 
     **Using the run-agent script (Recommended)**
     ```bash

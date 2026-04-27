@@ -233,7 +233,7 @@ def messages_from_legacy_openai_chat(messages: list[dict[str, Any]]) -> list[Mes
         reasoning_content = raw.get("reasoning_content")
         reasoning_signature = raw.get("reasoning_signature")
         reasoning_redacted_data = raw.get("reasoning_redacted_data")
-        if (isinstance(reasoning_content, str) and reasoning_content) or reasoning_redacted_data:
+        if ("reasoning_content" in raw and isinstance(reasoning_content, str)) or reasoning_redacted_data:
             # Thinking blocks MUST come before text/tool blocks for Anthropic compliance.
             content_blocks.insert(
                 0,

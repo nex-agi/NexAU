@@ -171,8 +171,7 @@ class TestRunInnerFinallyFlush:
             agent = await asyncio.to_thread(Agent, config=config)
 
             # Mock executor.execute to return normally
-            # RFC-0018: executor 返回三元组 (response, messages, pending_external_calls)
-            mock_response = ("response", [], [])
+            mock_response = ("response", [])
             agent.history = MagicMock()
             agent.history._pending_messages = []  # No pending messages
             agent.history.flush = Mock()
@@ -186,8 +185,7 @@ class TestRunInnerFinallyFlush:
                 custom_llm_client_provider=None,
             )
 
-            # RFC-0018: _run_inner 返回 (response, pending_external_calls) 元组
-            assert result == ("response", [])
+            assert result == "response"
             # flush is called once in the try block (normal path) and once in finally
             flush_call_count = agent.history.flush.call_count
             assert flush_call_count == 2

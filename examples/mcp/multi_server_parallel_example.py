@@ -97,13 +97,13 @@ Use these tools to help users with their tasks.""",
         print(f"✅ Agent created successfully in {init_time:.2f}s")
         print(f"   Agent name: {agent.config.name}")
 
-        # Get all tools from config.tools (MCP tools are added here during init)
-        all_tools = agent.config.tools
+        # Get all tools from tool_registry (includes config + MCP tools)
+        all_tools = agent.tool_registry
         print(f"   Total tools available: {len(all_tools)}")
 
         # Group tools by server (MCP tools have server_config attribute)
         tools_by_server: dict[str, list[str]] = {}
-        for tool in all_tools:
+        for tool in all_tools.values():
             # MCPTool has server_config, regular tools don't
             server_config = getattr(tool, "server_config", None)
             server_name = server_config.name if server_config else "builtin"

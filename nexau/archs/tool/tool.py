@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 _UNRESOLVED_ANNOTATION = object()
 
 
-StructuredToolKind = Literal["tool", "sub_agent", "external"]
+StructuredToolKind = Literal["tool", "sub_agent"]
 
 
 class StructuredToolDefinition(TypedDict):
@@ -170,6 +170,8 @@ def structured_tool_definition_to_openai(
 
 def structured_tool_definition_to_anthropic(
     tool_definition: StructuredToolDefinitionLike,
+    *,
+    tool_streaming: bool = True,
 ) -> ToolParam:
     """Convert a neutral or compatible tool definition into Anthropic schema.
 
@@ -177,17 +179,30 @@ def structured_tool_definition_to_anthropic(
 
     Anthropic tool schema 仅在 provider 边界生成，保持 Agent / Executor 内部
     仍以 neutral structured definition 作为唯一上游表示。
+
+    Parameters
+    ----------
+    tool_definition:
+        The neutral structured tool definition to convert.
+    tool_streaming:
+        When *True* (default), include ``eager_input_streaming: True`` to
+        enable fine-grained tool streaming and reduce first-token latency for
+        large arguments.  Set to *False* to omit the field entirely — some
+        non-Anthropic providers that share the schema shape reject unknown
+        fields.
     """
 
     normalized = normalize_structured_tool_definition(tool_definition)
-    return {
+    result: ToolParam = {
         "name": normalized["name"],
         "description": normalized["description"],
         "input_schema": normalize_input_schema(normalized["input_schema"]),
+    }
+    if tool_streaming:
         # 启用 fine-grained tool streaming，减少大参数（如写入长文件）的首 token 延迟，
         # 避免 SSE 超时断联。
-        "eager_input_streaming": True,
-    }
+        result["eager_input_streaming"] = True
+    return result
 
 
 class ToolYamlSchema(BaseModel):
@@ -208,25 +223,10 @@ class ToolYamlSchema(BaseModel):
     builtin: str | None = None
     binding: str | None = None
     formatter: str | None = None
-    # RFC-0018: external tool — kind="external" 表示该 tool 没有本地 implementation，
-    # 由调用方在 agent loop 暂停时完成执行并回传 tool result。
-    kind: Literal["tool", "external"] | None = Field(default=None)
 
 
 class ConfigError(Exception):
     """Exception raised for configuration errors."""
-
-    pass
-
-
-class ExternalToolError(Exception):
-    """Raised when a caller attempts to execute an external tool locally.
-
-    RFC-0018: External Tool
-
-    External tool 没有本地 implementation，必须由 agent loop 上层识别并委托给
-    调用方完成；直接调用 ``execute()`` / ``execute_async()`` 视为使用错误。
-    """
 
     pass
 
@@ -250,21 +250,8 @@ class Tool:
         formatter: str | ToolFormatter | None = None,
         extra_kwargs: dict[str, Any] | None = None,
         source_name: str | None = None,
-        kind: StructuredToolKind = "tool",
     ):
-        """Initialize a tool with schema and implementation.
-
-        RFC-0018: ``kind="external"`` 声明此 tool 无本地 implementation，
-        执行权归调用方；Tool 仍然持有 name / description / input_schema 用于
-        暴露给 LLM，但 ``execute()`` / ``execute_async()`` 会 raise
-        :class:`ExternalToolError`。
-        """
-        if kind == "external" and implementation is not None:
-            raise ConfigError(
-                f"Tool '{name}' is declared as external but has a local implementation; "
-                "external tools must not bind to a local callable or import path.",
-            )
-        self.kind: StructuredToolKind = kind
+        """Initialize a tool with schema and implementation."""
         self.name = name
         self.source_name = source_name
         self.description = description
@@ -349,18 +336,8 @@ class Tool:
         effective_defer_loading = yaml_defer_loading if defer_loading is None else defer_loading
         effective_lazy = yaml_lazy if lazy is None else lazy
 
-        # RFC-0018: external tool — YAML `kind: external` 且无 `binding` 声明无本地实现。
-        yaml_kind = tool_def.get("kind")
-        effective_kind: StructuredToolKind = "external" if yaml_kind == "external" else "tool"
-
         if binding is None and "binding" in tool_def:
             binding = tool_def.get("binding")
-
-        if effective_kind == "external" and binding is not None:
-            raise ConfigError(
-                f"Tool '{source_name}' is declared as external (kind: external) but a binding was provided "
-                f"in YAML or via the agent configuration; remove the binding or change kind.",
-            )
 
         if "global_storage" in input_schema:
             raise ValueError(
@@ -399,7 +376,6 @@ class Tool:
             template_override=template_override,
             formatter=formatter,
             extra_kwargs=extra_kwargs,
-            kind=effective_kind,
         )
 
     def resolve_formatter(self) -> ToolFormatter:
@@ -526,14 +502,6 @@ class Tool:
         return False
 
     @property
-    def is_external(self) -> bool:
-        """Whether this tool is an external (caller-executed) tool.
-
-        RFC-0018: External Tool
-        """
-        return self.kind == "external"
-
-    @property
     def has_native_async_execute(self) -> bool:
         """Whether this tool has a native async execute_async() override.
 
@@ -546,14 +514,6 @@ class Tool:
 
     def execute(self, **params: Any) -> dict[str, Any]:
         """Execute the tool with given parameters."""
-
-        # RFC-0018: external tool 没有本地实现，必须由上层识别并暂停 agent loop；
-        # 直接 execute() 视为使用错误，以独立异常区别于"缺失实现"的普通错误。
-        if self.is_external:
-            raise ExternalToolError(
-                f"Tool '{self.name}' is external and must be executed by the caller; "
-                "the agent loop should intercept external tool calls before reaching execute().",
-            )
 
         if self.implementation is None:
             if self.implementation_import_path:
@@ -665,13 +625,6 @@ class Tool:
         对 sync tool 实现通过 asyncio.to_thread() 在线程池中执行（避免阻塞 event loop）。
         现有 execute() 方法保持不变，供 sync 调用方（如 ThreadPoolExecutor workers）使用。
         """
-        # RFC-0018: external tool 没有本地实现，执行权归调用方，见 execute() 注释。
-        if self.is_external:
-            raise ExternalToolError(
-                f"Tool '{self.name}' is external and must be executed by the caller; "
-                "the agent loop should intercept external tool calls before reaching execute_async().",
-            )
-
         if self.implementation is None:
             if self.implementation_import_path:
                 logger.info(f"Dynamic importing tool implementation '{self.name}': {self.implementation_import_path}")
@@ -835,18 +788,13 @@ class Tool:
 
         structured 模式下，Tool 先产出 neutral definition；provider-specific
         schema 在后续 LLM adapter 中按 ``api_type`` 再做延迟转换。
-
-        RFC-0018: external tool 对 LLM 完全透明 — 统一以 ``kind="tool"`` 暴露，
-        "external" 仅在 executor 内部作为暂停标记使用。
         """
-
-        effective_kind: StructuredToolKind = "tool" if self.is_external or kind == "external" else kind
 
         return build_structured_tool_definition(
             name=self.name,
             description=self.description if description is None else description,
             input_schema=self.get_schema(),
-            kind=effective_kind,
+            kind=kind,
         )
 
     def to_openai(self) -> ChatCompletionToolParam:
@@ -860,13 +808,23 @@ class Tool:
 
         return structured_tool_definition_to_openai(self.to_structured_definition())
 
-    def to_anthropic(self) -> ToolParam:
+    def to_anthropic(self, *, tool_streaming: bool = True) -> ToolParam:
         """Return the Anthropic-compatible tool schema.
 
         RFC-0006: Provider 延迟适配兼容包装
 
         该方法保留为兼容入口，内部委托 neutral structured definition →
         Anthropic adapter，而不是在 Tool 层直接持有 Anthropic 主形状。
+
+        Parameters
+        ----------
+        tool_streaming:
+            Forward to :func:`structured_tool_definition_to_anthropic`.  When
+            *False*, the ``eager_input_streaming`` field is omitted from the
+            returned schema.
         """
 
-        return structured_tool_definition_to_anthropic(self.to_structured_definition())
+        return structured_tool_definition_to_anthropic(
+            self.to_structured_definition(),
+            tool_streaming=tool_streaming,
+        )

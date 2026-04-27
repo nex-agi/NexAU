@@ -525,6 +525,36 @@ class TestAdaptStructuredToolsForProvider:
         assert result is not None
         assert len(result) == 1
 
+    def test_anthropic_adapts_tool_streaming_disabled(self):
+        """tool_streaming=False omits eager_input_streaming from Anthropic schemas."""
+        tools = [
+            {
+                "name": "my_tool",
+                "description": "desc",
+                "input_schema": {"type": "object", "properties": {}},
+                "kind": "tool",
+            }
+        ]
+        result = _adapt_structured_tools_for_provider(tools, "anthropic", tool_streaming=False)
+        assert result is not None
+        assert len(result) == 1
+        assert "eager_input_streaming" not in result[0]
+
+    def test_anthropic_adapts_tool_streaming_enabled(self):
+        """tool_streaming=True (default) includes eager_input_streaming."""
+        tools = [
+            {
+                "name": "my_tool",
+                "description": "desc",
+                "input_schema": {"type": "object", "properties": {}},
+                "kind": "tool",
+            }
+        ]
+        result = _adapt_structured_tools_for_provider(tools, "anthropic", tool_streaming=True)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["eager_input_streaming"] is True
+
     def test_gemini_adapts(self):
         tools = [
             {

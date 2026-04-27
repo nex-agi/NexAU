@@ -12,17 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Example demonstrating Amap Maps MCP server integration with NexAU agents."""
+"""Example demonstrating Amap Maps MCP server integration with NexAU agents.
+
+Includes Langfuse tracing to observe MCP tool calls in the Langfuse dashboard.
+Requires environment variables: LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST.
+"""
 
 import os
 
 from nexau import Agent, AgentConfig
 from nexau.archs.llm import LLMConfig
+from nexau.archs.tracer.adapters.langfuse import LangfuseTracer
 
 
 def main():
     """Demonstrate Amap Maps MCP integration with NexAU agents."""
     print("🚀 Amap Maps MCP Integration Example for NexAU Framework\n")
+
+    # Langfuse tracer — reads credentials from env vars:
+    #   LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST
+    langfuse_tracer = LangfuseTracer()
 
     # Amap Maps MCP server configuration
     # This uses the streamable HTTP MCP protocol
@@ -30,7 +39,7 @@ def main():
         {
             "name": "amap-maps-streamableHTTP",
             "type": "http",
-            "url": "https://mcp.amap.com/mcp?key=xxxx",
+            "url": "https://mcp.amap.com/mcp?key=2dcc10a01caa038253df2c5beb078efe",
             "headers": {
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/event-stream",
@@ -76,17 +85,19 @@ Explain what you're doing and provide context for the results.""",
             tool_call_mode="structured",
             mcp_servers=mcp_servers,
             llm_config=llm_config,
+            tracers=[langfuse_tracer],
         )
         agent = Agent(config=agent_config)
 
         print("✅ Agent created successfully!")
         print(f"   Agent name: {agent.config.name}")
-        print(f"   Total tools available: {len(agent.config.tools)}")
+        all_tools = agent.tool_registry
+        print(f"   Total tools available: {len(all_tools)}")
 
-        # List available tools
-        if agent.config.tools:
+        # List available tools (tool_registry includes MCP tools)
+        if all_tools:
             print("\n🗺️  Available Amap Maps tools:")
-            for tool in agent.config.tools:
+            for tool in all_tools.values():
                 print(
                     f"   - {tool.name}: {getattr(tool, 'description', 'No description')}",
                 )
@@ -112,7 +123,7 @@ Explain what you're doing and provide context for the results.""",
                 "        The timeout has been reduced from 30s to 10s for faster failure detection.",
             )
 
-        response = agent.run("现在从漕河泾现代服务园A6到上南路 4265弄要多久？")
+        response = agent.run(message="现在从漕河泾现代服务园A6到上南路 4265弄要多久？")
         print(response)
 
     except Exception as e:

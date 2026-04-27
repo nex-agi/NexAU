@@ -313,32 +313,6 @@ class SessionManager:
         session.updated_at = datetime.now()
         return await self._update_session(session)
 
-    async def update_session_current_trace_id(
-        self,
-        *,
-        user_id: str,
-        session_id: str,
-        trace_id: str | None,
-    ) -> SessionModel:
-        """Persist (or clear) SessionModel.current_trace_id.
-
-        RFC-0018 T7: Session-level trace_id 的读写 API。Agent 在每次 user-triggered
-        run 开始时读取已有值（EXTERNAL_TOOL_CALL 恢复）或写入新生成值；EXTERNAL_TOOL_CALL
-        暂停时保留，其他 stop reason 结束时传 None 清空。
-
-        Args:
-            user_id: User identifier
-            session_id: Session identifier
-            trace_id: Trace ID to persist, or None to clear
-
-        Returns:
-            Updated SessionModel
-        """
-        session = await self._get_or_create_session(user_id=user_id, session_id=session_id)
-        session.current_trace_id = trace_id
-        session.updated_at = datetime.now()
-        return await self._update_session(session)
-
     async def update_session_state(
         self,
         *,

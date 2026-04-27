@@ -382,7 +382,11 @@ class LLMCaller:
             structured_provider_target = resolve_structured_provider_target(self.llm_config.api_type)
 
             # 2. 仅在真正组装请求体时，把 neutral definitions 延迟转换为 provider schema。
-            adapted_tools = _adapt_structured_tools_for_provider(tools, structured_provider_target)
+            adapted_tools = _adapt_structured_tools_for_provider(
+                tools,
+                structured_provider_target,
+                tool_streaming=self.llm_config.tool_streaming,
+            )
 
         # Prepare API parameters
         api_params = self.llm_config.to_openai_params()
@@ -755,7 +759,11 @@ class LLMCaller:
         adapted_tools: list[Mapping[str, object]] | None = None
         if use_structured_tools:
             structured_provider_target = resolve_structured_provider_target(self.llm_config.api_type)
-            adapted_tools = _adapt_structured_tools_for_provider(tools, structured_provider_target)
+            adapted_tools = _adapt_structured_tools_for_provider(
+                tools,
+                structured_provider_target,
+                tool_streaming=self.llm_config.tool_streaming,
+            )
 
         api_params = self.llm_config.to_openai_params()
         if max_tokens is not None:
@@ -1283,6 +1291,8 @@ def call_llm_with_generate_with_token(
 def _adapt_structured_tools_for_provider(
     tools: Sequence[StructuredToolDefinitionLike] | None,
     provider_target: StructuredProviderTarget,
+    *,
+    tool_streaming: bool = True,
 ) -> list[Mapping[str, object]] | None:
     """Adapt neutral structured tools for the selected provider.
 
@@ -1290,6 +1300,13 @@ def _adapt_structured_tools_for_provider(
 
     输入保持 neutral / compatibility definition，输出在请求边界收敛到目标
     provider 所需 schema；Gemini 路径继续保留 neutral definition 并走原生 adapter。
+
+    Parameters
+    ----------
+    tool_streaming:
+        Forwarded to :func:`structured_tool_definition_to_anthropic`.  When
+        *False*, ``eager_input_streaming`` is omitted from the Anthropic tool
+        schema so that providers rejecting unknown fields are not affected.
     """
 
     if not tools:
@@ -1301,7 +1318,7 @@ def _adapt_structured_tools_for_provider(
         if provider_target == "openai":
             adapted_tools.append(structured_tool_definition_to_openai(normalized))
         elif provider_target == "anthropic":
-            adapted_tools.append(structured_tool_definition_to_anthropic(normalized))
+            adapted_tools.append(structured_tool_definition_to_anthropic(normalized, tool_streaming=tool_streaming))
         elif provider_target == "gemini":
             adapted_tools.append(normalized)
         else:  # pragma: no cover - guarded by provider target resolution

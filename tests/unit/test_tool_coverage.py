@@ -130,6 +130,18 @@ class TestStructuredToolDefinitionConverters:
         assert result["name"] == "my_tool"
         assert "eager_input_streaming" in result
 
+    def test_to_anthropic_tool_streaming_disabled(self):
+        """eager_input_streaming is omitted when tool_streaming=False."""
+        defn = {
+            "name": "my_tool",
+            "description": "desc",
+            "input_schema": {"type": "object", "properties": {}},
+            "kind": "tool",
+        }
+        result = structured_tool_definition_to_anthropic(defn, tool_streaming=False)
+        assert result["name"] == "my_tool"
+        assert "eager_input_streaming" not in result
+
 
 # ---------------------------------------------------------------------------
 # Tool.execute — result coercion paths
@@ -409,6 +421,18 @@ class TestToolProviderConversion:
         )
         result = tool.to_anthropic()
         assert result["name"] == "t"
+
+    def test_to_anthropic_tool_streaming_disabled(self):
+        """Tool.to_anthropic(tool_streaming=False) omits eager_input_streaming."""
+        tool = Tool(
+            name="t",
+            description="desc",
+            input_schema={"type": "object", "properties": {}},
+            implementation=lambda: None,
+        )
+        result = tool.to_anthropic(tool_streaming=False)
+        assert result["name"] == "t"
+        assert "eager_input_streaming" not in result
 
 
 # ---------------------------------------------------------------------------
