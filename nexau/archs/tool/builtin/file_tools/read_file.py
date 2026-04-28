@@ -4,7 +4,8 @@
 read_file tool - Reads and returns the content of a specified text file.
 
 Based on gemini-cli's read-file.ts implementation.
-Handles text files only. For images and videos, use read_visual_file.
+Handles text files by default. When explicitly enabled, image and video files
+are delegated to read_visual_file for multimodal LLMs.
 """
 
 import logging
@@ -29,9 +30,8 @@ MAX_TOTAL_OUTPUT_CHARS = 20_000
 
 # Audio extensions - returned as placeholder text (nexau has no AudioBlock)
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".aiff", ".aac", ".ogg", ".flac"}
-PDF_EXTENSION = ".pdf"
 
-# Image and video extensions - NOT handled here; redirect to read_visual_file
+# Image and video extensions - delegated to read_visual_file only when enabled
 IMAGE_EXTENSIONS = {
     ".png",
     ".jpg",
@@ -46,7 +46,63 @@ IMAGE_EXTENSIONS = {
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m4v"}
 
 # Binary extensions that cannot be read as text - return error without attempting read
-BINARY_SKIP_EXTENSIONS = {".db", ".sqlite", ".db-shm", ".db-wal", ".pyc", ".pyo"}
+UNSUPPORTED_BINARY_EXTENSIONS = {
+    # Documents and office formats that need dedicated parsers.
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    ".odt",
+    ".ods",
+    ".odp",
+    # Archives and packaged artifacts.
+    ".zip",
+    ".tar",
+    ".gz",
+    ".tgz",
+    ".bz2",
+    ".xz",
+    ".7z",
+    ".rar",
+    ".zst",
+    ".jar",
+    ".war",
+    ".ear",
+    ".whl",
+    # Databases and database sidecar files.
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".db-shm",
+    ".db-wal",
+    # Compiled code, native libraries, and executables.
+    ".pyc",
+    ".pyo",
+    ".class",
+    ".o",
+    ".a",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".lib",
+    ".exe",
+    # Fonts.
+    ".ttf",
+    ".otf",
+    ".woff",
+    ".woff2",
+    ".eot",
+    # Disk/container images and binary certificates/keys.
+    ".iso",
+    ".dmg",
+    ".img",
+    ".der",
+    ".p12",
+    ".pfx",
+}
 
 
 def _head_truncate_lines(
@@ -129,10 +185,10 @@ def _is_visual_file(file_path: str) -> bool:
     return ext in IMAGE_EXTENSIONS or ext in VIDEO_EXTENSIONS
 
 
-def _is_audio_or_pdf(file_path: str) -> bool:
-    """Check if file is audio or PDF."""
+def _is_audio_file(file_path: str) -> bool:
+    """Check if file is audio."""
     ext = Path(file_path).suffix.lower()
-    return ext in AUDIO_EXTENSIONS or ext == PDF_EXTENSION
+    return ext in AUDIO_EXTENSIONS
 
 
 def read_file(
@@ -140,6 +196,12 @@ def read_file(
     offset: int | None = None,
     limit: int | None = None,
     agent_state: AgentState | None = None,
+    enable_visual: bool = False,
+    image_detail: str | None = None,
+    image_max_size: int | None = None,
+    video_frame_interval: int | None = None,
+    video_max_frames: int | None = None,
+    video_frame_width: int | None = None,
 ) -> dict[str, Any]:
     """
     Reads and returns the content of a specified text file.
@@ -148,13 +210,20 @@ def read_file(
     will clearly indicate if truncation has occurred and will provide details
     on how to read more of the file using the 'offset' and 'limit' parameters.
 
-    Handles text and PDF files. For images and videos, use the
-    read_visual_file tool instead.
+    Handles text files by default. For images and videos, set enable_visual=True
+    to delegate to read_visual_file; otherwise read_file returns a clear error
+    directing callers to read_visual_file.
 
     Args:
         file_path: The path to the file to read
         offset: Optional 0-based line number to start reading from
         limit: Optional maximum number of lines to read
+        enable_visual: Whether to read image/video files via read_visual_file
+        image_detail: Optional read_visual_file image detail level
+        image_max_size: Optional read_visual_file image max width
+        video_frame_interval: Optional read_visual_file video frame interval
+        video_max_frames: Optional read_visual_file max frame count
+        video_frame_width: Optional read_visual_file video frame width
 
     Returns:
         Dict with content and returnDisplay matching gemini-cli format
@@ -190,19 +259,29 @@ def read_file(
                 },
             }
 
-        # Redirect image/video files to read_visual_file
+        # Delegate image/video files to read_visual_file only when explicitly enabled
         if _is_visual_file(resolved_path):
             ext = Path(resolved_path).suffix.lower()
-            error_msg = (
-                f"File '{file_path}' is an image/video file ({ext}). "
-                f"Use the read_visual_file tool instead of read_file for image and video files."
-            )
+            if enable_visual is True:
+                from .read_visual_file import read_visual_file as _read_visual_file
+
+                return _read_visual_file(
+                    file_path=file_path,
+                    image_detail=image_detail,
+                    image_max_size=image_max_size,
+                    video_frame_interval=video_frame_interval,
+                    video_max_frames=video_max_frames,
+                    video_frame_width=video_frame_width,
+                    agent_state=agent_state,
+                )
+
+            error_msg = f"File '{file_path}' is an image/video file ({ext}) — Not supported"
             return {
                 "content": error_msg,
-                "returnDisplay": f"Image/video file ({ext}) — use read_visual_file.",
+                "returnDisplay": f"Image/video file ({ext}) — Not supported",
                 "error": {
                     "message": error_msg,
-                    "type": "USE_READ_VISUAL_FILE",
+                    "type": "DO_NOT_SUPPORT_VISUAL",
                 },
             }
 
@@ -219,8 +298,8 @@ def read_file(
                 },
             }
 
-        # Handle audio/PDF - return text placeholder
-        if _is_audio_or_pdf(resolved_path):
+        # Handle audio - return text placeholder
+        if _is_audio_file(resolved_path):
             ext = Path(resolved_path).suffix.lower()
             return {
                 "content": f"Read binary file ({ext}) - content not displayed to model",
@@ -229,7 +308,7 @@ def read_file(
 
         # Reject known binary types that cannot be read as text (avoids UnicodeDecodeError)
         ext = Path(resolved_path).suffix.lower()
-        if ext in BINARY_SKIP_EXTENSIONS:
+        if ext in UNSUPPORTED_BINARY_EXTENSIONS:
             error_msg = f"File type {ext} is binary and cannot be read as text: {file_path}"
             return {
                 "content": error_msg,

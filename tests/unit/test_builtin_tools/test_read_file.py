@@ -170,10 +170,10 @@ class TestReadFileLineLengthTruncation:
 
 
 class TestReadFileRejectsVisualFiles:
-    """Test that read_file rejects image/video files and directs to read_visual_file."""
+    """Test that read_file rejects image/video files unless visual support is enabled."""
 
     def test_image_file_returns_error(self):
-        """Image files should return an error directing to read_visual_file."""
+        """Image files should return an unsupported-visual error by default."""
         sandbox = Mock()
         sandbox.work_dir = Path("/tmp/work")
         sandbox.file_exists.return_value = True
@@ -187,11 +187,44 @@ class TestReadFileRejectsVisualFiles:
         result = read_file(file_path="x.png", agent_state=agent_state)
 
         assert "error" in result
-        assert result["error"]["type"] == "USE_READ_VISUAL_FILE"
-        assert "read_visual_file" in result["content"]
+        assert result["error"]["type"] == "DO_NOT_SUPPORT_VISUAL"
+        assert "Not supported" in result["content"]
+
+    def test_image_file_enable_visual_redirects_to_read_visual_file(self):
+        """Image files should be delegated to read_visual_file when explicitly enabled."""
+        sandbox = Mock()
+        sandbox.work_dir = Path("/tmp/work")
+        sandbox.file_exists.return_value = True
+
+        info = Mock()
+        info.is_directory = False
+        info.size = 100
+        sandbox.get_file_info.return_value = info
+
+        png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        read_res = Mock()
+        read_res.status = SandboxStatus.SUCCESS
+        read_res.content = png_bytes
+        sandbox.read_file.return_value = read_res
+
+        agent_state = _make_agent_state(sandbox)
+        result = read_file(
+            file_path="x.png",
+            enable_visual=True,
+            image_detail="low",
+            agent_state=agent_state,
+        )
+
+        assert "error" not in result or result.get("error") is None
+        assert result["returnDisplay"] == "Read image file: x.png"
+        block = result["content"]
+        assert isinstance(block, dict)
+        assert block["type"] == "image"
+        assert block["image_url"].startswith("data:image/png;base64,")
+        assert block["detail"] == "low"
 
     def test_video_file_returns_error(self):
-        """Video files should return an error directing to read_visual_file."""
+        """Video files should return an unsupported-visual error by default."""
         sandbox = Mock()
         sandbox.work_dir = Path("/tmp/work")
         sandbox.file_exists.return_value = True
@@ -205,8 +238,46 @@ class TestReadFileRejectsVisualFiles:
         result = read_file(file_path="clip.mp4", agent_state=agent_state)
 
         assert "error" in result
-        assert result["error"]["type"] == "USE_READ_VISUAL_FILE"
-        assert "read_visual_file" in result["content"]
+        assert result["error"]["type"] == "DO_NOT_SUPPORT_VISUAL"
+        assert "Not supported" in result["content"]
+
+    def test_pdf_file_returns_binary_error(self):
+        """PDF files should not be read as text or returned as supported content."""
+        sandbox = Mock()
+        sandbox.work_dir = Path("/tmp/work")
+        sandbox.file_exists.return_value = True
+
+        info = Mock()
+        info.is_directory = False
+        info.size = 100
+        sandbox.get_file_info.return_value = info
+
+        agent_state = _make_agent_state(sandbox)
+        result = read_file(file_path="doc.pdf", agent_state=agent_state)
+
+        assert "error" in result
+        assert result["error"]["type"] == "BINARY_FILE"
+        assert "cannot be read as text" in result["content"]
+        sandbox.read_file.assert_not_called()
+
+    def test_archive_file_returns_binary_error(self):
+        """Archive files should be rejected as unsupported binary content."""
+        sandbox = Mock()
+        sandbox.work_dir = Path("/tmp/work")
+        sandbox.file_exists.return_value = True
+
+        info = Mock()
+        info.is_directory = False
+        info.size = 100
+        sandbox.get_file_info.return_value = info
+
+        agent_state = _make_agent_state(sandbox)
+        result = read_file(file_path="bundle.zip", agent_state=agent_state)
+
+        assert "error" in result
+        assert result["error"]["type"] == "BINARY_FILE"
+        assert "cannot be read as text" in result["content"]
+        sandbox.read_file.assert_not_called()
 
 
 class TestReadVisualFileImage:

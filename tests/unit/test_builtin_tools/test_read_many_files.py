@@ -70,3 +70,45 @@ class TestReadManyFilesLineLengthTruncation:
         assert "x" * 2000 + "... [truncated]" in result_str
         # Should have the warning about truncated file
         assert "WARNING" in result_str or "truncated" in result_str.lower()
+
+    def test_skips_pdf_files(self):
+        """PDF files should be skipped instead of read as supported inline data."""
+        base_dir = "/tmp/work"
+        sandbox = Mock()
+        sandbox.work_dir = Path(base_dir)
+        sandbox.file_exists.return_value = False
+
+        file_path = f"{base_dir}/doc.pdf"
+        sandbox.glob.return_value = [file_path]
+        info = Mock()
+        info.is_file = True
+        sandbox.get_file_info.return_value = info
+
+        agent_state = _make_agent_state(sandbox)
+        result = read_many_files(include=["*.pdf"], agent_state=agent_state)
+
+        assert "error" not in result or result.get("error") is None
+        assert result["content"] == ["No files matching the criteria were found or all were skipped."]
+        assert "unsupported binary file type (.pdf)" in result["returnDisplay"]
+        sandbox.read_file.assert_not_called()
+
+    def test_skips_archive_files(self):
+        """Archive files should be skipped as unsupported binary files."""
+        base_dir = "/tmp/work"
+        sandbox = Mock()
+        sandbox.work_dir = Path(base_dir)
+        sandbox.file_exists.return_value = False
+
+        file_path = f"{base_dir}/bundle.zip"
+        sandbox.glob.return_value = [file_path]
+        info = Mock()
+        info.is_file = True
+        sandbox.get_file_info.return_value = info
+
+        agent_state = _make_agent_state(sandbox)
+        result = read_many_files(include=["*.zip"], agent_state=agent_state)
+
+        assert "error" not in result or result.get("error") is None
+        assert result["content"] == ["No files matching the criteria were found or all were skipped."]
+        assert "unsupported binary file type (.zip)" in result["returnDisplay"]
+        sandbox.read_file.assert_not_called()

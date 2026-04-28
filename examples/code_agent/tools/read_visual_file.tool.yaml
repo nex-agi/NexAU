@@ -11,35 +11,6 @@ input_schema:
     file_path:
       type: string
       description: The path to the image or video file to read.
-    image_detail:
-      type: string
-      enum: [low, high, auto]
-      description: >-
-        Optional: For image files, the detail level hint passed to the LLM.
-        "low" uses fewer tokens, "high" preserves detail, "auto" lets the LLM
-        decide. Default: "auto".
-    image_max_size:
-      type: number
-      description: >-
-        Optional: For image files, maximum width in pixels. Images wider than
-        this are downscaled (preserving aspect ratio) via ffmpeg before
-        encoding. Reduces token usage for large images. Requires ffmpeg.
-    video_frame_interval:
-      type: number
-      description: >-
-        Optional: For video files, seconds between extracted key frames.
-        Default: 5.
-    video_max_frames:
-      type: number
-      description: >-
-        Optional: For video files, maximum number of frames to return.
-        Default: 10.
-    video_frame_width:
-      type: number
-      description: >-
-        Optional: For video files, width in pixels for extracted frames
-        (preserving aspect ratio). Smaller values reduce token usage.
-        Default: original resolution.
   required:
     - file_path
   additionalProperties: false

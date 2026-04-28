@@ -8,7 +8,7 @@ Module: `nexau.archs.tool.builtin.file_tools`
 
 ### read_file
 
-Reads file content. Supports text, images, audio, and PDF.
+Reads file content. Supports text files by default; visual support can be enabled by tool configuration.
 
 ```
 Binding: nexau.archs.tool.builtin.file_tools:read_file

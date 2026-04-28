@@ -48,7 +48,66 @@ DEFAULT_EXCLUDES = [
 # Supported binary file types
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".aiff", ".aac", ".ogg", ".flac"}
-PDF_EXTENSION = ".pdf"
+VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m4v"}
+UNSUPPORTED_BINARY_EXTENSIONS = {
+    # Documents and office formats that need dedicated parsers.
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    ".odt",
+    ".ods",
+    ".odp",
+    # Video is not returned by read_many_files; use read_file with visual support.
+    *VIDEO_EXTENSIONS,
+    # Archives and packaged artifacts.
+    ".zip",
+    ".tar",
+    ".gz",
+    ".tgz",
+    ".bz2",
+    ".xz",
+    ".7z",
+    ".rar",
+    ".zst",
+    ".jar",
+    ".war",
+    ".ear",
+    ".whl",
+    # Databases and database sidecar files.
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".db-shm",
+    ".db-wal",
+    # Compiled code, native libraries, and executables.
+    ".pyc",
+    ".pyo",
+    ".class",
+    ".o",
+    ".a",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".lib",
+    ".exe",
+    # Fonts.
+    ".ttf",
+    ".otf",
+    ".woff",
+    ".woff2",
+    ".eot",
+    # Disk/container images and binary certificates/keys.
+    ".iso",
+    ".dmg",
+    ".img",
+    ".der",
+    ".p12",
+    ".pfx",
+}
 
 
 def _detect_file_type(file_path: str) -> str:
@@ -58,8 +117,8 @@ def _detect_file_type(file_path: str) -> str:
         return "image"
     elif ext in AUDIO_EXTENSIONS:
         return "audio"
-    elif ext == PDF_EXTENSION:
-        return "pdf"
+    elif ext in UNSUPPORTED_BINARY_EXTENSIONS:
+        return "unsupported_binary"
     return "text"
 
 
@@ -138,8 +197,6 @@ def _read_binary_file(file_path: str, sandbox: BaseSandbox) -> dict[str, Any]:
             mime_type = f"image/{ext[1:]}"
         elif ext in AUDIO_EXTENSIONS:
             mime_type = f"audio/{ext[1:]}"
-        elif ext == PDF_EXTENSION:
-            mime_type = "application/pdf"
         else:
             mime_type = "application/octet-stream"
 
@@ -213,7 +270,7 @@ def read_many_files(
     Reads content from multiple files specified by glob patterns.
 
     For text files, concatenates their content into a single string with separators.
-    For explicitly requested binary files (image/audio/PDF), includes them as inline data.
+    For explicitly requested binary files (image/audio), includes them as inline data.
 
     Args:
         include: Array of glob patterns or paths to include
@@ -282,8 +339,17 @@ def read_many_files(
                 rel_path = file_path
             file_type = _detect_file_type(file_path)
 
-            # Handle binary files (image/audio/pdf)
-            if file_type in ("image", "audio", "pdf"):
+            if file_type == "unsupported_binary":
+                skipped_files.append(
+                    {
+                        "path": rel_path,
+                        "reason": f"unsupported binary file type ({Path(file_path).suffix.lower()})",
+                    }
+                )
+                continue
+
+            # Handle binary files (image/audio)
+            if file_type in ("image", "audio"):
                 # Only include if explicitly requested
                 if not _is_explicitly_requested(file_path, include):
                     skipped_files.append(

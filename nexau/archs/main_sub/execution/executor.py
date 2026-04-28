@@ -64,8 +64,6 @@ from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.main_sub.execution.subagent_manager import SubAgentManager
 from nexau.archs.main_sub.execution.tool_executor import ToolExecutionResult, ToolExecutor
 from nexau.archs.main_sub.framework_context import FrameworkContext
-from nexau.archs.tracer.context import TraceContext
-from nexau.archs.tracer.core import BaseTracer, SpanType
 from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.token_trace_session import TokenTraceContextOverflowError, TokenTraceSession
 from nexau.archs.main_sub.tool_call_modes import (
@@ -78,6 +76,8 @@ from nexau.archs.tool.tool import (
     Tool,
 )
 from nexau.archs.tool.tool_registry import ToolRegistry
+from nexau.archs.tracer.context import TraceContext
+from nexau.archs.tracer.core import BaseTracer, SpanType
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, coerce_tool_result_content
 
