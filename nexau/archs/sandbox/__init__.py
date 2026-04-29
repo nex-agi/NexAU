@@ -38,6 +38,7 @@ from .base_sandbox import (
     extract_dataclass_init_kwargs,
     parse_sandbox_config,
 )
+from .output_utils import clean_shell_output, collapse_repetitive, resolve_cr, strip_ansi
 from .local_sandbox import LocalSandbox, LocalSandboxManager
 
 if TYPE_CHECKING:
@@ -82,4 +83,8 @@ __all__ = [
     "extract_dataclass_init_kwargs",
     "HEREDOC_PATTERN",
     "contains_heredoc",
+    "clean_shell_output",
+    "strip_ansi",
+    "resolve_cr",
+    "collapse_repetitive",
 ]

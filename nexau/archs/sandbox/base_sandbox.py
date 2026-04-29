@@ -210,13 +210,23 @@ def smart_truncate_output(
 ) -> tuple[str, str, bool, int | None, int | None]:
     """Apply smart truncation to command output streams.
 
-    如果 stdout + stderr 总字符数低于阈值，则原样返回。
-    否则对每个流分别截断为前 head_chars + 后 tail_chars 字符，并附带完整输出文件路径的提示。
+    If the combined character count of stdout + stderr is below the threshold,
+    returns them unchanged. Otherwise, each stream is independently truncated
+    to head_chars + tail_chars characters with a hint pointing to the full output file.
+
+    Issue #498: Clean ANSI escapes, CR overwrites, and repetitive lines before
+    the threshold check so that cleaned text is shorter and truncation is more accurate.
 
     Returns:
         (truncated_stdout, truncated_stderr, was_truncated,
          original_stdout_len_or_None, original_stderr_len_or_None)
     """
+    # Issue #498: Clean shell output (ANSI escapes, CR overwrites, repetitive-line collapse)
+    from nexau.archs.sandbox.output_utils import clean_shell_output
+
+    stdout = clean_shell_output(stdout)
+    stderr = clean_shell_output(stderr)
+
     total = len(stdout) + len(stderr)
     if total < threshold:
         return stdout, stderr, False, None, None

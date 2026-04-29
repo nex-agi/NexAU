@@ -45,6 +45,13 @@ def _normalize_stdout(stdout: str) -> str:
     if not stdout:
         return ""
 
+    # Issue #498: defense-in-depth — strip ANSI escapes and resolve CR overwrites
+    # for any output that may bypass the sandbox cleaning path
+    from nexau.archs.sandbox.output_utils import resolve_cr, strip_ansi
+
+    stdout = strip_ansi(stdout)
+    stdout = resolve_cr(stdout)
+
     stripped_leading = stdout.lstrip("\n \t\r")
     return stripped_leading.rstrip()
 
@@ -57,7 +64,11 @@ def _build_error_text(output: dict[str, object], *, stderr: str) -> str:
 
     parts: list[str] = []
     if stderr.strip():
-        parts.append(stderr.strip())
+        # Issue #498: defense-in-depth — clean stderr same as stdout
+        from nexau.archs.sandbox.output_utils import resolve_cr, strip_ansi
+
+        cleaned_stderr = resolve_cr(strip_ansi(stderr)).strip()
+        parts.append(cleaned_stderr)
 
     if interrupted:
         parts.append("<error>Command was aborted before completion</error>")

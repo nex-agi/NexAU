@@ -318,8 +318,8 @@ class LocalSandbox(BaseSandbox):
                     ferr.close()
 
                     duration_ms = int((time.time() - start_time) * 1000)
-                    stdout_raw = Path(stdout_path).read_text(encoding="utf-8", errors="replace")
-                    stderr_raw = Path(stderr_path).read_text(encoding="utf-8", errors="replace")
+                    stdout_raw = Path(stdout_path).read_bytes().decode("utf-8", errors="replace")
+                    stderr_raw = Path(stderr_path).read_bytes().decode("utf-8", errors="replace")
 
                     # 智能截断
                     t_stdout, t_stderr, was_truncated, o_out, o_err = smart_truncate_output(
@@ -355,8 +355,8 @@ class LocalSandbox(BaseSandbox):
             duration_ms = int((time.time() - start_time) * 1000)
 
             # 从文件读取完整输出
-            stdout_raw = Path(stdout_path).read_text(encoding="utf-8", errors="replace")
-            stderr_raw = Path(stderr_path).read_text(encoding="utf-8", errors="replace")
+            stdout_raw = Path(stdout_path).read_bytes().decode("utf-8", errors="replace")
+            stderr_raw = Path(stderr_path).read_bytes().decode("utf-8", errors="replace")
 
             # 智能截断
             t_stdout, t_stderr, was_truncated, orig_stdout_len, orig_stderr_len = smart_truncate_output(
@@ -426,11 +426,11 @@ class LocalSandbox(BaseSandbox):
         stderr = ""
         if output_dir:
             try:
-                stdout = Path(f"{output_dir}/stdout.txt").read_text(encoding="utf-8", errors="replace")
+                stdout = Path(f"{output_dir}/stdout.txt").read_bytes().decode("utf-8", errors="replace")
             except Exception:
                 pass
             try:
-                stderr = Path(f"{output_dir}/stderr.txt").read_text(encoding="utf-8", errors="replace")
+                stderr = Path(f"{output_dir}/stderr.txt").read_bytes().decode("utf-8", errors="replace")
             except Exception:
                 pass
 
