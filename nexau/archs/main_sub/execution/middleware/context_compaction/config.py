@@ -62,6 +62,23 @@ class CompactionConfig(BaseModel):
     compact_prompt_path: str | None = None
     retry_attempts: int = 3
 
+    # RFC-0021: 压缩时归档被移除的原始消息到 sandbox
+    save_history: bool = True
+    """开启历史消息文件归档（Opt-out: 启用压缩即归档）。
+
+    归档目录位置固定为 ``{sandbox.work_dir}/.nexau_history_archive/``,
+    不暴露成 config —— 避免用户输入路径穿越, 默认值就是设计上的唯一选择。
+
+    启用归档时, summary 末尾会自动注入"如何用 search_file_content / read_file
+    召回"的提示文本, 让 agent 知道归档存在并能使用 —— 这是归档的关键价值,
+    不再单独提供 opt-out 开关 (没有"归档但不告诉 agent"的真实用例)。
+
+    命名说明: 对外字段叫 ``save_history`` (用户视角: 是否保存历史), 内部模块
+    用 ``archive`` 词汇 (``HistoryArchiveWriter`` / ``ARCHIVE_SUBDIR`` /
+    ``.nexau_history_archive/`` / ``_boundary``) —— 因为内部强调"归档"语义
+    (write-once + per-round + grep-friendly), 而对外只是"开关历史是否落盘"。
+    """
+
     @model_validator(mode="after")
     def validate_and_resolve_paths(self) -> CompactionConfig:
         """Validate config and resolve prompt paths."""

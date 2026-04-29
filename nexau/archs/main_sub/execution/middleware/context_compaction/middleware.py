@@ -35,13 +35,14 @@ from ...hooks import AfterModelHookInput, BeforeModelHookInput, HookResult, Midd
 from ...llm_caller import LLMCaller
 from .config import CompactionConfig
 from .factory import create_compaction_strategy, create_emergency_compaction_strategy, create_trigger_strategy
+from .history_archive import BoundaryRecord, HistoryArchiveWriter, build_archive_hint
 from .llm_config_utils import normalize_summary_llm_overrides, resolve_summary_llm_config
 
 if TYPE_CHECKING:
     from ....utils.token_counter import TokenCounter
     from .compact_stratigies.user_model_full_trace_adaptive import UserModelFullTraceAdaptiveCompaction
 
-from nexau.core.messages import Message, Role, ToolUseBlock
+from nexau.core.messages import Message, Role, TextBlock, ToolUseBlock
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,9 @@ class ContextCompactionMiddleware(Middleware):
         self._session_id: str | None = None
         self._global_storage: Any | None = None
 
+        # RFC-0021: 历史归档 (lazy 初始化, 首次有可归档消息时构造)
+        self._archive_writer: HistoryArchiveWriter | None = None
+
         # Tracer span state for in-flight compaction (one compaction at a time)
         self._active_compaction_span: Span | None = None
         self._active_compaction_tracer: BaseTracer | None = None
@@ -134,6 +138,9 @@ class ContextCompactionMiddleware(Middleware):
         self.summary_base_url = self.summary_llm_config_overrides.get("base_url")
         self.summary_api_key = self.summary_llm_config_overrides.get("api_key")
         self.summary_api_type = self.summary_llm_config_overrides.get("api_type")
+
+        # RFC-0021: 归档开关 (路径走常量, hint 启用归档即注入, 都不暴露成单独开关)
+        self.save_history = config.save_history
 
         # Create strategies from config
         self.trigger_strategy = create_trigger_strategy(config)
@@ -560,9 +567,20 @@ class ContextCompactionMiddleware(Middleware):
             )
             raise
 
+        # RFC-0021: 归档被移除的消息，并按需注入路径提示
+        after_tokens = self._estimate_tokens(compacted_messages)
+        compacted_messages = self._maybe_archive_compaction(
+            agent_state=hook_input.agent_state,
+            messages_before=messages,
+            messages_after=compacted_messages,
+            tokens_before=current_tokens,
+            tokens_after=after_tokens,
+            trigger_reason=trigger_reason,
+            strategy_name=type(self.compaction_strategy).__name__,
+        )
+
         self._compact_count += 1
         self._total_messages_removed += original_count - len(compacted_messages)
-        after_tokens = self._estimate_tokens(compacted_messages)
         self._emit_compaction_finished(
             agent_state=hook_input.agent_state,
             phase="before_model",
@@ -683,10 +701,22 @@ class ContextCompactionMiddleware(Middleware):
                     if md.get("is_compacted") is True or md.get("isSummary") is True:
                         md.setdefault("session_id", self._session_id)
 
+            after_tokens = self._estimate_tokens(compacted_messages, params.tools)
+
+            # RFC-0021: 紧急路径也归档（emergency strategy 名字单独标）
+            emergency_strategy_name = type(self.emergency_compaction_strategy).__name__
+            compacted_messages = self._maybe_archive_compaction(
+                agent_state=params.agent_state,
+                messages_before=list(original_messages),
+                messages_after=compacted_messages,
+                tokens_before=before_tokens,
+                tokens_after=after_tokens,
+                trigger_reason="provider_context_overflow",
+                strategy_name=emergency_strategy_name,
+            )
+
             self._compact_count += 1
             self._total_messages_removed += len(original_messages) - len(compacted_messages)
-
-            after_tokens = self._estimate_tokens(compacted_messages, params.tools)
 
             if after_tokens is not None and self.max_context_tokens is not None and after_tokens >= self.max_context_tokens:
                 logger.error(
@@ -822,8 +852,19 @@ class ContextCompactionMiddleware(Middleware):
                 error=str(exc),
             )
             raise
-        compacted_message_count = len(compacted_messages)
         compacted_tokens = self._estimate_tokens(compacted_messages)
+
+        # RFC-0021: 归档被移除的消息，并按需注入路径提示
+        compacted_messages = self._maybe_archive_compaction(
+            agent_state=hook_input.agent_state,
+            messages_before=messages,
+            messages_after=compacted_messages,
+            tokens_before=current_tokens,
+            tokens_after=compacted_tokens,
+            trigger_reason=trigger_reason,
+            strategy_name=type(self.compaction_strategy).__name__,
+        )
+        compacted_message_count = len(compacted_messages)
 
         # Update statistics
         self._compact_count += 1
@@ -880,3 +921,85 @@ class ContextCompactionMiddleware(Middleware):
     ) -> list[Message]:
         """Compact messages using the configured strategy."""
         return self.compaction_strategy.compact(messages)
+
+    # ------------------------------------------------------------------
+    # RFC-0021: 历史归档辅助方法
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_agent_id(agent_state: Any | None) -> str | None:
+        if agent_state is None:
+            return None
+        agent_id = getattr(agent_state, "agent_id", None)  # noqa: B009
+        return agent_id if isinstance(agent_id, str) and agent_id else None
+
+    def _maybe_archive_compaction(
+        self,
+        *,
+        agent_state: Any | None,
+        messages_before: list[Message],
+        messages_after: list[Message],
+        tokens_before: int | None,
+        tokens_after: int | None,
+        trigger_reason: str,
+        strategy_name: str,
+    ) -> list[Message]:
+        """RFC-0021: 计算 before/after 差集，把被移除消息写入 sandbox 归档。
+
+        失败均静默 —— 归档异常绝不应中断压缩流程。
+        返回值：可能内嵌归档路径提示的 messages_after。
+        """
+        if not self.save_history or agent_state is None:
+            return messages_after
+
+        if self._archive_writer is None:
+            self._archive_writer = HistoryArchiveWriter.from_sandbox(
+                agent_state=agent_state,
+            )
+        if self._archive_writer is None:
+            return messages_after
+
+        after_ids = {m.id for m in messages_after}
+        removed = [m for m in messages_before if m.id not in after_ids]
+        if not removed:
+            return messages_after
+
+        meta = self._archive_writer.write_round(
+            removed=removed,
+            tokens_before=tokens_before,
+            tokens_after=tokens_after,
+            trigger_reason=trigger_reason,
+            strategy_name=strategy_name,
+            run_id=self._resolve_run_id(agent_state),
+            agent_id=self._resolve_agent_id(agent_state),
+        )
+        if meta is None:
+            return messages_after
+
+        # RFC-0021: 归档启用就一定注入 hint, 否则 agent 不知道归档存在 (没有"档但
+        # 不告诉 agent"的真实场景)
+        return self._inject_archive_hint(messages_after, meta)
+
+    def _inject_archive_hint(self, messages: list[Message], meta: BoundaryRecord) -> list[Message]:
+        """把归档路径提示注入到 summary 消息末尾；若无 summary 则追加 framework 消息。"""
+        if self._archive_writer is None:
+            return messages
+        hint = build_archive_hint(
+            total_archived=self._archive_writer.total_archived,
+            total_rounds=self._archive_writer.total_rounds,
+            latest_round=meta.round,
+        )
+        for msg in messages:
+            md = msg.metadata or {}
+            if md.get("isSummary") is True or md.get("is_compacted") is True:
+                # 多数 LLM provider 序列化时把同一消息的多个 TextBlock 直接拼接,
+                # 不插入 separator —— 新 TextBlock 不是渲染边界。显式留两行让
+                # hint 在 trace / prompt 里独占段落。
+                msg.content.append(TextBlock(text="\n\n" + hint))
+                return messages
+        # 无 summary 消息（如 ToolResultCompaction 路径）：附加一条 framework 提示
+        framework_msg = Message(
+            role=Role.FRAMEWORK,
+            content=[TextBlock(text=hint)],
+        )
+        return [*messages, framework_msg]
