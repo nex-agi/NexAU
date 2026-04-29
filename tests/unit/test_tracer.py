@@ -448,7 +448,8 @@ def test_langfuse_tracer_end_span_sanitizes_usage():
     }
 
 
-def test_langfuse_tracer_end_span_updates_and_flushes():
+def test_langfuse_tracer_end_span_updates_without_flush():
+    """end_span updates vendor object but does NOT synchronously flush (#495)."""
     tracer = LangfuseTracer(debug=True)
     span = tracer.start_span("tool", SpanType.TOOL)
     outputs = {"model": "gpt", "usage": {"input_tokens": 1}, "result": "ok"}
@@ -463,7 +464,7 @@ def test_langfuse_tracer_end_span_updates_and_flushes():
     assert vendor_obj.ended is True
     assert tracer.client is not None
     client = cast(DummyLangfuseClient, tracer.client)
-    assert client.flush_count == 1
+    assert client.flush_count == 0, "end_span must not synchronously flush (#495)"
 
 
 def test_langfuse_tracer_ttft_maps_to_completion_start_time():
@@ -1368,3 +1369,195 @@ def test_property_lifo_deactivation_order(num_tracers: int) -> None:
     finally:
         # Always restore the OTel context to clean state
         otel_context.detach(pre_token)
+
+
+# ---------------------------------------------------------------------------
+# #495: end_span flush behavior
+# ---------------------------------------------------------------------------
+
+
+def test_langfuse_end_span_no_sync_flush_on_root() -> None:
+    """end_span must NOT synchronously flush — even on root span (no event loop).
+
+    #495: No synchronous flush without event loop; relies on SDK batch worker
+    """
+    tracer = LangfuseTracer(
+        public_key="pk-test",
+        secret_key="sk-test",
+        host="http://langfuse.test",
+    )
+    tracer._ensure_client()
+    assert len(DummyLangfuseClient.instances) == 1
+    client = DummyLangfuseClient.instances[0]
+
+    root_span = tracer.start_span("root-agent", SpanType.AGENT)
+    tracer.end_span(root_span, outputs={"result": "ok"})
+    assert client.flush_count == 0, (
+        "end_span must not synchronously flush on root span completion "
+        "(would block event loop via Queue.join). "
+        "See: https://github.com/Nex-AGI/nexau/issues/495"
+    )
+
+    child_span = tracer.start_span("llm-call", SpanType.LLM, parent_span=root_span)
+    tracer.end_span(child_span, outputs={"text": "hello"})
+    assert client.flush_count == 0, "Child span should not trigger flush either"
+
+    tracer.flush()
+    assert client.flush_count == 1, "Explicit flush() should still work"
+
+
+def test_langfuse_end_span_async_flush_on_root() -> None:
+    """end_span fires an async flush on root span when event loop is running.
+
+    #495: Async fire-and-forget flush on root span end when event loop is running
+    """
+    import asyncio
+
+    tracer = LangfuseTracer(
+        public_key="pk-test",
+        secret_key="sk-test",
+        host="http://langfuse.test",
+    )
+    tracer._ensure_client()
+    client = DummyLangfuseClient.instances[-1]
+
+    async def _test() -> None:
+        root_span = tracer.start_span("root-agent", SpanType.AGENT)
+        tracer.end_span(root_span, outputs={"result": "ok"})
+        assert client.flush_count == 0, "Flush should not happen synchronously"
+        await asyncio.sleep(0.05)
+        assert client.flush_count == 1, "Async flush should have run after root span end"
+
+        child_span = tracer.start_span("llm-call", SpanType.LLM, parent_span=root_span)
+        tracer.end_span(child_span, outputs={"text": "hello"})
+        await asyncio.sleep(0.05)
+        assert client.flush_count == 1, "Child span should not trigger async flush"
+
+    asyncio.run(_test())
+
+
+# ---------------------------------------------------------------------------
+# #495: Credential rotation — async old-client cleanup
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_client_credential_rotation_offloads_async_cleanup() -> None:
+    """When credentials change with a running event loop, old client cleanup
+    is offloaded to a background task (not synchronous).
+
+    #495: Old client cleanup should run async during credential rotation
+    """
+    import asyncio
+
+    tracer = LangfuseTracer(
+        public_key="pk-old",
+        secret_key="sk-old",
+        host="http://langfuse.test",
+    )
+    tracer._ensure_client()
+    assert len(DummyLangfuseClient.instances) == 1
+    old_client = DummyLangfuseClient.instances[0]
+
+    tracer._init_public_key = "pk-new"
+    tracer._init_secret_key = "sk-new"
+
+    async def _rotate() -> None:
+        tracer._ensure_client()
+        await asyncio.sleep(0.05)
+
+    asyncio.run(_rotate())
+
+    assert old_client.flush_count == 1, "Old client should be flushed during rotation"
+    assert old_client.shutdown_count == 1, "Old client should be shutdown during rotation"
+    assert len(DummyLangfuseClient.instances) == 2
+
+
+def test_ensure_client_credential_rotation_sync_fallback() -> None:
+    """When credentials change with NO running event loop, old client cleanup
+    falls back to synchronous best-effort.
+
+    #495: Falls back to synchronous cleanup when no event loop is available
+    """
+    tracer = LangfuseTracer(
+        public_key="pk-old",
+        secret_key="sk-old",
+        host="http://langfuse.test",
+    )
+    tracer._ensure_client()
+    old_client = DummyLangfuseClient.instances[0]
+
+    tracer._init_public_key = "pk-new"
+    tracer._init_secret_key = "sk-new"
+    tracer._ensure_client()
+
+    assert old_client.flush_count == 1, "Sync fallback should flush old client"
+    assert old_client.shutdown_count == 1, "Sync fallback should shutdown old client"
+    assert len(DummyLangfuseClient.instances) == 2
+
+
+def test_async_cleanup_old_client_timeout() -> None:
+    """Async old-client cleanup should not hang indefinitely — timeout fires.
+
+    #495: Async cleanup must not hang indefinitely; timeout should abort
+    """
+    import asyncio
+    import time
+    from unittest.mock import Mock
+
+    mock_client = Mock()
+
+    def slow_flush() -> None:
+        time.sleep(10)
+
+    mock_client.flush.side_effect = slow_flush
+    mock_client.shutdown = Mock()
+
+    tracer = LangfuseTracer(
+        public_key="pk-test",
+        secret_key="sk-test",
+        host="http://langfuse.test",
+    )
+
+    coroutine_elapsed: float = 0.0
+
+    async def _test() -> None:
+        nonlocal coroutine_elapsed
+        tracer._ASYNC_OP_TIMEOUT = 0.1
+        start = time.monotonic()
+        await tracer._async_cleanup_old_client(mock_client)
+        coroutine_elapsed = time.monotonic() - start
+
+    asyncio.run(_test())
+
+    assert coroutine_elapsed < 2.0, f"Coroutine should have timed out quickly, took {coroutine_elapsed:.1f}s"
+
+
+# ---------------------------------------------------------------------------
+# #495: Agent.sync_cleanup wires tracer.shutdown()
+# ---------------------------------------------------------------------------
+
+
+def test_agent_sync_cleanup_calls_tracer_shutdown() -> None:
+    """Agent.sync_cleanup() should call tracer.shutdown() to flush buffered
+    trace data before process exit.
+
+    #495: Prevent trace loss by calling tracer.shutdown() via sync_cleanup on exit
+    """
+    from unittest.mock import MagicMock
+
+    tracer = RecordingTracer()
+
+    mock_agent = MagicMock()
+    mock_agent.config.name = "test-agent"
+
+    mock_storage = MagicMock()
+    mock_storage.get.return_value = tracer
+    mock_agent.global_storage = mock_storage
+    mock_agent.executor = MagicMock()
+
+    from nexau.archs.main_sub.agent import Agent
+
+    Agent.sync_cleanup(mock_agent)
+
+    assert tracer.shutdown_count == 1, "sync_cleanup should call tracer.shutdown()"
+    mock_storage.get.assert_called_once_with("tracer")

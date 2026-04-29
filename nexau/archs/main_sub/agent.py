@@ -1483,6 +1483,8 @@ class Agent:
     def sync_cleanup(self, *, _from_del: bool = False) -> None:
         """Synchronous cleanup for __del__ and other sync contexts.
 
+        #495: Flush and shutdown tracer on exit to prevent losing buffered trace data.
+
         Args:
             _from_del: Internal flag. True when called from __del__ to skip
                 logging (logging may fail during interpreter shutdown).
@@ -1492,6 +1494,18 @@ class Agent:
                 f"🧹 Cleaning up agent '{self.config.name}' and its sub-agents...",
             )
         self.executor.cleanup()
+
+        # #495: Flush and shutdown tracer to avoid losing buffered trace data.
+        # CleanupManager calls sync_cleanup on SIGTERM/SIGINT/atexit, ensuring
+        # the Langfuse SDK background worker drains its queue before exit.
+        tracer: BaseTracer | None = self.global_storage.get("tracer")
+        if tracer is not None:
+            try:
+                tracer.shutdown()
+            except Exception:
+                if not _from_del:
+                    logger.warning("Tracer shutdown failed during cleanup", exc_info=True)
+
         if not _from_del:
             logger.info(f"✅ Agent '{self.config.name}' cleanup completed")
 

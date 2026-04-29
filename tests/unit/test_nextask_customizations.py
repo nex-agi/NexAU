@@ -817,6 +817,8 @@ class TestAgentSyncCleanupFromDel:
             agent = Agent.__new__(Agent)
             agent.config = mock_agent.config
             agent.executor = mock_agent.executor
+            agent.global_storage = Mock()
+            agent.global_storage.get = Mock(return_value=None)
 
             with caplog.at_level(logging.INFO):
                 agent.sync_cleanup(_from_del=True)
@@ -836,6 +838,8 @@ class TestAgentSyncCleanupFromDel:
             agent.config.name = "test_agent"
             agent.executor = Mock()
             agent.executor.cleanup = Mock()
+            agent.global_storage = Mock()
+            agent.global_storage.get = Mock(return_value=None)
 
             with caplog.at_level(logging.INFO):
                 agent.sync_cleanup()

@@ -18,7 +18,7 @@ Verifies that the memory leak fixes are effective:
  - _full_trace / _record_full_trace_messages / _update_trace_memory removed
  - AgentRunActionModel GC after REPLACE
  - AgentEventsMiddleware aggregator cleanup
- - Langfuse root-only flush
+ - Langfuse end_span no longer synchronously flushes (#495)
 
 Usage::
 
@@ -29,6 +29,7 @@ Usage::
 from __future__ import annotations
 
 import gc
+import os
 import tracemalloc
 from typing import Any, cast
 from unittest.mock import Mock, patch
@@ -471,8 +472,14 @@ class TestMemoryLeakRegression:
         assert len(mw.openai_chat_completion_aggregators) == 0, "aggregators should be cleared after after_model"
         print("\n  ✅ openai_chat_completion_aggregators cleared after after_model")
 
-    def test_langfuse_flush_only_on_root_span(self):
-        """Langfuse should only flush on root span (parent_id is None)."""
+    @patch.dict(os.environ, {}, clear=False)
+    def test_langfuse_end_span_does_not_flush(self):
+        """end_span() should never synchronously flush the Langfuse client (#495)."""
+        # Clear Langfuse env vars to prevent _ensure_client() identity mismatch
+        os.environ.pop("LANGFUSE_HOST", None)
+        os.environ.pop("LANGFUSE_PUBLIC_KEY", None)
+        os.environ.pop("LANGFUSE_SECRET_KEY", None)
+
         from nexau.archs.tracer.adapters.langfuse import LangfuseTracer
 
         tracer = LangfuseTracer(enabled=True, public_key="pk-test", secret_key="sk-test")
@@ -494,5 +501,5 @@ class TestMemoryLeakRegression:
         print(f"\n  Root span flush calls: {root_flush_count}")
         print(f"  Child span flush calls: {child_flush_count}")
 
-        assert root_flush_count >= 1, "Root span should trigger flush"
-        assert child_flush_count == 0, "Child span should NOT trigger flush"
+        assert root_flush_count == 0, "Root span end should NOT trigger flush"
+        assert child_flush_count == 0, "Child span end should NOT trigger flush"

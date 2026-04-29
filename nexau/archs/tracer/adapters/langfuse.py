@@ -14,6 +14,7 @@
 
 """Langfuse tracer adapter for agent observability."""
 
+import asyncio
 import json
 import logging
 import os
@@ -163,17 +164,21 @@ class LangfuseTracer(BaseTracer):
         if self.client is not None and self._client_identity == identity:
             return self.client
 
-        # Credentials changed (multi-project in one process) OR client not created yet.
-        # Flush/shutdown old client best-effort to avoid dropping buffered events.
+        # #495: Credential rotation — async cleanup of old client.
+        # Detach old client immediately so new spans use the new client.
+        # Offload flush+shutdown to background thread with timeout to avoid
+        # blocking the event loop. Falls back to sync cleanup when no event
+        # loop is running (e.g. plain script context).
         if self.client is not None:
+            old_client = self.client
+            self.client = None
+            self._client_identity = None
             try:
-                self.client.flush()
-            except Exception:
-                pass
-            try:
-                self.client.shutdown()
-            except Exception:
-                pass
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._async_cleanup_old_client(old_client))
+            except RuntimeError:
+                # No running event loop — sync context, best-effort
+                self._sync_cleanup_old_client(old_client)
 
         client_kwargs: dict[str, Any] = {
             "public_key": public_key,
@@ -452,14 +457,83 @@ class LangfuseTracer(BaseTracer):
                 duration = span.duration_ms()
                 logger.debug(f"Ended Langfuse span: {span.name} (duration={duration:.2f}ms)")
 
-            # Only flush on root span completion. Non-root spans rely on the
-            # Langfuse SDK's automatic batch flush to avoid excessive I/O in
-            # long-running sessions with many nested spans.
-            if self.client is not None and span.parent_id is None:
-                self.client.flush()
+            # #495: Async flush on root span completion (fire-and-forget).
+            # Offload flush to thread pool so the SDK
+            # uploads trace data promptly without blocking the agent main path.
+            # If no event loop is running, rely on SDK background batch worker.
+            if span.parent_id is None and self.client is not None:
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(
+                        self._async_flush_best_effort(),
+                        name="langfuse-root-span-flush",
+                    )
+                except RuntimeError:
+                    pass  # No event loop — SDK batch worker handles delivery
 
         except Exception as e:
             logger.warning(f"Failed to end Langfuse span '{span.name}': {e}")
+
+    # ------------------------------------------------------------------
+    # Old-client lifecycle helpers (#495)
+    # ------------------------------------------------------------------
+
+    _ASYNC_OP_TIMEOUT: float = 5.0
+    """Timeout in seconds for async flush / old-client cleanup operations."""
+
+    async def _async_cleanup_old_client(self, old_client: Langfuse) -> None:
+        """Offload old-client flush+shutdown to a thread with timeout.
+
+        Runs flush()+shutdown() via asyncio.to_thread with a wait_for timeout
+        to prevent Langfuse SDK Queue.join() from blocking indefinitely.
+        """
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self._sync_cleanup_old_client, old_client),
+                timeout=self._ASYNC_OP_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Old Langfuse client cleanup timed out after %.1fs, skipping",
+                self._ASYNC_OP_TIMEOUT,
+            )
+        except Exception as e:
+            logger.warning("Old Langfuse client async cleanup failed: %s", e)
+
+    @staticmethod
+    def _sync_cleanup_old_client(old_client: Langfuse) -> None:
+        """Best-effort synchronous flush+shutdown of an old Langfuse client."""
+        try:
+            old_client.flush()
+        except Exception:
+            pass
+        try:
+            old_client.shutdown()
+        except Exception:
+            pass
+
+    async def _async_flush_best_effort(self) -> None:
+        """Fire-and-forget async flush for root span completion.
+
+        Offloads the blocking Langfuse SDK flush() to a thread pool with a
+        timeout guard. Timeout or failure is silently handled so the agent
+        main path is never affected.
+        """
+        if self.client is None:
+            return
+        client = self.client  # capture reference in case of rotation
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(client.flush),
+                timeout=self._ASYNC_OP_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Langfuse async flush timed out after %.1fs",
+                self._ASYNC_OP_TIMEOUT,
+            )
+        except Exception as e:
+            logger.debug("Langfuse async flush best-effort failed: %s", e)
 
     def flush(self) -> None:
         """Flush pending data to Langfuse."""
@@ -472,7 +546,12 @@ class LangfuseTracer(BaseTracer):
                 logger.warning(f"Failed to flush Langfuse data: {e}")
 
     def shutdown(self) -> None:
-        """Shutdown the Langfuse client."""
+        """Shutdown the Langfuse client.
+
+        Called on agent/process exit via CleanupManager -> agent.sync_cleanup().
+        Langfuse SDK shutdown() internally calls flush() then stops worker
+        threads. Uses best-effort error handling to never raise.
+        """
         if self.enabled and self.client is not None:
             try:
                 self.client.shutdown()
