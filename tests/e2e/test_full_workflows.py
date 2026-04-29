@@ -33,6 +33,7 @@ from nexau.archs.main_sub.config import AgentConfig
 from nexau.archs.session import InMemoryDatabaseEngine, SessionManager
 from nexau.archs.tool.tool import Tool
 from nexau.archs.tracer.adapters.langfuse import LangfuseTracer
+from nexau.core.messages import ToolUseBlock
 
 
 @pytest.fixture
@@ -268,8 +269,9 @@ class TestDeferredToolWorkflow:
             name="mixed_workflow_agent",
             system_prompt=(
                 "You are a helpful assistant. "
-                "If you don't have the right tool available, use ToolSearch to find one. "
-                "You MUST use tools to answer — never answer from your own knowledge."
+                "For currency conversion tasks, never estimate from your own knowledge. "
+                "First call ToolSearch with query '+currency +convert', then call the returned currency converter tool. "
+                "Use the tool result as the sole source of truth for the final answer."
             ),
             llm_config=LLMConfig(),
             tools=[calc_tool, currency_tool],
@@ -286,8 +288,17 @@ class TestDeferredToolWorkflow:
             session_id="mixed_workflow_session",
         )
 
-        # Fuzzy: LLM must figure out it needs ToolSearch → find currency tool → use it
-        response = agent.run(message="How much is 100 US dollars in euros?")
+        # The model must use ToolSearch → find the deferred currency tool → use it.
+        response = agent.run(
+            message=(
+                "Use tools only. Convert exactly 100 USD to EUR. "
+                "If CurrencyConverter is not available yet, first call ToolSearch with query '+currency +convert'. "
+                "Then call CurrencyConverter and report its converted value."
+            ),
+        )
         assert isinstance(response, str)
+        assert any(
+            isinstance(block, ToolUseBlock) and block.name == "CurrencyConverter" for message in agent.history for block in message.content
+        )
         # 100 * 0.92 = 92.0
         assert "92" in response

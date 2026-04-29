@@ -2406,3 +2406,500 @@ class TestCompactionTracerSpan:
         assert span.error is not None
         assert "compaction boom" in span.error
         assert span.outputs["success"] is False
+
+
+def _assert_no_orphan_tool_results(messages: list[Message]) -> None:
+    """Assert every ToolResultBlock has a matching preceding ToolUseBlock in the same list."""
+    seen_tool_use_ids: set[str] = set()
+    for msg in messages:
+        for block in msg.content:
+            if isinstance(block, ToolUseBlock):
+                seen_tool_use_ids.add(block.id)
+            elif isinstance(block, ToolResultBlock):
+                assert block.tool_use_id in seen_tool_use_ids or any(block.tool_use_id.startswith(tid) for tid in seen_tool_use_ids), (
+                    f"Orphan ToolResultBlock(tool_use_id={block.tool_use_id!r}) — no matching ToolUseBlock found"
+                )
+
+
+class TestToolCallResultPairPreservation:
+    """Regression tests for tool call / result pair preservation in UserModelFullTraceAdaptiveCompaction.
+
+    These tests verify that _build_pair_safe_units, _split_two_segments, _truncate_segment_to_budget,
+    and _flatten_unit_to_text correctly keep tool-call assistant messages grouped with their
+    corresponding tool-result messages, preventing orphaned ToolResultBlock items after compaction.
+    """
+
+    def test_build_pair_safe_units_groups_tool_call_with_results(self) -> None:
+        """An assistant message with a ToolUseBlock is grouped with the following matching tool message."""
+        messages = [
+            Message(role=Role.USER, content=[TextBlock(text="Hello")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[ToolUseBlock(id="call_a", name="search", input={"q": "test"})],
+            ),
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_a", content="result a")],
+            ),
+            Message(role=Role.USER, content=[TextBlock(text="Thanks")]),
+        ]
+
+        units = UserModelFullTraceAdaptiveCompaction._build_pair_safe_units(messages)
+
+        assert units == [[0], [1, 2], [3]]
+
+    def test_build_pair_safe_units_multiple_tool_calls(self) -> None:
+        """An assistant message with multiple ToolUseBlocks groups all matching tool messages."""
+        messages = [
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ToolUseBlock(id="call_a", name="search", input={"q": "a"}),
+                    ToolUseBlock(id="call_b", name="search", input={"q": "b"}),
+                ],
+            ),
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_a", content="result a")],
+            ),
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_b", content="result b")],
+            ),
+        ]
+
+        units = UserModelFullTraceAdaptiveCompaction._build_pair_safe_units(messages)
+
+        assert units == [[0, 1, 2]]
+
+    def test_build_pair_safe_units_out_of_order_tool_results(self) -> None:
+        """Out-of-order TOOL results from the same contiguous block stay in one unit."""
+        messages = [
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ToolUseBlock(id="call_a", name="search", input={"q": "a"}),
+                    ToolUseBlock(id="call_b", name="read", input={"path": "b"}),
+                    ToolUseBlock(id="call_c", name="run", input={"cmd": "c"}),
+                ],
+            ),
+            # Real persisted histories can store results in completion order, not call order.
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_c", content="result c")],
+            ),
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_a", content="result a")],
+            ),
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_b", content="result b")],
+            ),
+        ]
+
+        units = UserModelFullTraceAdaptiveCompaction._build_pair_safe_units(messages)
+
+        assert units == [[0, 1, 2, 3]]
+
+    def test_build_pair_safe_units_text_only_messages(self) -> None:
+        """Messages without any ToolUseBlocks each form their own standalone unit."""
+        messages = [
+            Message(role=Role.USER, content=[TextBlock(text="Hi")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="Hello!")]),
+            Message(role=Role.USER, content=[TextBlock(text="Bye")]),
+        ]
+
+        units = UserModelFullTraceAdaptiveCompaction._build_pair_safe_units(messages)
+
+        assert units == [[0], [1], [2]]
+
+    def test_split_two_segments_preserves_tool_pairs(self) -> None:
+        """_split_two_segments never splits a tool-call assistant from its tool-result messages."""
+        messages = [
+            Message(role=Role.USER, content=[TextBlock(text="Q")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[ToolUseBlock(id="call_a", name="search", input={"q": "test"})],
+            ),
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_a", content="result a")],
+            ),
+            Message(role=Role.USER, content=[TextBlock(text="Thanks")]),
+        ]
+
+        def token_counter_side_effect(msgs: list[Message]) -> int:
+            total = 0
+            for msg in msgs:
+                has_tool_use = any(isinstance(b, ToolUseBlock) for b in msg.content)
+                has_tool_result = any(isinstance(b, ToolResultBlock) for b in msg.content)
+                if has_tool_use or has_tool_result:
+                    total += 500
+                else:
+                    total += 10
+            return total
+
+        mock_counter = Mock(count_tokens=Mock(side_effect=token_counter_side_effect))
+
+        strategy = UserModelFullTraceAdaptiveCompaction(
+            token_counter=mock_counter,
+            max_context_tokens=4096,
+        )
+
+        seg_a, seg_b = strategy._split_two_segments(messages)
+
+        # The assistant+tool pair must be in the same segment
+        for segment in [seg_a, seg_b]:
+            _assert_no_orphan_tool_results(segment)
+
+    def test_truncate_segment_to_budget_keeps_complete_iterations(self) -> None:
+        """Truncation drops entire tool iterations rather than including partial ones."""
+        segment = [
+            Message(role=Role.USER, content=[TextBlock(text="Q")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[ToolUseBlock(id="call_a", name="search", input={"q": "test"})],
+            ),
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_a", content="result a")],
+            ),
+            Message(role=Role.USER, content=[TextBlock(text="Thanks")]),
+        ]
+
+        # Token counts: user=50, assistant+tool unit=200 combined, user=50
+        # Budget of 120 fits [user] but not [user] + [assistant, tool]
+        call_count = 0
+
+        def token_side_effect(msgs: list[Message]) -> int:
+            nonlocal call_count
+            total = 0
+            for msg in msgs:
+                has_tool_use = any(isinstance(b, ToolUseBlock) for b in msg.content)
+                has_tool_result = any(isinstance(b, ToolResultBlock) for b in msg.content)
+                if has_tool_use or has_tool_result:
+                    total += 100
+                else:
+                    total += 50
+            return total
+
+        mock_counter = Mock(count_tokens=Mock(side_effect=token_side_effect))
+
+        strategy = UserModelFullTraceAdaptiveCompaction(
+            token_counter=mock_counter,
+            max_context_tokens=4096,
+        )
+
+        result, truncated = strategy._truncate_segment_to_budget(segment, budget_tokens=120)
+
+        assert truncated is True
+        # Only the first user message fits; the tool iteration is too large to add
+        assert len(result) == 1
+        assert result[0].role == Role.USER
+        # The tool iteration must not be partially included
+        _assert_no_orphan_tool_results(result)
+
+    def test_oversized_tool_iteration_flattens_to_text(self) -> None:
+        """A tool iteration that exceeds the budget is flattened to a single plain-text message."""
+        segment = [
+            Message(
+                role=Role.ASSISTANT,
+                content=[ToolUseBlock(id="call_a", name="search", input={"q": "test"})],
+            ),
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_a", content="result a")],
+            ),
+        ]
+
+        # Every message costs 1000 tokens — far over the budget of 50
+        mock_counter = Mock(count_tokens=Mock(return_value=1000))
+
+        strategy = UserModelFullTraceAdaptiveCompaction(
+            token_counter=mock_counter,
+            max_context_tokens=4096,
+        )
+
+        result, truncated = strategy._truncate_segment_to_budget(segment, budget_tokens=50)
+
+        assert truncated is True
+        assert len(result) == 1
+
+        flattened = result[0]
+        assert flattened.role == Role.USER
+        # Content must be plain TextBlock (no ToolUseBlock / ToolResultBlock)
+        assert len(flattened.content) == 1
+        assert isinstance(flattened.content[0], TextBlock)
+        assert flattened.metadata.get("flattened_tool_iteration") is True
+        assert flattened.metadata.get("truncated_for_emergency_compaction") is True
+
+    def test_compact_end_to_end_no_orphan_tool_results(self) -> None:
+        """Full end-to-end compact() never produces orphan ToolResultBlocks in summarize_fn input."""
+        messages = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+            Message(role=Role.USER, content=[TextBlock(text="Question 1")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[ToolUseBlock(id="call_a", name="search", input={"q": "a"})],
+            ),
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_a", content="result a")],
+            ),
+            Message(role=Role.USER, content=[TextBlock(text="Question 2")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[ToolUseBlock(id="call_b", name="lookup", input={"id": "b"})],
+            ),
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_b", content="result b")],
+            ),
+            Message(role=Role.USER, content=[TextBlock(text="Last question")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="final answer")]),
+        ]
+
+        mock_counter = Mock(count_tokens=Mock(return_value=128))
+
+        strategy = UserModelFullTraceAdaptiveCompaction(
+            token_counter=mock_counter,
+            max_context_tokens=4096,
+        )
+
+        captured_calls: list[list[Message]] = []
+
+        def summarize_fn(msgs: list[Message], prompt: str, max_tokens: int) -> str:
+            captured_calls.append(list(msgs))
+            return "summary"
+
+        strategy.compact(messages, summarize_fn=summarize_fn)
+
+        # At least one summarize call should have been made
+        assert len(captured_calls) > 0
+
+        # Validate: every list of messages passed to summarize_fn has no orphan tool results
+        for call_msgs in captured_calls:
+            _assert_no_orphan_tool_results(call_msgs)
+
+    def test_compact_realistic_out_of_order_tool_results_no_orphans(self) -> None:
+        """End-to-end: realistic persisted out-of-order TOOL results remain provider-valid.
+
+        Local NexAU storage commonly persists multi-tool assistant turns followed by a
+        contiguous TOOL block whose result order reflects completion order rather than
+        the original tool-call order. Emergency compaction must not split those blocks
+        into orphan ToolResultBlock summary inputs.
+        """
+        messages = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+            Message(role=Role.USER, content=[TextBlock(text="Old question")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ToolUseBlock(id="call_a", name="search", input={"q": "a"}),
+                    ToolUseBlock(id="call_b", name="read", input={"path": "b"}),
+                    ToolUseBlock(id="call_c", name="run", input={"cmd": "c"}),
+                ],
+            ),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_c", content="result c")]),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_a", content="result a")]),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_b", content="result b")]),
+            Message(role=Role.USER, content=[TextBlock(text="Another old question")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ToolUseBlock(id="call_d", name="grep", input={"pattern": "d"}),
+                    ToolUseBlock(id="call_e", name="read", input={"path": "e"}),
+                ],
+            ),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_e", content="result e")]),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_d", content="result d")]),
+            Message(role=Role.USER, content=[TextBlock(text="Recent question")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="Recent answer")]),
+        ]
+
+        mock_counter = Mock(count_tokens=Mock(return_value=128))
+        strategy = UserModelFullTraceAdaptiveCompaction(
+            token_counter=mock_counter,
+            max_context_tokens=4096,
+            keep_recent_iterations=1,
+        )
+
+        captured_calls: list[list[Message]] = []
+
+        def summarize_fn(msgs: list[Message], prompt: str, max_tokens: int) -> str:
+            captured_calls.append(list(msgs))
+            return "summary"
+
+        strategy.compact(messages, summarize_fn=summarize_fn)
+
+        assert len(captured_calls) == 3
+        assert any(
+            any(isinstance(block, ToolResultBlock) and block.tool_use_id == "call_c" for msg in call for block in msg.content)
+            for call in captured_calls
+        )
+        for call_msgs in captured_calls:
+            _assert_no_orphan_tool_results(call_msgs)
+
+    def test_collect_keep_indices_keeps_resolved_tool_results_with_unresolved_assistant(self) -> None:
+        """When an assistant has both resolved and unresolved tool calls, keep_indices
+        must include the resolved tool result alongside the kept assistant message.
+
+        Scenario: assistant has call_a (resolved) and call_b (unresolved).
+        _collect_unresolved_tool_use_indices keeps the assistant (because of call_b).
+        _collect_paired_tool_result_indices must also keep call_a's TOOL message.
+        """
+        messages = [
+            # idx 0: system
+            Message(role=Role.SYSTEM, content=[TextBlock(text="System")]),
+            # idx 1: user (old, will be compactable)
+            Message(role=Role.USER, content=[TextBlock(text="Old question")]),
+            # idx 2: assistant with call_a + call_b (unresolved call_b → kept)
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ToolUseBlock(id="call_a", name="search", input={"q": "a"}),
+                    ToolUseBlock(id="call_b", name="run", input={"cmd": "x"}),
+                ],
+            ),
+            # idx 3: tool result for call_a only (call_b has no result)
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_a", content="result a")],
+            ),
+            # idx 4: user (recent iteration start)
+            Message(role=Role.USER, content=[TextBlock(text="Recent question")]),
+            # idx 5: assistant (recent iteration — kept)
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="Recent answer")]),
+        ]
+
+        mock_counter = Mock(count_tokens=Mock(return_value=128))
+        strategy = UserModelFullTraceAdaptiveCompaction(
+            token_counter=mock_counter,
+            max_context_tokens=4096,
+        )
+
+        keep_indices = strategy._collect_keep_indices(messages)
+
+        # assistant idx=2 kept (unresolved call_b), tool idx=3 must also be kept
+        assert 2 in keep_indices, "Assistant with unresolved tool call should be kept"
+        assert 3 in keep_indices, "Resolved tool result must be kept alongside its assistant"
+
+    def test_compact_partial_unresolved_multi_tool_no_orphans(self) -> None:
+        """End-to-end: assistant with resolved call_a + unresolved call_b.
+
+        The summarize_fn must never receive an orphan ToolResultBlock for call_a
+        whose matching ToolUseBlock was removed from the compactable segment.
+        """
+        messages = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="System")]),
+            Message(role=Role.USER, content=[TextBlock(text="Old question")]),
+            # assistant with call_a (resolved) + call_b (unresolved)
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ToolUseBlock(id="call_a", name="search", input={"q": "a"}),
+                    ToolUseBlock(id="call_b", name="run", input={"cmd": "x"}),
+                ],
+            ),
+            # only call_a has a result
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_a", content="result a")],
+            ),
+            # recent iteration (will be kept)
+            Message(role=Role.USER, content=[TextBlock(text="Recent question")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="Recent answer")]),
+        ]
+
+        mock_counter = Mock(count_tokens=Mock(return_value=128))
+        strategy = UserModelFullTraceAdaptiveCompaction(
+            token_counter=mock_counter,
+            max_context_tokens=4096,
+        )
+
+        captured_calls: list[list[Message]] = []
+
+        def summarize_fn(msgs: list[Message], prompt: str, max_tokens: int) -> str:
+            captured_calls.append(list(msgs))
+            return "summary"
+
+        strategy.compact(messages, summarize_fn=summarize_fn)
+
+        # Every summarize_fn call must be free of orphan tool results
+        for call_msgs in captured_calls:
+            _assert_no_orphan_tool_results(call_msgs)
+
+    def test_collect_keep_indices_prefix_match_keeps_suffixed_tool_result(self) -> None:
+        """Tool result with framework-appended UUID suffix must be kept with its assistant.
+
+        The framework may append a UUID suffix to tool_call_id (e.g. "call_a" → "call_a_abc123").
+        _collect_paired_tool_result_indices must use prefix matching to keep these.
+        """
+        messages = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="System")]),
+            Message(role=Role.USER, content=[TextBlock(text="Old question")]),
+            # assistant with call_a (resolved via suffix) + call_b (unresolved)
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ToolUseBlock(id="call_a", name="search", input={"q": "a"}),
+                    ToolUseBlock(id="call_b", name="run", input={"cmd": "x"}),
+                ],
+            ),
+            # tool result uses suffixed id
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_a_suffix_uuid", content="result a")],
+            ),
+            Message(role=Role.USER, content=[TextBlock(text="Recent question")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="Recent answer")]),
+        ]
+
+        mock_counter = Mock(count_tokens=Mock(return_value=128))
+        strategy = UserModelFullTraceAdaptiveCompaction(
+            token_counter=mock_counter,
+            max_context_tokens=4096,
+        )
+
+        keep_indices = strategy._collect_keep_indices(messages)
+
+        assert 2 in keep_indices, "Assistant with unresolved tool call should be kept"
+        assert 3 in keep_indices, "Suffixed tool result must be kept via prefix matching"
+
+    def test_compact_prefix_match_suffixed_tool_result_no_orphans(self) -> None:
+        """End-to-end: suffixed tool_use_id must not produce orphan ToolResultBlock in summarize_fn."""
+        messages = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="System")]),
+            Message(role=Role.USER, content=[TextBlock(text="Old question")]),
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ToolUseBlock(id="call_a", name="search", input={"q": "a"}),
+                    ToolUseBlock(id="call_b", name="run", input={"cmd": "x"}),
+                ],
+            ),
+            Message(
+                role=Role.TOOL,
+                content=[ToolResultBlock(tool_use_id="call_a_suffix_uuid", content="result a")],
+            ),
+            Message(role=Role.USER, content=[TextBlock(text="Recent question")]),
+            Message(role=Role.ASSISTANT, content=[TextBlock(text="Recent answer")]),
+        ]
+
+        mock_counter = Mock(count_tokens=Mock(return_value=128))
+        strategy = UserModelFullTraceAdaptiveCompaction(
+            token_counter=mock_counter,
+            max_context_tokens=4096,
+        )
+
+        captured_calls: list[list[Message]] = []
+
+        def summarize_fn(msgs: list[Message], prompt: str, max_tokens: int) -> str:
+            captured_calls.append(list(msgs))
+            return "summary"
+
+        strategy.compact(messages, summarize_fn=summarize_fn)
+
+        for call_msgs in captured_calls:
+            _assert_no_orphan_tool_results(call_msgs)

@@ -157,27 +157,47 @@ class UserModelFullTraceAdaptiveCompaction:
         return merged if merged else _EMPTY_SUMMARY_TEXT
 
     def _split_two_segments(self, messages: list[Message]) -> tuple[list[Message], list[Message]]:
+        """Split *messages* into two segments at pair-safe unit boundaries.
+
+        RFC-0496: 按原子 unit 边界拆分，避免 tool call/result 被拆散
+        """
         if len(messages) <= 1:
             return messages, []
 
-        total_tokens = self._count_tokens(messages)
-        if total_tokens <= 0:
-            mid = max(1, len(messages) // 2)
-            return messages[:mid], messages[mid:]
+        units = self._build_pair_safe_units(messages)
+        if len(units) <= 1:
+            return messages, []
 
+        # 1. 计算每个 unit 的 token 数
+        unit_tokens: list[int] = []
+        for unit in units:
+            unit_msgs = [messages[i] for i in unit]
+            unit_tokens.append(self._count_tokens(unit_msgs))
+
+        total_tokens = sum(unit_tokens)
+        if total_tokens <= 0:
+            mid = max(1, len(units) // 2)
+            seg_a = [messages[i] for u in units[:mid] for i in u]
+            seg_b = [messages[i] for u in units[mid:] for i in u]
+            return seg_a, seg_b
+
+        # 2. 按 token 累计找到 50% 分割点（以 unit 为粒度）
         target = total_tokens * 0.5
         accumulated = 0
-        split_index = 0
-        for idx, msg in enumerate(messages):
-            accumulated += self._count_tokens([msg])
-            split_index = idx
-            if accumulated >= target and idx < len(messages) - 1:
+        split_unit_idx = 0
+        for ui, tokens in enumerate(unit_tokens):
+            accumulated += tokens
+            split_unit_idx = ui
+            if accumulated >= target and ui < len(units) - 1:
                 break
 
-        segment_a = messages[: split_index + 1]
-        segment_b = messages[split_index + 1 :]
+        segment_a = [messages[i] for u in units[: split_unit_idx + 1] for i in u]
+        segment_b = [messages[i] for u in units[split_unit_idx + 1 :] for i in u]
+
+        # 3. 回退：如果 segment_b 为空，将最后一个 unit 移到 segment_b
         if not segment_b:
-            return messages[:-1], [messages[-1]]
+            segment_a = [messages[i] for u in units[:-1] for i in u]
+            segment_b = [messages[i] for u in units[-1:] for i in u]
         return segment_a, segment_b
 
     def _truncate_segment_to_budget(
@@ -185,23 +205,34 @@ class UserModelFullTraceAdaptiveCompaction:
         segment: list[Message],
         budget_tokens: int,
     ) -> tuple[list[Message], bool]:
+        """Truncate *segment* to fit within *budget_tokens* at unit boundaries.
+
+        RFC-0496: 按原子 unit 边界截断，保证 tool call/result 不被拆散
+        """
         if not segment:
             return [], False
 
         if self._count_tokens(segment) <= budget_tokens:
             return segment, False
 
+        # 1. 构建 pair-safe units，按 unit 粒度累计
+        units = self._build_pair_safe_units(segment)
         truncated: list[Message] = []
-        for msg in segment:
-            candidate = truncated + [msg]
+        for unit in units:
+            unit_msgs = [segment[i] for i in unit]
+            candidate = truncated + unit_msgs
             if self._count_tokens(candidate) > budget_tokens:
                 break
-            truncated.append(msg)
+            truncated.extend(unit_msgs)
 
         if truncated:
             return truncated, True
 
-        return [self._truncate_single_message(segment[0], budget_tokens)], True
+        # 2. 超大 unit 回退：单消息保留原有行为，多消息（tool 迭代）降级为纯文本
+        first_unit_msgs = [segment[i] for i in units[0]]
+        if len(first_unit_msgs) == 1:
+            return [self._truncate_single_message(first_unit_msgs[0], budget_tokens)], True
+        return [self._flatten_unit_to_text(first_unit_msgs, budget_tokens)], True
 
     def _truncate_single_message(self, msg: Message, budget_tokens: int) -> Message:
         text = msg.get_text_content().strip()
@@ -233,7 +264,54 @@ class UserModelFullTraceAdaptiveCompaction:
         if last_user_index is not None:
             keep_indices.add(last_user_index)
 
+        # RFC-0496: 保留被 keep 的 assistant 消息对应的已完成 tool result，
+        # 防止 compactable_messages 产生孤儿 ToolResultBlock
+        keep_indices.update(self._collect_paired_tool_result_indices(messages, keep_indices))
+
         return keep_indices
+
+    @staticmethod
+    def _collect_paired_tool_result_indices(messages: list[Message], keep_indices: set[int]) -> set[int]:
+        """Return indices of TOOL messages whose matching assistant is already kept.
+
+        RFC-0496: 防止 keep_indices 把 assistant tool call 和已完成 tool result 拆开
+
+        When ``_collect_unresolved_tool_use_indices`` keeps an assistant message
+        that contains *both* resolved and unresolved tool calls, the resolved
+        ``Role.TOOL`` results would otherwise fall into ``compactable_messages``
+        as orphan ``ToolResultBlock`` items.
+        """
+        # 1. 收集所有被 keep 的 assistant 消息中的 tool_use_id
+        kept_tool_use_ids: set[str] = set()
+        for idx in keep_indices:
+            if idx >= len(messages):
+                continue
+            msg = messages[idx]
+            if msg.role != Role.ASSISTANT:
+                continue
+            for block in msg.content:
+                if isinstance(block, ToolUseBlock):
+                    kept_tool_use_ids.add(block.id)
+
+        if not kept_tool_use_ids:
+            return set()
+
+        # 2. 找出不在 keep_indices 中但匹配的 TOOL 消息（精确 + 前缀匹配）
+        paired: set[int] = set()
+        for idx, msg in enumerate(messages):
+            if idx in keep_indices or msg.role != Role.TOOL:
+                continue
+            for block in msg.content:
+                if not isinstance(block, ToolResultBlock):
+                    continue
+                if block.tool_use_id in kept_tool_use_ids:
+                    paired.add(idx)
+                    break
+                # 前缀匹配回退（与 _collect_unresolved_tool_use_indices 一致）
+                if any(block.tool_use_id.startswith(tid) for tid in kept_tool_use_ids):
+                    paired.add(idx)
+                    break
+        return paired
 
     def _collect_recent_iteration_indices(self, messages: list[Message]) -> set[int]:
         start_index = 1 if messages and messages[0].role == Role.SYSTEM else 0
@@ -268,6 +346,92 @@ class UserModelFullTraceAdaptiveCompaction:
         if current:
             iterations.append(current)
         return iterations
+
+    @staticmethod
+    def _build_pair_safe_units(messages: list[Message]) -> list[list[int]]:
+        """Group message indices into pair-safe units for split/truncation.
+
+        RFC-0496: 保持 tool call / result 对的原子性
+
+        Each unit keeps an assistant tool-call message together with its
+        matching tool-result messages, so splitting at unit boundaries
+        never produces orphan ``ToolResultBlock`` items.  Non-tool
+        messages form standalone single-index units.
+        """
+        units: list[list[int]] = []
+        n = len(messages)
+        i = 0
+        while i < n:
+            msg = messages[i]
+            # 1. 检查是否是包含 ToolUseBlock 的 assistant 消息
+            tool_use_ids: set[str] = set()
+            if msg.role == Role.ASSISTANT:
+                for block in msg.content:
+                    if isinstance(block, ToolUseBlock):
+                        tool_use_ids.add(block.id)
+            if tool_use_ids:
+                # 2. 贪心地将后续匹配的 TOOL 消息纳入同一 unit
+                unit = [i]
+                j = i + 1
+                while j < n and messages[j].role == Role.TOOL:
+                    has_match = False
+                    for block in messages[j].content:
+                        if not isinstance(block, ToolResultBlock):
+                            continue
+                        if block.tool_use_id in tool_use_ids:
+                            has_match = True
+                            break
+                        # 前缀匹配回退（与 _collect_unresolved_tool_use_indices 一致）
+                        for tid in tool_use_ids:
+                            if block.tool_use_id.startswith(tid):
+                                has_match = True
+                                break
+                        if has_match:
+                            break
+                    if has_match:
+                        unit.append(j)
+                        j += 1
+                    else:
+                        break
+                units.append(unit)
+                i = j
+            else:
+                # 3. 非 tool-call 消息作为独立 unit
+                units.append([i])
+                i += 1
+        return units
+
+    def _flatten_unit_to_text(self, unit_messages: list[Message], budget_tokens: int) -> Message:
+        """Convert a multi-message tool-call unit to a single plain-text message.
+
+        RFC-0496: 超大 tool-call 迭代的安全降级
+
+        Used when a complete tool-call iteration exceeds the summary budget.
+        Serializes all messages as plain text to avoid emitting orphan
+        native ``function_call_output`` items.
+        """
+        parts: list[str] = []
+        for msg in unit_messages:
+            text = msg.get_text_content().strip()
+            if not text:
+                try:
+                    text = str(msg.model_dump(mode="python", exclude_none=True))
+                except Exception:
+                    text = str(msg)
+            parts.append(f"[{msg.role.value}] {text}")
+
+        combined = "\n".join(parts)
+        max_chars = max(64, budget_tokens * 4)
+        truncated_text = combined[:max_chars]
+
+        return Message(
+            role=Role.USER,
+            content=[TextBlock(text=truncated_text)],
+            metadata={
+                "truncated_for_emergency_compaction": True,
+                "flattened_tool_iteration": True,
+            },
+        )
 
     @staticmethod
     def _collect_unresolved_tool_use_indices(messages: list[Message]) -> set[int]:
