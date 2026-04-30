@@ -38,7 +38,7 @@ from nexau.archs.main_sub.execution.llm_caller import LLMCaller
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
-from nexau.core.messages import ImageBlock, Message, Role, TextBlock, ToolResultBlock
+from nexau.core.messages import ImageBlock, Message, ReasoningBlock, Role, TextBlock, ToolResultBlock
 from nexau.core.serializers.openai_chat import serialize_ump_to_openai_chat_payload
 from nexau.core.serializers.openai_responses import prepare_openai_responses_api_input
 from nexau.core.usage import TokenUsage
@@ -2042,3 +2042,56 @@ class TestAnthropicCacheControl:
 
         # Should default to cached
         assert system_blocks[0].get("cache_control") == {"type": "ephemeral"}
+
+    def test_anthropic_call_honors_allow_unsigned_thinking_config(self):
+        """LLMConfig.allow_unsigned_thinking opt-in reaches the Anthropic serializer."""
+        from nexau.archs.main_sub.execution.llm_caller import call_llm_with_anthropic_chat_completion
+
+        mock_client = Mock()
+        mock_client.messages.create.return_value = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+        }
+        llm_config = LLMConfig(
+            model="claude-3",
+            base_url="http://x",
+            api_key="k",
+            api_type="anthropic_chat_completion",
+            allow_unsigned_thinking=True,
+        )
+        messages = [
+            Message.user("first"),
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ReasoningBlock(text="openai responses reasoning"),
+                    TextBlock(text="answer"),
+                ],
+            ),
+            Message.user("follow-up"),
+        ]
+        params = ModelCallParams(
+            messages=messages,
+            max_tokens=100,
+            force_stop_reason=None,
+            agent_state=None,
+            tool_call_mode="xml",
+            tools=None,
+            api_params={},
+            openai_client=None,
+            llm_config=llm_config,
+            retry_attempts=1,
+            shutdown_event=None,
+        )
+
+        call_llm_with_anthropic_chat_completion(
+            mock_client,
+            {"model": "claude-3", "max_tokens": 100},
+            model_call_params=params,
+            llm_config=llm_config,
+        )
+
+        sent_messages = mock_client.messages.create.call_args.kwargs["messages"]
+        assistant_blocks = sent_messages[1]["content"]
+        assert assistant_blocks[0] == {"type": "thinking", "thinking": "openai responses reasoning"}
+        assert "signature" not in assistant_blocks[0]

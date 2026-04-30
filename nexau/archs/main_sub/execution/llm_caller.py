@@ -1398,7 +1398,9 @@ def call_llm_with_anthropic_chat_completion(
 
         from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
 
-        return AnthropicMessagesAdapter().to_vendor_format(model_call_params.messages)
+        return AnthropicMessagesAdapter(
+            allow_unsigned_thinking=bool(llm_config and llm_config.allow_unsigned_thinking),
+        ).to_vendor_format(model_call_params.messages)
 
     def llm_call() -> Any:
         # 组装 Anthropic 参数
@@ -1974,7 +1976,9 @@ async def call_llm_with_anthropic_chat_completion_async(
 
         from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
 
-        return AnthropicMessagesAdapter().to_vendor_format(model_call_params.messages)
+        return AnthropicMessagesAdapter(
+            allow_unsigned_thinking=bool(llm_config and llm_config.allow_unsigned_thinking),
+        ).to_vendor_format(model_call_params.messages)
 
     # 1. 组装参数（与 sync 版完全相同）
     system_messages, user_messages = _build_anthropic_messages()

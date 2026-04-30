@@ -191,6 +191,7 @@ class TestLLMConfig:
             cache_control_ttl="1h",
             connect_timeout_ms=11_000,
             stream_idle_timeout_ms=22_000,
+            allow_unsigned_thinking=True,
             custom_param="value",
             reasoning={"effort": "high", "summary": "detailed"},
             additional_drop_params=["stop"],
@@ -207,6 +208,7 @@ class TestLLMConfig:
         assert copied.api_type == original.api_type
         assert copied.get_connect_timeout() == 11.0
         assert copied.get_stream_idle_timeout() == 22.0
+        assert copied.allow_unsigned_thinking is True
         assert copied is not original
 
     def test_repr_and_str(self):
@@ -315,6 +317,19 @@ class TestLLMConfig:
         )
         copied = original.copy()
         assert copied.tool_streaming is False
+
+    def test_allow_unsigned_thinking_defaults_false_and_is_not_provider_param(self):
+        """allow_unsigned_thinking is an internal Anthropic serializer switch."""
+        config = LLMConfig(
+            model="claude-3-5-sonnet",
+            base_url="http://x",
+            api_key="k",
+            api_type="anthropic_chat_completion",
+            allow_unsigned_thinking=True,
+        )
+
+        assert config.allow_unsigned_thinking is True
+        assert "allow_unsigned_thinking" not in config.to_openai_params()
 
     def test_invalid_temperature(self):
         """Test validation of temperature parameter."""

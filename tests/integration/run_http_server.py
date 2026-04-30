@@ -42,7 +42,12 @@ def main() -> None:
     agent_config = AgentConfig(
         name="test_agent",
         system_prompt="You are a helpful assistant.",
-        llm_config=LLMConfig(),  # model from LLM_MODEL in .env
+        # Keep real-LLM integration tests bounded; model/base/key still come from env.
+        llm_config=LLMConfig(
+            max_tokens=int(os.environ.get("HTTP_TEST_MAX_TOKENS", "64")),
+            max_retries=1,
+            stream_idle_timeout_ms=int(os.environ.get("HTTP_TEST_STREAM_IDLE_TIMEOUT_MS", "30000")),
+        ),
     )
     server = SSETransportServer(
         engine=engine,

@@ -222,8 +222,8 @@ class TestAnthropicAdapterReasoningBlock:
         assert thinking_blocks[0]["thinking"] == "my thinking"
         assert thinking_blocks[0]["signature"] == "sig1"
 
-    def test_reasoning_block_without_signature_kept_with_answer_content(self):
-        """ReasoningBlock with answer content should remain thinking even without a signature."""
+    def test_reasoning_block_without_signature_downgraded_with_answer_content(self):
+        """Anthropic payloads must not contain unsigned thinking blocks."""
         adapter = AnthropicMessagesAdapter()
         messages = [
             Message(
@@ -237,14 +237,12 @@ class TestAnthropicAdapterReasoningBlock:
         _, convo = adapter.to_vendor_format(messages)
         blocks = convo[0]["content"]
         thinking_blocks = [b for b in blocks if b.get("type") == "thinking"]
-        assert len(thinking_blocks) == 1
-        assert thinking_blocks[0] == {"type": "thinking", "thinking": "openai reasoning content"}
+        assert thinking_blocks == []
         text_blocks = [b for b in blocks if b.get("type") == "text"]
-        assert len(text_blocks) == 1
-        assert text_blocks[0]["text"] == "my answer"
+        assert [b["text"] for b in text_blocks] == ["openai reasoning content", "my answer"]
 
-    def test_reasoning_block_empty_text_no_signature_preserved_with_answer_content(self):
-        """Explicit empty reasoning_content should be preserved when companion content exists."""
+    def test_reasoning_block_empty_text_no_signature_omitted_with_answer_content(self):
+        """Empty unsigned reasoning cannot be sent as Anthropic thinking."""
         adapter = AnthropicMessagesAdapter()
         messages = [
             Message(
@@ -257,9 +255,7 @@ class TestAnthropicAdapterReasoningBlock:
         ]
         _, convo = adapter.to_vendor_format(messages)
         blocks = convo[0]["content"]
-        assert blocks[0] == {"type": "thinking", "thinking": ""}
-        assert blocks[1]["type"] == "text"
-        assert blocks[1]["text"] == "answer"
+        assert blocks == [{"type": "text", "text": "answer"}]
 
     def test_redacted_thinking_block(self):
         adapter = AnthropicMessagesAdapter()
@@ -278,8 +274,8 @@ class TestAnthropicAdapterReasoningBlock:
         assert len(redacted) == 1
         assert redacted[0]["data"] == "encrypted_blob"
 
-    def test_reasoning_block_without_signature_kept_as_thinking_with_answer_content(self):
-        """ReasoningBlock with companion answer content should stay as thinking without signature."""
+    def test_reasoning_block_without_signature_downgraded_as_text_with_answer_content(self):
+        """ReasoningBlock with companion answer content is plain text without a signature."""
         adapter = AnthropicMessagesAdapter()
         messages = [
             Message(
@@ -293,14 +289,12 @@ class TestAnthropicAdapterReasoningBlock:
         _, convo = adapter.to_vendor_format(messages)
         blocks = convo[0]["content"]
         thinking_blocks = [b for b in blocks if b.get("type") == "thinking"]
-        assert len(thinking_blocks) == 1
-        assert thinking_blocks[0] == {"type": "thinking", "thinking": "interrupted thinking"}
+        assert thinking_blocks == []
         text_blocks = [b for b in blocks if b.get("type") == "text"]
-        assert len(text_blocks) == 1
-        assert text_blocks[0]["text"] == "answer"
+        assert [b["text"] for b in text_blocks] == ["interrupted thinking", "answer"]
 
-    def test_reasoning_block_with_empty_signature_kept_as_thinking_with_answer_content(self):
-        """Empty string signature is treated as missing but keeps reasoning with companion content."""
+    def test_reasoning_block_with_empty_signature_downgraded_as_text_with_answer_content(self):
+        """Empty string signature is treated as missing."""
         adapter = AnthropicMessagesAdapter()
         messages = [
             Message(
@@ -314,14 +308,12 @@ class TestAnthropicAdapterReasoningBlock:
         _, convo = adapter.to_vendor_format(messages)
         blocks = convo[0]["content"]
         thinking_blocks = [b for b in blocks if b.get("type") == "thinking"]
-        assert len(thinking_blocks) == 1
-        assert thinking_blocks[0] == {"type": "thinking", "thinking": "thinking cut off"}
+        assert thinking_blocks == []
         text_blocks = [b for b in blocks if b.get("type") == "text"]
-        assert len(text_blocks) == 1
-        assert text_blocks[0]["text"] == "response"
+        assert [b["text"] for b in text_blocks] == ["thinking cut off", "response"]
 
-    def test_reasoning_block_empty_text_and_no_signature_preserved_with_answer_content(self):
-        """Empty reasoning_content should remain a thinking block when answer content exists."""
+    def test_reasoning_block_empty_text_and_no_signature_omitted_with_answer_content(self):
+        """Empty unsigned reasoning_content is omitted for Anthropic payload validity."""
         adapter = AnthropicMessagesAdapter()
         messages = [
             Message(
@@ -334,9 +326,7 @@ class TestAnthropicAdapterReasoningBlock:
         ]
         _, convo = adapter.to_vendor_format(messages)
         blocks = convo[0]["content"]
-        assert blocks[0] == {"type": "thinking", "thinking": ""}
-        assert blocks[1]["type"] == "text"
-        assert blocks[1]["text"] == "answer"
+        assert blocks == [{"type": "text", "text": "answer"}]
 
     def test_reasoning_only_block_without_signature_downgraded_to_text(self):
         """Only reasoning_content is downgraded to plain text when no companion output exists."""

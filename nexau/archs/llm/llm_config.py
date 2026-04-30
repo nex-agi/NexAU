@@ -48,6 +48,7 @@ class LLMConfig:
         stream_idle_timeout_ms: int | None = None,
         connect_timeout_ms: int | None = None,
         tool_streaming: bool = True,
+        allow_unsigned_thinking: bool = False,
         **kwargs: Any,
     ):
         """
@@ -77,6 +78,11 @@ class LLMConfig:
                 None → DEFAULT_CONNECT_TIMEOUT_MS (15_000ms = 15 s).
             tool_streaming: Enable Anthropic eager_input_streaming for tool calls.
                 Only valid for api_type='anthropic_chat_completion'. Default True.
+            allow_unsigned_thinking: Compatibility switch for Anthropic-compatible
+                proxies that accept thinking blocks without signatures. Default
+                False because strict Anthropic backends require signed thinking;
+                enable only when the target proxy is known to support unsigned
+                thinking replay.
             **kwargs: Additional model-specific parameters
         """
         self.model = model or self._get_model_from_env()
@@ -99,6 +105,7 @@ class LLMConfig:
         self.stream_idle_timeout_ms: int | None = stream_idle_timeout_ms
         self.connect_timeout_ms: int | None = connect_timeout_ms
         self.tool_streaming = tool_streaming
+        self.allow_unsigned_thinking = allow_unsigned_thinking
 
         # tool_streaming 仅适用于 Anthropic
         if tool_streaming is not True and api_type != "anthropic_chat_completion":
@@ -278,6 +285,7 @@ class LLMConfig:
             stream_idle_timeout_ms=self.stream_idle_timeout_ms,
             connect_timeout_ms=self.connect_timeout_ms,
             tool_streaming=self.tool_streaming,
+            allow_unsigned_thinking=self.allow_unsigned_thinking,
             **self.extra_params,
         )
 

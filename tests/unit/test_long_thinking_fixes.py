@@ -402,8 +402,8 @@ class TestAnthropicThinkingOnlyStreamingIntegration:
         assert thinking_blocks[0]["thinking"] == "Very long thinking..."
         assert thinking_blocks[0]["signature"] == "EpybBQ_test_signature"
 
-    def test_ump_roundtrip_keeps_unsigned_thinking_with_companion_content(self) -> None:
-        """When assistant output accompanies unsigned thinking, preserve it as thinking."""
+    def test_ump_roundtrip_downgrades_unsigned_thinking_with_companion_content(self) -> None:
+        """Unsigned thinking is downgraded so Anthropic follow-up payloads remain valid."""
         from nexau.core.adapters.anthropic_messages import AnthropicMessagesAdapter
         from nexau.core.messages import Message
 
@@ -440,10 +440,10 @@ class TestAnthropicThinkingOnlyStreamingIntegration:
         content_blocks = assistant_msg["content"]
 
         thinking_blocks = [b for b in content_blocks if b.get("type") == "thinking"]
-        assert len(thinking_blocks) == 1
-        assert thinking_blocks[0] == {"type": "thinking", "thinking": "Interrupted thinking..."}
+        assert thinking_blocks == []
 
         text_blocks = [b for b in content_blocks if b.get("type") == "text"]
+        assert any(b["text"] == "Interrupted thinking..." for b in text_blocks)
         assert any(b["text"] == "\n" for b in text_blocks)
 
 

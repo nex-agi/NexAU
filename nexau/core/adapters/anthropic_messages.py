@@ -18,8 +18,14 @@ class AnthropicMessagesAdapter(LLMAdapter):
     - messages: list[{"role": "...", "content": [blocks...]}]
     """
 
+    def __init__(self, *, allow_unsigned_thinking: bool = False) -> None:
+        self.allow_unsigned_thinking = allow_unsigned_thinking
+
     def to_vendor_format(self, messages: list[Message]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        return serialize_ump_to_anthropic_messages_payload(messages)
+        return serialize_ump_to_anthropic_messages_payload(
+            messages,
+            allow_unsigned_thinking=self.allow_unsigned_thinking,
+        )
 
     def from_vendor_response(self, response: Any) -> Message:  # pragma: no cover (not wired yet)
         raise NotImplementedError

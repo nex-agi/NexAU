@@ -238,11 +238,12 @@ class TestTwoTurnPayloadMatrix:
         thinking_blocks = [block for block in assistant_blocks if block.get("type") == "thinking"]
         text_blocks = [block for block in assistant_blocks if block.get("type") == "text"]
 
-        assert len(thinking_blocks) == 1
-        assert thinking_blocks[0]["thinking"] == expected_thinking_text
         if expected_signature is None:
-            assert "signature" not in thinking_blocks[0]
+            assert thinking_blocks == []
+            assert text_blocks[0]["text"] == expected_thinking_text
         else:
+            assert len(thinking_blocks) == 1
+            assert thinking_blocks[0]["thinking"] == expected_thinking_text
             assert thinking_blocks[0]["signature"] == expected_signature
         expected_text = "35 × 11 = 385\n385 + 57 = 442\n442 ÷ 13 = 34\n\nFinal A: 34" if source_name == "completion" else "Final A: 34"
         assert text_blocks[-1]["text"] == expected_text
@@ -280,11 +281,11 @@ class TestTwoTurnPayloadMatrix:
         [
             ("completion", "completion", "reasoning_content"),
             ("completion", "responses", "reconstructed_reasoning_replay"),
-            ("completion", "claude", "unsigned_thinking"),
+            ("completion", "claude", "unsigned_reasoning_text"),
             ("completion", "gemini", "thought_part"),
             ("responses", "completion", "response_items_plus_reasoning_content"),
             ("responses", "responses", "typed_reasoning_replay"),
-            ("responses", "claude", "unsigned_thinking"),
+            ("responses", "claude", "unsigned_reasoning_text"),
             ("responses", "gemini", "thought_part"),
             ("claude", "completion", "reasoning_content_plus_signature"),
             ("claude", "responses", "reconstructed_reasoning_replay"),
@@ -292,7 +293,7 @@ class TestTwoTurnPayloadMatrix:
             ("claude", "gemini", "thought_part"),
             ("gemini", "completion", "reasoning_content_plus_thought_signature"),
             ("gemini", "responses", "reconstructed_reasoning_replay"),
-            ("gemini", "claude", "unsigned_thinking"),
+            ("gemini", "claude", "unsigned_reasoning_text"),
             ("gemini", "gemini", "thought_part_with_signature"),
         ],
     )
@@ -341,10 +342,10 @@ class TestTwoTurnPayloadMatrix:
             if expected_policy == "signed_thinking":
                 assert len(thinking_blocks) == 1
                 assert thinking_blocks[0]["signature"] == "claude_sig"
-            elif expected_policy == "unsigned_thinking":
-                assert len(thinking_blocks) == 1
-                assert "signature" not in thinking_blocks[0]
-                assert thinking_blocks[0]["thinking"] in {"completion reasoning", "responses reasoning summary", "gemini thought"}
+            elif expected_policy == "unsigned_reasoning_text":
+                assert thinking_blocks == []
+                text_blocks = [block for block in assistant_blocks if block.get("type") == "text"]
+                assert text_blocks[0]["text"] in {"completion reasoning", "responses reasoning summary", "gemini thought"}
             else:
                 raise AssertionError(f"Unexpected claude policy {expected_policy}")
             return

@@ -6,7 +6,7 @@ from nexau.core.serializers.anthropic_messages import (
 from nexau.core.serializers.gemini_messages import serialize_ump_to_gemini_messages_payload
 
 
-def test_anthropic_serializer_keeps_unsigned_reasoning_with_companion_content_and_signed_thinking() -> None:
+def test_anthropic_serializer_downgrades_unsigned_reasoning_with_companion_content_and_keeps_signed_thinking() -> None:
     system_blocks, convo = serialize_ump_to_anthropic_messages_payload(
         [
             Message(role=Role.SYSTEM, content=[TextBlock(text="sys")], metadata={"cache": True}),
@@ -23,7 +23,7 @@ def test_anthropic_serializer_keeps_unsigned_reasoning_with_companion_content_an
 
     assert system_blocks == [{"type": "text", "text": "sys", "_cache": True}]
     blocks = convo[0]["content"]
-    assert blocks[0] == {"type": "thinking", "thinking": "unsigned reasoning"}
+    assert blocks[0] == {"type": "text", "text": "unsigned reasoning"}
     assert blocks[1] == {"type": "thinking", "thinking": "signed thinking", "signature": "sig_1"}
     assert blocks[2] == {"type": "text", "text": "answer"}
 
@@ -41,7 +41,7 @@ def test_anthropic_serializer_downgrades_unsigned_reasoning_only_message() -> No
     assert convo[0]["content"] == [{"type": "text", "text": "reasoning only"}]
 
 
-def test_anthropic_serializer_keeps_unsigned_reasoning_with_tool_call() -> None:
+def test_anthropic_serializer_downgrades_unsigned_reasoning_with_tool_call() -> None:
     _system_blocks, convo = serialize_ump_to_anthropic_messages_payload(
         [
             Message(
@@ -55,13 +55,33 @@ def test_anthropic_serializer_keeps_unsigned_reasoning_with_tool_call() -> None:
     )
 
     blocks = convo[0]["content"]
-    assert blocks[0] == {"type": "thinking", "thinking": "choose tool"}
+    assert blocks[0] == {"type": "text", "text": "choose tool"}
     assert blocks[1] == {
         "type": "tool_use",
         "id": "call_1",
         "name": "lookup",
         "input": {"query": "weather"},
     }
+
+
+def test_anthropic_serializer_allows_unsigned_thinking_when_configured() -> None:
+    _system_blocks, convo = serialize_ump_to_anthropic_messages_payload(
+        [
+            Message(
+                role=Role.ASSISTANT,
+                content=[
+                    ReasoningBlock(text="choose tool"),
+                    ToolUseBlock(id="call_1", name="lookup", input={"query": "weather"}),
+                ],
+            ),
+        ],
+        allow_unsigned_thinking=True,
+    )
+
+    blocks = convo[0]["content"]
+    assert blocks[0] == {"type": "thinking", "thinking": "choose tool"}
+    assert "signature" not in blocks[0]
+    assert blocks[1]["type"] == "tool_use"
 
 
 def test_anthropic_serializer_splits_tool_result_images_and_applies_cache_control() -> None:
