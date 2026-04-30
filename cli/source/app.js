@@ -261,6 +261,11 @@ export default function App({yamlPath}) {
 			['run', 'python', '-m', pythonModule, yamlPath],
 			{
 				cwd: repoRoot,
+				env: {
+					...process.env,
+					PYTHONUTF8: '1',
+					PYTHONIOENCODING: 'utf-8',
+				},
 			},
 		);
 

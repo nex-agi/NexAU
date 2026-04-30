@@ -20,6 +20,7 @@ from nexau.archs.sandbox.base_sandbox import (
     SandboxStatus,
     contains_heredoc,
     extract_dataclass_init_kwargs,
+    parse_single_bash_heredoc,
 )
 from nexau.archs.session.session_manager import SessionManager
 
@@ -276,6 +277,10 @@ class DummySandbox(BaseSandbox):
     def __init__(self, sandbox_id: str | None = None, work_dir: str = "/tmp") -> None:
         super().__init__(sandbox_id=sandbox_id, work_dir=work_dir)
         self.uploaded = []
+        self.last_execute_bash_call: dict[str, object] | None = None
+
+    def get_temp_dir(self) -> str:
+        return "/tmp"
 
     def detect_encoding(self, data: bytes) -> str:
         return self._detect_file_encoding(data)
@@ -289,6 +294,14 @@ class DummySandbox(BaseSandbox):
         envs: dict[str, str] | None = None,
         background: bool = False,
     ) -> CommandResult:
+        self.last_execute_bash_call = {
+            "command": command,
+            "timeout": timeout,
+            "cwd": cwd,
+            "user": user,
+            "envs": envs,
+            "background": background,
+        }
         return CommandResult(status=SandboxStatus.SUCCESS)
 
     def get_background_task_status(self, pid: int) -> CommandResult:
@@ -362,7 +375,7 @@ class TestBaseSandboxInterface:
 
         sandbox = LocalSandbox(work_dir="/tmp/test")
         assert isinstance(sandbox.work_dir, Path)
-        assert str(sandbox.work_dir) == "/tmp/test"
+        assert sandbox.work_dir == Path("/tmp/test")
 
     def test_base_sandbox_dict_method(self):
         from nexau.archs.sandbox.local_sandbox import LocalSandbox
@@ -387,6 +400,29 @@ class TestBaseSandboxInterface:
         assert sandbox is not None
         assert sandbox.sandbox_id == "ctx_test"
 
+    def test_execute_shell_delegates_to_legacy_execute_bash(self) -> None:
+        """Old subclasses that only implement execute_bash still get execute_shell."""
+        sandbox = DummySandbox()
+
+        result = sandbox.execute_shell(
+            "echo ok",
+            timeout=123,
+            cwd="/work",
+            user="user",
+            envs={"A": "B"},
+            background=True,
+        )
+
+        assert result.status == SandboxStatus.SUCCESS
+        assert sandbox.last_execute_bash_call == {
+            "command": "echo ok",
+            "timeout": 123,
+            "cwd": "/work",
+            "user": "user",
+            "envs": {"A": "B"},
+            "background": True,
+        }
+
     def test_detect_file_encoding_utf8(self):
         utf8_data = b"Hello World"
         encoding = DummySandbox().detect_encoding(utf8_data)
@@ -403,8 +439,9 @@ class TestBaseSandboxInterface:
         sandbox = DummySandbox(work_dir="/tmp/sandbox")
         skill = type("Skill", (), {"folder": "/local/skill_name"})()
         result = sandbox.upload_skill(skill)
-        assert result == "/tmp/sandbox/.skills/skill_name"
-        assert sandbox.uploaded == [("/local/skill_name", "/tmp/sandbox/.skills/skill_name")]
+        expected_path = str(Path("/tmp/sandbox") / ".skills" / "skill_name")
+        assert result == expected_path
+        assert sandbox.uploaded == [("/local/skill_name", expected_path)]
 
     def test_dict_returns_init_fields_only(self) -> None:
         """dict() should return only dataclass init fields."""
@@ -413,7 +450,7 @@ class TestBaseSandboxInterface:
         assert "sandbox_id" in d
         assert "work_dir" in d
         assert d["sandbox_id"] == "sid"
-        assert d["work_dir"] == "/tmp"
+        assert d["work_dir"] == str(Path("/tmp"))
 
     def test_detect_file_encoding_chardet_high_confidence(self) -> None:
         """When chardet returns high confidence, use detected encoding."""
@@ -430,6 +467,16 @@ class TestBaseSandboxInterface:
         monkeypatch.setattr("chardet.detect", raise_err)
         encoding = DummySandbox().detect_encoding(b"hello")
         assert encoding == "utf-8"
+
+    def test_join_path_uses_posix_semantics_for_posix_base(self) -> None:
+        sandbox = DummySandbox()
+        joined = sandbox.join_path("/tmp/", "nexau_tool_outputs", "out.txt")
+        assert joined == "/tmp/nexau_tool_outputs/out.txt"
+
+    def test_join_path_preserves_windows_drive_paths(self) -> None:
+        sandbox = DummySandbox()
+        joined = sandbox.join_path(r"C:\Temp", "nexau_tool_outputs", "out.txt")
+        assert joined == r"C:\Temp\nexau_tool_outputs\out.txt"
 
 
 class TestBaseSandboxManager:
@@ -758,3 +805,71 @@ class TestContainsHeredoc:
         from nexau.archs.sandbox.e2b_sandbox import E2BSandbox
 
         assert E2BSandbox._HEREDOC_PATTERN is HEREDOC_PATTERN
+
+
+class TestPrepareShellCommand:
+    """Tests for RFC-0019 backend-aware shell command preparation."""
+
+    def test_prepare_shell_command_returns_non_heredoc_unchanged(self) -> None:
+        sandbox = DummySandbox()
+
+        assert sandbox.prepare_shell_command("echo hello") == "echo hello"
+
+    def test_prepare_shell_command_scriptifies_bash_heredoc(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        writes: list[tuple[str, str]] = []
+        sandbox = DummySandbox()
+
+        def fake_write_file(
+            file_path: str,
+            content: str | bytes,
+            encoding: str = "utf-8",
+            binary: bool = False,
+            create_directories: bool = True,
+            user: str | None = None,
+        ) -> FileOperationResult:
+            assert encoding == "utf-8"
+            assert binary is False
+            assert create_directories is True
+            assert user is None
+            writes.append((file_path, str(content)))
+            return FileOperationResult(status=SandboxStatus.SUCCESS, file_path=file_path)
+
+        monkeypatch.setattr(sandbox, "write_file", fake_write_file)
+
+        prepared = sandbox.prepare_shell_command("cat <<'EOF'\nhello\nEOF")
+
+        assert prepared.startswith("bash /tmp/_nexau_heredoc_")
+        assert prepared.endswith(".sh")
+        assert writes == [(writes[0][0], "cat <<'EOF'\nhello\nEOF")]
+
+    def test_scriptify_heredoc_delegates_to_prepare_shell_command(self) -> None:
+        sandbox = DummySandbox()
+
+        assert sandbox.scriptify_heredoc("echo ok") == "echo ok"
+
+
+class TestParseSingleBashHeredoc:
+    """Tests for the conservative single-heredoc parser."""
+
+    def test_parses_cat_prefix_and_body(self) -> None:
+        heredoc = parse_single_bash_heredoc("cat > file.txt <<'EOF'\n$HOME\n'@\nEOF")
+
+        assert heredoc is not None
+        assert heredoc.command_prefix == "cat > file.txt"
+        assert heredoc.command_suffix == ""
+        assert heredoc.delimiter == "EOF"
+        assert heredoc.quoted is True
+        assert heredoc.body == "$HOME\n'@\n"
+
+    def test_parses_cat_suffix_redirection(self) -> None:
+        heredoc = parse_single_bash_heredoc("cat <<EOF >> out.txt\nhello\nEOF")
+
+        assert heredoc is not None
+        assert heredoc.command_prefix == "cat"
+        assert heredoc.command_suffix == ">> out.txt"
+        assert heredoc.body == "hello\n"
+
+    def test_rejects_multiple_heredocs(self) -> None:
+        heredoc = parse_single_bash_heredoc("cat <<A\na\nA\ncat <<B\nb\nB")
+
+        assert heredoc is None

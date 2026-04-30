@@ -767,6 +767,96 @@ class TestAgent:
                 # Verify merged context, state, and config were used
                 mock_execute.assert_called_once()
 
+    def test_run_injects_default_runtime_context_for_all_entrypoints(self, agent_config, global_storage):
+        """Agent.run should provide platform facts even when callers omit context."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            agent = Agent(config=agent_config, global_storage=global_storage)
+            runtime_context = {
+                "date": "2026-04-28 13:40:00",
+                "username": "tester",
+                "working_directory": r"C:\repo",
+                "operating_system": "Windows-11",
+                "platform": "win32",
+                "shell_tool_backend": "Windows PowerShell backend",
+                "shell_tool_guidance": "Use PowerShell command syntax.",
+                "env_content": {},
+            }
+
+            with (
+                patch("nexau.archs.main_sub.agent.build_runtime_prompt_context", return_value=runtime_context),
+                patch.object(
+                    agent.prompt_builder,
+                    "build_system_prompt",
+                    wraps=agent.prompt_builder.build_system_prompt,
+                ) as mock_build_prompt,
+                patch.object(agent.executor, "execute_async", new_callable=AsyncMock) as mock_execute,
+            ):
+                mock_execute.return_value = (
+                    "Response",
+                    [
+                        Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+                        Message(role=Role.USER, content=[TextBlock(text="Message")]),
+                        Message(role=Role.ASSISTANT, content=[TextBlock(text="Response")]),
+                    ],
+                )
+
+                response = agent.run(message="Message")
+
+            assert response == "Response"
+            prompt_context = mock_build_prompt.call_args.kwargs["runtime_context"]
+            assert prompt_context["operating_system"] == "Windows-11"
+            assert prompt_context["shell_tool_backend"] == "Windows PowerShell backend"
+            assert prompt_context["working_directory"] == r"C:\repo"
+            assert agent._last_context["operating_system"] == "Windows-11"
+
+    def test_run_context_overrides_default_runtime_context(self, agent_config, global_storage):
+        """Explicit run context should remain higher priority than default runtime facts."""
+        with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
+            mock_openai.OpenAI.return_value = Mock()
+
+            agent = Agent(config=agent_config, global_storage=global_storage)
+            runtime_context = {
+                "date": "2026-04-28 13:40:00",
+                "username": "tester",
+                "working_directory": r"C:\repo",
+                "operating_system": "Windows-11",
+                "platform": "win32",
+                "shell_tool_backend": "Windows PowerShell backend",
+                "shell_tool_guidance": "Use PowerShell command syntax.",
+                "env_content": {},
+            }
+
+            with (
+                patch("nexau.archs.main_sub.agent.build_runtime_prompt_context", return_value=runtime_context),
+                patch.object(
+                    agent.prompt_builder,
+                    "build_system_prompt",
+                    wraps=agent.prompt_builder.build_system_prompt,
+                ) as mock_build_prompt,
+                patch.object(agent.executor, "execute_async", new_callable=AsyncMock) as mock_execute,
+            ):
+                mock_execute.return_value = (
+                    "Response",
+                    [
+                        Message(role=Role.SYSTEM, content=[TextBlock(text="System prompt")]),
+                        Message(role=Role.USER, content=[TextBlock(text="Message")]),
+                        Message(role=Role.ASSISTANT, content=[TextBlock(text="Response")]),
+                    ],
+                )
+
+                response = agent.run(
+                    message="Message",
+                    context={"operating_system": "OverrideOS", "shell_tool_backend": "Override shell"},
+                )
+
+            assert response == "Response"
+            prompt_context = mock_build_prompt.call_args.kwargs["runtime_context"]
+            assert prompt_context["operating_system"] == "OverrideOS"
+            assert prompt_context["shell_tool_backend"] == "Override shell"
+            assert prompt_context["working_directory"] == r"C:\repo"
+
     def test_run_uses_custom_llm_client_provider_for_main_agent(self, agent_config, global_storage):
         """Custom provider should override the runtime client for the main agent only."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:

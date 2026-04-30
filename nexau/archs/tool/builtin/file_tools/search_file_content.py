@@ -10,7 +10,7 @@ Uses prioritized strategies: git grep -> system grep -> JavaScript fallback.
 import fnmatch
 import re
 import shlex
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from nexau.archs.main_sub.agent_state import AgentState
@@ -32,11 +32,14 @@ DEFAULT_EXCLUDES = [
     ".eggs",
 ]
 
+_GREP_LINE_PATTERN: re.Pattern[str] = re.compile(r":(\d+):(.*)$")
+_WINDOWS_DRIVE_PATH_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z]:[\\/]")
+
 
 def _rg_available(sandbox: BaseSandbox) -> bool:
     """Check if ripgrep (rg) is available inside the sandbox."""
     try:
-        res = sandbox.execute_bash("rg --version", timeout=5000)
+        res = sandbox.execute_shell("rg --version", timeout=5000)
         return res.status == SandboxStatus.SUCCESS and (res.exit_code == 0)
     except Exception:
         return False
@@ -50,28 +53,40 @@ def _parse_grep_line(line: str, base_path: str) -> dict[str, Any] | None:
     if not line.strip():
         return None
 
-    # Use regex to locate the first occurrence of :<digits>:
-    match = re.match(r"^(.+?):(\d+):(.*)$", line)
-    if not match:
+    # RFC-0019: match the trailing `:lineNumber:` segment so Windows drive
+    # prefixes like `C:\...` do not break parsing.
+    match = _GREP_LINE_PATTERN.search(line)
+    if match is None:
         return None
 
-    file_path_raw, line_number_str, line_content = match.groups()
+    file_path_raw = line[: match.start()]
+    line_number_str = match.group(1)
+    line_content = match.group(2)
 
     try:
         line_number = int(line_number_str)
     except ValueError:
         return None
 
-    base = Path(base_path)
     raw = file_path_raw.strip()
-    p = Path(raw)
-    if p.is_absolute():
+    windows_absolute_match = _WINDOWS_DRIVE_PATH_PATTERN.match(raw)
+    if windows_absolute_match is not None:
+        base_windows = PureWindowsPath(base_path)
+        path_windows = PureWindowsPath(raw)
         try:
-            rel = str(p.relative_to(base))
+            rel = str(path_windows.relative_to(base_windows))
         except Exception:
             rel = raw
     else:
-        rel = raw
+        base = Path(base_path)
+        p = Path(raw)
+        if p.is_absolute():
+            try:
+                rel = str(p.relative_to(base))
+            except Exception:
+                rel = raw
+        else:
+            rel = raw
 
     return {
         "filePath": rel,
@@ -114,10 +129,10 @@ def _rg_grep(
         cmd.extend(["--glob", include])
 
     cmd.append(pattern)
-    cmd.append(search_path)
+    cmd.append(sandbox.to_shell_path(search_path))
 
     cmd_str = " ".join(shlex.quote(x) for x in cmd)
-    res = sandbox.execute_bash(cmd_str, timeout=DEFAULT_SEARCH_TIMEOUT_MS)
+    res = sandbox.execute_shell(cmd_str, timeout=DEFAULT_SEARCH_TIMEOUT_MS)
 
     if res.status == SandboxStatus.TIMEOUT:
         raise TimeoutError("search_file_content timed out")

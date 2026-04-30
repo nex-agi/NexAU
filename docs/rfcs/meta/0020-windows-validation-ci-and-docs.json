@@ -1,29 +1,33 @@
 {
   "rfc": "0020",
   "title": "NexAU Windows 验证、CI 与文档交付",
-  "status": "accepted",
+  "status": "implementing",
   "priority": "P0",
   "tags": [
     "windows",
     "ci",
     "testing",
     "docs",
-    "cli"
+    "cli",
+    "shell-backend",
+    "encoding"
   ],
-  "affects": "GitHub Actions CI, Windows test suite, CLI entrypoints, user-facing documentation",
+  "affects": "GitHub Actions CI, Windows test suite, CLI entrypoints, user-facing documentation, shell backend validation, text encoding regression coverage",
   "created": "2026-04-22",
-  "updated": "2026-04-23",
+  "updated": "2026-04-27",
   "requires": [
     "0019"
   ],
-  "related": [],
+  "related": [
+    "0019"
+  ],
   "tasks": [
     {
       "id": "T1",
       "title": "Windows 支持基线与验证矩阵落地",
       "depends_on": [],
-      "status": "pending",
-      "ref": null
+      "status": "implemented",
+      "ref": ""
     },
     {
       "id": "T2",
@@ -31,25 +35,25 @@
       "depends_on": [
         "T1"
       ],
-      "status": "pending",
-      "ref": null
+      "status": "implemented",
+      "ref": "Marked implemented by operator instruction; Windows required checks work is considered complete for RFC-0020 T4 unblocking"
     },
     {
       "id": "T3",
-      "title": "测试基建平台化与差异治理",
+      "title": "测试基建平台化与 shell backend 差异治理",
       "depends_on": [],
-      "status": "pending",
-      "ref": null
+      "status": "implemented",
+      "ref": "local verification: 151 passed, 1 skipped; rg fallback and ffmpeg degradation injection tests added; Windows target includes T3 helper tests"
     },
     {
       "id": "T4",
-      "title": "启动入口与前置条件链路验证补齐",
+      "title": "启动入口与 shell backend 链路验证补齐",
       "depends_on": [
         "T2",
         "T3"
       ],
-      "status": "pending",
-      "ref": null
+      "status": "implemented",
+      "ref": "windows-entrypoint-smoke runs RFC-0020 T4 entrypoint/backend tests; CLI preflight respects explicit NEXAU_WINDOWS_SHELL_BACKEND=git-bash fail-fast and default backend re-probe"
     },
     {
       "id": "T5",
@@ -58,8 +62,8 @@
         "T1",
         "T4"
       ],
-      "status": "pending",
-      "ref": null
+      "status": "implemented",
+      "ref": "docs/windows.md plus README.md, README_CN.md, docs/getting-started.md, docs/index.md links; final wording aligned after T4 implementation"
     }
   ]
 }

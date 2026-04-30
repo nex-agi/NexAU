@@ -18,6 +18,12 @@ You are a [Role Name] agent specialized in [domain/task].
 - [Guideline 2]
 - [Guideline 3]
 
+# Runtime Environment
+
 Date: {{ date }}
 Username: {{ username }}
 Working Dir: {{ working_directory }}
+Operating System: {{ operating_system }}
+Platform: {{ platform }}
+Shell Tool Backend: {{ shell_tool_backend }}
+Shell Tool Guidance: {{ shell_tool_guidance }}

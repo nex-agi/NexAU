@@ -1,13 +1,15 @@
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
 
+from nexau.archs.platform.shell_backend import WindowsCmdBackend, WindowsPowerShellBackend
 from nexau.archs.sandbox.base_sandbox import (
-    BASH_TOOL_RESULTS_BASE_PATH,
     CodeLanguage,
+    SandboxError,
     SandboxFileError,
     SandboxStatus,
 )
@@ -25,6 +27,123 @@ def temp_dir():
 def sandbox(temp_dir):
     sb = LocalSandbox(sandbox_id="test_sandbox", work_dir=temp_dir)
     yield sb
+
+
+def _python_inline(sandbox: LocalSandbox, code: str) -> str:
+    """Build a shell-neutral inline Python command for the active backend."""
+    return f'{sandbox.get_python_command()} -c "{code}"'
+
+
+def test_get_python_command_uses_sys_executable_for_windows_powershell(monkeypatch):
+    """RFC-0020: Windows local execution must not depend on PATH python3."""
+    sandbox = LocalSandbox(sandbox_id="python_command_test", work_dir=tempfile.mkdtemp())
+    try:
+        sandbox._shell_backend = WindowsPowerShellBackend(Path(r"C:\Program Files\PowerShell\7\pwsh.exe"), "pwsh")
+        monkeypatch.setattr("nexau.archs.sandbox.local_sandbox.sys.executable", r"C:\Program Files\Python312\python.exe")
+
+        command = sandbox.get_python_command()
+
+        assert command == r"& 'C:\Program Files\Python312\python.exe'"
+        assert "python3" not in command
+    finally:
+        shutil.rmtree(str(sandbox.work_dir), ignore_errors=True)
+
+
+def test_execute_bash_delegates_to_execute_shell(sandbox, monkeypatch):
+    expected = object()
+    calls = []
+
+    def fake_execute_shell(command, *, timeout=None, cwd=None, user=None, envs=None, background=False):
+        calls.append(
+            {
+                "command": command,
+                "timeout": timeout,
+                "cwd": cwd,
+                "user": user,
+                "envs": envs,
+                "background": background,
+            }
+        )
+        return expected
+
+    monkeypatch.setattr(sandbox, "execute_shell", fake_execute_shell)
+
+    result = sandbox.execute_bash(
+        "Write-Output ok",
+        timeout=1000,
+        cwd=str(sandbox.work_dir),
+        user="user",
+        envs={"A": "B"},
+        background=True,
+    )
+
+    assert result is expected
+    assert calls == [
+        {
+            "command": "Write-Output ok",
+            "timeout": 1000,
+            "cwd": str(sandbox.work_dir),
+            "user": "user",
+            "envs": {"A": "B"},
+            "background": True,
+        }
+    ]
+
+
+def test_execute_shell_detaches_child_stdin(sandbox, monkeypatch):
+    popen_calls = []
+    real_popen = subprocess.Popen
+
+    class TrackingPopen:
+        def __call__(self, *args, **kwargs):
+            popen_calls.append(kwargs)
+            return real_popen(*args, **kwargs)
+
+        def __class_getitem__(cls, item):
+            return real_popen[item]
+
+        def __getitem__(self, item):
+            return real_popen[item]
+
+    monkeypatch.setattr(subprocess, "Popen", TrackingPopen())
+
+    result = sandbox.execute_shell("echo stdin-detached")
+
+    assert result.status == SandboxStatus.SUCCESS
+    assert popen_calls
+    assert popen_calls[0]["stdin"] == subprocess.DEVNULL
+
+
+def test_execute_shell_background_detaches_child_stdin(sandbox, monkeypatch):
+    popen_calls = []
+    real_popen = subprocess.Popen
+
+    class TrackingPopen:
+        def __call__(self, *args, **kwargs):
+            popen_calls.append(kwargs)
+            return real_popen(*args, **kwargs)
+
+        def __class_getitem__(cls, item):
+            return real_popen[item]
+
+        def __getitem__(self, item):
+            return real_popen[item]
+
+    monkeypatch.setattr(subprocess, "Popen", TrackingPopen())
+
+    result = sandbox.execute_shell("echo stdin-detached", background=True)
+    assert result.background_pid is not None
+
+    deadline = time.time() + 5
+    while True:
+        status = sandbox.get_background_task_status(result.background_pid)
+        if status.status != SandboxStatus.RUNNING or time.time() >= deadline:
+            break
+        time.sleep(0.05)
+
+    assert status.status == SandboxStatus.SUCCESS
+    assert popen_calls
+    assert popen_calls[0]["stdin"] == subprocess.DEVNULL
 
 
 class TestLocalSandboxLifecycle:
@@ -54,9 +173,17 @@ class TestBashCommandExecution:
         assert "timed out" in result.error.lower()
 
     def test_execute_command_with_output(self, sandbox):
-        result = sandbox.execute_bash("ls -la")
+        result = sandbox.execute_bash(_python_inline(sandbox, "print('listing ok')"))
         assert result.status == SandboxStatus.SUCCESS
         assert len(result.stdout) > 0
+
+    def test_execute_command_with_per_call_envs(self, sandbox):
+        result = sandbox.execute_bash(
+            _python_inline(sandbox, "import os; print(os.environ['MY_TEST_VAR'])"),
+            envs={"MY_TEST_VAR": "hello_nexau"},
+        )
+        assert result.status == SandboxStatus.SUCCESS
+        assert "hello_nexau" in result.stdout
 
     def test_execute_command_stderr(self, sandbox):
         result = sandbox.execute_bash("ls /nonexistent_directory_12345")
@@ -74,6 +201,42 @@ class TestBashCommandExecution:
         assert "Line 1" in result.stdout
         assert "Line 2" in result.stdout
         assert "Line 3" in result.stdout
+
+    def test_powershell_backend_rewrites_simple_bash_cat_heredoc(self, sandbox):
+        sandbox._shell_backend = WindowsPowerShellBackend(Path(r"C:\pwsh.exe"), "pwsh")
+        command = "cat > out.txt <<'EOF'\n$HOME\n'@\n`tick`\nEOF"
+
+        before_payloads = set(Path(sandbox.get_temp_dir()).glob("_nexau_heredoc_payload_*.txt"))
+
+        prepared = sandbox.prepare_shell_command(command)
+
+        assert "<<" not in prepared
+        assert "$HOME" not in prepared
+        assert "'@" not in prepared
+        assert "_nexau_heredoc_payload_" in prepared
+        assert "WriteAllText('out.txt'" in prepared
+        payload_files = set(Path(sandbox.get_temp_dir()).glob("_nexau_heredoc_payload_*.txt")) - before_payloads
+        assert len(payload_files) == 1
+        payload_file = next(iter(payload_files))
+        assert payload_file.read_text(encoding="utf-8") == "$HOME\n'@\n`tick`\n"
+
+    def test_powershell_backend_rejects_complex_bash_heredoc(self, sandbox):
+        sandbox._shell_backend = WindowsPowerShellBackend(Path(r"C:\pwsh.exe"), "pwsh")
+
+        with pytest.raises(SandboxError) as exc_info:
+            sandbox.prepare_shell_command("python - <<'PY'\nprint('hello')\nPY")
+
+        message = str(exc_info.value)
+        assert "PowerShell syntax" in message
+        assert "UTF8Encoding($false)" in message
+        assert "NEXAU_WINDOWS_SHELL_BACKEND=git-bash" in message
+        assert "Set-Content -Encoding UTF8" not in message
+
+    def test_cmd_backend_rejects_bash_heredoc(self, sandbox):
+        sandbox._shell_backend = WindowsCmdBackend(Path(r"C:\Windows\System32\cmd.exe"))
+
+        with pytest.raises(SandboxError, match="PowerShell syntax"):
+            sandbox.prepare_shell_command("cat <<EOF\nhello\nEOF")
 
     def test_execute_command_in_work_dir(self, sandbox):
         sandbox.write_file("test_marker.txt", "marker")
@@ -596,7 +759,8 @@ class TestAlwaysOnOutputDir:
     def test_foreground_large_output_truncated_with_hint(self, sandbox):
         """Output above threshold is truncated with first/last 5k chars and file hint."""
         # Generate > 10k chars of stdout output
-        result = sandbox.execute_bash("python3 -c \"print('x' * 15000)\"")
+        python_cmd = sandbox.get_python_command()
+        result = sandbox.execute_bash(f"{python_cmd} -c \"print('x' * 15000)\"")
         assert result.truncated is True
         assert result.original_stdout_length is not None
         assert result.original_stdout_length >= 15000
@@ -609,7 +773,7 @@ class TestAlwaysOnOutputDir:
 
     def test_foreground_save_output_with_stderr(self, sandbox):
         """Both stdout and stderr are saved to output_dir."""
-        result = sandbox.execute_bash("echo 'out' && echo 'err' >&2")
+        result = sandbox.execute_bash(_python_inline(sandbox, "import sys; print('out'); print('err', file=sys.stderr)"))
         assert result.output_dir is not None
         assert "out" in Path(f"{result.output_dir}/stdout.txt").read_text()
         assert "err" in Path(f"{result.output_dir}/stderr.txt").read_text()
@@ -617,7 +781,7 @@ class TestAlwaysOnOutputDir:
 
     def test_foreground_failed_command_has_output_dir(self, sandbox):
         """Failed commands also get output_dir populated."""
-        result = sandbox.execute_bash("echo 'before fail' && exit 1")
+        result = sandbox.execute_bash(_python_inline(sandbox, "import sys; print('before fail'); sys.exit(1)"))
         assert result.status == SandboxStatus.ERROR
         assert result.output_dir is not None
         assert Path(f"{result.output_dir}/stdout.txt").exists()
@@ -626,16 +790,19 @@ class TestAlwaysOnOutputDir:
 
     def test_foreground_timeout_has_output_dir(self, sandbox):
         """Timed-out commands also get output_dir populated."""
-        result = sandbox.execute_bash("echo 'timeout_test' && sleep 60", timeout=200)
+        result = sandbox.execute_bash(_python_inline(sandbox, "import time; print('timeout_test'); time.sleep(60)"), timeout=200)
         assert result.status == SandboxStatus.TIMEOUT
         assert result.output_dir is not None
         shutil.rmtree(result.output_dir, ignore_errors=True)
 
     def test_output_dir_under_expected_base_path(self, sandbox):
-        """Output dir is created under BASH_TOOL_RESULTS_BASE_PATH."""
+        """Output dir is created under the local bash tool results directory."""
+        from nexau.archs.platform.path_helpers import get_local_bash_tool_results_dir
+
         result = sandbox.execute_bash("echo 'path test'")
         assert result.output_dir is not None
-        assert result.output_dir.startswith(f"{BASH_TOOL_RESULTS_BASE_PATH}/")
+        expected_base = str(get_local_bash_tool_results_dir())
+        assert result.output_dir.startswith(expected_base)
         shutil.rmtree(result.output_dir, ignore_errors=True)
 
     def test_background_always_creates_output_dir(self, sandbox):
@@ -658,7 +825,8 @@ class TestAlwaysOnOutputDir:
         """Background tasks with large output are smart-truncated."""
         import time
 
-        result = sandbox.execute_bash("python3 -c \"print('y' * 15000)\"", background=True)
+        python_cmd = sandbox.get_python_command()
+        result = sandbox.execute_bash(f"{python_cmd} -c \"print('y' * 15000)\"", background=True)
         time.sleep(2)
         status = sandbox.get_background_task_status(result.background_pid)
         assert status.truncated is True
@@ -729,6 +897,7 @@ class TestSmartTruncateOutput:
         assert truncated is False
 
 
+@pytest.mark.posix_only
 class TestGracefulKill:
     """Tests for the _graceful_kill static method and process group management."""
 
@@ -789,7 +958,7 @@ class TestGracefulKill:
         import os
 
         # Run a command that prints its process group ID
-        result = sandbox.execute_bash('python3 -c "import os; print(os.getpgrp())"')
+        result = sandbox.execute_bash(f'{sandbox.get_python_command()} -c "import os; print(os.getpgrp())"')
         assert result.status == SandboxStatus.SUCCESS
         child_pgid = int(result.stdout.strip())
         # The child's pgid should differ from our own (since start_new_session=True)
@@ -801,7 +970,7 @@ class TestGracefulKill:
         import time
 
         result = sandbox.execute_bash(
-            'python3 -c "import os; print(os.getpgrp())"',
+            f'{sandbox.get_python_command()} -c "import os; print(os.getpgrp())"',
             background=True,
         )
         pid = result.background_pid
@@ -822,7 +991,9 @@ class TestGracefulKill:
         kill_result = sandbox.kill_background_task(pid)
         assert kill_result.status == SandboxStatus.SUCCESS
 
-        # Verify the process is actually gone
+        # Verify the process is actually gone.
+        # On POSIX os.kill(pid, 0) raises ProcessLookupError when the PID is
+        # gone; on Windows it raises OSError (WinError 87).
         import os
 
         try:
@@ -833,7 +1004,7 @@ class TestGracefulKill:
             time.sleep(1)
             os.kill(pid, 0)
             # Still alive after 1s is unexpected but not a hard failure
-        except ProcessLookupError:
+        except (ProcessLookupError, OSError):
             pass  # expected — process was killed
 
     def test_graceful_kill_kills_child_processes(self, sandbox):
@@ -847,12 +1018,15 @@ class TestGracefulKill:
         assert result.status == SandboxStatus.TIMEOUT
 
 
+@pytest.mark.posix_only
 class TestGracefulKillBranches:
     """Mock-based tests to cover SIGKILL fallback branches in _graceful_kill."""
 
     def test_sigkill_path_when_sigterm_times_out(self):
         """When SIGTERM doesn't stop the process within grace_period, SIGKILL should be sent."""
         from unittest.mock import MagicMock, patch
+
+        from nexau.archs.platform.process_compat import _SIGKILL
 
         process = MagicMock()
         process.pid = 12345
@@ -864,7 +1038,10 @@ class TestGracefulKillBranches:
             None,  # step 4
         ]
 
-        with patch("os.getpgid", return_value=12345) as _, patch("os.killpg") as mock_killpg:
+        with (
+            patch("nexau.archs.platform.process_compat._getpgid", return_value=12345),
+            patch("nexau.archs.platform.process_compat._killpg") as mock_killpg,
+        ):
             LocalSandbox._graceful_kill(process, grace_period=1.0)
 
         # Verify SIGKILL was sent (second call to killpg)
@@ -873,7 +1050,7 @@ class TestGracefulKillBranches:
         killpg_calls = mock_killpg.call_args_list
         assert len(killpg_calls) == 2
         assert killpg_calls[0].args == (12345, signal.SIGTERM)
-        assert killpg_calls[1].args == (12345, signal.SIGKILL)
+        assert killpg_calls[1].args == (12345, _SIGKILL)
         # process.kill() is also called as belt-and-suspenders
         process.kill.assert_called_once()
 
@@ -889,7 +1066,7 @@ class TestGracefulKillBranches:
             None,  # step 4
         ]
 
-        with patch("os.getpgid", side_effect=ProcessLookupError("No such process")):
+        with patch("nexau.archs.platform.process_compat._getpgid", side_effect=ProcessLookupError("No such process")):
             # SIGTERM fallback to process.terminate(), then SIGKILL getpgid also fails
             LocalSandbox._graceful_kill(process, grace_period=0.1)
         # Should not raise
@@ -906,7 +1083,10 @@ class TestGracefulKillBranches:
             subprocess.TimeoutExpired(cmd="test", timeout=10),  # step 4
         ]
 
-        with patch("os.getpgid", return_value=22222), patch("os.killpg"):
+        with (
+            patch("nexau.archs.platform.process_compat._getpgid", return_value=22222),
+            patch("nexau.archs.platform.process_compat._killpg"),
+        ):
             LocalSandbox._graceful_kill(process, grace_period=0.1)
         # Should still return without raising
 
@@ -923,7 +1103,10 @@ class TestGracefulKillBranches:
             None,  # step 4
         ]
 
-        with patch("os.getpgid", return_value=44444), patch("os.killpg"):
+        with (
+            patch("nexau.archs.platform.process_compat._getpgid", return_value=44444),
+            patch("nexau.archs.platform.process_compat._killpg"),
+        ):
             LocalSandbox._graceful_kill(process, grace_period=0.1)
         # Should not raise despite process.kill() failure
 

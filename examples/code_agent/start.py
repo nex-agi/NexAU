@@ -15,19 +15,12 @@
 """Test the code agent loading from YAML configuration."""
 
 import logging
-import os
-from datetime import datetime
 from pathlib import Path
-
 
 from nexau import Agent, AgentConfig
 from nexau.archs.main_sub.execution.middleware.agent_events_middleware import AgentEventsMiddleware, Event
 
 logging.basicConfig(level=logging.INFO)
-
-
-def get_date():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def handler(event: Event) -> None:
@@ -58,7 +51,7 @@ def main():
         if sandbox is None:
             print("✗ Sandbox failed to start")
             return False
-        print("✓ Sandbox constructed successfully: {}".format(sandbox.sandbox_id))
+        print(f"✓ Sandbox constructed successfully: {sandbox.sandbox_id}")
 
         print("\nTesting Code Agent...")
         user_message = input("Enter your task: ")
@@ -67,19 +60,7 @@ def main():
         print("\nAgent Response:")
         print("-" * 30)
 
-        response = claude_code_agent.run(
-            message=user_message,
-            context={
-                "date": get_date(),
-                "username": os.getenv("USER"),
-                "working_directory": str(sandbox.work_dir if sandbox else os.getcwd()),
-                "env_content": {
-                    "date": get_date(),
-                    "username": os.getenv("USER"),
-                    "working_directory": str(sandbox.work_dir if sandbox else os.getcwd()),
-                },
-            },
-        )
+        response = claude_code_agent.run(message=user_message)
         print(response)
 
     except Exception as e:

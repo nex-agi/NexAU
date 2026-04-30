@@ -115,12 +115,14 @@ Module: `nexau.archs.tool.builtin.shell_tools`
 
 ### run_shell_command
 
-Executes a shell command via `bash -c`.
+Executes a shell command through the sandbox's active shell backend. On Windows,
+the default backend is PowerShell/cmd unless Git Bash is explicitly selected;
+on Unix-like systems, the backend is bash-compatible.
 
 ```
 Binding: nexau.archs.tool.builtin.shell_tools:run_shell_command
 Parameters:
-  - command (string, required): Bash command to execute
+  - command (string, required): Command to execute with the active shell backend
   - description (string, optional): Brief description of the command
   - is_background (boolean, optional): Run in background (default: false)
   - dir_path (string, optional): Working directory

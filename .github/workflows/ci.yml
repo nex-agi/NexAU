@@ -35,7 +35,8 @@ jobs:
 
     - name: Run lint suite
       run: |
-        make lint format-check
+        uv run ruff check .
+        make format-check
 
   typecheck:
     runs-on: ubuntu-latest
@@ -54,7 +55,7 @@ jobs:
       run: |
         make mypy-coverage
 
-    - name: Run pyright (strict, non-blocking)
+    - name: Run pyright
       run: |
         make pyright
 
@@ -74,6 +75,244 @@ jobs:
       with:
         name: type-coverage-html
         path: mypy_reports/type_html/
+
+  windows-quality:
+    name: windows-quality
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - *setup-python
+    - name: Install uv (Windows)
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        irm https://astral.sh/uv/install.ps1 | iex
+        $uvDir = @(
+          "$env:USERPROFILE\.local\bin"
+          "$env:USERPROFILE\.cargo\bin"
+        ) | Where-Object { Test-Path (Join-Path $_ 'uv.exe') } | Select-Object -First 1
+        if (-not $uvDir) {
+          throw "uv.exe was not installed to an expected user bin directory."
+        }
+        $uvDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    - *install-deps
+    - name: Verify default Windows shell backend
+      shell: pwsh
+      run: |
+        $script = @'
+        from nexau.archs.platform.shell_backend import ensure_default_windows_shell
+
+        inst = ensure_default_windows_shell()
+        print(
+            "default Windows shell backend: "
+            f"kind={inst.kind} path={inst.executable_path} "
+            f"source={inst.source} version={inst.version}"
+        )
+        '@
+        $script | uv run python -
+
+    - name: Show Python version
+      shell: pwsh
+      run: python --version
+
+    - name: Show uv version
+      shell: pwsh
+      run: uv --version
+
+    - name: Show Node.js version
+      shell: pwsh
+      run: node --version
+
+    - name: Show npm version
+      shell: pwsh
+      run: npm --version
+
+    - name: Run ruff check
+      shell: pwsh
+      run: uv run ruff check .
+
+    - name: Run ruff format check
+      shell: pwsh
+      run: uv run ruff format --check
+
+    - name: Run mypy on Windows
+      shell: pwsh
+      run: uv run mypy --config-file pyproject.toml .
+
+    - name: Run pyright on Windows
+      shell: pwsh
+      run: uv run pyright
+
+  windows-target-tests:
+    name: windows-target-tests
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - *setup-python
+    - name: Install uv (Windows)
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        irm https://astral.sh/uv/install.ps1 | iex
+        $uvDir = @(
+          "$env:USERPROFILE\.local\bin"
+          "$env:USERPROFILE\.cargo\bin"
+        ) | Where-Object { Test-Path (Join-Path $_ 'uv.exe') } | Select-Object -First 1
+        if (-not $uvDir) {
+          throw "uv.exe was not installed to an expected user bin directory."
+        }
+        $uvDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+    - *install-deps
+    - name: Verify default Windows shell backend
+      shell: pwsh
+      run: |
+        $script = @'
+        from nexau.archs.platform.shell_backend import ensure_default_windows_shell
+
+        inst = ensure_default_windows_shell()
+        print(
+            "default Windows shell backend: "
+            f"kind={inst.kind} path={inst.executable_path} "
+            f"source={inst.source} version={inst.version}"
+        )
+        '@
+        $script | uv run python -
+
+    - name: Run Windows target pytest suite
+      shell: pwsh
+      run: |
+        $targets = @(
+          "tests/unit/archs/platform/"
+          "tests/unit/test_cli_entrypoint_checks.py"
+          "tests/unit/test_cli_commands_chat.py"
+          "tests/unit/test_cli_agent_runner_stdio.py"
+          "tests/unit/test_cli_run_agent.py"
+          "tests/unit/test_cli_wrapper.py"
+          "tests/unit/test_platform_test_utils.py"
+          "tests/unit/test_skill.py"
+          "tests/unit/archs/sandbox/test_windows_local_sandbox_smoke.py"
+          "tests/unit/archs/sandbox/test_base_sandbox.py"
+          "tests/unit/archs/sandbox/test_e2b_sandbox_unit.py::TestResolvePath"
+          "tests/unit/archs/sandbox/test_e2b_sandbox_unit.py::TestDefaultWorkDir"
+          "tests/unit/archs/main_sub/test_cleanup_manager.py"
+          "tests/unit/test_builtin_tools/test_read_file.py"
+          "tests/unit/test_builtin_tools/test_read_visual_file.py"
+          "tests/unit/test_builtin_tools/test_run_shell_command.py"
+          "tests/unit/test_builtin_tools/test_search_file_content.py"
+          "tests/unit/test_builtin_tools/test_replace.py"
+          "tests/unit/test_config.py"
+        )
+        uv run pytest $targets --timeout=120 -v --tb=short
+
+  windows-entrypoint-smoke:
+    name: windows-entrypoint-smoke
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - *setup-python
+    - name: Install uv (Windows)
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        irm https://astral.sh/uv/install.ps1 | iex
+        $uvDir = @(
+          "$env:USERPROFILE\.local\bin"
+          "$env:USERPROFILE\.cargo\bin"
+        ) | Where-Object { Test-Path (Join-Path $_ 'uv.exe') } | Select-Object -First 1
+        if (-not $uvDir) {
+          throw "uv.exe was not installed to an expected user bin directory."
+        }
+        $uvDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    - *install-deps
+    - name: Verify default Windows shell backend
+      shell: pwsh
+      run: |
+        $script = @'
+        from nexau.archs.platform.shell_backend import ensure_default_windows_shell
+
+        inst = ensure_default_windows_shell()
+        print(
+            "default Windows shell backend: "
+            f"kind={inst.kind} path={inst.executable_path} "
+            f"source={inst.source} version={inst.version}"
+        )
+        '@
+        $script | uv run python -
+
+    - name: Run RFC-0020 T4 entrypoint and backend link tests
+      shell: pwsh
+      run: |
+        $targets = @(
+          "tests/unit/test_cli_entrypoint_checks.py"
+          "tests/unit/test_cli_commands_chat.py"
+          "tests/unit/test_cli_run_agent.py"
+          "tests/unit/test_cli_wrapper.py"
+          "tests/unit/archs/platform/test_shell_backend.py"
+        )
+        uv run pytest $targets --timeout=120 -v --tb=short
+
+    - name: Smoke test nexau chat runtime path
+      shell: pwsh
+      run: |
+        $PSNativeCommandUseErrorActionPreference = $false
+        Remove-Item Env:LLM_MODEL, Env:LLM_BASE_URL, Env:LLM_API_KEY -ErrorAction SilentlyContinue
+        $output = uv run nexau chat examples/simple_research/main_agent.yaml --query "windows-smoke" 2>&1
+        $code = $LASTEXITCODE
+        $text = ($output | Out-String)
+        Write-Host $text
+        if ($code -eq 0) {
+          throw "Expected `nexau chat` smoke to fail after entering the runtime path, but it exited 0."
+        }
+        if ($text -notmatch "Environment variable 'LLM_MODEL' is not set") {
+          throw "Expected `nexau chat` smoke to reach post-default-shell config loading and fail on missing LLM_MODEL."
+        }
+        exit 0
+
+    - name: Smoke test nexau main entrypoint help
+      shell: pwsh
+      run: uv run nexau --help
+
+    - name: Smoke test run_agent module help
+      shell: pwsh
+      run: uv run python -m nexau.cli.run_agent --help
+
+    - name: Smoke test run-agent.cmd help
+      shell: pwsh
+      run: .\run-agent.cmd --help
+
+    - name: Smoke test npm agent wrapper help
+      shell: pwsh
+      run: npm run agent -- --help
+
+    - name: Smoke test nexau-cli shim help
+      shell: pwsh
+      run: uv run nexau-cli --help
 
   test-saas:
     runs-on: ubuntu-latest

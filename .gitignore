@@ -1,5 +1,7 @@
 .nexau/
 .skills/
+.agents/
+
 *.pyc
 .env
 *.egg-info

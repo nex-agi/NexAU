@@ -78,7 +78,10 @@ class TestToolChainIntegration:
         content = "Line 1\nLine 2\nLine 3\n"
 
         write_file(file_path, content, agent_state=agent_state)
-        result = run_shell_command(f"wc -l {file_path}", agent_state=agent_state, ctx=FrameworkContext.for_testing())
+        sandbox = agent_state.get_sandbox()
+        script = f"from pathlib import Path; print(len(Path({file_path!r}).read_text().splitlines()))"
+        command = f'{sandbox.get_python_command()} -c "{script}"'
+        result = run_shell_command(command, agent_state=agent_state, ctx=FrameworkContext.for_testing())
         assert "error" not in result
         assert "3" in result["content"]
 

@@ -41,6 +41,8 @@ from nexau.archs.sandbox.base_sandbox import (
 def mock_sandbox() -> MagicMock:
     """Return a mock BaseSandbox whose write_file always succeeds."""
     sandbox = MagicMock(spec=BaseSandbox)
+    sandbox.get_tool_output_dir.return_value = "/tmp/nexau_tool_outputs"
+    sandbox.join_path.side_effect = lambda base, *parts: "/".join([str(base).rstrip("/\\"), *(str(part).strip("/\\") for part in parts)])
     sandbox.write_file.return_value = FileOperationResult(
         status=SandboxStatus.SUCCESS,
         file_path="",
@@ -125,11 +127,27 @@ class TestConstructorValidation:
 
     def test_default_temp_dir(self):
         mw = LongToolOutputMiddleware()
-        assert mw.temp_dir == "/tmp/nexau_tool_outputs"
+        assert mw.temp_dir is None
 
     def test_custom_temp_dir(self):
         mw = LongToolOutputMiddleware(temp_dir="/custom/path")
         assert mw.temp_dir == "/custom/path"
+
+    def test_old_sentinel_string_is_treated_as_literal_path(self, agent_state: AgentState, mock_sandbox):
+        mw = _make_middleware(
+            max_output_chars=100,
+            head_lines=2,
+            tail_lines=2,
+            temp_dir="__sandbox_default__",
+        )
+        hook_input = _make_hook_input(agent_state, _long_text(40), sandbox=mock_sandbox)
+
+        result = mw.after_tool(hook_input)
+
+        assert result.has_modifications()
+        mock_sandbox.write_file.assert_called_once()
+        file_path = mock_sandbox.write_file.call_args.kwargs["file_path"]
+        assert file_path.startswith("__sandbox_default__/")
 
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,12 @@ A high-quality RFC is a tool for alignment and architectural decision-making. Yo
 3. NexAU 自带的read_file读文件的工具就支持读图片、视频给模型，不需要再实现额外的工具解析视频、图片。
 4. 不要自己去读图片或视频，太消耗上下文了
 
+# Runtime Environment
+
 Date: {{ date }}
 Username: {{ username }}
 Working Dir: {{ working_directory }}
+Operating System: {{ operating_system }}
+Platform: {{ platform }}
+Shell Tool Backend: {{ shell_tool_backend }}
+Shell Tool Guidance: {{ shell_tool_guidance }}

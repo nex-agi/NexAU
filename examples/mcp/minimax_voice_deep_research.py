@@ -59,10 +59,10 @@ def main():
 
     src_dir = os.path.dirname(os.path.abspath(__file__))
 
-    configured_bash_tool = Tool.from_yaml(
+    configured_shell_tool = Tool.from_yaml(
         os.path.join(
             src_dir,
-            "tools/Bash.tool.yaml",
+            "tools/Shell.tool.yaml",
         ),
         binding=run_shell_command,
     )
@@ -81,7 +81,7 @@ def main():
         binding=web_fetch,
     )
     tools = [
-        configured_bash_tool,
+        configured_shell_tool,
         web_search_tool,
         web_read_tool,
     ]
@@ -112,16 +112,16 @@ def main():
         print("🤖 Creating agent with MiniMax MCP server...")
         agent_config = AgentConfig(
             name="minimax_agent",
-            system_prompt="""You are an AI agent with access to MiniMax MCP, bash tool, and web search tool.
+            system_prompt="""You are an AI agent with access to MiniMax MCP, a shell command tool, and web search tool.
 
 You can use the following tools:
 - web_search
 - web_read
-- bash_tool
+- Shell
 And the MCP tools from MiniMax.
 
-You can use Bash tool to execute bash commands, e.g., convert a mp3 file to opus file:
-```bash
+You can use Shell to execute commands through NexAU's active shell backend, e.g., convert a mp3 file to opus file:
+```sh
 ffmpeg -i SourceFile.mp3 -acodec libopus -ac 1 -ar 16000 TargetFile.opus
 ```
 

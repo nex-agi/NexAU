@@ -245,8 +245,8 @@ sandbox = sandbox_manager.start(
 # Sandbox state is automatically persisted to session
 # On next start() call with same session_id, sandbox will be restored
 
-# Use the sandbox
-result = sandbox.execute_bash("echo 'Hello from sandbox'")
+# Use the sandbox. Use command syntax supported by the active shell backend.
+result = sandbox.execute_shell("echo Hello from sandbox")
 print(result.stdout)
 
 # Pause to save state
@@ -280,8 +280,8 @@ sandbox = sandbox_manager.start(
     sandbox_config={"type": "local"}
 )
 
-# Use sandbox operations
-result = sandbox.execute_bash("ls -la")
+# Use sandbox operations. Use command syntax supported by the active shell backend.
+result = sandbox.execute_shell("echo Hello from sandbox")
 print(result.stdout)
 
 # Pause the sandbox
@@ -614,15 +614,38 @@ class CustomSandbox(BaseSandbox):
     # Add custom configuration fields
     custom_param: str = "default"
 
+    def execute_shell(
+        self,
+        command: str,
+        timeout: int | None = None,
+        cwd: str | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
+        background: bool = False,
+    ) -> CommandResult:
+        """Execute shell command in custom environment."""
+        # Implement command execution
+        # Return CommandResult with status, stdout, stderr, etc.
+        pass
+
     def execute_bash(
         self,
         command: str,
         timeout: int | None = None,
+        cwd: str | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
+        background: bool = False,
     ) -> CommandResult:
-        """Execute bash command in custom environment."""
-        # Implement command execution
-        # Return CommandResult with status, stdout, stderr, etc.
-        pass
+        """Deprecated legacy alias for execute_shell."""
+        return self.execute_shell(
+            command,
+            timeout=timeout,
+            cwd=cwd,
+            user=user,
+            envs=envs,
+            background=background,
+        )
 
     def execute_code(
         self,
@@ -804,17 +827,50 @@ class DockerSandbox(BaseSandbox):
             )
             self.container_id = container.id
 
-    def execute_bash(self, command: str, timeout: int | None = None) -> CommandResult:
+    def execute_shell(
+        self,
+        command: str,
+        timeout: int | None = None,
+        cwd: str | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
+        background: bool = False,
+    ) -> CommandResult:
+        if background:
+            raise NotImplementedError("DockerSandbox example does not implement background tasks")
+        if user is not None:
+            raise NotImplementedError("DockerSandbox example does not implement user switching")
         container = self._client.containers.get(self.container_id)
         exit_code, output = container.exec_run(
-            f"bash -c '{command}'",
-            workdir=str(self.work_dir)
+            ["/bin/sh", "-lc", command],
+            workdir=str(cwd or self.work_dir),
+            environment=envs,
+            demux=False,
         )
 
         return CommandResult(
             status=SandboxStatus.SUCCESS if exit_code == 0 else SandboxStatus.ERROR,
             stdout=output.decode('utf-8'),
             exit_code=exit_code
+        )
+
+    def execute_bash(
+        self,
+        command: str,
+        timeout: int | None = None,
+        cwd: str | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
+        background: bool = False,
+    ) -> CommandResult:
+        """Deprecated legacy alias for execute_shell."""
+        return self.execute_shell(
+            command,
+            timeout=timeout,
+            cwd=cwd,
+            user=user,
+            envs=envs,
+            background=background,
         )
 
     # Implement other methods...
@@ -834,17 +890,27 @@ The `BaseSandbox` abstract class defines the core interface that all sandbox imp
 
 #### Command Execution Methods
 
-##### `execute_bash(command: str, timeout: int | None = None) -> CommandResult`
+##### `execute_shell(command: str, timeout: int | None = None, cwd: str | None = None, user: str | None = None, envs: dict[str, str] | None = None, background: bool = False) -> CommandResult`
 
-Execute a bash command in the sandbox.
+Execute a command through the sandbox's active shell backend.
 
 **Parameters:**
-- `command` (`str`): The bash command to execute
+- `command` (`str`): The command to execute with the active shell backend
 - `timeout` (`int | None`): Optional timeout in milliseconds (overrides default)
+- `cwd` (`str | None`): Optional working directory
+- `user` (`str | None`): Optional user to run as, if supported by the sandbox
+- `envs` (`dict[str, str] | None`): Optional environment variables
+- `background` (`bool`): Whether to start the command as a background task
 
 **Returns:** `CommandResult` containing execution results
 
 **Raises:** `SandboxError` if command execution fails
+
+##### `execute_bash(command: str, timeout: int | None = None, cwd: str | None = None, user: str | None = None, envs: dict[str, str] | None = None, background: bool = False) -> CommandResult`
+
+Deprecated legacy alias for `execute_shell(...)`. It is retained for existing
+callers and third-party sandboxes during migration; new NexAU code and examples
+should use `execute_shell(...)`.
 
 ##### `execute_code(code: str, language: CodeLanguage | str, timeout: int | None = None) -> CodeExecutionResult`
 

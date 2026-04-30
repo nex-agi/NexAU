@@ -23,6 +23,20 @@ import subprocess
 import sys
 from pathlib import Path
 
+from nexau.cli.entrypoint_checks import MISSING_WINDOWS_SHELL_EXIT_CODE, ensure_default_windows_shell_for_entrypoint
+from nexau.cli.run_agent import ensure_cli_built
+
+
+def _source_tree_cli_paths() -> tuple[Path, Path] | None:
+    """Return ``(cli_dir, cli_dist)`` when running from a source checkout."""
+    repo_root = Path(__file__).resolve().parent.parent
+    cli_dir = repo_root / "cli"
+    cli_source = cli_dir / "source" / "cli.js"
+    cli_dist = cli_dir / "dist" / "cli.js"
+    if cli_dir.is_dir() and cli_source.is_file():
+        return cli_dir, cli_dist
+    return None
+
 
 def find_node_cli():
     """Find the Node.js CLI executable in the package installation."""
@@ -49,14 +63,17 @@ def find_node_cli():
     if installed_cli_path.exists():
         return installed_cli_path
 
-    # Location 4: Check if node_modules is available and CLI is in expected location
-    # This handles the case where the package is installed with pip but CLI is in a known location
-    possible_paths = [
-        Path(sys.prefix) / "lib" / "python3.12" / "site-packages" / "nexau-cli" / "cli" / "dist" / "cli.js",
-        Path(sys.prefix) / "local" / "lib" / "python3.12" / "site-packages" / "nexau-cli" / "cli" / "dist" / "cli.js",
-        Path("/usr/local/lib/python3.12/site-packages/nexau-cli/cli/dist/cli.js"),
-        Path("/usr/lib/python3.12/site-packages/nexau-cli/cli/dist/cli.js"),
-    ]
+    # Location 4: Probe interpreter-managed install roots without hardcoding
+    # Unix-only paths or a specific Python minor version.
+    import sysconfig
+
+    possible_paths: list[Path] = []
+    for scheme_name in ("purelib", "platlib"):
+        scheme_path = sysconfig.get_path(scheme_name)
+        if scheme_path:
+            base_path = Path(scheme_path)
+            possible_paths.append(base_path / "nexau-cli" / "cli" / "dist" / "cli.js")
+            possible_paths.append(base_path / "nexau" / "cli" / "dist" / "cli.js")
 
     for path in possible_paths:
         if path.exists():
@@ -79,10 +96,36 @@ def find_node_cli():
     return None
 
 
+def resolve_node_cli() -> Path | None:
+    """Resolve the Node CLI, auto-building the source-tree dist artifact if needed."""
+    existing_cli = find_node_cli()
+    if existing_cli is not None:
+        return existing_cli
+
+    source_tree_paths = _source_tree_cli_paths()
+    if source_tree_paths is None:
+        return None
+
+    cli_dir, cli_dist = source_tree_paths
+    return ensure_cli_built(cli_dir=cli_dir, cli_dist=cli_dist)
+
+
 def main():
     """Main entry point for the nexau-cli wrapper."""
-    # Find the Node.js CLI
-    node_cli_path = find_node_cli()
+    try:
+        ensure_default_windows_shell_for_entrypoint()
+    except RuntimeError:
+        sys.exit(MISSING_WINDOWS_SHELL_EXIT_CODE)
+
+    # Find or build the Node.js CLI
+    try:
+        node_cli_path = resolve_node_cli()
+    except subprocess.CalledProcessError as exc:
+        print(f"Error: Failed to build nexau Node.js CLI (exit code {exc.returncode}).", file=sys.stderr)
+        sys.exit(exc.returncode or 1)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if not node_cli_path:
         print("Error: Could not locate nexau Node.js CLI executable.", file=sys.stderr)

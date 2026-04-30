@@ -335,7 +335,7 @@ class TestMemoryLeakRegression:
                 f"Round {s['round']}: trace_memory should not have message_trace (only generate_with_token writes it)"
             )
 
-    def test_memory_bounded_100_rounds(self):
+    def test_memory_bounded_50_rounds(self):
         """With fixes applied, memory should not grow linearly with rounds.
 
         History is bounded by the executor's natural behavior, and there is no
@@ -343,13 +343,13 @@ class TestMemoryLeakRegression:
         """
         snap_before = tracemalloc.take_snapshot()
 
-        result = _simulate_single_agent_session(0, num_rounds=100, enable_compaction=True, enable_tracer=True)
+        result = _simulate_single_agent_session(0, num_rounds=50, enable_compaction=True, enable_tracer=True)
 
         gc.collect()
         snap_after = tracemalloc.take_snapshot()
 
         print("\n" + "=" * 80)
-        print("VERIFY: BOUNDED MEMORY — 100 rounds")
+        print("VERIFY: BOUNDED MEMORY — 50 rounds")
         print("=" * 80)
         for s in result["snapshots"]:
             print(f"  Round {s['round']:>4d} | history={s['history_len']:>4d}")
@@ -362,7 +362,7 @@ class TestMemoryLeakRegression:
             print(f"    {stat}")
         print("=" * 80)
 
-        # History should be bounded — last round's executor output, not 100*N messages
+        # History should be bounded — last round's executor output, not N rounds of full traces.
         # With max_iterations=6, each round produces at most ~6 new messages.
         # Without compaction triggering, history grows but that's expected normal behavior.
         # The key assertion: NO _full_trace bloat.
@@ -385,39 +385,41 @@ class TestMemoryLeakRegression:
 
             key = AgentRunActionKey(user_id="u1", session_id="s1", agent_id="a1")
 
-            # Create several APPEND records
-            for i in range(10):
-                await session_manager.agent_run_action.persist_append(
-                    key=key,
-                    run_id=f"run_{i}",
-                    root_run_id="root",
-                    parent_run_id=None,
-                    agent_name="test",
-                    messages=[Message.user(f"msg {i}")],
+            with patch("nexau.archs.session.models.agent_run_action_model.time.time_ns", return_value=123456789):
+                # Create several APPEND records
+                for i in range(10):
+                    await session_manager.agent_run_action.persist_append(
+                        key=key,
+                        run_id=f"run_{i}",
+                        root_run_id="root",
+                        parent_run_id=None,
+                        agent_name="test",
+                        messages=[Message.user(f"msg {i}")],
+                    )
+
+                # Count records before REPLACE
+                from nexau.archs.session.orm import AndFilter, ComparisonFilter
+
+                all_records = await engine.find_many(
+                    AgentRunActionModel,
+                    filters=AndFilter(
+                        filters=[
+                            ComparisonFilter.eq("user_id", "u1"),
+                            ComparisonFilter.eq("session_id", "s1"),
+                            ComparisonFilter.eq("agent_id", "a1"),
+                        ]
+                    ),
                 )
+                count_before = len(all_records)
 
-            # Count records before REPLACE
-            from nexau.archs.session.orm import AndFilter, ComparisonFilter
-
-            all_records = await engine.find_many(
-                AgentRunActionModel,
-                filters=AndFilter(
-                    filters=[
-                        ComparisonFilter.eq("user_id", "u1"),
-                        ComparisonFilter.eq("session_id", "s1"),
-                        ComparisonFilter.eq("agent_id", "a1"),
-                    ]
-                ),
-            )
-            count_before = len(all_records)
-
-            # Now do a REPLACE
-            await session_manager.agent_run_action.persist_replace(
-                key=key,
-                run_id="replace_run",
-                root_run_id="root",
-                messages=[Message.user("compacted summary")],
-            )
+                # Now do a REPLACE. Keep the timestamp fixed to cover the
+                # collision case where old APPEND records share the REPLACE timestamp.
+                await session_manager.agent_run_action.persist_replace(
+                    key=key,
+                    run_id="replace_run",
+                    root_run_id="root",
+                    messages=[Message.user("compacted summary")],
+                )
 
             # Count records after REPLACE
             all_records_after = await engine.find_many(

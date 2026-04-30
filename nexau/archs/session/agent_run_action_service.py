@@ -216,7 +216,7 @@ class AgentRunActionService:
                         ComparisonFilter.eq("user_id", key.user_id),
                         ComparisonFilter.eq("session_id", key.session_id),
                         ComparisonFilter.eq("agent_id", key.agent_id),
-                        ComparisonFilter.lt("created_at_ns", created.created_at_ns),
+                        ComparisonFilter.neq("action_id", created.action_id),
                     ]
                 ),
             )

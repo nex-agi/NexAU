@@ -37,7 +37,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib import import_module
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, TypeVar, override
 
 if TYPE_CHECKING:
@@ -48,7 +48,6 @@ if TYPE_CHECKING:
 from packaging.version import Version
 
 from .base_sandbox import (
-    BASH_TOOL_RESULTS_BASE_PATH,
     E2B_DEFAULT_WORK_DIR,
     HEREDOC_PATTERN,
     BaseSandbox,
@@ -69,6 +68,9 @@ from .base_sandbox import (
 )
 
 logger = logging.getLogger(__name__)
+
+BASH_TOOL_RESULTS_BASE_PATH = "/tmp/nexau_bash_tool_results"
+"""Remote Linux directory used for E2B shell stdout/stderr artifacts."""
 
 _T = TypeVar("_T")
 
@@ -118,6 +120,14 @@ class E2BSandbox(BaseSandbox):
 
     # Unserialized fields
     _sandbox: E2BRawSandbox | None = field(default=None, repr=False, init=False)
+
+    def __post_init__(self) -> None:
+        if self.work_dir is not None:
+            self.work_dir = str(PurePosixPath(Path(self.work_dir).as_posix()))
+
+    def get_temp_dir(self) -> str:
+        """Return the E2B remote Linux temp directory."""
+        return "/tmp"
 
     @property
     def sandbox(self) -> E2BRawSandbox | None:
@@ -315,7 +325,7 @@ class E2BSandbox(BaseSandbox):
         raise SandboxError("Retries exhausted")
 
     @override
-    def execute_bash(
+    def execute_shell(
         self,
         command: str,
         timeout: int | None = None,
@@ -325,13 +335,13 @@ class E2BSandbox(BaseSandbox):
         background: bool = False,
     ) -> CommandResult:
         """
-        Execute a bash command in the E2B sandbox.
+        Execute a shell command in the E2B sandbox.
 
         命令启动时即通过 shell 级重定向将 stdout/stderr 写入临时文件，
         执行完毕后从文件读取输出并按需智能截断。
 
         Args:
-            command: The bash command to execute
+            command: The shell command to execute
             timeout: Optional timeout in milliseconds (overrides default)
             cwd: Optional working directory
             user: Optional user to run the command as
@@ -603,6 +613,26 @@ class E2BSandbox(BaseSandbox):
             )
 
     @override
+    def execute_bash(
+        self,
+        command: str,
+        timeout: int | None = None,
+        cwd: str | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
+        background: bool = False,
+    ) -> CommandResult:
+        """Deprecated legacy alias for execute_shell."""
+        return self.execute_shell(
+            command,
+            timeout=timeout,
+            cwd=cwd,
+            user=user,
+            envs=envs,
+            background=background,
+        )
+
+    @override
     def get_background_task_status(self, pid: int) -> CommandResult:
         """
         Get the status and output of a background task.
@@ -812,15 +842,22 @@ class E2BSandbox(BaseSandbox):
 
         temp_file_path = None
         try:
-            # Create temporary Python file in /tmp (always exists)
+            # Create temporary Python file in the sandbox temp directory.
+            temp_dir = self.get_temp_dir()
             temp_filename = f"tmp_{uuid.uuid4().hex[:8]}.py"
-            temp_file_path = f"/tmp/{temp_filename}"
+            temp_file_path = self.join_path(temp_dir, temp_filename)
 
             # Write code to temp file
             self.write_file(temp_file_path, code)
 
             # Execute the temp file
-            result = self.execute_bash(f"python3 {temp_filename}", timeout, cwd="/tmp/", user=user, envs=envs)
+            result = self.execute_shell(
+                f"{self.get_python_command()} {temp_filename}",
+                timeout,
+                cwd=temp_dir,
+                user=user,
+                envs=envs,
+            )
 
             outputs: list[dict[str, Any]] = []
             if result.stdout:
@@ -853,7 +890,7 @@ class E2BSandbox(BaseSandbox):
             # Clean up temp file
             if temp_file_path:
                 try:
-                    self.execute_bash(f"rm -f {temp_file_path}", timeout=5000)
+                    self.execute_shell(f"rm -f {temp_file_path}", timeout=5000)
                 except Exception as e:
                     logger.warning(f"Failed to delete temp file {temp_file_path}: {e}")
 
@@ -1742,6 +1779,9 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
     # Keepalive state (not init params)
     _keepalive_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _keepalive_stop_event: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.work_dir = str(PurePosixPath(Path(self.work_dir).as_posix()))
 
     def _maybe_rebuild_for_http(
         self,

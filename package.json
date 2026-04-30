@@ -4,8 +4,8 @@
   "description": "NexAU - Agent Framework",
   "scripts": {
     "setup-cli": "cd cli && npm install && npm run build && cd ..",
-    "run-agent": "bash run-agent",
-    "agent": "bash run-agent"
+    "run-agent": "uv run python -m nexau.cli.run_agent",
+    "agent": "uv run python -m nexau.cli.run_agent"
   },
   "bin": {
     "nexau-cli": "./cli/dist/cli.js"

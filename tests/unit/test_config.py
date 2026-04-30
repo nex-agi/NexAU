@@ -149,7 +149,7 @@ class TestLoadYamlWithVars:
         result = load_yaml_with_vars(path)
 
         assert "Here" in result["system_prompt"]
-        assert temp_dir in result["system_prompt"]
+        assert Path(temp_dir).as_posix() in result["system_prompt"]
         assert result["value"] == "hello"
 
     def test_yaml_variables_block_resolved_and_removed(self, temp_dir):

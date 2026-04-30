@@ -23,22 +23,27 @@ For production use, consider using proper sandboxing solutions like E2B or Docke
 import glob as glob_module
 import logging
 import os
+import shlex
 import shutil
-import signal
 import stat as stat_module
 import subprocess
+import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, override
 
+from nexau.archs.platform.path_helpers import get_local_bash_tool_results_dir, get_local_temp_root
+from nexau.archs.platform.process_compat import graceful_kill
+from nexau.archs.platform.shell_backend import ShellBackend, WindowsCmdBackend, WindowsPowerShellBackend, create_shell_backend
+
 from .base_sandbox import (
-    BASH_TOOL_RESULTS_BASE_PATH,
     BaseSandbox,
     BaseSandboxManager,
+    BashHeredocBlock,
     CodeExecutionResult,
     CodeLanguage,
     CommandResult,
@@ -48,7 +53,9 @@ from .base_sandbox import (
     SandboxError,
     SandboxFileError,
     SandboxStatus,
+    contains_heredoc,
     extract_dataclass_init_kwargs,
+    parse_single_bash_heredoc,
     smart_truncate_output,
 )
 
@@ -66,6 +73,24 @@ class LocalSandbox(BaseSandbox):
     only be used for development and testing purposes.
     """
 
+    _shell_backend: ShellBackend = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self._shell_backend = create_shell_backend()
+
+    def get_temp_dir(self) -> str:
+        """Return the local host temp directory managed by NexAU."""
+        return str(get_local_temp_root())
+
+    def to_shell_path(self, path: str | Path) -> str:
+        """Convert a local native path into the active shell backend format."""
+        return self._shell_backend.format_path_for_shell(path)
+
+    def get_python_command(self) -> str:
+        """Return the shell-safe Python interpreter command for LocalSandbox."""
+        return self._shell_backend.format_executable_for_shell(sys.executable)
+
     def _ensure_working_directory(self) -> Path:
         """
         Ensure the working directory exists.
@@ -80,50 +105,8 @@ class LocalSandbox(BaseSandbox):
 
     @staticmethod
     def _graceful_kill(process: subprocess.Popen[bytes], grace_period: float = 5.0) -> None:
-        """Gracefully terminate a process: SIGTERM → wait → SIGKILL.
-
-        1. Send SIGTERM to the process group (kills child processes too).
-        2. Wait *grace_period* seconds for a clean exit.
-        3. If still alive, SIGKILL the entire process group.
-
-        Since output is redirected to files (not pipes), this method does not
-        drain any pipe output.  The caller reads output from the temp files.
-        """
-
-        # 1. SIGTERM — give the process group a chance to clean up.
-        try:
-            pgid = os.getpgid(process.pid)
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            # Process already exited or we can't signal the group; fall back.
-            try:
-                process.terminate()
-            except OSError:
-                pass
-
-        # 2. Wait for graceful exit.
-        try:
-            process.wait(timeout=grace_period)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-
-        # 3. SIGKILL — force-kill the entire process group.
-        try:
-            pgid = os.getpgid(process.pid)
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-        try:
-            process.kill()
-        except OSError:
-            pass
-
-        # 4. Final wait.
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            pass
+        """Gracefully terminate a process using the platform compatibility layer."""
+        graceful_kill(process, grace_period)
 
     def _prepare_output_dir(self, command: str) -> str:
         """Create an output directory and write command.txt.
@@ -135,7 +118,7 @@ class LocalSandbox(BaseSandbox):
         Returns:
             The absolute output directory path.
         """
-        output_dir = f"{BASH_TOOL_RESULTS_BASE_PATH}/{uuid.uuid4().hex[:8]}"
+        output_dir = str(get_local_bash_tool_results_dir() / uuid.uuid4().hex[:8])
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         Path(f"{output_dir}/command.txt").write_text(command, encoding="utf-8")
         return output_dir
@@ -180,7 +163,125 @@ class LocalSandbox(BaseSandbox):
         return {**os.environ, **merged}
 
     @override
-    def execute_bash(
+    def prepare_shell_command(self, command: str, script_dir: str | None = None) -> str:
+        """Prepare shell command for the active local backend.
+
+        RFC-0019: PowerShell backend-aware heredoc handling
+
+        PowerShell does not understand Bash heredoc syntax. Common ``cat``
+        heredocs are rewritten through a UTF-8 payload file; complex heredocs
+        fail before execution with guidance to use PowerShell here-strings or
+        opt into Git Bash.
+        """
+        if not contains_heredoc(command):
+            return command
+
+        if isinstance(self._shell_backend, WindowsPowerShellBackend):
+            return self._prepare_powershell_heredoc(command, script_dir)
+
+        if isinstance(self._shell_backend, WindowsCmdBackend):
+            raise SandboxError(self._unsupported_windows_heredoc_message("cmd.exe"))
+
+        return super().prepare_shell_command(command, script_dir)
+
+    @override
+    def scriptify_heredoc(self, command: str, script_dir: str | None = None) -> str:
+        """Compatibility wrapper for backend-aware command preparation."""
+        return self.prepare_shell_command(command, script_dir)
+
+    def _prepare_powershell_heredoc(self, command: str, script_dir: str | None) -> str:
+        """Rewrite supported Bash ``cat`` heredocs into PowerShell commands."""
+        heredoc = parse_single_bash_heredoc(command)
+        if heredoc is None:
+            raise SandboxError(self._unsupported_windows_heredoc_message("PowerShell"))
+
+        mode, target = self._parse_simple_cat_heredoc_target(heredoc)
+        if mode == "unsupported":
+            raise SandboxError(self._unsupported_windows_heredoc_message("PowerShell"))
+
+        target_script_dir = script_dir if script_dir is not None else self.get_temp_dir()
+        payload_path = f"{target_script_dir}/_nexau_heredoc_payload_{uuid.uuid4().hex[:8]}.txt"
+        self.write_file(payload_path, heredoc.body, create_directories=True)
+        logger.info(
+            "[sandbox] PowerShell heredoc payload prepared (%d bytes) – wrote to %s",
+            len(heredoc.body.encode("utf-8", errors="replace")),
+            payload_path,
+        )
+
+        payload_literal = self._quote_powershell_literal(self._shell_backend.format_path_for_shell(payload_path))
+        read_payload = f"$__nexau_payload = [System.IO.File]::ReadAllText({payload_literal}, [System.Text.Encoding]::UTF8)"
+        if mode == "stdout":
+            return f"{read_payload}; [Console]::Out.Write($__nexau_payload)"
+
+        if target is None:
+            raise SandboxError(self._unsupported_windows_heredoc_message("PowerShell"))
+
+        target_literal = self._quote_powershell_literal(target)
+        write_method = "AppendAllText" if mode == "append" else "WriteAllText"
+        utf8_encoding = "$__nexau_utf8 = New-Object System.Text.UTF8Encoding -ArgumentList $false"
+        return f"{read_payload}; {utf8_encoding}; [System.IO.File]::{write_method}({target_literal}, $__nexau_payload, $__nexau_utf8)"
+
+    def _parse_simple_cat_heredoc_target(self, heredoc: BashHeredocBlock) -> tuple[str, str | None]:
+        """Return PowerShell output mode and target for supported ``cat`` heredocs."""
+        prefix_tokens = self._split_heredoc_command_part(heredoc.command_prefix)
+        suffix_tokens = self._split_heredoc_command_part(heredoc.command_suffix)
+        if prefix_tokens is None or suffix_tokens is None or not prefix_tokens or prefix_tokens[0] != "cat":
+            return "unsupported", None
+
+        prefix_tail = prefix_tokens[1:]
+        if not prefix_tail and not suffix_tokens:
+            return "stdout", None
+
+        if prefix_tail and suffix_tokens:
+            return "unsupported", None
+
+        redirect_tokens = prefix_tail if prefix_tail else suffix_tokens
+        if len(redirect_tokens) != 2 or redirect_tokens[0] not in {">", ">>"}:
+            return "unsupported", None
+
+        target = redirect_tokens[1]
+        if not self._is_safe_literal_heredoc_target(target):
+            return "unsupported", None
+
+        mode = "append" if redirect_tokens[0] == ">>" else "write"
+        return mode, target
+
+    @staticmethod
+    def _split_heredoc_command_part(value: str) -> list[str] | None:
+        """Split a simple heredoc command fragment with shell-style quoting."""
+        if not value:
+            return []
+        try:
+            return shlex.split(value, posix=True)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _is_safe_literal_heredoc_target(target: str) -> bool:
+        """Return True for literal path tokens safe to pass to PowerShell."""
+        if not target or target in {"-", ".", ".."}:
+            return False
+        forbidden_chars = {"$", "`", "(", ")", "|", "&", ";", "<", ">", "\n", "\r"}
+        return all(char not in forbidden_chars for char in target)
+
+    @staticmethod
+    def _quote_powershell_literal(value: str) -> str:
+        """Quote a literal for PowerShell single-quoted strings."""
+        return "'" + value.replace("'", "''") + "'"
+
+    @staticmethod
+    def _unsupported_windows_heredoc_message(shell_name: str) -> str:
+        """Return clear RFC-0019 guidance for unsupported Bash heredocs."""
+        return (
+            f"Unsupported Bash heredoc form under {shell_name}. "
+            "Rewrite the command using PowerShell syntax. For simple multi-line text, "
+            "a here-string is acceptable; for exact UTF-8 file content without BOM, "
+            "use .NET WriteAllText with UTF8Encoding($false). "
+            "Alternatively, set NEXAU_WINDOWS_SHELL_BACKEND=git-bash."
+        )
+
+    @override
+    def execute_shell(
         self,
         command: str,
         timeout: int | None = None,
@@ -190,14 +291,14 @@ class LocalSandbox(BaseSandbox):
         background: bool = False,
     ) -> CommandResult:
         """
-        Execute a bash command in the sandbox.
+        Execute a shell command through the active local shell backend.
 
         Stdout and stderr are always saved to temporary files (stdout.txt, stderr.txt).
         If the combined output exceeds the threshold, the returned stdout/stderr are
         smart-truncated with hints to the full files.
 
         Args:
-            command: The bash command to execute
+            command: The shell command to execute
             timeout: Optional timeout in milliseconds (overrides default)
             cwd: Optional working directory
             user: Optional user to run the command as (not available in LocalSandbox)
@@ -219,6 +320,10 @@ class LocalSandbox(BaseSandbox):
         timeout_seconds = timeout / 1000.0
 
         try:
+            # 1. 按当前 shell backend 预处理命令（例如 heredoc 脚本化 / PowerShell 安全重写）
+            command = self.prepare_shell_command(command)
+            launch_config = self._shell_backend.build_launch_config(command)
+
             if background:
                 # 1. 创建输出目录，stdout/stderr 直接重定向到文件
                 output_dir = self._prepare_output_dir(command)
@@ -230,13 +335,14 @@ class LocalSandbox(BaseSandbox):
 
                 # Background mode: redirect stdout/stderr to files, no PIPE
                 process = subprocess.Popen(
-                    command,
-                    shell=True,
+                    launch_config.argv,
+                    stdin=subprocess.DEVNULL,
                     stdout=fout,
                     stderr=ferr,
                     cwd=cwd or str(work_dir),
                     env=self._build_local_envs(envs),
-                    start_new_session=True,
+                    creationflags=launch_config.creationflags,
+                    start_new_session=launch_config.start_new_session,
                 )
                 bg_pid = process.pid
 
@@ -252,7 +358,7 @@ class LocalSandbox(BaseSandbox):
                     "stderr_file": ferr,
                 }
 
-                def _wait_process(proc: subprocess.Popen[str], info: dict[str, Any]) -> None:
+                def _wait_process(proc: subprocess.Popen[bytes], info: dict[str, Any]) -> None:
                     try:
                         exit_code = proc.wait()
                         info["exit_code"] = exit_code
@@ -301,13 +407,14 @@ class LocalSandbox(BaseSandbox):
 
             try:
                 process = subprocess.Popen(
-                    command,
-                    shell=True,
+                    launch_config.argv,
+                    stdin=subprocess.DEVNULL,
                     stdout=fout,
                     stderr=ferr,
                     cwd=cwd or str(work_dir),
                     env=self._build_local_envs(envs),
-                    start_new_session=True,
+                    creationflags=launch_config.creationflags,
+                    start_new_session=launch_config.start_new_session,
                 )
 
                 try:
@@ -395,6 +502,26 @@ class LocalSandbox(BaseSandbox):
                 error=f"Execution failed: {str(e)}",
                 truncated=False,
             )
+
+    @override
+    def execute_bash(
+        self,
+        command: str,
+        timeout: int | None = None,
+        cwd: str | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
+        background: bool = False,
+    ) -> CommandResult:
+        """Deprecated legacy alias for execute_shell."""
+        return self.execute_shell(
+            command,
+            timeout=timeout,
+            cwd=cwd,
+            user=user,
+            envs=envs,
+            background=background,
+        )
 
     @override
     def get_background_task_status(self, pid: int) -> CommandResult:
@@ -598,7 +725,11 @@ class LocalSandbox(BaseSandbox):
                 os.close(fd)
 
             # Execute the temp file
-            result = self.execute_bash(f"python3 {Path(temp_file).name}", timeout, envs=envs)
+            result = self.execute_shell(
+                f"{self.get_python_command()} {shlex.quote(Path(temp_file).name)}",
+                timeout,
+                envs=envs,
+            )
 
             outputs: list[dict[str, Any]] = []
             if result.stdout:

@@ -32,6 +32,11 @@ from nexau.archs.transports.http.models import AgentRequest
 # ---------------------------------------------------------------------------
 
 
+def _python_inline(sandbox: LocalSandbox, code: str) -> str:
+    """Build a shell-neutral inline Python command for the active backend."""
+    return f'{sandbox.get_python_command()} -c "{code}"'
+
+
 class TestContextValue:
     def test_default_empty(self):
         cv = ContextValue()
@@ -200,30 +205,30 @@ class TestLocalSandboxEnvs:
     def test_execute_bash_with_instance_envs(self, temp_dir):
         """Instance envs are available inside executed commands."""
         sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir, envs={"MY_TEST_VAR": "hello_nexau"})
-        result = sb.execute_bash("echo $MY_TEST_VAR")
+        result = sb.execute_bash(_python_inline(sb, "import os; print(os.environ['MY_TEST_VAR'])"))
         assert result.status == SandboxStatus.SUCCESS
         assert "hello_nexau" in result.stdout
 
     def test_execute_bash_preserves_path(self, temp_dir):
         """Instance envs don't clobber PATH."""
         sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir, envs={"MY_VAR": "val"})
-        result = sb.execute_bash("echo $PATH")
+        result = sb.execute_bash(_python_inline(sb, "import os; print(os.environ['PATH'])"))
         assert result.status == SandboxStatus.SUCCESS
-        assert "/" in result.stdout  # PATH should contain at least one slash
+        assert result.stdout.strip()
 
     def test_execute_bash_per_call_overrides_instance(self, temp_dir):
         """Per-call envs override instance envs."""
         sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir, envs={"K": "instance_val"})
-        result = sb.execute_bash("echo $K", envs={"K": "per_call_val"})
+        result = sb.execute_bash(_python_inline(sb, "import os; print(os.environ['K'])"), envs={"K": "per_call_val"})
         assert result.status == SandboxStatus.SUCCESS
         assert "per_call_val" in result.stdout
 
     def test_execute_bash_no_envs_inherits_parent(self, temp_dir):
         """Without any envs, subprocess inherits parent environment normally."""
         sb = LocalSandbox(sandbox_id="t", work_dir=temp_dir)
-        result = sb.execute_bash("echo $PATH")
+        result = sb.execute_bash(_python_inline(sb, "import os; print(os.environ.get('PATH', ''))"))
         assert result.status == SandboxStatus.SUCCESS
-        assert "/" in result.stdout
+        assert result.stdout.strip()
 
 
 # ---------------------------------------------------------------------------

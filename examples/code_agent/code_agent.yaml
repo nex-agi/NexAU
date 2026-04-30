@@ -86,6 +86,7 @@ skills: # Skills are used to hint the agent to solve specific tasks
   - ./skills/template-skill
 stop_tools: [complete_task]
 middlewares:
+  - import: nexau.archs.main_sub.execution.middleware.runtime_environment:RuntimeEnvironmentMiddleware
   - import: nexau.archs.main_sub.execution.middleware.long_tool_output:LongToolOutputMiddleware
     params:
       max_output_chars: 10000

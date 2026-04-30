@@ -14,10 +14,10 @@
 
 - 平台适配逻辑集中在 `nexau/archs/platform/`（或等效集中位置），不散落在业务模块中。
 - 该兼容边界至少承载四类职责：
-  - **shell backend**：bash 发现与调用（Unix 系统 bash / Windows Git Bash）
+  - **shell backend**：Unix bash、Windows PowerShell 默认 backend、Windows Git Bash 可选 backend 的发现与调用
   - **process compat**：进程创建、终止、信号处理
-  - **path helpers**：临时目录、输出路径、Python 原生路径 ↔ Git Bash 路径转换
-  - **Git Bash setup**：探测、安装协助、重探测
+  - **path helpers**：临时目录、输出路径、Python 原生路径 ↔ PowerShell / Git Bash 路径转换
+  - **optional Git Bash setup**：显式 Git Bash backend 的探测、安装协助、重探测
 - `local_sandbox.py`、`run_shell_command.py`、内置工具等业务模块通过统一接口调用平台能力，不直接做平台判断。
 
 ```python
@@ -78,7 +78,7 @@ def _graceful_kill(self, process):
 | 优雅终止进程 | `SIGTERM` → wait → `SIGKILL`（process group） | `terminate()` → wait → `kill()` |
 | 后台进程隔离 | `start_new_session=True` | `CREATE_NEW_PROCESS_GROUP` 或等效 |
 | 临时目录创建 | `tempfile.mkdtemp()` | `tempfile.mkdtemp()` |
-| Shell 命令执行 | `bash -c "command"` | `git-bash.exe -c "command"` |
+| Shell 命令执行 | `bash -c "command"` | 默认 `pwsh.exe` / `powershell.exe`，最后 `cmd.exe` 兜底；显式 Git Bash 时 `git-bash.exe -c "command"` |
 
 **参考**：Codex `sandboxing/manager.rs` — 统一 `MacosSeatbelt | LinuxSeccomp | WindowsRestrictedToken` 枚举，抽象"沙箱能力"而非实现。
 
@@ -101,7 +101,7 @@ def _graceful_kill(self, process):
 |------|---------|
 | `rg` (ripgrep) 缺失 | 降级到 Python fallback grep |
 | `ffmpeg` 缺失 | 降级到仅图片支持，视频处理返回清晰提示 |
-| Git Bash 缺失 | 提示用户确认 → 尝试安装协助 → 安装失败则返回手动指引 |
+| 默认 PowerShell 可用、Git Bash 缺失 | 默认路径继续执行；仅显式 Git Bash / bash-only 场景提示用户确认 → 尝试安装协助 → 安装失败则返回手动指引 |
 | WSL1 / 不支持的平台 | 明确拒绝，不尝试半支持 |
 
 ```python
@@ -136,14 +136,16 @@ NexAU 在 Windows 上存在两种路径格式：
 | 格式 | 示例 | 使用场景 |
 |------|------|---------|
 | Python 原生路径 | `C:\Users\wn\AppData\Local\Temp\nexau_xxx` | `pathlib`、`subprocess.Popen(cwd=...)`、Python 文件 API |
-| Git Bash POSIX 路径 | `/c/Users/wn/AppData/Local/Temp/nexau_xxx` | Git Bash 命令字符串内部 |
+| PowerShell / cmd 原生路径 | `C:\Users\wn\AppData\Local\Temp\nexau_xxx` | Windows 默认 shell backend 命令字符串内部 |
+| Git Bash POSIX 路径 | `/c/Users/wn/AppData/Local/Temp/nexau_xxx` | 显式 Git Bash 命令字符串内部 |
 
 ### 5.2 路径规则
 
 - Python 层使用 Python 原生路径（`pathlib` / `os.path`）。
+- PowerShell / `cmd.exe` 命令字符串中的路径保留 Windows 原生格式，并使用 backend-aware quoting。
 - Git Bash 命令字符串中的路径通过统一 helper 转为 POSIX 风格。
 - `subprocess.Popen` 的 `cwd` 参数使用 Python 原生路径。
-- 跨越 Python 层 ↔ Git Bash 层的路径必须通过统一 helper 显式转换。
+- 跨越 Python 层 ↔ shell backend 层的路径必须通过统一 helper 显式转换；PowerShell / `cmd.exe` 与 Git Bash 分别处理。
 - `shlex.quote()` / command building 在路径转换之后执行，避免反斜杠被误处理。
 - 不硬编码 `/tmp` — 使用 `tempfile.gettempdir()` 或 `tempfile.mkdtemp()`。
 - E2B 远端 Linux 路径（`/tmp`、`/home/user`）保持不变，不做 Windows 化。
@@ -214,13 +216,13 @@ graceful_kill(process, grace_period=5.0)
 
 - Windows CI 必须作为 required check 阻塞合并。
 - Windows CI 使用 Windows 原生命令 + 官方 setup action，不依赖 `make` 或 `curl | sh`。
-- Windows CI 中 Git Bash 以 runner 预装为主，不依赖交互式安装协助。
+- Windows CI 默认验证 PowerShell backend；Git Bash 作为可选 backend，以 runner 预装或可控模拟为主，不依赖交互式安装协助。
 
 ### 7.2 测试
 
 - 平台 fixture / marker / helper 集中管理（如 `tests/conftest.py` 或 `tests/utils/platform.py`），不在测试文件中散落 `skipif`。
 - 核心平台差异（路径、换行、shell、进程）有明确 fixture 承载。
-- 降级路径（`rg` 缺失、`ffmpeg` 缺失、Git Bash 缺失）有可控模拟验证。
+- 降级路径（`rg` 缺失、`ffmpeg` 缺失、显式 Git Bash 缺失）有可控模拟验证。
 - Windows CI 的接入不得减少 Linux CI 上现有测试的执行数量。
 
 ### 7.3 文档
@@ -241,7 +243,7 @@ graceful_kill(process, grace_period=5.0)
 - [ ] 能力抽象是否只定义"做什么"，不强制具体平台 API
 - [ ] 能力缺失时是否有明确的降级或拒绝，而非静默忽略
 - [ ] 路径生成是否使用 `tempfile` / `pathlib`，而非硬编码 `/tmp`
-- [ ] 跨 Python ↔ Git Bash 边界的路径是否通过统一 helper 转换
+- [ ] 跨 Python ↔ shell backend 边界的路径是否通过统一 helper 转换，并按 PowerShell / Git Bash 分流
 - [ ] 路径解析是否处理了 Windows 驱动器号（`C:\...` 中的 `:`）
 - [ ] 是否避免了依赖 shell 命令输出路径驱动 Python 文件 API
 - [ ] 新增测试是否有平台 marker / fixture，而非散落 `skipif`

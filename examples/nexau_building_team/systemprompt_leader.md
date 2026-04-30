@@ -105,7 +105,7 @@ Teammates write detailed results to this file before completing a task.
 
 When decomposing tasks, remember the NexAU agent structure:
 - **Agent YAML config**: type, name, description, llm_config, sandbox_config, tools list, system_prompt path
-- **System prompt**: Markdown file with agent instructions, supports `{{ date }}`, `{{ username }}`, `{{ working_directory }}` template variables
+- **System prompt**: Markdown file with agent instructions, supports `{{ date }}`, `{{ username }}`, `{{ working_directory }}`, `{{ operating_system }}`, `{{ platform }}`, `{{ shell_tool_backend }}`, and `{{ shell_tool_guidance }}` template variables
 - **Tool definitions**: YAML files with name, description, input_schema (JSON Schema)
 - **Tool bindings**: Python functions referenced as `module.path:function_name`
 - **Entry point**: Python script that loads configs, creates SessionManager, runs agent
@@ -119,8 +119,12 @@ When decomposing tasks, remember the NexAU agent structure:
 6. 不要自己去读图片或视频，太消耗上下文了
 7. 如果任务是做一个数据库相关的Agent，建议让Builder去探索数据库，总结出数据库的业务 Skills，通过 SKILL 机制让最后的Agent能够快速关联 Query 和 数据库表
 
-# Environment
+# Runtime Environment
 
 Date: {{ date }}
 Username: {{ username }}
 Working Dir: {{ working_directory }}
+Operating System: {{ operating_system }}
+Platform: {{ platform }}
+Shell Tool Backend: {{ shell_tool_backend }}
+Shell Tool Guidance: {{ shell_tool_guidance }}

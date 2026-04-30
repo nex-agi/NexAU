@@ -20,6 +20,7 @@ from unittest.mock import Mock, patch
 import pytest
 import yaml
 
+from nexau.archs.platform.git_bash import MissingGitBashError
 from nexau.cli.commands import chat as chat_cmd
 
 
@@ -246,6 +247,56 @@ class TestMain:
 
             assert result == 0
             mock_interactive.assert_called_once()
+
+    def test_main_returns_missing_windows_shell_exit_code(self, tmp_path):
+        config_path = tmp_path / "agent.yaml"
+        with open(config_path, "w") as f:
+            yaml.dump({"name": "test_agent"}, f)
+
+        args = argparse.Namespace(
+            agent=str(config_path),
+            query=None,
+            user_id="cli_user",
+            session_id=None,
+            verbose=False,
+        )
+
+        with (
+            patch(
+                "nexau.cli.commands.chat.ensure_default_windows_shell_for_entrypoint",
+                side_effect=RuntimeError("PowerShell is unavailable"),
+            ),
+            patch("nexau.cli.commands.chat.SQLDatabaseEngine") as mock_engine,
+        ):
+            result = chat_cmd.main(args)
+
+        assert result == chat_cmd.MISSING_WINDOWS_SHELL_EXIT_CODE
+        mock_engine.assert_not_called()
+
+    def test_main_returns_missing_dependency_code_for_explicit_git_bash(self, tmp_path):
+        config_path = tmp_path / "agent.yaml"
+        with open(config_path, "w") as f:
+            yaml.dump({"name": "test_agent"}, f)
+
+        args = argparse.Namespace(
+            agent=str(config_path),
+            query=None,
+            user_id="cli_user",
+            session_id=None,
+            verbose=False,
+        )
+
+        with (
+            patch(
+                "nexau.cli.commands.chat.ensure_default_windows_shell_for_entrypoint",
+                side_effect=MissingGitBashError("Git Bash is required"),
+            ),
+            patch("nexau.cli.commands.chat.SQLDatabaseEngine") as mock_engine,
+        ):
+            result = chat_cmd.main(args)
+
+        assert result == chat_cmd.MISSING_WINDOWS_SHELL_EXIT_CODE
+        mock_engine.assert_not_called()
 
 
 class TestMainInteractive:

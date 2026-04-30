@@ -31,6 +31,14 @@ import dotenv
 import pytest
 import yaml
 
+from tests.utils.platform import (
+    TestPlatform,
+    build_test_output_dir_root,
+    build_test_script_dir_root,
+    default_python_command,
+    detect_test_platform,
+)
+
 # Load .env BEFORE importing nexau modules (they may read env vars during init)
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 dotenv.load_dotenv(os.path.join(_project_root, ".env"), override=True)
@@ -266,6 +274,45 @@ def temp_dir():
         shutil.rmtree(temp_path)
 
 
+@pytest.fixture(scope="session")
+def test_platform_runtime() -> TestPlatform:
+    """Detect the current test platform and optional tool availability.
+
+    RFC-0020: 集中承载测试平台差异与可选依赖探测。
+    """
+    return detect_test_platform()
+
+
+@pytest.fixture(scope="session")
+def platform_temp_dir(test_platform_runtime: TestPlatform) -> Path:
+    """Return the host temp directory selected for platform-aware tests."""
+    return test_platform_runtime.temp_dir
+
+
+@pytest.fixture(scope="session")
+def bash_output_dir_root(platform_temp_dir: Path) -> Path:
+    """Return the platform-aware root used for local shell output artifacts in tests."""
+    return build_test_output_dir_root(platform_temp_dir)
+
+
+@pytest.fixture(scope="session")
+def bash_script_dir_root(platform_temp_dir: Path) -> Path:
+    """Return the platform-aware root used for generated script artifacts in tests."""
+    return build_test_script_dir_root(platform_temp_dir)
+
+
+@pytest.fixture(scope="session")
+def git_bash_path(test_platform_runtime: TestPlatform) -> str | None:
+    """Return the optional Git Bash backend path detected for the current platform."""
+    return test_platform_runtime.git_bash_path
+
+
+@pytest.fixture(scope="session")
+def python_command(test_platform_runtime: TestPlatform) -> str:
+    """Return the interpreter command tests should use for the host platform."""
+    return default_python_command(test_platform_runtime.system)
+
+
 @pytest.fixture
 def sample_yaml_config(temp_dir):
     """Create a sample YAML configuration file."""
@@ -482,6 +529,14 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "e2e: marks tests as end-to-end tests")
     config.addinivalue_line("markers", "external: marks tests that require external services")
     config.addinivalue_line("markers", "llm: marks tests that require LLM services")
+    config.addinivalue_line("markers", "windows_only: marks tests that only run on Windows")
+    config.addinivalue_line("markers", "posix_only: marks tests that only run on POSIX systems")
+    config.addinivalue_line(
+        "markers",
+        "requires_git_bash: marks tests that require the optional Git Bash backend or a bash executable",
+    )
+    config.addinivalue_line("markers", "requires_rg: marks tests that require ripgrep (rg)")
+    config.addinivalue_line("markers", "requires_ffmpeg: marks tests that require ffmpeg")
 
 
 # Configure anyio to only use asyncio backend (trio is not installed)
@@ -493,7 +548,13 @@ def anyio_backend():
 
 def pytest_collection_modifyitems(config, items):
     """Modify test collection to add markers automatically."""
+    platform_runtime = detect_test_platform()
+    run_live_llm = os.environ.get("NEXAU_RUN_LIVE_LLM_TESTS") == "1"
+    skip_llm = pytest.mark.skip(reason="live LLM test; set NEXAU_RUN_LIVE_LLM_TESTS=1 to run")
+
     for item in items:
+        explicit_llm_marker = item.get_closest_marker("llm") is not None
+
         # Add slow marker to tests that take longer
         if "performance" in item.name or "load" in item.name:
             item.add_marker(pytest.mark.slow)
@@ -513,3 +574,22 @@ def pytest_collection_modifyitems(config, items):
         # Add llm marker to tests that use LLM services
         if any(keyword in item.name for keyword in ["llm", "openai", "chat"]):
             item.add_marker(pytest.mark.llm)
+
+        if explicit_llm_marker and not run_live_llm:
+            item.add_marker(skip_llm)
+
+        # RFC-0020: 集中处理平台与可选依赖 gate，避免在测试中散落 skipif
+        if item.get_closest_marker("windows_only") is not None and not platform_runtime.is_windows:
+            item.add_marker(pytest.mark.skip(reason="windows_only test requires Windows host"))
+
+        if item.get_closest_marker("posix_only") is not None and not platform_runtime.is_posix:
+            item.add_marker(pytest.mark.skip(reason="posix_only test requires a POSIX host"))
+
+        if item.get_closest_marker("requires_git_bash") is not None and platform_runtime.git_bash_path is None:
+            item.add_marker(pytest.mark.skip(reason="requires_git_bash test requires optional Git Bash / bash executable"))
+
+        if item.get_closest_marker("requires_rg") is not None and platform_runtime.rg_path is None:
+            item.add_marker(pytest.mark.skip(reason="requires_rg test could not find ripgrep (rg)"))
+
+        if item.get_closest_marker("requires_ffmpeg") is not None and platform_runtime.ffmpeg_path is None:
+            item.add_marker(pytest.mark.skip(reason="requires_ffmpeg test could not find ffmpeg"))

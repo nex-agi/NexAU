@@ -17,6 +17,8 @@ NexAU is a general-purpose agent framework for building intelligent agents with 
 
 * **[🚀 Getting Started](./getting-started.md)**: Installation, environment setup, and running your first agent.
 
+* **[Windows Support](./windows.md)**: Windows 10/11 support, default PowerShell backend, optional Git Bash backend, self checks, and troubleshooting.
+
 * **Core Concepts**
     * **[🤖 Agents](./core-concepts/agents.md)**: Learn how to create and configure agents.
     * **[🛠️ Tools](./core-concepts/tools.md)**: Use built-in tools and create your own.

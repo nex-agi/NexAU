@@ -89,10 +89,11 @@ class TestRunShellCommandIntegration:
         info = Mock()
         info.is_directory = True
         sandbox.get_file_info.return_value = info
+        sandbox.prepare_shell_command.side_effect = lambda command: command
 
         start_result = Mock()
         start_result.background_pid = 123
-        sandbox.execute_bash.return_value = start_result
+        sandbox.execute_shell.return_value = start_result
 
         cmd_result = Mock()
         cmd_result.stdout = "hello world"
@@ -120,6 +121,83 @@ class TestRunShellCommandIntegration:
         assert result["interrupted"] is False
         assert result["timed_out"] is False
 
+    def test_dir_path_is_resolved_and_passed_as_cwd(self):
+        """RFC-0020: tool-layer cwd routing reaches the sandbox backend."""
+        sandbox = Mock()
+        sandbox.work_dir = Path("/tmp/work")
+        sandbox.file_exists.return_value = True
+        info = Mock()
+        info.is_directory = True
+        sandbox.get_file_info.return_value = info
+        sandbox.prepare_shell_command.side_effect = lambda command: command
+
+        start_result = Mock()
+        start_result.background_pid = 123
+        sandbox.execute_shell.return_value = start_result
+
+        cmd_result = Mock()
+        cmd_result.stdout = "cwd ok"
+        cmd_result.stderr = ""
+        cmd_result.exit_code = 0
+        cmd_result.error = None
+        cmd_result.status = SandboxStatus.SUCCESS
+        cmd_result.output_dir = None
+        cmd_result.stdout_file = None
+        cmd_result.stderr_file = None
+        cmd_result.truncated = False
+        cmd_result.original_stdout_length = None
+        cmd_result.original_stderr_length = None
+        sandbox.get_background_task_status.return_value = cmd_result
+
+        agent_state = _make_agent_state(sandbox)
+        ctx = FrameworkContext.for_testing()
+        result = run_shell_command("echo cwd", dir_path="subdir", agent_state=agent_state, ctx=ctx)
+
+        expected_cwd = str(Path(str(sandbox.work_dir)) / "subdir")
+        assert result["stdout"] == "cwd ok"
+        sandbox.file_exists.assert_called_once_with(expected_cwd)
+        sandbox.get_file_info.assert_called_once_with(expected_cwd)
+        sandbox.execute_shell.assert_called_once_with("echo cwd", timeout=1800000, background=True, cwd=expected_cwd)
+
+    @patch("nexau.archs.tool.builtin.shell_tools.run_shell_command.time.sleep", return_value=None)
+    @patch("nexau.archs.tool.builtin.shell_tools.run_shell_command.time.monotonic", side_effect=[0.0, 0.002, 0.002])
+    def test_timeout_kills_running_foreground_command(self, _monotonic_mock, _sleep_mock):
+        """RFC-0020: foreground timeout uses sandbox background-task kill path."""
+        sandbox = Mock()
+        sandbox.work_dir = Path("/tmp/work")
+        sandbox.file_exists.return_value = True
+        info = Mock()
+        info.is_directory = True
+        sandbox.get_file_info.return_value = info
+        sandbox.prepare_shell_command.side_effect = lambda command: command
+
+        start_result = Mock()
+        start_result.background_pid = 789
+        sandbox.execute_shell.return_value = start_result
+
+        running_result = Mock()
+        running_result.status = SandboxStatus.RUNNING
+        running_result.stdout = "partial"
+        running_result.stderr = ""
+        running_result.exit_code = -1
+        running_result.error = None
+        running_result.output_dir = "/tmp/out"
+        running_result.stdout_file = "/tmp/out/stdout.txt"
+        running_result.stderr_file = "/tmp/out/stderr.txt"
+        running_result.truncated = False
+        running_result.original_stdout_length = None
+        running_result.original_stderr_length = None
+        sandbox.get_background_task_status.return_value = running_result
+
+        agent_state = _make_agent_state(sandbox)
+        ctx = FrameworkContext.for_testing()
+        result = run_shell_command("sleep", timeout_ms=1, agent_state=agent_state, ctx=ctx)
+
+        sandbox.kill_background_task.assert_called_once_with(789)
+        assert result["timed_out"] is True
+        assert result["error"]["message"] == "Command timed out after 1ms"
+        assert "Timeout: command timed out after 0.0 minutes." in result["content"]
+
     @patch("nexau.archs.tool.builtin.shell_tools.run_shell_command.time.sleep", return_value=None)
     def test_stop_request_kills_running_foreground_command(self, _sleep_mock):
         """Should kill the sandbox task when shutdown_event is set during polling."""
@@ -129,10 +207,11 @@ class TestRunShellCommandIntegration:
         info = Mock()
         info.is_directory = True
         sandbox.get_file_info.return_value = info
+        sandbox.prepare_shell_command.side_effect = lambda command: command
 
         start_result = Mock()
         start_result.background_pid = 456
-        sandbox.execute_bash.return_value = start_result
+        sandbox.execute_shell.return_value = start_result
 
         running_result = Mock()
         running_result.status = SandboxStatus.RUNNING

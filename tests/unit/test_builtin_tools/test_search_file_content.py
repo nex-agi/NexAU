@@ -14,15 +14,20 @@
 
 """Unit tests for search_file_content builtin tool."""
 
+import importlib
 import os
 import shutil
 import tempfile
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
+from nexau.archs.sandbox.base_sandbox import FileInfo, FileOperationResult, SandboxStatus
 from nexau.archs.sandbox.local_sandbox import LocalSandbox
 from nexau.archs.tool.builtin.file_tools import search_file_content
+
+search_file_content_module = importlib.import_module("nexau.archs.tool.builtin.file_tools.search_file_content")
 
 
 def _make_agent_state(sandbox):
@@ -188,3 +193,45 @@ class TestSearchFileContentOutputFormat:
         assert result.get("error") is not None
         assert "message" in result["error"]
         assert "type" in result["error"]
+
+    def test_parse_windows_drive_path(self):
+        """Should parse grep output lines that start with a Windows drive path."""
+        from nexau.archs.tool.builtin.file_tools.search_file_content import _parse_grep_line
+
+        parsed = _parse_grep_line(r"C:\repo\src\main.py:42:print('hello')", r"C:\repo")
+
+        assert parsed == {
+            "filePath": r"src\main.py",
+            "lineNumber": 42,
+            "line": "print('hello')",
+        }
+
+    def test_rg_missing_uses_python_fallback(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """RFC-0020: rg 缺失时可重复注入并验证 Python fallback。"""
+        target = tmp_path / "fallback.txt"
+        target.write_text("alpha\nneedle line\n", encoding="utf-8")
+        sandbox = Mock()
+        sandbox.work_dir = tmp_path
+        sandbox.file_exists.return_value = True
+        sandbox.get_file_info.return_value.is_directory = True
+        sandbox.list_files.return_value = [
+            FileInfo(path=str(target), exists=True, is_file=True, is_directory=False),
+        ]
+        sandbox.read_file.return_value = FileOperationResult(
+            status=SandboxStatus.SUCCESS,
+            file_path=str(target),
+            content=target.read_text(encoding="utf-8"),
+        )
+        agent_state = _make_agent_state(sandbox)
+        monkeypatch.setattr(search_file_content_module, "_rg_available", lambda _sandbox: False)
+        monkeypatch.setattr(
+            search_file_content_module,
+            "_rg_grep",
+            Mock(side_effect=AssertionError("rg path should not be used when rg is unavailable")),
+        )
+
+        result = search_file_content(pattern="needle", dir_path=str(tmp_path), agent_state=agent_state)
+
+        assert "fallback.txt" in result["content"]
+        assert "strategy: python fallback" in result["content"]
+        sandbox.list_files.assert_called_once_with(str(tmp_path), recursive=True)

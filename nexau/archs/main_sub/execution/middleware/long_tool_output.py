@@ -23,7 +23,9 @@ threshold, this middleware:
 2. Writes the **full** output to a temporary file under ``temp_dir`` via the
    Sandbox API (``sandbox.write_file``).  This ensures the file is written to
    the correct environment regardless of whether the agent runs locally or
-   inside a remote sandbox (e.g. E2B).
+   inside a remote sandbox (e.g. E2B). If ``temp_dir`` is omitted, the
+   middleware asks the sandbox for its platform-appropriate default output
+   directory. Passing ``temp_dir=None`` disables file persistence entirely.
 3. Replaces the original tool output with the truncated version plus a
    human-/LLM-readable note pointing to the temp file so the model can
    ``read_file`` it if needed.
@@ -36,9 +38,8 @@ Configuration example (YAML agent config)::
           max_output_chars: 10000
           head_lines: 50
           tail_lines: 30
-          temp_dir: /tmp/nexau_tool_outputs
           bypass_tool_names:
-            - execute_bash
+            - execute_shell
 """
 
 from __future__ import annotations
@@ -73,8 +74,19 @@ _DEFAULT_HEAD_CHARS = 5000
 _DEFAULT_TAIL_CHARS = 5000
 """Number of characters to keep from the end of the output."""
 
-_DEFAULT_TEMP_DIR = "/tmp/nexau_tool_outputs"
-"""Default directory for persisted full outputs."""
+
+class _SandboxDefaultTempDir:
+    """Sentinel type: use the sandbox's default output directory."""
+
+
+_SANDBOX_DEFAULT_TEMP_DIR = _SandboxDefaultTempDir()
+_DEFAULT_TEMP_DIR = _SANDBOX_DEFAULT_TEMP_DIR
+"""Constructor default sentinel for persisted full outputs.
+
+The public API keeps ``temp_dir=None`` as "disable persistence" for backward
+compatibility, while the default constructor behavior resolves a sandbox-
+specific output directory at runtime via ``BaseSandbox.get_tool_output_dir()``.
+"""
 
 _DEFAULT_BYPASS_TOOL_NAMES: frozenset[str] = frozenset({"LoadSkill"})
 """Tools bypassed by default.
@@ -108,13 +120,13 @@ class LongToolOutputMiddleware(Middleware):
         tail_chars: Number of trailing characters to retain in the truncated
             view.
         temp_dir: Absolute directory path where full outputs are written.
-            Defaults to ``/tmp/nexau_tool_outputs``.  Set to ``None`` to
-            disable file persistence (truncation still applies, but no file
-            is saved and no ``read_file`` hint is emitted).
+            Defaults to the sandbox-resolved output directory.
+            Set to ``None`` to disable file persistence entirely, or to an
+            explicit path to override the sandbox choice.
         bypass_tool_names: Tool names whose output should never be truncated
             by this middleware.  Defaults to ``{"LoadSkill"}``.  Useful for
             tools that already perform their own truncation or that run
-            without a sandbox (e.g. ``execute_bash``, ``LoadSkill``).
+            without a sandbox (e.g. ``execute_shell``, ``LoadSkill``).
     """
 
     def __init__(
@@ -125,7 +137,7 @@ class LongToolOutputMiddleware(Middleware):
         tail_lines: int = _DEFAULT_TAIL_LINES,
         head_chars: int = _DEFAULT_HEAD_CHARS,
         tail_chars: int = _DEFAULT_TAIL_CHARS,
-        temp_dir: str | None = _DEFAULT_TEMP_DIR,
+        temp_dir: str | None | _SandboxDefaultTempDir = _DEFAULT_TEMP_DIR,
         bypass_tool_names: Sequence[str] | None = None,
     ) -> None:
         if max_output_chars < 1:
@@ -146,7 +158,14 @@ class LongToolOutputMiddleware(Middleware):
         self.tail_lines = tail_lines
         self.head_chars = head_chars
         self.tail_chars = tail_chars
-        self.temp_dir = temp_dir
+        if temp_dir is _SANDBOX_DEFAULT_TEMP_DIR:
+            self._use_sandbox_default_temp_dir = True
+            self.temp_dir: str | None = None
+        elif isinstance(temp_dir, str) or temp_dir is None:
+            self._use_sandbox_default_temp_dir = False
+            self.temp_dir = temp_dir
+        else:
+            raise TypeError("temp_dir must be a string path, None, or omitted")
         self._bypass_tool_names: frozenset[str] = _DEFAULT_BYPASS_TOOL_NAMES | frozenset(bypass_tool_names or ())
 
     # ------------------------------------------------------------------
@@ -189,12 +208,18 @@ class LongToolOutputMiddleware(Middleware):
 
         # ---- Persist full output to temp file via Sandbox API --------
         saved_path: str | None = None
-        if self.temp_dir is not None:
+        resolved_temp_dir: str | None
+        if self._use_sandbox_default_temp_dir:
+            resolved_temp_dir = sandbox.get_tool_output_dir() if sandbox is not None else None
+        else:
+            resolved_temp_dir = self.temp_dir
+        if resolved_temp_dir is not None:
             saved_path = self._save_to_temp_file(
                 sandbox=sandbox,
                 tool_name=hook_input.tool_name,
                 tool_call_id=hook_input.tool_call_id,
                 full_text=output_text,
+                temp_dir=resolved_temp_dir,
             )
 
         # ---- Build replacement output --------------------------------
@@ -333,6 +358,7 @@ class LongToolOutputMiddleware(Middleware):
         tool_name: str,
         tool_call_id: str,
         full_text: str,
+        temp_dir: str,
     ) -> str:
         """Write *full_text* to a temp file via Sandbox API and return its path.
 
@@ -346,12 +372,12 @@ class LongToolOutputMiddleware(Middleware):
         timestamp = int(time.time() * 1000)
         short_id = tool_call_id[-8:] if len(tool_call_id) > 8 else tool_call_id
         filename = f"{safe_tool}_{short_id}_{timestamp}.txt"
-        filepath = f"{self.temp_dir}/{filename}"
-
         if sandbox is None:
             raise RuntimeError(
                 "[LongToolOutputMiddleware] No sandbox available to write temp file. The middleware requires a sandbox to be configured."
             )
+
+        filepath = sandbox.join_path(temp_dir, filename)
 
         result = sandbox.write_file(
             file_path=filepath,

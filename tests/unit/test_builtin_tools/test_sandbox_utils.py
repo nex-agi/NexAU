@@ -14,6 +14,7 @@
 
 """Unit tests for _sandbox_utils."""
 
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -50,10 +51,16 @@ class TestResolvePath:
     """Test resolve_path helper."""
 
     def test_absolute_path_unchanged(self):
-        """Should return absolute path as-is."""
+        """Should return native absolute paths as-is."""
         sandbox = Mock()
-        sandbox.work_dir = Path("/tmp/work")
-        assert resolve_path("/absolute/path", sandbox) == "/absolute/path"
+        if sys.platform == "win32":
+            sandbox.work_dir = Path(r"C:\tmp\work")
+            absolute_path = r"C:\absolute\path"
+        else:
+            sandbox.work_dir = Path("/tmp/work")
+            absolute_path = "/absolute/path"
+
+        assert resolve_path(absolute_path, sandbox) == absolute_path
 
     def test_relative_path_resolved_against_work_dir(self):
         """Should resolve relative path against sandbox work_dir."""

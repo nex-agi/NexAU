@@ -204,6 +204,31 @@ class TestBuildSystemPrompt:
         mock_base.assert_called_once()
         mock_caps.assert_called_once()
 
+    def test_build_system_prompt_does_not_force_runtime_platform_contract(self, mock_config):
+        """Runtime environment facts stay available as template variables only."""
+        from nexau.archs.main_sub.prompt_builder import SystemPromptPart
+
+        builder = PromptBuilder()
+        runtime_context = {
+            "operating_system": "Windows-11",
+            "platform": "win32",
+            "working_directory": r"C:\repo",
+            "shell_tool_backend": "Windows PowerShell backend",
+            "shell_tool_guidance": "Use PowerShell command syntax for run_shell_command.",
+        }
+
+        with patch.object(builder, "_get_base_system_prompt", return_value=[SystemPromptPart(text="Base\n")]):
+            with patch.object(builder, "_build_capabilities_docs", return_value="Caps\n"):
+                with patch.object(builder, "_get_tool_execution_instructions", return_value="Inst\n"):
+                    result = builder.build_system_prompt(
+                        mock_config,
+                        runtime_context=runtime_context,
+                    )
+
+        assert len(result) == 1
+        assert "# Runtime Platform Contract" not in result[0].text
+        assert "Active Shell Backend: Windows PowerShell backend" not in result[0].text
+
     def test_build_system_prompt_without_tool_instructions(self, mock_config):
         """Ensure tool instructions can be skipped when requested."""
         from nexau.archs.main_sub.prompt_builder import SystemPromptPart

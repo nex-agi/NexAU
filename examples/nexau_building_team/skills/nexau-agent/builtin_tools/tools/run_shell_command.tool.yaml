@@ -2,11 +2,18 @@ type: tool
 name: run_shell_command
 formatter: nexau.archs.tool.formatters.shell:format_run_shell_command_output
 description: >-
-  This tool executes a given shell command as `bash -c <command>`. To run a
+  This tool executes a given shell command through the sandbox's active shell
+  backend. On Windows the default backend is PowerShell/cmd, while Git Bash is
+  used only when explicitly selected; on Unix-like systems the backend is
+  bash-compatible. Use the command syntax for the active backend described in
+  the Runtime Environment section of the system prompt. On Windows PowerShell
+  backends, use PowerShell syntax. PowerShell here-strings are useful for
+  simple multi-line content, but avoid single-quoted here-strings when content
+  may contain a line beginning with `'@`. For exact UTF-8 file content without
+  BOM, prefer .NET `WriteAllText` with `UTF8Encoding($false)`. Do not use Bash
+  heredoc unless Git Bash is explicitly selected. To run a
   command in the background, set the `is_background` parameter to true. Do NOT
-  use `&` to background commands. Command is executed as a subprocess that leads
-  its own process group. Command process group can be terminated as `kill --
-  -PGID` or signaled as `kill -s SIGNAL -- -PGID`.
+  use `&` to background commands.
 
   The following information is returned:
 
@@ -27,7 +34,7 @@ input_schema:
   properties:
     command:
       type: string
-      description: Exact bash command to execute as `bash -c <command>`
+      description: Exact command to execute with the active shell backend
     description:
       type: string
       description: >-

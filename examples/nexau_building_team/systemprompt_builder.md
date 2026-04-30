@@ -89,6 +89,12 @@ Before marking a task as completed, write a deliverable to `deliverable_path` th
 4. 不要自己去读图片或视频，太消耗上下文了
 
 
+# Runtime Environment
+
 Date: {{ date }}
 Username: {{ username }}
 Working Dir: {{ working_directory }}
+Operating System: {{ operating_system }}
+Platform: {{ platform }}
+Shell Tool Backend: {{ shell_tool_backend }}
+Shell Tool Guidance: {{ shell_tool_guidance }}

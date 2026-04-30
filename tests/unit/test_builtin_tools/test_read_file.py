@@ -26,6 +26,10 @@ from nexau.archs.tool.builtin.file_tools.read_file import (
     _head_truncate_lines,
     _read_text_lossy,
 )
+from nexau.archs.tool.builtin.file_tools.read_visual_file import (
+    _read_video_frames,
+    _resize_image_in_sandbox,
+)
 
 
 def _make_agent_state(sandbox):
@@ -482,6 +486,73 @@ class TestReadVisualFileParameterSanitization:
 
         # Should succeed (no INVALID_PARAMETER error)
         assert result.get("error") is None or result["error"]["type"] != "INVALID_PARAMETER"
+
+
+class TestReadVisualFileSandboxApiPaths:
+    """Regression tests for sandbox-native temp path/file APIs in read_visual_file."""
+
+    @staticmethod
+    def _join_sandbox_path(base: str, *parts: str) -> str:
+        clean_parts = [str(base).rstrip("/\\")]
+        clean_parts.extend(str(part).strip("/\\") for part in parts)
+        return "/".join(clean_parts)
+
+    def test_read_video_frames_uses_sandbox_apis_and_cleans_up(self):
+        sandbox = Mock()
+        sandbox.get_temp_dir.return_value = "/tmp"
+        sandbox.join_path.side_effect = self._join_sandbox_path
+        sandbox.to_shell_path.side_effect = lambda path: f"SHELL<{path}>"
+        sandbox.execute_shell.return_value = Mock(status=SandboxStatus.SUCCESS, exit_code=0, stdout="", stderr="")
+
+        frame_info = Mock()
+        frame_info.path = "/tmp/generated/frame_0001.jpg"
+        frame_info.is_file = True
+        sandbox.list_files.return_value = [frame_info]
+        sandbox.read_file.return_value = Mock(status=SandboxStatus.SUCCESS, content=b"jpeg-bytes")
+
+        result = _read_video_frames("clip.mp4", sandbox, frame_interval=5, max_frames=3, frame_width=320)
+
+        assert len(result) == 1
+        sandbox.create_directory.assert_called_once()
+        tmp_dir = sandbox.create_directory.call_args.args[0]
+        assert tmp_dir.startswith("/tmp/nexau_video_frames_")
+        sandbox.list_files.assert_called_once_with(tmp_dir, recursive=False, pattern="frame_*.jpg")
+        sandbox.delete_file.assert_called_once_with(tmp_dir)
+
+        ffmpeg_cmd = sandbox.execute_shell.call_args.args[0]
+        assert "SHELL<clip.mp4>" in ffmpeg_cmd
+        assert "frame_%04d.jpg" in ffmpeg_cmd
+
+    def test_read_video_frames_raises_when_no_frames_found_and_still_cleans_up(self):
+        sandbox = Mock()
+        sandbox.get_temp_dir.return_value = "/tmp"
+        sandbox.join_path.side_effect = self._join_sandbox_path
+        sandbox.to_shell_path.side_effect = lambda path: f"SHELL<{path}>"
+        sandbox.execute_shell.return_value = Mock(status=SandboxStatus.SUCCESS, exit_code=0, stdout="", stderr="")
+        sandbox.list_files.return_value = []
+
+        with pytest.raises(RuntimeError, match="No frames extracted from video"):
+            _read_video_frames("clip.mp4", sandbox)
+
+        tmp_dir = sandbox.create_directory.call_args.args[0]
+        sandbox.delete_file.assert_called_once_with(tmp_dir)
+
+    def test_resize_image_uses_join_path_and_cleans_up_temp_output(self):
+        sandbox = Mock()
+        sandbox.get_temp_dir.return_value = "/tmp"
+        sandbox.join_path.side_effect = self._join_sandbox_path
+        sandbox.to_shell_path.side_effect = lambda path: f"SHELL<{path}>"
+        sandbox.execute_shell.return_value = Mock(status=SandboxStatus.SUCCESS, exit_code=0, stdout="", stderr="")
+        sandbox.read_file.return_value = Mock(status=SandboxStatus.SUCCESS, content=b"jpeg-bytes")
+
+        result = _resize_image_in_sandbox("image.png", sandbox, 640)
+
+        assert result == b"jpeg-bytes"
+        tmp_out = sandbox.read_file.call_args.args[0]
+        ffmpeg_cmd = sandbox.execute_shell.call_args.args[0]
+        assert "SHELL<image.png>" in ffmpeg_cmd
+        assert f"SHELL<{tmp_out}>" in ffmpeg_cmd
+        sandbox.delete_file.assert_called_once_with(tmp_out)
 
 
 # ---------------------------------------------------------------------------

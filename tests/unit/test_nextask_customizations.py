@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import logging
+import signal
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -859,6 +860,51 @@ class TestCleanupManagerLoggingProtection:
             mock_logger.error.side_effect = ValueError("I/O operation on closed file")
             # Should not raise
             manager._cleanup_all_agents()
+
+
+class TestCleanupManagerPlatformSignals:
+    """Tests for platform-aware cleanup signal registration and re-emission."""
+
+    def test_register_cleanup_handlers_uses_supported_signals(self):
+        from nexau.archs.main_sub.utils.cleanup_manager import CleanupManager
+
+        manager = CleanupManager()
+        manager._cleanup_registered = False
+
+        try:
+            with (
+                patch(
+                    "nexau.archs.main_sub.utils.cleanup_manager.supported_cleanup_signals",
+                    return_value=(signal.SIGINT,),
+                ),
+                patch("nexau.archs.main_sub.utils.cleanup_manager.signal.signal") as mock_signal,
+            ):
+                manager._register_cleanup_handlers()
+
+            mock_signal.assert_called_once_with(signal.SIGINT, manager._signal_handler)
+            assert manager._cleanup_registered is True
+        finally:
+            manager._cleanup_registered = False
+
+    def test_signal_handler_reemits_via_platform_helper_after_cleanup(self):
+        from nexau.archs.main_sub.utils.cleanup_manager import CleanupManager
+
+        manager = CleanupManager()
+
+        with (
+            patch.object(manager, "_cleanup_sandbox") as mock_cleanup_sandbox,
+            patch.object(manager, "_cleanup_all_agents") as mock_cleanup_agents,
+            patch(
+                "nexau.archs.main_sub.utils.cleanup_manager.reemit_termination_signal",
+                side_effect=SystemExit(128 + signal.SIGINT),
+            ) as mock_reemit,
+        ):
+            with pytest.raises(SystemExit, match=str(128 + signal.SIGINT)):
+                manager._signal_handler(signal.SIGINT, None)
+
+        mock_cleanup_sandbox.assert_called_once_with()
+        mock_cleanup_agents.assert_called_once_with()
+        mock_reemit.assert_called_once_with(signal.SIGINT)
 
 
 # ===========================================================================

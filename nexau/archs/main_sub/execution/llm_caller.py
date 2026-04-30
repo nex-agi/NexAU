@@ -75,6 +75,18 @@ OnRetryCallback = Callable[[int, int, float, str], None]
 """(attempt, max_attempts, backoff_seconds, error_message) → None"""
 
 
+def _log_llm_debug_request(messages: Sequence[Message]) -> None:
+    logger.info("🐛 [DEBUG] LLM Request Messages:")
+    for i, msg in enumerate(messages):
+        logger.info(
+            f"🐛 [DEBUG] Message {i}: {msg.role.value} -> {msg.get_text_content()}",
+        )
+
+
+def _log_llm_debug_response(model_response: ModelResponse) -> None:
+    logger.info(f"🐛 [DEBUG] LLM Response: {model_response.render_text()}")
+
+
 class StreamIdleTimeoutError(Exception):
     """Raised when no stream chunk is received within the configured idle timeout.
 
@@ -428,11 +440,7 @@ class LLMCaller:
 
         # Debug logging for LLM messages
         if self.llm_config.debug:
-            logger.info("🐛 [DEBUG] LLM Request Messages:")
-            for i, msg in enumerate(messages):
-                logger.info(
-                    f"🐛 [DEBUG] Message {i}: {msg.role.value} -> {msg.get_text_content()}",
-                )
+            _log_llm_debug_request(messages)
 
         logger.info(f"🧠 Calling LLM with {max_tokens} max tokens...")
 
@@ -474,7 +482,7 @@ class LLMCaller:
 
         # Debug logging for LLM response
         if self.llm_config.debug:
-            logger.info(f"🐛 [DEBUG] LLM Response: {model_response.render_text()}")
+            _log_llm_debug_response(model_response)
 
         return model_response
 
@@ -793,6 +801,9 @@ class LLMCaller:
         if callable(dropper):
             api_params = cast(dict[str, Any], dropper(api_params))
 
+        if self.llm_config.debug:
+            _log_llm_debug_request(messages)
+
         messages = _ensure_tool_results(messages)
 
         model_call_params = ModelCallParams(
@@ -829,6 +840,10 @@ class LLMCaller:
             from ..utils.xml_utils import XMLUtils
 
             response_payload.content = XMLUtils.restore_closing_tags(response_payload.content)
+
+        if self.llm_config.debug:
+            _log_llm_debug_response(response_payload)
+
         return response_payload
 
     async def _call_with_retry_async(

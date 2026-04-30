@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import difflib
 from dataclasses import dataclass
-from pathlib import PurePath, PureWindowsPath
+from pathlib import PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from nexau.archs.main_sub.agent_state import AgentState
@@ -340,7 +340,7 @@ def _parse_patch_text(patch: str) -> list[PatchHunk]:
 
 def _is_absolute_patch_path(path: str) -> bool:
     """Detect POSIX or Windows absolute paths."""
-    return PurePath(path).is_absolute() or PureWindowsPath(path).is_absolute()
+    return PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute()
 
 
 def _validate_patch_path(path: str) -> None:
@@ -482,6 +482,7 @@ def _apply_replacements(lines: list[str], replacements: list[tuple[int, int, lis
 
 def _derive_new_contents(display_path: str, original_content: str, chunks: list[UpdateFileChunk]) -> str:
     """Derive the new file content after applying update chunks."""
+    original_content = original_content.replace("\r\n", "\n").replace("\r", "\n")
     original_lines = original_content.split("\n")
     if original_lines and original_lines[-1] == "":
         original_lines.pop()

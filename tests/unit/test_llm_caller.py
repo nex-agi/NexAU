@@ -26,9 +26,10 @@ Tests cover:
 - Error scenarios
 """
 
+import asyncio
 import logging
 from types import SimpleNamespace
-from unittest.mock import Mock, call, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
 
@@ -1476,6 +1477,36 @@ class TestLLMCallerDebugLogging:
         # Check that debug logs were NOT created
         debug_logs = [rec.message for rec in caplog.records if "🐛 [DEBUG]" in rec.message]
         assert len(debug_logs) == 0
+
+    def test_call_llm_async_debug_logging_enabled(self, mock_openai_client, mock_llm_config, agent_state, caplog):
+        """Test that debug logging works on the async LLM path."""
+        mock_llm_config.debug = True
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=mock_llm_config,
+        )
+        caller._call_with_retry_async = AsyncMock(return_value=ModelResponse(content="Async debug response"))
+
+        messages = messages_from_legacy_openai_chat(
+            [
+                {"role": "system", "content": "System prompt"},
+                {"role": "user", "content": "User message"},
+            ],
+        )
+
+        with caplog.at_level(logging.INFO):
+            asyncio.run(
+                caller.call_llm_async(
+                    messages,
+                    max_tokens=100,
+                    force_stop_reason=AgentStopReason.SUCCESS,
+                    agent_state=agent_state,
+                ),
+            )
+
+        debug_logs = [rec.message for rec in caplog.records if "[DEBUG]" in rec.message]
+        assert any("LLM Request Messages" in msg for msg in debug_logs)
+        assert any("LLM Response" in msg for msg in debug_logs)
 
 
 class TestLLMCallerRetryLogic:

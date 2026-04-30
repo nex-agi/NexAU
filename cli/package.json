@@ -8,9 +8,8 @@
 		"node": ">=16"
 	},
 	"scripts": {
-		"build": "babel --out-dir=dist source && chmod +x dist/cli.js",
+		"build": "babel --out-dir=dist source && node --input-type=module -e \"import { chmodSync, existsSync } from 'node:fs'; if (existsSync('dist/cli.js')) chmodSync('dist/cli.js', 0o755);\"",
 		"dev": "babel --out-dir=dist --watch source",
-		"postbuild": "chmod +x dist/cli.js",
 		"test": "prettier --check . && xo && ava",
 		"start": "npm run build && node dist/cli.js",
 		"test-fake-cc": "npm run build && node dist/cli.js ../examples/code_agent/code_agent.yaml"

@@ -31,6 +31,7 @@ Fix verified in TestTeamLockConflictFix:
 from __future__ import annotations
 
 import asyncio
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -124,6 +125,7 @@ class TestTeamLockConflictReproduction:
 
         asyncio.run(_run())
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="reproduction test can block the Windows proactor event loop")
     def test_concurrent_team_run_causes_lock_conflict(self):
         """Reproduce the actual bug: second team.run() fails.
 

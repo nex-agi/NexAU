@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import create_engine, select
 from sqlmodel import Field, Session, SQLModel
@@ -167,7 +167,7 @@ class TestFilterDSLProperty1:
     **Validates: Requirements 1.7, 1.8**
     """
 
-    @settings(max_examples=100)
+    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
     @given(filter_=comparison_filters())
     def test_comparison_filter_json_roundtrip(
         self,

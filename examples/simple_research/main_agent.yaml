@@ -35,7 +35,6 @@ middlewares:
       auto_compact: true
       threshold: 0.75
       compaction_strategy: "llm_summary"
-      window_size: 2
       summary_model: ${env.LLM_MODEL}
       summary_base_url: ${env.LLM_BASE_URL}
       summary_api_key: ${env.LLM_API_KEY}

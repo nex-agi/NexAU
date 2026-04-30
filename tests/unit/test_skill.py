@@ -128,6 +128,47 @@ More content here.
         assert "Content after frontmatter" in detail
         assert "More content here" in detail
 
+    def test_load_yaml_formatted_reads_utf8_content(self, temp_dir):
+        """Skill files are read as UTF-8 instead of the platform default encoding."""
+        skill_file = Path(temp_dir) / "utf8.md"
+        content = """---
+name: utf8-skill
+description: 读取中文技能文件
+---
+
+# 技能详情
+
+用于验证 Windows 默认编码不会影响 UTF-8 skill 文件。
+"""
+        skill_file.write_bytes(content.encode("utf-8"))
+
+        metadata, detail = Skill._load_yaml_formatted(skill_file)
+
+        assert metadata["description"] == "读取中文技能文件"
+        assert "技能详情" in detail
+        assert "UTF-8 skill 文件" in detail
+
+    def test_load_yaml_formatted_reads_utf8_bom_content(self, temp_dir):
+        """Skill files saved as UTF-8 with BOM still load correctly."""
+        skill_file = Path(temp_dir) / "utf8_bom.md"
+        content = """---
+name: utf8-bom-skill
+description: 读取带 BOM 的技能文件
+---
+
+# 技能详情
+
+用于验证 Windows 工具生成的 UTF-8 BOM 不会破坏 frontmatter。
+"""
+        skill_file.write_bytes(content.encode("utf-8-sig"))
+
+        metadata, detail = Skill._load_yaml_formatted(skill_file)
+
+        assert metadata["name"] == "utf8-bom-skill"
+        assert metadata["description"] == "读取带 BOM 的技能文件"
+        assert "技能详情" in detail
+        assert "frontmatter" in detail
+
     def test_load_yaml_formatted_no_frontmatter(self, temp_dir):
         """Test loading file without YAML frontmatter."""
         skill_file = Path(temp_dir) / "no_frontmatter.md"

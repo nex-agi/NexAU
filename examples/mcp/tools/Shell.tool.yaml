@@ -1,8 +1,10 @@
 type: tool
-name: Bash
+name: Shell
 description: >-
-  Executes a given bash command in a persistent shell session with optional
-  timeout, ensuring proper handling and security measures.
+  Executes a given shell command through NexAU's active shell backend with
+  optional timeout, ensuring proper handling and security measures. On Windows,
+  the default backend is PowerShell/cmd unless Git Bash is explicitly selected;
+  on Unix-like systems, the backend is bash-compatible.
 
 
   Before executing the command, please follow these steps:
@@ -50,8 +52,8 @@ description: >-
 
   1. You have the capability to call multiple tools in a single response. When
   multiple independent pieces of information are requested, batch your tool
-  calls together for optimal performance. ALWAYS run the following bash commands
-  in parallel, each using the Bash tool:
+  calls together for optimal performance. ALWAYS run the following shell
+  commands in parallel, each using this tool:
     - Run a git status command to see all untracked files.
     - Run a git diff command to see both staged and unstaged changes that will be committed.
     - Run a git log command to see recent commit messages, so that you can follow this repository's commit message style.
@@ -80,7 +82,7 @@ description: >-
 
   - NEVER update the git config
 
-  - NEVER run additional commands to read or explore code, besides git bash
+  - NEVER run additional commands to read or explore code, besides git shell
   commands
 
   - NEVER use the TodoWrite or Task tools
@@ -110,7 +112,7 @@ description: >-
 
   # Creating pull requests
 
-  Use the gh command via the Bash tool for ALL GitHub-related tasks including
+  Use the gh command via the Shell tool for ALL GitHub-related tasks including
   working with issues, pull requests, checks, and releases. If given a Github
   URL use the gh command to get the information needed.
 
@@ -121,9 +123,9 @@ description: >-
 
   1. You have the capability to call multiple tools in a single response. When
   multiple independent pieces of information are requested, batch your tool
-  calls together for optimal performance. ALWAYS run the following bash commands
-  in parallel using the Bash tool, in order to understand the current state of
-  the branch since it diverged from the main branch:
+  calls together for optimal performance. ALWAYS run the following shell
+  commands in parallel using this tool, in order to understand the current state
+  of the branch since it diverged from the main branch:
      - Run a git status command to see all untracked files
      - Run a git diff command to see both staged and unstaged changes that will be committed
      - Check if the current branch tracks a remote branch and is up to date with the remote, so you know if you need to push to the remote

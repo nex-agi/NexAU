@@ -16,12 +16,13 @@
 
 import atexit
 import logging
-import os
 import signal
 import threading
 import weakref
 from types import FrameType
 from typing import TYPE_CHECKING, Any
+
+from nexau.archs.platform.process_compat import reemit_termination_signal, supported_cleanup_signals
 
 if TYPE_CHECKING:
     from nexau.archs.sandbox import BaseSandboxManager
@@ -73,8 +74,9 @@ class CleanupManager:
         try:
             # Register signal handlers for graceful shutdown
             # Signal handlers can only be registered in the main thread
-            signal.signal(signal.SIGTERM, self._signal_handler)
-            signal.signal(signal.SIGINT, self._signal_handler)
+            for signum in supported_cleanup_signals():
+                signal.signal(signum, self._signal_handler)
+            self._cleanup_registered = True
             logger.debug("🔧 Signal handlers registered")
         except ValueError as e:
             # This happens when not in main thread - signal handlers can't be registered
@@ -147,9 +149,7 @@ class CleanupManager:
             pass
         self._cleanup_sandbox()
         self._cleanup_all_agents()
-        # Re-raise the signal with default handler to ensure proper termination
-        signal.signal(signum, signal.SIG_DFL)
-        os.kill(os.getpid(), signum)
+        reemit_termination_signal(signum)
 
 
 # Global instance

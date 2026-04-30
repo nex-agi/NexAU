@@ -2,8 +2,17 @@ type: tool
 name: run_shell_command
 formatter: nexau.archs.tool.formatters.shell:format_run_shell_command_output
 description: >-
-  This tool executes a given shell command synchronously as `bash -c <command>`.
-  All commands run in the foreground and must complete before returning. Use this
+  This tool executes a given shell command synchronously through the sandbox's
+  active shell backend. On Windows the default backend is PowerShell/cmd, while
+  Git Bash is used only when explicitly selected; on Unix-like systems the
+  backend is bash-compatible. Use the command syntax for the active backend
+  described in the Runtime Environment section of the system prompt. On Windows
+  PowerShell backends, use PowerShell syntax. PowerShell here-strings are useful
+  for simple multi-line content, but avoid single-quoted here-strings when content
+  may contain a line beginning with `'@`. For exact UTF-8 file content without
+  BOM, prefer .NET `WriteAllText` with `UTF8Encoding($false)`. Do not use Bash
+  heredoc unless Git Bash is explicitly selected. All commands
+  run in the foreground and must complete before returning. Use this
   for build steps, tests, one-off scripts, and commands that terminate.
 
   The following information is returned:
@@ -20,7 +29,7 @@ input_schema:
   properties:
     command:
       type: string
-      description: Exact bash command to execute as `bash -c <command>`
+      description: Exact command to execute with the active shell backend
     description:
       type: string
       description: >-

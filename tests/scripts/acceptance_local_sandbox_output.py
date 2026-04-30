@@ -38,10 +38,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from nexau.archs.sandbox.base_sandbox import (
-    BASH_TOOL_RESULTS_BASE_PATH,
-    SandboxStatus,
-)
+from nexau.archs.platform.path_helpers import get_local_bash_tool_results_dir
+from nexau.archs.sandbox.base_sandbox import SandboxStatus
 from nexau.archs.sandbox.local_sandbox import LocalSandbox
 
 # ---------------------------------------------------------------------------
@@ -340,8 +338,9 @@ def main() -> None:
     print(f"\nWork dir: {work_dir}")
 
     # 清理可能残留的临时文件
-    if Path(BASH_TOOL_RESULTS_BASE_PATH).exists():
-        old_count = len(list(Path(BASH_TOOL_RESULTS_BASE_PATH).iterdir()))
+    output_base_path = get_local_bash_tool_results_dir()
+    if output_base_path.exists():
+        old_count = len(list(output_base_path.iterdir()))
         print(f"Existing output dirs: {old_count}")
 
     sandbox = _create_sandbox(work_dir)

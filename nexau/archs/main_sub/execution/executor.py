@@ -1382,6 +1382,41 @@ class Executor:
         state.final_response = processed_response
         return _IterationOutcome.BREAK
 
+    @staticmethod
+    def _extract_stop_tool_result(
+        *,
+        tool_name: str,
+        raw_output: dict[str, Any],
+        tool_call: ToolCall,
+    ) -> str:
+        """Return the user-facing final response for a stop tool call."""
+
+        if tool_name == "complete_task":
+            result = tool_call.parameters.get("result")
+            if result is not None:
+                return str(result)
+
+        actual_result: dict[str, Any] = {key: value for key, value in raw_output.items() if key != "_is_stop_tool"}
+        if "result" in actual_result and len(actual_result) == 1:
+            return json.dumps(
+                actual_result["result"],
+                ensure_ascii=False,
+                indent=4,
+            )
+        return (
+            json.dumps(
+                actual_result,
+                ensure_ascii=False,
+                indent=4,
+            )
+            if actual_result
+            else json.dumps(
+                raw_output,
+                ensure_ascii=False,
+                indent=4,
+            )
+        )
+
     async def _process_xml_calls_async(
         self,
         hook_input: AfterModelHookInput,
@@ -1672,11 +1707,11 @@ class Executor:
                     if raw_output_dict is not None and raw_output_dict.get("_is_stop_tool"):
                         stop_tool_detected = True
                         self._last_stop_tool_name = tool_name
-                        actual_result: dict[str, Any] = {key: value for key, value in raw_output_dict.items() if key != "_is_stop_tool"}
-                        if "result" in actual_result and len(actual_result) == 1:
-                            stop_tool_result = json.dumps(actual_result["result"], ensure_ascii=False, indent=4)
-                        else:
-                            stop_tool_result = json.dumps(actual_result or raw_output_dict, ensure_ascii=False, indent=4)
+                        stop_tool_result = self._extract_stop_tool_result(
+                            tool_name=tool_name,
+                            raw_output=raw_output_dict,
+                            tool_call=call_obj,
+                        )
                 except TypeError:
                     pass
 
@@ -1973,29 +2008,11 @@ class Executor:
                             if raw_output_dict is not None and raw_output_dict.get("_is_stop_tool"):
                                 stop_tool_detected = True
                                 self._last_stop_tool_name = tool_name
-                                actual_result: dict[str, Any] = {
-                                    key: value for key, value in raw_output_dict.items() if key != "_is_stop_tool"
-                                }
-                                if "result" in actual_result and len(actual_result) == 1:
-                                    stop_tool_result = json.dumps(
-                                        actual_result["result"],
-                                        ensure_ascii=False,
-                                        indent=4,
-                                    )
-                                else:
-                                    stop_tool_result = (
-                                        json.dumps(
-                                            actual_result,
-                                            ensure_ascii=False,
-                                            indent=4,
-                                        )
-                                        if actual_result
-                                        else json.dumps(
-                                            raw_output_dict,
-                                            ensure_ascii=False,
-                                            indent=4,
-                                        )
-                                    )
+                                stop_tool_result = self._extract_stop_tool_result(
+                                    tool_name=tool_name,
+                                    raw_output=raw_output_dict,
+                                    tool_call=call_obj,
+                                )
                                 logger.info(
                                     f"🛑 Stop tool '{tool_name}' result detected, will terminate after processing",
                                 )

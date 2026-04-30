@@ -315,7 +315,7 @@ class Tool:
         if not path.exists():
             raise FileNotFoundError(f"Tool YAML file not found: {yaml_path}")
 
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             tool_def_model = ToolYamlSchema.model_validate(yaml.safe_load(f))
         tool_def = tool_def_model.model_dump()
 

@@ -15,6 +15,7 @@ from nexau.archs.session import SessionManager, SQLDatabaseEngine
 from nexau.cli.agent_runner import create_cli_progress_hook, create_cli_tool_hook
 from nexau.cli.agent_runner import send_message as cli_send_message
 from nexau.cli.cli_subagent_adapter import attach_cli_to_agent
+from nexau.cli.entrypoint_checks import MISSING_WINDOWS_SHELL_EXIT_CODE, ensure_default_windows_shell_for_entrypoint
 
 
 def setup_parser(parser: argparse.ArgumentParser) -> None:
@@ -244,6 +245,11 @@ def main(args: argparse.Namespace) -> int:
     if not config_path.exists():
         print(f"Error: Configuration file not found: {config_path}", file=sys.stderr)
         return 1
+
+    try:
+        ensure_default_windows_shell_for_entrypoint()
+    except RuntimeError:
+        return MISSING_WINDOWS_SHELL_EXIT_CODE
 
     # Create SQLite engine for persistence
     db_path = Path.home() / ".nexau" / "nexau.db"

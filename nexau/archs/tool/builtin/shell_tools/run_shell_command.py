@@ -7,7 +7,6 @@ Based on gemini-cli's shell.ts implementation.
 Supports foreground and background execution, timeout handling, and process management.
 """
 
-import shlex
 import time
 from collections.abc import Callable
 from typing import Any
@@ -92,6 +91,7 @@ def _execute_foreground_command(
     command: str,
     timeout_ms: int | None,
     execution: ExecutionAPI,
+    cwd: str | None,
 ) -> CommandResult:
     """Execute a foreground shell command via background task polling.
 
@@ -99,7 +99,7 @@ def _execute_foreground_command(
     可以复用 sandbox 现有的 kill_background_task 能力中断长时间阻塞命令。
     """
     start_time = time.monotonic()
-    start_result = sandbox.execute_bash(command, timeout=timeout_ms, background=True)
+    start_result = sandbox.execute_shell(command, timeout=timeout_ms, background=True, cwd=cwd)
     background_pid = start_result.background_pid
 
     if background_pid is None:
@@ -149,8 +149,10 @@ def run_shell_command(
     """
     Executes a shell command.
 
-    On Unix/Linux/macOS: Executes as `bash -c <command>`
-    On Windows: Executes as `powershell.exe -NoProfile -Command <command>`
+    Commands are executed through the sandbox's active shell backend. For
+    LocalSandbox this means an explicit bash path on Unix, PowerShell/cmd by
+    default on Windows, or Git Bash when that optional backend is explicitly
+    selected.
 
     The following information is returned:
     - Output: Combined stdout/stderr. Can be `(empty)` or partial on error.
@@ -209,9 +211,9 @@ def run_shell_command(
         timeout_arg = timeout_ms if timeout_ms and timeout_ms > 0 else None
 
         if is_background:
-            # Background mode: sandbox.execute_bash supports cwd and background params
+            # Background mode: sandbox.execute_shell supports cwd and background params
             start = time.time()
-            cmd_result = sandbox.execute_bash(
+            cmd_result = sandbox.execute_shell(
                 command,
                 timeout=timeout_arg,
                 cwd=cwd,
@@ -257,26 +259,23 @@ def run_shell_command(
             cmd_description += f" [current working directory {cwd}]"
         if description:
             cmd_description += f" ({description.replace(chr(10), ' ')})"
-        # Streaming output is not supported by execute_bash; ignore update_output.
+        # Streaming output is not supported by execute_shell; ignore update_output.
         _ = update_output
 
         # RFC-0006: 通过 ctx.execution 获取停止信号
         execution = ctx.execution
 
-        # Scriptify heredoc commands before wrapping with `cd ... &&` so that
-        # the delimiter stays on its own line regardless of outer shell wrappers.
-        command = sandbox.scriptify_heredoc(command)
-
-        cmd_to_run = command
-        if cwd:
-            cmd_to_run = f"cd {shlex.quote(cwd)} && {command}"
+        # Prepare commands for the active backend before execution. This includes
+        # Bash heredoc scriptification and PowerShell-compatible safe rewrites.
+        command = sandbox.prepare_shell_command(command)
 
         start = time.time()
         cmd_result = _execute_foreground_command(
             sandbox=sandbox,
-            command=cmd_to_run,
+            command=command,
             timeout_ms=timeout_arg,
             execution=execution,
+            cwd=cwd,
         )
         duration_ms = int((time.time() - start) * 1000)
 

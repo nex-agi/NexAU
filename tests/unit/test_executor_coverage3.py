@@ -576,6 +576,40 @@ class TestExecuteParsedCallsAsyncTool:
         assert should_stop is True
         assert stop_tool_result is not None
 
+    def test_complete_task_stop_tool_uses_tool_input_result(self):
+        """complete_task should expose its submitted result, not its ack JSON."""
+        tool_call = ToolCall(
+            tool_name="complete_task",
+            parameters={"result": "操作系统 / Windows\nshell 工具 / PowerShell\n工作目录 / C:\\repo"},
+            tool_call_id="tc_complete",
+        )
+
+        result = Executor._extract_stop_tool_result(
+            tool_name="complete_task",
+            raw_output={
+                "success": True,
+                "message": "Result submitted and task completed.",
+                "status": "TASK_COMPLETED",
+                "task_completed": True,
+                "_is_stop_tool": True,
+            },
+            tool_call=tool_call,
+        )
+
+        assert result == "操作系统 / Windows\nshell 工具 / PowerShell\n工作目录 / C:\\repo"
+
+    def test_other_stop_tool_keeps_legacy_result_output(self):
+        """Non-complete_task stop tools keep the existing raw-output behavior."""
+        tool_call = ToolCall(tool_name="finish_team", parameters={"result": "ignored input"}, tool_call_id="tc_finish")
+
+        result = Executor._extract_stop_tool_result(
+            tool_name="finish_team",
+            raw_output={"result": "team finished", "_is_stop_tool": True},
+            tool_call=tool_call,
+        )
+
+        assert result == '"team finished"'
+
     @pytest.mark.anyio
     async def test_async_tool_with_middleware_hooks(self):
         """Async tool path calls before_tool and after_tool middleware (lines 1523-1566)."""

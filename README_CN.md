@@ -11,6 +11,10 @@
 
 **➡️ 完整文档请查看 [`docs/`](./docs/index.md) 目录。**
 
+**Windows 支持：** NexAU 支持 Windows 10 和 Windows 11，默认使用 PowerShell
+backend。Git Bash 是可选 backend，仅在显式 bash-compatible 模式或 bash-only
+命令场景需要。详见 [Windows 支持](./docs/windows.md)。
+
 ---
 
 ## 安装
@@ -176,6 +180,10 @@ uv sync
     ```bash
     # 一行命令运行任何 NexAU Agent 的 yaml 配置
     ./run-agent examples/code_agent/code_agent.yaml
+    ```
+    在 Windows 上，使用原生 wrapper：
+    ```powershell
+    .\run-agent.cmd examples/code_agent/code_agent.yaml
     ```
     NexAU CLI 支持多轮交互、显示工具调用轨迹和Sub-agent的轨迹，非常适合用来调试 NexAU 的 Agent。
     ![NexAU CLI](assets/nexau_cli.jpeg)

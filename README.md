@@ -11,6 +11,10 @@ This framework provides a modular tool system, a flexible agent architecture, an
 
 **➡️ For the full documentation, please see the [`docs/`](./docs/index.md) directory.**
 
+**Windows support:** NexAU supports Windows 10 and Windows 11 with the default
+PowerShell backend. Git Bash is optional for explicit bash-compatible mode or
+bash-only commands. See [Windows Support](./docs/windows.md).
+
 ---
 
 ## Installation
@@ -176,6 +180,10 @@ uv sync
     ```bash
     # One-liner to run any NexAU agent yaml config
     ./run-agent examples/code_agent/code_agent.yaml
+    ```
+    On Windows, use the native wrapper:
+    ```powershell
+    .\run-agent.cmd examples/code_agent/code_agent.yaml
     ```
     NexAU CLI supports multi-round human interaction, tool call traces and sub-agent traces, which makes agent debugging easier.
     ![NexAU CLI](assets/nexau_cli.jpeg)

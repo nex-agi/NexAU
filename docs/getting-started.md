@@ -47,6 +47,20 @@ pip install uv
 uv sync
 ```
 
+## Windows Support
+
+NexAU supports Windows 10 and Windows 11 with the default PowerShell backend.
+Git Bash is optional and only needed for explicit bash-compatible mode or
+bash-only commands. See [Windows Support](./windows.md) for the backend
+selection order, self checks, and troubleshooting notes.
+
+On Windows, use the native wrapper when running agent YAML files from the source
+tree:
+
+```powershell
+.\run-agent.cmd examples/code_agent/code_agent.yaml
+```
+
 ## Quick Start
 
 1.  **Set up your environment variables** in a `.env` file:
@@ -157,5 +171,9 @@ uv sync
     # One-liner to run any NexAU agent yaml config
     ./run-agent examples/code_agent/code_agent.yaml
     ```
+    On Windows, use:
+    ```powershell
+    .\run-agent.cmd examples/code_agent/code_agent.yaml
+    ```
     NexAU CLI supports multi-round human interaction, tool call traces and sub-agent traces, which makes agent debugging easier.
-    ![NexAU CLI](assets/nexau_cli.jpeg)
+    ![NexAU CLI](../assets/nexau_cli.jpeg)

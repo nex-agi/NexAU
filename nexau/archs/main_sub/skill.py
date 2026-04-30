@@ -59,7 +59,9 @@ class Skill:
         Returns:
             tuple: (metadata dict, content after frontmatter)
         """
-        with open(skill_path) as f:
+        # RFC-0019: tolerate UTF-8 with BOM files produced by Windows tools
+        # while keeping skill files UTF-8 only; do not fall back to locale encodings.
+        with open(skill_path, encoding="utf-8-sig") as f:
             content = f.read()
 
         # Check if file starts with YAML frontmatter

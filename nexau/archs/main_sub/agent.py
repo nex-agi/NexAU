@@ -51,6 +51,7 @@ from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.main_sub.execution.stop_result import StopResult
 from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.prompt_builder import PromptBuilder
+from nexau.archs.main_sub.runtime_context import build_runtime_prompt_context
 from nexau.archs.main_sub.skill import Skill, build_load_skill_tool, build_tool_skill
 from nexau.archs.main_sub.token_trace_session import TokenTraceSession
 from nexau.archs.main_sub.tool_call_modes import (
@@ -1038,8 +1039,14 @@ class Agent:
             merged_config.update(config)
 
         effective_variables = variables or self._variables
+        sandbox_instance = getattr(self.sandbox_manager, "_instance", None)
+        runtime_context = build_runtime_prompt_context(
+            sandbox_instance,
+            working_directory=getattr(self.sandbox_manager, "work_dir", None),
+        )
+        initial_context = {**runtime_context, **(self.config.initial_context or {})}
         merged_context = AgentContext.from_sources(
-            initial_context=self.config.initial_context,
+            initial_context=initial_context,
             legacy_context=context,
             template=effective_variables.template if effective_variables else None,
         ).context

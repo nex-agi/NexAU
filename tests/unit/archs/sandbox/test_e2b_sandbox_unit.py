@@ -185,7 +185,7 @@ def _enable_fake_e2b(monkeypatch: pytest.MonkeyPatch, sandbox: _FakeSandbox | No
     monkeypatch.setattr(e2b_module, "E2B_AVAILABLE", True)
     monkeypatch.setattr(e2b_module, "FileType", _FakeFileType())
     monkeypatch.setattr(e2b_module, "Sandbox", fake_class)
-    # Mock e2b exception classes used in execute_bash
+    # Mock e2b exception classes used in shell execution.
     if "e2b" not in sys.modules:
         fake_e2b = types.ModuleType("e2b")
         sys.modules["e2b"] = fake_e2b
@@ -202,6 +202,50 @@ def _enable_fake_e2b(monkeypatch: pytest.MonkeyPatch, sandbox: _FakeSandbox | No
 def _attach_backend(sandbox: E2BSandbox, backend: _FakeSandbox) -> None:
     sandbox.__dict__["_sandbox"] = backend
     sandbox.sandbox_id = backend.sandbox_id
+
+
+class TestExecuteShellCompatibility:
+    def test_execute_bash_delegates_to_execute_shell(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        expected = object()
+        calls = []
+
+        def fake_execute_shell(command, *, timeout=None, cwd=None, user=None, envs=None, background=False):
+            calls.append(
+                {
+                    "command": command,
+                    "timeout": timeout,
+                    "cwd": cwd,
+                    "user": user,
+                    "envs": envs,
+                    "background": background,
+                }
+            )
+            return expected
+
+        monkeypatch.setattr(sandbox, "execute_shell", fake_execute_shell)
+
+        result = sandbox.execute_bash(
+            "echo ok",
+            timeout=1000,
+            cwd="/work",
+            user="user",
+            envs={"A": "B"},
+            background=True,
+        )
+
+        assert result is expected
+        assert calls == [
+            {
+                "command": "echo ok",
+                "timeout": 1000,
+                "cwd": "/work",
+                "user": "user",
+                "envs": {"A": "B"},
+                "background": True,
+            }
+        ]
 
 
 # =============================================================================
@@ -266,6 +310,11 @@ class TestDefaultWorkDir:
         sandbox = E2BSandbox(sandbox_id="sbx")
         assert str(sandbox.work_dir) == E2B_DEFAULT_WORK_DIR
 
+    def test_e2b_sandbox_normalizes_path_work_dir_to_posix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _enable_fake_e2b(monkeypatch)
+        sandbox = E2BSandbox(sandbox_id="sbx", work_dir=Path("/home/user/workspace"))
+        assert sandbox.work_dir == "/home/user/workspace"
+
     def test_e2b_sandbox_config_default_work_dir(self) -> None:
         from nexau.archs.sandbox.base_sandbox import E2B_DEFAULT_WORK_DIR
 
@@ -284,8 +333,8 @@ class TestDefaultWorkDir:
 # =============================================================================
 
 
-class TestExecuteBashDefensive:
-    """Cover execute_bash error/edge paths that can't be triggered via e2e."""
+class TestExecuteShellDefensive:
+    """Cover execute_shell error/edge paths that can't be triggered via e2e."""
 
     def test_reconnects_on_event_loop_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         commands = _FakeCommands(
@@ -301,7 +350,7 @@ class TestExecuteBashDefensive:
         _attach_backend(sandbox, backend)
         # Patch sleep to avoid slowing down tests
         monkeypatch.setattr(e2b_module.time, "sleep", lambda _: None)
-        result = sandbox.execute_bash("echo hi")
+        result = sandbox.execute_shell("echo hi")
         assert result.status == SandboxStatus.SUCCESS
         assert cls.connect_called
 
@@ -321,7 +370,7 @@ class TestExecuteBashDefensive:
         sandbox = E2BSandbox(sandbox_id="sbx")
         _attach_backend(sandbox, backend)
         monkeypatch.setattr(e2b_module.time, "sleep", lambda _: None)
-        result = sandbox.execute_bash("echo hi")
+        result = sandbox.execute_shell("echo hi")
         assert result.status == SandboxStatus.SUCCESS
         assert "recovered" in result.stdout
         assert cls.connect_called
@@ -337,7 +386,7 @@ class TestExecuteBashDefensive:
         _enable_fake_e2b(monkeypatch, backend)
         sandbox = E2BSandbox(sandbox_id="sbx")
         _attach_backend(sandbox, backend)
-        result = sandbox.execute_bash("false")
+        result = sandbox.execute_shell("false")
         assert result.status == SandboxStatus.ERROR
         assert result.exit_code == 2
 
@@ -352,7 +401,7 @@ class TestExecuteBashDefensive:
         _enable_fake_e2b(monkeypatch, backend)
         sandbox = E2BSandbox(sandbox_id="sbx")
         _attach_backend(sandbox, backend)
-        result = sandbox.execute_bash("sleep 999", timeout=1000)
+        result = sandbox.execute_shell("sleep 999", timeout=1000)
         assert result.status == SandboxStatus.TIMEOUT
 
     def test_generic_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -366,7 +415,7 @@ class TestExecuteBashDefensive:
         _enable_fake_e2b(monkeypatch, backend)
         sandbox = E2BSandbox(sandbox_id="sbx")
         _attach_backend(sandbox, backend)
-        result = sandbox.execute_bash("echo hi")
+        result = sandbox.execute_shell("echo hi")
         assert result.status == SandboxStatus.ERROR
         assert "unexpected" in (result.error or "")
 
@@ -395,13 +444,13 @@ class TestExecuteBashDefensive:
         sandbox = E2BSandbox(sandbox_id="sbx")
         _attach_backend(sandbox, backend)
         with pytest.raises(ValueError, match="root.*user"):
-            sandbox.execute_bash("echo hi", user="nobody")
+            sandbox.execute_shell("echo hi", user="nobody")
 
     def test_no_sandbox_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _enable_fake_e2b(monkeypatch)
         sandbox = E2BSandbox(sandbox_id="sbx")
         with pytest.raises(Exception):
-            sandbox.execute_bash("echo hi")
+            sandbox.execute_shell("echo hi")
 
 
 class TestMaybeScriptifyHeredoc:
@@ -455,11 +504,11 @@ class TestMaybeScriptifyHeredoc:
         """The _HEREDOC_PATTERN should match common heredoc syntax variants."""
         assert E2BSandbox._HEREDOC_PATTERN.search(heredoc_fragment) is not None
 
-    def test_heredoc_full_execute_bash(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """End-to-end: execute_bash with a heredoc command should wrap
+    def test_heredoc_full_execute_shell(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """End-to-end: execute_shell with a heredoc command should wrap
         ``bash run.sh`` (not the raw heredoc) in the compound command."""
         sandbox, backend = self._make_sandbox(monkeypatch)
-        result = sandbox.execute_bash("python3 - <<'PY'\nprint('hi')\nPY")
+        result = sandbox.execute_shell("python3 - <<'PY'\nprint('hi')\nPY")
         assert result.status == SandboxStatus.SUCCESS
         # The second call should be the wrapped command containing "bash ... /run.sh"
         # (first call is _prepare_output_dir)

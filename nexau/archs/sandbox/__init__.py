@@ -38,8 +38,8 @@ from .base_sandbox import (
     extract_dataclass_init_kwargs,
     parse_sandbox_config,
 )
-from .output_utils import clean_shell_output, collapse_repetitive, resolve_cr, strip_ansi
 from .local_sandbox import LocalSandbox, LocalSandboxManager
+from .output_utils import clean_shell_output, collapse_repetitive, resolve_cr, strip_ansi
 
 if TYPE_CHECKING:
     from .e2b_sandbox import E2BSandbox, E2BSandboxManager

@@ -7,14 +7,13 @@ from pathlib import Path
 import pytest
 
 from nexau.archs.sandbox.base_sandbox import (
-    BASH_TOOL_RESULTS_BASE_PATH,
     CodeLanguage,
     E2BSandboxConfig,
     SandboxError,
     SandboxFileError,
     SandboxStatus,
 )
-from nexau.archs.sandbox.e2b_sandbox import E2BSandbox, E2BSandboxManager
+from nexau.archs.sandbox.e2b_sandbox import BASH_TOOL_RESULTS_BASE_PATH, E2BSandbox, E2BSandboxManager
 from nexau.archs.session import SessionManager
 from nexau.archs.session.orm import InMemoryDatabaseEngine
 

@@ -59,7 +59,8 @@ def load_yaml_with_vars(path: str | os.PathLike[str]) -> YamlValue:
         config_text = f.read()
 
     base_dir = os.path.dirname(os.path.abspath(path))
-    config_text = config_text.replace("${this_file_dir}", base_dir)
+    yaml_safe_base_dir = base_dir.replace("\\", "/") if os.name == "nt" else base_dir
+    config_text = config_text.replace("${this_file_dir}", yaml_safe_base_dir)
 
     # Replace ${env.VAR_NAME} placeholders with environment variables
     env_pattern = re.compile(r"\$\{env\.([A-Za-z_][A-Za-z0-9_]*)\}")

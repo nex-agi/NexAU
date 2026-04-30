@@ -46,6 +46,7 @@ from nexau.archs.main_sub.execution.hooks import (
     AfterToolHookResult,
 )
 from nexau.archs.main_sub.utils import load_yaml_with_vars
+from nexau.archs.platform.path_helpers import get_local_cli_sessions_dir
 from nexau.archs.session.models.serialization_utils import sanitize_for_serialization
 from nexau.cli.cli_subagent_adapter import attach_cli_to_agent
 from nexau.core.messages import Message, Role
@@ -68,15 +69,25 @@ if _project_root and _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 
+def _configure_stdio_for_utf8() -> None:
+    """Force UTF-8 text stdio when supported.
+
+    The Node CLI talks to this runner over stdin/stdout using UTF-8 JSON lines.
+    On Windows, Python may otherwise inherit the active code page and misdecode
+    multi-byte user input, leaving surrogate characters in message history.
+    """
+    for stream_name in ("stdin", "stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def _ensure_config_dir_on_sys_path(config_path: Path) -> None:
     """Ensure local config modules (e.g. `tool_impl.*`) are importable."""
     config_dir = str(config_path.resolve().parent)
     if config_dir not in sys.path:
         sys.path.insert(0, config_dir)
-
-
-def get_date():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 _stdout_lock = threading.Lock()
@@ -102,7 +113,7 @@ def _resolve_cli_snapshot_dir() -> Path:
         [
             Path(_project_root) / ".nexau" / "cli-sessions",
             Path.home() / ".nexau" / "cli-sessions",
-            Path("/tmp") / "nexau" / "cli-sessions",
+            get_local_cli_sessions_dir(),
         ]
     )
 
@@ -1478,12 +1489,6 @@ class CliAgentRuntime:
             llm_config_raw["base_url"] = self._llm_override["base_url"]
             llm_config_raw["api_key"] = self._llm_override["api_key"]
 
-        existing_model_hooks = list(normalized_config.get("after_model_hooks", []))
-        existing_tool_hooks = list(normalized_config.get("after_tool_hooks", []))
-
-        normalized_config["after_model_hooks"] = [self._cli_progress_hook] + existing_model_hooks
-        normalized_config["after_tool_hooks"] = [self._cli_tool_hook] + existing_tool_hooks
-
         builder = AgentConfigBuilder(normalized_config, self.config_path.parent)
         agent_config = (
             builder.build_core_properties()
@@ -1590,22 +1595,8 @@ class CliAgentRuntime:
 
         send_message("step", "Processing request...", metadata={"type": "start"})
 
-        sandbox = self._agent.sandbox_manager.instance
-
         try:
-            response = self._agent.run(
-                message=user_message,
-                context={
-                    "date": get_date(),
-                    "username": os.getenv("USER", "user"),
-                    "working_directory": str(sandbox.work_dir if sandbox else os.getcwd()),
-                    "env_content": {
-                        "date": get_date(),
-                        "username": os.getenv("USER", "user"),
-                        "working_directory": str(sandbox.work_dir if sandbox else os.getcwd()),
-                    },
-                },
-            )
+            response = self._agent.run(message=user_message)
 
             if not self._interrupt_requested:
                 send_message("step", "Request completed", metadata={"type": "complete"})
@@ -1639,6 +1630,8 @@ class CliAgentRuntime:
 
 
 def main():
+    _configure_stdio_for_utf8()
+
     if len(sys.argv) < 2:
         send_message("error", "No agent configuration file provided")
         sys.exit(1)

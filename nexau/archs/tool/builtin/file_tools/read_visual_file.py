@@ -91,12 +91,12 @@ def _read_video_frames(
         if frame_width <= 0:
             raise ValueError(f"frame_width must be a positive integer, got {frame_width}")
 
-    # 1. Create temp directory with restrictive permissions (owner-only)
-    tmp_dir = f"/tmp/nexau_video_frames_{uuid.uuid4().hex[:12]}"
-    sandbox.execute_bash(f"mkdir -m 0700 -p {shlex.quote(tmp_dir)}")
+    # 1. Create temp directory using sandbox-native path helpers.
+    tmp_dir = sandbox.join_path(sandbox.get_temp_dir(), f"nexau_video_frames_{uuid.uuid4().hex[:12]}")
+    sandbox.create_directory(tmp_dir, parents=True)
 
     try:
-        out_pattern = f"{tmp_dir}/frame_%04d.jpg"
+        out_pattern = sandbox.join_path(tmp_dir, "frame_%04d.jpg")
 
         # 2. Use ffmpeg to extract frames (with optional scaling)
         vf_filters = [f"fps=1/{frame_interval}"]
@@ -105,8 +105,11 @@ def _read_video_frames(
             vf_filters.append(f"scale={frame_width}:-2")
         vf_str = ",".join(vf_filters)
 
-        ffmpeg_cmd = f"ffmpeg -i {shlex.quote(file_path)} -vf {shlex.quote(vf_str)} -q:v 2 {shlex.quote(out_pattern)} -y 2>&1"
-        cmd_result = sandbox.execute_bash(ffmpeg_cmd, timeout=60_000)
+        ffmpeg_cmd = (
+            f"ffmpeg -i {shlex.quote(sandbox.to_shell_path(file_path))} "
+            f"-vf {shlex.quote(vf_str)} -q:v 2 {shlex.quote(sandbox.to_shell_path(out_pattern))} -y 2>&1"
+        )
+        cmd_result = sandbox.execute_shell(ffmpeg_cmd, timeout=60_000)
 
         if cmd_result.status != SandboxStatus.SUCCESS or cmd_result.exit_code != 0:
             stderr = cmd_result.stderr or cmd_result.stdout or ""
@@ -114,12 +117,11 @@ def _read_video_frames(
                 raise RuntimeError("ffmpeg not found in sandbox. Install ffmpeg to process video files.")
             raise RuntimeError(f"ffmpeg failed (exit {cmd_result.exit_code}): {stderr[:500]}")
 
-        # 3. List extracted frame files
-        ls_result = sandbox.execute_bash(f"ls -1 {shlex.quote(tmp_dir)}/frame_*.jpg 2>/dev/null | sort")
-        if ls_result.status != SandboxStatus.SUCCESS or not ls_result.stdout.strip():
+        # 3. List extracted frame files via sandbox filesystem APIs.
+        frame_infos = sandbox.list_files(tmp_dir, recursive=False, pattern="frame_*.jpg")
+        frame_paths = sorted(info.path for info in frame_infos if info.is_file)
+        if not frame_paths:
             raise RuntimeError("No frames extracted from video")
-
-        frame_paths = [p.strip() for p in ls_result.stdout.strip().splitlines() if p.strip()]
 
         # 4. Uniform sampling (when frame count exceeds limit)
         if len(frame_paths) > max_frames:
@@ -163,8 +165,8 @@ def _read_video_frames(
 
         return results
     finally:
-        # Always cleanup temp directory, even on unexpected exceptions
-        sandbox.execute_bash(f"rm -rf {shlex.quote(tmp_dir)}")
+        # Always cleanup temp directory, even on unexpected exceptions.
+        sandbox.delete_file(tmp_dir)
 
 
 def _resize_image_in_sandbox(
@@ -181,12 +183,15 @@ def _resize_image_in_sandbox(
     if max_width <= 0:
         raise ValueError(f"max_width must be a positive integer, got {max_width}")
 
-    tmp_out = f"/tmp/nexau_resized_{uuid.uuid4().hex[:12]}.jpg"
+    tmp_out = sandbox.join_path(sandbox.get_temp_dir(), f"nexau_resized_{uuid.uuid4().hex[:12]}.jpg")
     try:
         # scale='min(max_width,iw)':-2 only shrinks when width exceeds threshold
         scale_expr = f"scale='min({max_width},iw)':-2"
-        cmd = f"ffmpeg -i {shlex.quote(file_path)} -vf {shlex.quote(scale_expr)} -q:v 2 {shlex.quote(tmp_out)} -y 2>&1"
-        result = sandbox.execute_bash(cmd, timeout=30_000)
+        cmd = (
+            f"ffmpeg -i {shlex.quote(sandbox.to_shell_path(file_path))} "
+            f"-vf {shlex.quote(scale_expr)} -q:v 2 {shlex.quote(sandbox.to_shell_path(tmp_out))} -y 2>&1"
+        )
+        result = sandbox.execute_shell(cmd, timeout=30_000)
         if result.status != SandboxStatus.SUCCESS or result.exit_code != 0:
             return None
 
@@ -198,7 +203,7 @@ def _resize_image_in_sandbox(
             return bytes(res.content)
         return res.content.encode("utf-8", errors="replace")
     finally:
-        sandbox.execute_bash(f"rm -f {shlex.quote(tmp_out)}")
+        sandbox.delete_file(tmp_out)
 
 
 def _read_image_file(

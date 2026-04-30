@@ -23,12 +23,13 @@ deployment in production environments.
 import logging
 import os
 import re
+import shlex
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from threading import Lock, Thread
 from typing import Any, Literal, TypeVar
 
@@ -39,8 +40,6 @@ from nexau.archs.session.session_manager import SessionManager
 from nexau.core.utils import run_async_function_sync
 
 logger = logging.getLogger(__name__)
-
-BASH_TOOL_RESULTS_BASE_PATH = "/tmp/nexau_bash_tool_results"
 
 HEREDOC_PATTERN: re.Pattern[str] = re.compile(r"<<-?\s*['\"]?\w+['\"]?")
 """Detect heredoc syntax: ``<<WORD``, ``<<'WORD'``, ``<<"WORD"``, ``<<-WORD``, etc.
@@ -55,9 +54,95 @@ negative causes a syntax error.
 """
 
 
+@dataclass(frozen=True)
+class BashHeredocBlock:
+    """Parsed single Bash heredoc block.
+
+    RFC-0019: backend-aware heredoc preparation
+
+    Represents a conservative, line-oriented parse of one Bash heredoc. The
+    parser intentionally supports one block only; complex multi-heredoc command
+    lines remain unsupported for backend-specific rewrites.
+    """
+
+    opener: str
+    body: str
+    delimiter: str
+    quoted: bool
+    strip_tabs: bool
+    command_prefix: str
+    command_suffix: str
+
+
+_WINDOWS_DRIVE_PATH_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z]:[\\/]")
+"""Detect Windows absolute drive paths such as ``C:\\Temp`` or ``C:/Temp``."""
+
+
 def contains_heredoc(command: str) -> bool:
     """Return True if *command* contains bash heredoc syntax (``<<WORD``)."""
     return HEREDOC_PATTERN.search(command) is not None
+
+
+def parse_single_bash_heredoc(command: str) -> BashHeredocBlock | None:
+    """Parse a single Bash heredoc command.
+
+    RFC-0019: backend-aware heredoc preparation
+
+    Returns ``None`` for malformed, multi-heredoc, or unsupported delimiter
+    syntax. The parser does not evaluate Bash expansions; callers decide
+    whether a parsed block is safe to rewrite for their backend.
+    """
+    matches = list(HEREDOC_PATTERN.finditer(command))
+    if len(matches) != 1:
+        return None
+
+    match = matches[0]
+    opener_line_start = command.rfind("\n", 0, match.start()) + 1
+    opener_line_end = command.find("\n", match.end())
+    if opener_line_end == -1:
+        return None
+
+    opener = command[opener_line_start:opener_line_end]
+    heredoc_match = re.search(r"<<(?P<strip>-?)\s*(?P<token>'[^']+'|\"[^\"]+\"|[A-Za-z_][A-Za-z0-9_]*)", opener)
+    if heredoc_match is None:
+        return None
+
+    token = heredoc_match.group("token")
+    quoted = (token.startswith("'") and token.endswith("'")) or (token.startswith('"') and token.endswith('"'))
+    delimiter = token[1:-1] if quoted else token
+    strip_tabs = heredoc_match.group("strip") == "-"
+    command_prefix = opener[: heredoc_match.start()].strip()
+    command_suffix = opener[heredoc_match.end() :].strip()
+
+    body_start = opener_line_end + 1
+    lines = command[body_start:].splitlines(keepends=True)
+    body_parts: list[str] = []
+    consumed_length = 0
+    for line in lines:
+        raw_line = line[:-1] if line.endswith("\n") else line
+        raw_line = raw_line[:-1] if raw_line.endswith("\r") else raw_line
+        delimiter_candidate = raw_line.lstrip("\t") if strip_tabs else raw_line
+        if delimiter_candidate == delimiter:
+            consumed_length += len(line)
+            trailing = command[body_start + consumed_length :].strip()
+            if trailing:
+                return None
+            body = "".join(body_parts)
+            if strip_tabs:
+                body = "".join(part[1:] if part.startswith("\t") else part for part in body.splitlines(keepends=True))
+            return BashHeredocBlock(
+                opener=opener,
+                body=body,
+                delimiter=delimiter,
+                quoted=quoted,
+                strip_tabs=strip_tabs,
+                command_prefix=command_prefix,
+                command_suffix=command_suffix,
+            )
+        body_parts.append(line)
+        consumed_length += len(line)
+
+    return None
 
 
 DEFAULT_OUTPUT_CHAR_THRESHOLD = 10_000
@@ -86,7 +171,7 @@ class BaseSandboxConfig(BaseModel):
     work_dir: str = E2B_DEFAULT_WORK_DIR
     envs: dict[str, str] = Field(default_factory=dict)
     status_after_run: Literal["pause", "stop", "none"] = "stop"
-    # Smart truncation settings for execute_bash output
+    # Smart truncation settings for shell execution output
     output_char_threshold: int = DEFAULT_OUTPUT_CHAR_THRESHOLD
     truncate_head_chars: int = TRUNCATE_HEAD_CHARS
     truncate_tail_chars: int = TRUNCATE_TAIL_CHARS
@@ -365,6 +450,43 @@ class BaseSandbox(ABC):
         if self.work_dir is not None and not isinstance(self.work_dir, Path):
             self.work_dir = Path(self.work_dir)
 
+    @abstractmethod
+    def get_temp_dir(self) -> str:
+        """Return the sandbox-native temp directory."""
+
+    def join_path(self, base_path: str | Path, *parts: str | Path) -> str:
+        """Join sandbox-native paths without depending on the host OS path rules."""
+        base_str = str(base_path)
+        if not parts:
+            return base_str
+
+        if _WINDOWS_DRIVE_PATH_PATTERN.match(base_str) is not None or "\\" in base_str:
+            joined_windows = PureWindowsPath(base_str)
+            for part in parts:
+                joined_windows = joined_windows / str(part)
+            return str(joined_windows)
+
+        joined_posix = PurePosixPath(base_str)
+        for part in parts:
+            joined_posix = joined_posix / str(part)
+        return str(joined_posix)
+
+    def get_bash_tool_results_base_path(self) -> str:
+        """Return the base directory for command stdout/stderr artifacts."""
+        return self.join_path(self.get_temp_dir(), "nexau_bash_tool_results")
+
+    def get_tool_output_dir(self) -> str:
+        """Return the base directory used for persisted long tool outputs."""
+        return self.join_path(self.get_temp_dir(), "nexau_tool_outputs")
+
+    def to_shell_path(self, path: str | Path) -> str:
+        """Convert a sandbox path into a shell-consumable path string."""
+        return str(path)
+
+    def get_python_command(self) -> str:
+        """Return the Python interpreter command for shell execution."""
+        return "python3"
+
     def _merge_envs(self, per_call_envs: dict[str, str] | None = None) -> dict[str, str] | None:
         """Merge instance-level envs with per-call envs.
 
@@ -383,46 +505,88 @@ class BaseSandbox(ABC):
             merged.update(per_call_envs)
         return merged or None
 
-    # Bash command execution methods
+    # Shell command preparation methods
 
-    def scriptify_heredoc(self, command: str, script_dir: str = "/tmp") -> str:
-        """Write *command* to a temp script file and return ``bash <path>``.
+    def prepare_shell_command(self, command: str, script_dir: str | None = None) -> str:
+        """Prepare *command* for the active shell backend before execution.
 
-        If *command* does not contain heredoc syntax (``<<WORD``), it is
-        returned unchanged.
+        RFC-0019: backend-aware command preparation
 
-        Heredoc commands break when the caller wraps them in shell
-        constructs like ``(cmd)``, ``{ cmd; }``, or ``cmd > file 2> file``
-        that append tokens after the heredoc delimiter.  Writing the
-        command to a file first isolates the heredoc so any outer wrapper
-        is safe.
-
-        This is a **public API** intended for use by external executors
-        (e.g. NexTask / NexQ) that cannot rely on ``execute_bash()``
-        doing the scriptification internally.
-
-        Args:
-            command: The shell command string to inspect / rewrite.
-            script_dir: Directory inside the sandbox to write the temp
-                script.  Defaults to ``/tmp``.
-
-        Returns:
-            Either the original *command* (no heredoc) or
-            ``bash <script_path>`` after writing the command to a file.
+        The base implementation keeps Unix / bash-compatible behavior: Bash
+        heredoc commands are written to a temporary ``.sh`` script and executed
+        with ``bash`` so outer wrappers cannot break heredoc delimiter lines.
+        Backend-specific subclasses may rewrite safe forms for other shells.
         """
+        return self._scriptify_bash_heredoc(command, script_dir)
+
+    def scriptify_heredoc(self, command: str, script_dir: str | None = None) -> str:
+        """Compatibility wrapper for :meth:`prepare_shell_command`.
+
+        RFC-0019: legacy heredoc preparation API
+
+        This public method is retained for external executors (for example
+        NexTask / NexQ) that call it directly. New NexAU code should call
+        ``prepare_shell_command(...)`` because command preparation is now
+        backend-aware and not limited to Bash heredoc scriptification.
+        """
+        return self.prepare_shell_command(command, script_dir)
+
+    def _scriptify_bash_heredoc(self, command: str, script_dir: str | None = None) -> str:
+        """Write Bash heredoc *command* to a temp script and return ``bash <path>``."""
         if not contains_heredoc(command):
             return command
 
         import uuid as _uuid
 
-        script_path = f"{script_dir}/_nexau_heredoc_{_uuid.uuid4().hex[:8]}.sh"
+        target_script_dir = script_dir if script_dir is not None else self.get_temp_dir()
+        script_path = f"{target_script_dir}/_nexau_heredoc_{_uuid.uuid4().hex[:8]}.sh"
         self.write_file(script_path, command, create_directories=True)
         logger.info(
             "[sandbox] Heredoc command scriptified (%d bytes) – wrote to %s",
             len(command.encode("utf-8", errors="replace")),
             script_path,
         )
-        return f"bash {script_path}"
+        return f"bash {shlex.quote(self.to_shell_path(script_path))}"
+
+    def execute_shell(
+        self,
+        command: str,
+        timeout: int | None = None,
+        cwd: str | None = None,
+        user: str | None = None,
+        envs: dict[str, str] | None = None,
+        background: bool = False,
+    ) -> CommandResult:
+        """
+        Execute a shell command through the sandbox's active shell backend.
+
+        This is the preferred command execution interface. The legacy
+        ``execute_bash`` name remains for compatibility and may still be
+        implemented by third-party sandbox subclasses.
+
+        Stdout and stderr are always saved to temporary files (stdout.txt, stderr.txt)
+        under a unique directory. If the combined output exceeds the threshold, the
+        returned stdout/stderr are smart-truncated with hints to the full files.
+
+        Args:
+            command: The shell command to execute
+            timeout: Optional timeout in milliseconds (overrides default)
+            cwd: Optional working directory
+            user: Optional user to run the command as (not available in LocalSandbox)
+            envs: Optional environment variables
+            background: Optional flag to run the command in the background
+
+        Returns:
+            CommandResult containing execution results
+        """
+        return self.execute_bash(
+            command,
+            timeout=timeout,
+            cwd=cwd,
+            user=user,
+            envs=envs,
+            background=background,
+        )
 
     @abstractmethod
     def execute_bash(
@@ -435,22 +599,10 @@ class BaseSandbox(ABC):
         background: bool = False,
     ) -> CommandResult:
         """
-        Execute a bash command in the sandbox.
+        Deprecated legacy alias for :meth:`execute_shell`.
 
-        Stdout and stderr are always saved to temporary files (stdout.txt, stderr.txt)
-        under a unique directory. If the combined output exceeds the threshold, the
-        returned stdout/stderr are smart-truncated with hints to the full files.
-
-        Args:
-            command: The bash command to execute
-            timeout: Optional timeout in milliseconds (overrides default)
-            cwd: Optional working directory
-            user: Optional user to run the command as (not available in LocalSandbox)
-            envs: Optional environment variables
-            background: Optional flag to run the command in the background
-
-        Returns:
-            CommandResult containing execution results
+        New code should call ``execute_shell``. The old method name is retained
+        for compatibility with existing sandbox implementations and callers.
         """
         pass
 
