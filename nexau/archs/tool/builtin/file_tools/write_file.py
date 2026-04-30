@@ -38,7 +38,6 @@ def _generate_diff(
         new_lines,
         fromfile=f"Original: {file_path}",
         tofile=f"Written: {file_path}",
-        lineterm="",
     )
 
     return "".join(diff)
