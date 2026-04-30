@@ -1113,6 +1113,7 @@ class Agent:
                     metadata={"cache": part.cache},
                 )
                 for part in system_prompt_parts
+                if part.text.strip()
             ]
 
             parent_run_id: str | None
