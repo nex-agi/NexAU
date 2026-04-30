@@ -1,0 +1,26 @@
+{
+  "rfc": "0013",
+  "title": "子 Agent 委派与上下文传播",
+  "status": "implemented",
+  "priority": "P1",
+  "tags": [
+    "architecture",
+    "subagent",
+    "delegation",
+    "context",
+    "concurrency"
+  ],
+  "affects": "nexau/archs/main_sub/execution/subagent_manager.py, nexau/archs/main_sub/execution/executor.py, nexau/archs/main_sub/execution/batch_processor.py, nexau/archs/main_sub/execution/parse_structures.py, nexau/archs/main_sub/execution/response_parser.py, nexau/archs/main_sub/config/config.py, nexau/archs/tool/builtin/recall_sub_agent_tool.py, nexau/archs/main_sub/agent.py",
+  "created": "2026-04-16",
+  "updated": "2026-04-16",
+  "requires": [
+    "rfcs/0007-tool-system-architecture-and-binding.md",
+    "rfcs/0008-session-persistence-and-history.md"
+  ],
+  "related": [
+    "rfcs/0002-agent-team.md",
+    "rfcs/0006-rfc-catalog-completion-master-plan.md",
+    "rfcs/0012-global-storage-and-session-mutations.md"
+  ],
+  "tasks": []
+}

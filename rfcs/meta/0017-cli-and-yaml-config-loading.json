@@ -1,0 +1,28 @@
+{
+  "rfc": "0017",
+  "title": "CLI 与 YAML 配置加载",
+  "status": "implemented",
+  "priority": "P2",
+  "tags": [
+    "cli",
+    "config",
+    "yaml",
+    "pydantic",
+    "dx",
+    "architecture"
+  ],
+  "affects": "nexau/cli/, nexau/cli_wrapper.py, nexau/archs/main_sub/config/, nexau/archs/main_sub/utils/common.py, nexau/archs/config/config_loader.py, pyproject.toml",
+  "created": "2026-04-16",
+  "updated": "2026-04-16",
+  "requires": [],
+  "related": [
+    "rfcs/0006-rfc-catalog-completion-master-plan.md",
+    "rfcs/0007-tool-system-architecture-and-binding.md",
+    "rfcs/0011-middleware-hook-composition.md",
+    "rfcs/0013-subagent-delegation-and-context-propagation.md",
+    "rfcs/0014-prompt-engineering-and-templating.md",
+    "rfcs/0015-transport-routing-and-dispatch.md",
+    "rfcs/0016-mcp-resource-discovery-and-recovery.md"
+  ],
+  "tasks": []
+}

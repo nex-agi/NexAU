@@ -1,0 +1,28 @@
+{
+  "rfc": "0016",
+  "title": "MCP 资源发现与错误恢复",
+  "status": "implemented",
+  "priority": "P2",
+  "tags": [
+    "mcp",
+    "tool",
+    "discovery",
+    "recovery",
+    "architecture",
+    "concurrency"
+  ],
+  "affects": "nexau/archs/tool/builtin/mcp_client.py, examples/mcp/*.py, examples/deep_research/deep_research_with_mcp.yaml",
+  "created": "2026-04-16",
+  "updated": "2026-04-16",
+  "requires": [
+    "rfcs/0007-tool-system-architecture-and-binding.md"
+  ],
+  "related": [
+    "rfcs/0006-rfc-catalog-completion-master-plan.md",
+    "rfcs/0011-middleware-hook-composition.md",
+    "rfcs/0012-global-storage-and-session-mutations.md",
+    "rfcs/0014-prompt-engineering-and-templating.md",
+    "rfcs/0015-transport-routing-and-dispatch.md"
+  ],
+  "tasks": []
+}
