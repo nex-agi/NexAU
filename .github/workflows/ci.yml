@@ -352,7 +352,7 @@ jobs:
         uv run pip list 2>/dev/null | grep -iE "greenlet|sqlalchemy|aiosqlite|sqlmodel" || true
 
     - name: Run tests with coverage (E2B SaaS)
-      timeout-minutes: 20
+      timeout-minutes: 30
       env:
         LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         LLM_MODEL: ${{ vars.LLM_MODEL }}
@@ -361,10 +361,29 @@ jobs:
         LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
         LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
         LANGFUSE_HOST: ${{ vars.LANGFUSE_HOST }}
+        # RFC-0023 §阶段 ③ — surface the live aggregator-truth matrix
+        # against real provider endpoints so SaaS CI catches Set A
+        # build()/adapter shape mismatches the deleted Set B parity
+        # tests used to cover. Gateway-routed entries (chat_14_*,
+        # responses_14_*, anthropic_14_*, gemini_14_*) skip without
+        # their dedicated TOKEN_MATRIX_GATEWAY_* keys; provider-direct
+        # entries (gemini_real_25flash) run with the secrets below.
+        NEXAU_RUN_LIVE_LLM_TESTS: "1"
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        NORTHGATE_API_KEY: ${{ secrets.NORTHGATE_API_KEY }}
+        # 14.103 gateway routes Gemini to a paid tier — needed because
+        # the public ``GEMINI_API_KEY`` free tier caps at 20 daily
+        # requests for one model and 0 for everything else.
+        TOKEN_MATRIX_GATEWAY_GEMINI_API_KEY: ${{ secrets.TOKEN_MATRIX_GATEWAY_GEMINI_API_KEY }}
       run: |
         make test
 
     - name: Upload test coverage to Codecov
+      # Always upload, even when ``make test`` failed — otherwise an
+      # unrelated flake (e.g. ``test_interrupt_persistence`` cancellation
+      # timing) blocks the codecov/patch gate by leaving stale carryforward
+      # results, masking real coverage on the latest commit.
+      if: always()
       uses: codecov/codecov-action@v5
       with:
         name: test-coverage-saas
@@ -428,6 +447,9 @@ jobs:
           -x --timeout=120
 
     - name: Upload test coverage to Codecov
+      # Mirror the test-saas job: upload coverage even on test failure
+      # so an unrelated flake doesn't masquerade as a coverage regression.
+      if: always()
       uses: codecov/codecov-action@v5
       with:
         name: test-coverage-selfhost

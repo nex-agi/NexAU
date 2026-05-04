@@ -28,7 +28,6 @@ from pydantic import TypeAdapter
 
 from nexau.archs.llm.llm_aggregators import OpenAIResponsesAggregator
 from nexau.archs.llm.llm_aggregators.events import Event
-from nexau.archs.main_sub.execution.llm_caller import OpenAIResponsesStreamAggregator
 
 _RESPONSE_EVENT_ADAPTER: TypeAdapter[ResponseStreamEvent] = TypeAdapter(ResponseStreamEvent)
 
@@ -190,11 +189,3 @@ def run_set_a_openai_responses_events_only(events: list[Any]) -> list[Event]:
     """Adapter for the run_parity() harness which expects events list only."""
     collected, _built = run_set_a_openai_responses(events)
     return collected
-
-
-def run_set_b_openai_responses(events: list[Any]) -> dict[str, Any]:
-    """Feed events into Set B and finalize."""
-    aggregator = OpenAIResponsesStreamAggregator()
-    for ev in events:
-        aggregator.consume(ev)
-    return aggregator.finalize()

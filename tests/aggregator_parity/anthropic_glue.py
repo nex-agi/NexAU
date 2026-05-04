@@ -5,22 +5,9 @@
 
 """Anthropic-specific glue for the parity harness.
 
-Wires Set A (``AnthropicEventAggregator``) and Set B (``AnthropicStreamAggregator``)
-into the provider-agnostic harness in ``parity_helpers``.
-
-Two fixture forms are supported:
-
-- **SDK-typed events** (``RawMessageStreamEvent`` instances) — fed into Set A
-  unchanged; serialized back to dicts when fed into Set B.
-- **Loose dicts** (the wire format used by ``tests/unit/test_llm_streaming.py``
-  for Set B regression tests) — fed into Set B unchanged; normalized into
-  strict SDK types via ``dict_to_anthropic_event`` before reaching Set A.
-
-The normalizer fills in fields that Set B is permissive about but the
-Anthropic SDK's strict Pydantic validation requires (e.g. ``message_start.message.id``,
-``ThinkingBlock.signature``). It does NOT change semantics — only fills in
-sentinel placeholders for fields that don't affect the Set B logic being
-tested.
+Wires Set A (``AnthropicEventAggregator``) into the provider-agnostic
+harness in ``parity_helpers``. RFC-0023 §阶段 ③ retired Set B; only the
+SDK-typed event path remains.
 """
 
 from __future__ import annotations
@@ -32,7 +19,6 @@ from pydantic import TypeAdapter
 
 from nexau.archs.llm.llm_aggregators import AnthropicEventAggregator
 from nexau.archs.llm.llm_aggregators.events import Event
-from nexau.archs.main_sub.execution.llm_caller import AnthropicStreamAggregator
 
 _ANTHROPIC_EVENT_ADAPTER: TypeAdapter[RawMessageStreamEvent] = TypeAdapter(RawMessageStreamEvent)
 
@@ -163,15 +149,3 @@ def run_set_a_anthropic(events: list[Any]) -> list[Event]:
     if not saw_stop:
         aggregator._handle_message_stop()  # noqa: SLF001 — synthetic flush for fixtures lacking stop event
     return collected
-
-
-def run_set_b_anthropic(events: list[Any]) -> dict[str, Any]:
-    """Feed events into Set B's AnthropicStreamAggregator and finalize.
-
-    Set B's ``consume()`` accepts both SDK types (via ``_to_serializable_dict``)
-    and dicts directly, so we don't need to coerce here — pass through.
-    """
-    aggregator = AnthropicStreamAggregator()
-    for ev in events:
-        aggregator.consume(ev)
-    return aggregator.finalize()

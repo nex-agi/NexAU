@@ -193,7 +193,13 @@ async def _run_multi_turn_case(case: LiveMatrixCase) -> tuple[list[_TurnCapture]
         session_id = f"session_{case.case_id}"
 
         try:
-            agent1 = _build_agent(
+            # ``Agent()`` constructor performs sync I/O (session DB init)
+            # and rejects being called inside a running event loop. Wrap
+            # in ``to_thread`` so multi_turn cases can spin agents up
+            # without "Agent() cannot be called directly from an async
+            # context".
+            agent1 = await asyncio.to_thread(
+                _build_agent,
                 case=case,
                 session_manager=session_manager,
                 user_id=user_id,
@@ -204,7 +210,8 @@ async def _run_multi_turn_case(case: LiveMatrixCase) -> tuple[list[_TurnCapture]
             turn1_answer = _normalize_run_result(await agent1.run_async(message=prompts[0]))
             await asyncio.sleep(0.1)
 
-            agent2 = _build_agent(
+            agent2 = await asyncio.to_thread(
+                _build_agent,
                 case=case,
                 session_manager=session_manager,
                 user_id=user_id,

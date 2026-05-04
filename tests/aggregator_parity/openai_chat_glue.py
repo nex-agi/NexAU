@@ -33,7 +33,6 @@ from pydantic import TypeAdapter
 
 from nexau.archs.llm.llm_aggregators import OpenAIChatCompletionAggregator
 from nexau.archs.llm.llm_aggregators.events import Event
-from nexau.archs.main_sub.execution.llm_caller import OpenAIChatStreamAggregator
 
 _CHUNK_ADAPTER: TypeAdapter[ChatCompletionChunk] = TypeAdapter(ChatCompletionChunk)
 
@@ -81,11 +80,3 @@ def run_set_a_openai_chat(events: list[Any]) -> list[Event]:
     except RuntimeError:
         pass
     return collected
-
-
-def run_set_b_openai_chat(events: list[Any]) -> dict[str, Any]:
-    """Feed events into Set B's OpenAIChatStreamAggregator and finalize."""
-    aggregator = OpenAIChatStreamAggregator()
-    for ev in events:
-        aggregator.consume(ev)
-    return aggregator.finalize()

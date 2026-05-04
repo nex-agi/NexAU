@@ -3,9 +3,14 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any
 
+from openai.types.chat import ChatCompletionChunk
+from pydantic import TypeAdapter
+
 from nexau.archs.main_sub.execution.llm_caller import call_llm_with_openai_chat_completion
 from nexau.archs.tracer.context import reset_current_span, set_current_span
 from nexau.archs.tracer.core import BaseTracer, Span, SpanType
+
+_CHUNK_ADAPTER: TypeAdapter[ChatCompletionChunk] = TypeAdapter(ChatCompletionChunk)
 
 
 class RecordingTracer(BaseTracer):
@@ -74,12 +79,26 @@ def test_openai_stream_call_is_wrapped_in_trace_context_when_current_span_exists
     current = Span(id="parent", name="parent", type=SpanType.AGENT)
     token = set_current_span(current)
     try:
+        # RFC-0023 §阶段 ③ — Set A's aggregator expects strict ChatCompletionChunk
+        # SDK objects (not loose dicts as Set B accepted). Build via TypeAdapter
+        # so the test mocks the wire format the aggregator actually parses.
         chunks = [
-            {
-                "model": "gpt-test",
-                "choices": [{"delta": {"role": "assistant", "content": "hi"}}],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-            }
+            _CHUNK_ADAPTER.validate_python(
+                {
+                    "id": "chatcmpl_trace",
+                    "object": "chat.completion.chunk",
+                    "created": 0,
+                    "model": "gpt-test",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": "hi"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }
+            )
         ]
         client = FakeOpenAIClient(chunks)
 
@@ -97,6 +116,9 @@ def test_openai_stream_call_is_wrapped_in_trace_context_when_current_span_exists
         assert any(call["name"] == "OpenAI chat.completions.create (stream)" for call in tracer.start_calls)
 
         end_call = next(call for call in tracer.end_calls if call["span"].name == "OpenAI chat.completions.create (stream)")
-        assert end_call["outputs"]["content"] == "hi"
+        # Set A's build() returns the full ChatCompletion; trace outputs are
+        # the serialized completion (choices/usage/model at top level), not
+        # the flat message dict Set B used to produce.
+        assert end_call["outputs"]["choices"][0]["message"]["content"] == "hi"
     finally:
         reset_current_span(token)

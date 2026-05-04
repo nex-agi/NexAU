@@ -34,7 +34,6 @@ from typing import Any, cast
 
 from nexau.archs.llm.llm_aggregators import GeminiRestEventAggregator
 from nexau.archs.llm.llm_aggregators.events import Event
-from nexau.archs.main_sub.execution.llm_caller import GeminiRestStreamAggregator
 
 
 def run_set_a_gemini(events: list[dict[str, Any]]) -> list[Event]:
@@ -50,11 +49,3 @@ def run_set_a_gemini(events: list[dict[str, Any]]) -> list[Event]:
         # Wire dicts conform to GeminiResponse shape; cast at the boundary.
         aggregator.aggregate(cast(GeminiResponse, chunk))
     return collected
-
-
-def run_set_b_gemini(events: list[dict[str, Any]]) -> dict[str, Any]:
-    """Feed chunks into Set B's GeminiRestStreamAggregator and finalize."""
-    aggregator = GeminiRestStreamAggregator()
-    for chunk in events:
-        aggregator.consume(chunk)
-    return aggregator.finalize()

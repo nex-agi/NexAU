@@ -34,10 +34,16 @@ from typing import Any, Literal, cast
 import httpx
 import openai
 import requests
-from json_repair import repair_json
 from openai import AsyncStream, Stream
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
+from nexau.archs.llm.llm_aggregators import (
+    AnthropicEventAggregator,
+    GeminiRestEventAggregator,
+    OpenAIChatCompletionAggregator,
+    OpenAIResponsesAggregator,
+)
+from nexau.archs.llm.llm_aggregators.events import Event
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.token_trace_session import TokenTraceSession
 from nexau.archs.tool.tool import (
@@ -65,6 +71,59 @@ from ..tool_call_modes import (
 from .hooks import MiddlewareManager, ModelCallParams
 from .model_response import ModelResponse
 from .stop_reason import AgentStopReason
+
+
+def _noop_event_handler(_: Event) -> None:
+    return None
+
+
+def _chat_completion_to_model_response(completion: ChatCompletion) -> ModelResponse:
+    """Bridge Set A's ``ChatCompletion`` ``build()`` output to ``ModelResponse``.
+
+    ``ModelResponse.from_openai_message`` expects a single message
+    (``ChatCompletionMessage``) plus an optional usage dict — that was the
+    natural shape Set B's ``finalize()`` produced. Set A's ``build()``
+    returns the full ``ChatCompletion`` (with ``.choices`` and
+    ``.usage``); extract the first choice's message and pass usage
+    separately so the adapter sees what it expects.
+    """
+    message = completion.choices[0].message if completion.choices else None
+    usage = _to_serializable_dict(completion.usage) if completion.usage is not None else None
+    return ModelResponse.from_openai_message(message, usage=usage)
+
+
+def _resolve_run_id(model_call_params: ModelCallParams | None) -> str:
+    """Best-effort run_id for stream aggregator instances.
+
+    RFC-0023 §阶段 ③ — Set A aggregators tag emitted events with ``run_id``.
+    Production calls always have an ``agent_state`` carrying the live id;
+    test scaffolding sometimes calls ``llm_caller`` without one, so fall
+    back to a literal placeholder rather than crashing.
+    """
+    if model_call_params is None or model_call_params.agent_state is None:
+        return "stream"
+    return model_call_params.agent_state.run_id
+
+
+def _get_event_emitter(manager: MiddlewareManager | None) -> Callable[[Event], None]:
+    """Resolve the unified event emitter from the middleware chain.
+
+    RFC-0023 §阶段 ③ — Set A aggregators now live inside ``llm_caller`` (one
+    instance per stream call). They need an ``on_event`` sink so the AG-UI
+    events they emit reach the user's streaming callback. The sink is owned
+    by ``AgentEventsMiddleware`` (via its ``on_event`` instance attribute);
+    we walk the middleware chain to fetch it. When no middleware provides
+    one (eg. unit tests, scripts), fall back to a no-op so the aggregator
+    can still drive ``build()``.
+    """
+    if manager is None:
+        return _noop_event_handler
+    for mw in manager.middlewares:
+        handler = mw.get_event_handler()
+        if handler is not None:
+            return cast(Callable[[Event], None], handler)
+    return _noop_event_handler
+
 
 logger = logging.getLogger(__name__)
 
@@ -1443,7 +1502,7 @@ def call_llm_with_anthropic_chat_completion(
         response = llm_call()
         return ModelResponse.from_anthropic_message(response)
 
-    def llm_stream_call() -> tuple[dict[str, Any], str | None]:
+    def llm_stream_call() -> ModelResponse:
         system_messages, user_messages = _build_anthropic_messages()
         _apply_cache_control(system_messages, user_messages)
 
@@ -1454,7 +1513,12 @@ def call_llm_with_anthropic_chat_completion(
         # Build the exact kwargs for tracing
         api_kwargs: dict[str, Any] = {"system": system_messages, "messages": user_messages, **new_kwargs}
 
-        aggregator = AnthropicStreamAggregator()
+        # RFC-0023 §阶段 ③ — Set A is the single canonical aggregator. It
+        # emits AG-UI events through ``emitter`` (the middleware's on_event
+        # sink) and yields a typed ``AnthropicMessage`` via ``build()``.
+        run_id = _resolve_run_id(model_call_params)
+        emitter = _get_event_emitter(middleware_manager)
+        aggregator = AnthropicEventAggregator(on_event=emitter, run_id=run_id)
 
         try:
             if should_trace and tracer is not None:
@@ -1474,16 +1538,16 @@ def call_llm_with_anthropic_chat_completion(
                             processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
                             if processed_event is None:
                                 continue
-                            aggregator.consume(processed_event)
-                    message_payload = aggregator.finalize()
-                    trace_ctx.set_outputs(message_payload)
+                            aggregator.aggregate(processed_event)
+                    message = aggregator.build()
+                    trace_ctx.set_outputs(_to_serializable_dict(message))
                     if first_token_time is not None:
                         trace_ctx.set_attributes(
                             {
                                 "time_to_first_token_ms": (first_token_time - start_time) * 1000,
                             }
                         )
-                    return message_payload, aggregator.model_name
+                    return ModelResponse.from_anthropic_message(message)
 
             # RFC-0001: shutdown_event 检测
             _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
@@ -1495,9 +1559,8 @@ def call_llm_with_anthropic_chat_completion(
                     processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
                     if processed_event is None:
                         continue
-                    aggregator.consume(processed_event)
-            message_payload = aggregator.finalize()
-            return message_payload, aggregator.model_name
+                    aggregator.aggregate(processed_event)
+            return ModelResponse.from_anthropic_message(aggregator.build())
         except Exception as exc:
             wrapped_error = _maybe_wrap_stream_idle_timeout(
                 exc,
@@ -1508,9 +1571,7 @@ def call_llm_with_anthropic_chat_completion(
                 raise wrapped_error from exc
             raise
 
-    response_payload, _ = llm_stream_call()
-
-    return ModelResponse.from_anthropic_message(response_payload)
+    return llm_stream_call()
 
 
 def call_llm_with_openai_chat_completion(
@@ -1540,13 +1601,14 @@ def call_llm_with_openai_chat_completion(
 
     if stream_requested:
 
-        def call_llm_stream(payload: dict[str, Any]) -> tuple[dict[str, Any], ChatCompletionChunk | None, str | None]:
+        def call_llm_stream(payload: dict[str, Any]) -> ModelResponse:
             payload = payload.copy()
             payload.pop("stream", None)
             stream_options = {"include_usage": True}
             payload["stream_options"] = stream_options
-            aggregator = OpenAIChatStreamAggregator()
-            last_chunk: ChatCompletionChunk | None = None
+            run_id = _resolve_run_id(model_call_params)
+            emitter = _get_event_emitter(middleware_manager)
+            aggregator = OpenAIChatCompletionAggregator(on_event=emitter, run_id=run_id)
 
             try:
                 if should_trace and tracer is not None:
@@ -1567,20 +1629,19 @@ def call_llm_with_openai_chat_completion(
                                     break
                                 if first_token_time is None:
                                     first_token_time = time.time()
-                                last_chunk = chunk
                                 processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
                                 if processed_chunk is None:
                                     continue
-                                aggregator.consume(processed_chunk)
-                        message_payload = aggregator.finalize()
-                        trace_ctx.set_outputs(message_payload)
+                                aggregator.aggregate(processed_chunk)
+                        completion = aggregator.build()
+                        trace_ctx.set_outputs(_to_serializable_dict(completion))
                         if first_token_time is not None:
                             trace_ctx.set_attributes(
                                 {
                                     "time_to_first_token_ms": (first_token_time - start_time) * 1000,
                                 }
                             )
-                        return message_payload, last_chunk, aggregator.model_name
+                        return _chat_completion_to_model_response(completion)
 
                 stream_ctx = client.chat.completions.create(
                     stream=True,
@@ -1593,13 +1654,11 @@ def call_llm_with_openai_chat_completion(
                         if _shutdown_ev is not None and _shutdown_ev.is_set():
                             logger.info("🛑 Shutdown event detected during OpenAI streaming, finalizing partial response")
                             break
-                        last_chunk = chunk
                         processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
                         if processed_chunk is None:
                             continue
-                        aggregator.consume(processed_chunk)
-                message_payload_untraced = aggregator.finalize()
-                return message_payload_untraced, last_chunk, aggregator.model_name
+                        aggregator.aggregate(processed_chunk)
+                return _chat_completion_to_model_response(aggregator.build())
             except Exception as exc:
                 wrapped_error = _maybe_wrap_stream_idle_timeout(
                     exc,
@@ -1610,9 +1669,7 @@ def call_llm_with_openai_chat_completion(
                     raise wrapped_error from exc
                 raise
 
-        message, _, _ = call_llm_stream(kwargs)
-
-        return ModelResponse.from_openai_message(message)
+        return call_llm_stream(kwargs)
 
     def _ensure_chat_completion(payload: object) -> ChatCompletion:
         if isinstance(payload, ChatCompletion):
@@ -1734,8 +1791,10 @@ def call_llm_with_openai_responses(
     if not stream_requested:
         return ModelResponse.from_openai_response(call_llm(request_payload))
 
-    def call_llm_stream(payload: dict[str, Any]) -> dict[str, Any]:
-        aggregator = OpenAIResponsesStreamAggregator()
+    def call_llm_stream(payload: dict[str, Any]) -> ModelResponse:
+        run_id = _resolve_run_id(model_call_params)
+        emitter = _get_event_emitter(middleware_manager)
+        aggregator = OpenAIResponsesAggregator(on_event=emitter, run_id=run_id)
         # RFC-0001: shutdown_event 检测
         _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
 
@@ -1755,16 +1814,16 @@ def call_llm_with_openai_responses(
                             processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
                             if processed_event is None:
                                 continue
-                            aggregator.consume(processed_event)
-                    response_payload = aggregator.finalize()
-                    trace_ctx.set_outputs(response_payload)
+                            aggregator.aggregate(processed_event)
+                    response = aggregator.build()
+                    trace_ctx.set_outputs(_to_serializable_dict(response))
                     if first_token_time is not None:
                         trace_ctx.set_attributes(
                             {
                                 "time_to_first_token_ms": (first_token_time - start_time) * 1000,
                             }
                         )
-                    return response_payload
+                    return ModelResponse.from_openai_response(response)
 
             with client.responses.stream(**payload) as stream:
                 for event in stream:
@@ -1774,8 +1833,8 @@ def call_llm_with_openai_responses(
                     processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
                     if processed_event is None:
                         continue
-                    aggregator.consume(processed_event)
-            return aggregator.finalize()
+                    aggregator.aggregate(processed_event)
+            return ModelResponse.from_openai_response(aggregator.build())
         except Exception as exc:
             wrapped_error = _maybe_wrap_stream_idle_timeout(
                 exc,
@@ -1786,8 +1845,7 @@ def call_llm_with_openai_responses(
                 raise wrapped_error from exc
             raise
 
-    response_payload = call_llm_stream(request_payload)
-    return ModelResponse.from_openai_response(response_payload)
+    return call_llm_stream(request_payload)
 
 
 # ── Async LLM call functions ────────────────────────────────────────
@@ -1875,7 +1933,9 @@ async def call_llm_with_openai_chat_completion_async(
         payload.pop("stream", None)
         stream_options = {"include_usage": True}
         payload["stream_options"] = stream_options
-        aggregator = OpenAIChatStreamAggregator()
+        run_id = _resolve_run_id(model_call_params)
+        emitter = _get_event_emitter(middleware_manager)
+        aggregator = OpenAIChatCompletionAggregator(on_event=emitter, run_id=run_id)
 
         _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
 
@@ -1899,9 +1959,9 @@ async def call_llm_with_openai_chat_completion_async(
                             processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
                             if processed_chunk is None:
                                 continue
-                            aggregator.consume(processed_chunk)
-                    message_payload = aggregator.finalize()
-                    trace_ctx.set_outputs(message_payload)
+                            aggregator.aggregate(processed_chunk)
+                    completion = aggregator.build()
+                    trace_ctx.set_outputs(_to_serializable_dict(completion))
                     if first_token_time is not None:
                         trace_ctx.set_attributes({"time_to_first_token_ms": (first_token_time - start_time) * 1000})
             else:
@@ -1914,8 +1974,8 @@ async def call_llm_with_openai_chat_completion_async(
                         processed_chunk = _process_stream_chunk(chunk, middleware_manager, model_call_params)
                         if processed_chunk is None:
                             continue
-                        aggregator.consume(processed_chunk)
-                message_payload = aggregator.finalize()
+                        aggregator.aggregate(processed_chunk)
+                completion = aggregator.build()
         except Exception as exc:
             wrapped_error = _maybe_wrap_stream_idle_timeout(
                 exc,
@@ -1926,7 +1986,7 @@ async def call_llm_with_openai_chat_completion_async(
                 raise wrapped_error from exc
             raise
 
-        return ModelResponse.from_openai_message(message_payload)
+        return _chat_completion_to_model_response(completion)
 
     # 2. 非流式路径
     async def _invoke(api_kwargs: dict[str, Any]) -> ChatCompletion:
@@ -2016,7 +2076,9 @@ async def call_llm_with_anthropic_chat_completion_async(
         return ModelResponse.from_anthropic_message(resp)
 
     # 3. 流式路径
-    aggregator = AnthropicStreamAggregator()
+    run_id = _resolve_run_id(model_call_params)
+    emitter = _get_event_emitter(middleware_manager)
+    aggregator = AnthropicEventAggregator(on_event=emitter, run_id=run_id)
     _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
 
     try:
@@ -2035,9 +2097,9 @@ async def call_llm_with_anthropic_chat_completion_async(
                         processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
                         if processed_event is None:
                             continue
-                        aggregator.consume(processed_event)
-                message_payload = aggregator.finalize()
-                trace_ctx_s.set_outputs(message_payload)
+                        aggregator.aggregate(processed_event)
+                message = aggregator.build()
+                trace_ctx_s.set_outputs(_to_serializable_dict(message))
                 if first_token_time is not None:
                     trace_ctx_s.set_attributes({"time_to_first_token_ms": (first_token_time - start_time) * 1000})
         else:
@@ -2049,8 +2111,8 @@ async def call_llm_with_anthropic_chat_completion_async(
                     processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
                     if processed_event is None:
                         continue
-                    aggregator.consume(processed_event)
-            message_payload = aggregator.finalize()
+                    aggregator.aggregate(processed_event)
+            message = aggregator.build()
     except Exception as exc:
         wrapped_error = _maybe_wrap_stream_idle_timeout(
             exc,
@@ -2061,7 +2123,7 @@ async def call_llm_with_anthropic_chat_completion_async(
             raise wrapped_error from exc
         raise
 
-    return ModelResponse.from_anthropic_message(message_payload)
+    return ModelResponse.from_anthropic_message(message)
 
 
 async def call_llm_with_openai_responses_async(
@@ -2140,7 +2202,9 @@ async def call_llm_with_openai_responses_async(
         return ModelResponse.from_openai_response(response)
 
     # 流式路径
-    aggregator = OpenAIResponsesStreamAggregator()
+    run_id = _resolve_run_id(model_call_params)
+    emitter = _get_event_emitter(middleware_manager)
+    aggregator = OpenAIResponsesAggregator(on_event=emitter, run_id=run_id)
     _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
 
     try:
@@ -2159,9 +2223,9 @@ async def call_llm_with_openai_responses_async(
                         processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
                         if processed_event is None:
                             continue
-                        aggregator.consume(processed_event)
-                response_payload_s = aggregator.finalize()
-                trace_ctx_s.set_outputs(response_payload_s)
+                        aggregator.aggregate(processed_event)
+                response_obj = aggregator.build()
+                trace_ctx_s.set_outputs(_to_serializable_dict(response_obj))
                 if first_token_time is not None:
                     trace_ctx_s.set_attributes({"time_to_first_token_ms": (first_token_time - start_time) * 1000})
         else:
@@ -2173,8 +2237,8 @@ async def call_llm_with_openai_responses_async(
                     processed_event = _process_stream_chunk(event, middleware_manager, model_call_params)
                     if processed_event is None:
                         continue
-                    aggregator.consume(processed_event)
-            response_payload_s = aggregator.finalize()
+                    aggregator.aggregate(processed_event)
+            response_obj = aggregator.build()
     except Exception as exc:
         wrapped_error = _maybe_wrap_stream_idle_timeout(
             exc,
@@ -2185,7 +2249,7 @@ async def call_llm_with_openai_responses_async(
             raise wrapped_error from exc
         raise
 
-    return ModelResponse.from_openai_response(response_payload_s)
+    return ModelResponse.from_openai_response(response_obj)
 
 
 def _process_stream_chunk(
@@ -2293,762 +2357,6 @@ def _enrich_gemini_trace_outputs(
             usage["reasoning_tokens"] = thoughts
         enriched["usage"] = usage
     return enriched
-
-
-# ============================================================================
-# ⚠️ PARITY PROTOCOL — Stream aggregators below
-# ============================================================================
-#
-# The four ``*StreamAggregator`` classes below (OpenAIChatStreamAggregator,
-# AnthropicStreamAggregator, OpenAIResponsesStreamAggregator,
-# GeminiRestStreamAggregator) each have a TWIN in
-# ``nexau/archs/llm/llm_aggregators/<provider>/`` that parses the same
-# wire format and produces unified Event objects for the agent events
-# middleware. Both must stay in lock-step until RFC-0023 §阶段 ③
-# retires this entire section.
-#
-# Any change to any aggregator below requires:
-#
-# 1. Run ``uv run pytest tests/aggregator_parity/`` before commit.
-# 2. If your change handles a new wire pattern (new field / event /
-#    block / extension), record a fixture via
-#    ``tests/aggregator_parity/scripts/record_fixture.py``.
-# 3. If parity surfaces a divergence, fix the buggy side rather than
-#    xfail — real Set A↔Set B drift = real production bug visible to
-#    end users (live SSE vs persisted history mismatch).
-#
-# The parity harness has caught 5 production bugs that would otherwise
-# have shipped silently. See ``tests/aggregator_parity/README.md`` for
-# the protocol and the cross-validation against OSS prior art (vLLM,
-# JetBrains/koog, Spring AI, LiteLLM all hit the same class of bugs).
-#
-# After RFC-0023 §阶段 ③ merges, these classes will be deleted and
-# their accumulator state absorbed into the corresponding Set A
-# aggregators. Until then: lock-step.
-#
-# ============================================================================
-
-
-class OpenAIChatStreamAggregator:
-    """Aggregate OpenAI chat completion stream chunks into a final message dict."""
-
-    def __init__(self) -> None:
-        self._content_parts: list[str] = []
-        self._tool_calls: dict[int, dict[str, Any]] = {}
-        self._reasoning_parts: list[str] = []
-        self._reasoning_details: list[dict[str, Any]] = []
-        self.role: str = "assistant"
-        self.model_name: str | None = None
-        self.usage: Any | None = None
-
-    def consume(self, chunk: Any) -> None:
-        payload = _to_serializable_dict(chunk)
-        model = payload.get("model")
-        if isinstance(model, str):
-            self.model_name = model
-
-        usage_payload = payload.get("usage")
-        if usage_payload is not None:
-            self.usage = _to_serializable_dict(usage_payload)
-
-        choices: list[Any] = payload.get("choices") or []
-        for choice in choices:
-            choice_dict: dict[str, Any] = _to_serializable_dict(choice)
-            delta: dict[str, Any] = _to_serializable_dict(choice_dict.get("delta", {}))
-
-            role = delta.get("role")
-            if role:
-                self.role = role
-
-            content_delta = delta.get("content")
-            if isinstance(content_delta, str):
-                self._content_parts.append(content_delta)
-            elif isinstance(content_delta, list):
-                content_delta_list: list[Any] = cast(list[Any], content_delta)
-                for entry in content_delta_list:
-                    entry_text = _safe_get(entry, "text")
-                    if entry_text:
-                        self._content_parts.append(str(entry_text))
-
-            # reasoning_content: DeepSeek / Qwen / vLLM style — a single aggregated reasoning
-            # string (may also arrive as a list of {text: ...} entries that we flatten).
-            reasoning = delta.get("reasoning_content")
-            if isinstance(reasoning, str):
-                self._reasoning_parts.append(reasoning)
-            elif isinstance(reasoning, list):
-                reasoning_list: list[Any] = cast(list[Any], reasoning)
-                for entry in reasoning_list:
-                    text = _safe_get(entry, "text")
-                    if text:
-                        self._reasoning_parts.append(str(text))
-
-            # reasoning_details: OpenRouter wire format — a list of structured blocks that
-            # MUST be echoed back unmodified on subsequent turns for multi-turn reasoning.
-            # Preserve the original shape verbatim (do not flatten into reasoning_content).
-            reasoning_details = delta.get("reasoning_details")
-            if isinstance(reasoning_details, list):
-                reasoning_details_list: list[Any] = cast(list[Any], reasoning_details)
-                for detail_entry in reasoning_details_list:
-                    if detail_entry is None:
-                        continue
-                    detail_dict = _to_serializable_dict(detail_entry)
-                    if detail_dict:
-                        self._reasoning_details.append(detail_dict)
-
-            tool_calls: list[Any] = delta.get("tool_calls") or []
-            for tool_delta in tool_calls:
-                tool_dict: dict[str, Any] = _to_serializable_dict(tool_delta)
-                index = int(tool_dict.get("index", 0))
-                builder = self._tool_calls.setdefault(
-                    index,
-                    {
-                        "id": tool_dict.get("id"),
-                        "type": tool_dict.get("type", "function"),
-                        "function": {"name": None, "arguments": ""},
-                    },
-                )
-                if tool_dict.get("id"):
-                    builder["id"] = tool_dict["id"]
-                if tool_dict.get("type"):
-                    builder["type"] = tool_dict["type"]
-
-                function_delta: dict[str, Any] = _to_serializable_dict(tool_dict.get("function", {}))
-                if function_delta.get("name"):
-                    builder.setdefault("function", {})["name"] = function_delta["name"]
-                arguments = function_delta.get("arguments")
-                if arguments:
-                    current = builder.setdefault("function", {}).get("arguments") or ""
-                    builder["function"]["arguments"] = f"{current}{arguments}"
-
-    def finalize(self) -> dict[str, Any]:
-        if not self._content_parts and not self._tool_calls and not self._reasoning_parts and not self._reasoning_details:
-            raise RuntimeError("No stream chunks were received from OpenAI chat completion")
-
-        message: dict[str, Any] = {
-            "role": self.role or "assistant",
-            "content": "".join(self._content_parts) if self._content_parts else "",
-        }
-
-        if self._tool_calls:
-            ordered_calls: list[dict[str, Any]] = []
-            for index in sorted(self._tool_calls):
-                call = self._tool_calls[index]
-                function_payload: dict[str, Any] = cast(dict[str, Any], call.get("function") or {})
-                arguments = function_payload.get("arguments") or ""
-                if not isinstance(arguments, str):
-                    arguments = json.dumps(arguments, ensure_ascii=False)
-                ordered_calls.append(
-                    {
-                        "id": call.get("id"),
-                        "type": call.get("type", "function"),
-                        "function": {
-                            "name": function_payload.get("name"),
-                            "arguments": arguments,
-                        },
-                    },
-                )
-            message["tool_calls"] = ordered_calls
-
-        if self._reasoning_parts:
-            message["reasoning_content"] = "".join(self._reasoning_parts)
-
-        if self._reasoning_details:
-            message["reasoning_details"] = self._reasoning_details
-
-        if self.model_name:
-            message["model"] = self.model_name
-
-        if self.usage is not None:
-            message["usage"] = self.usage
-
-        return message
-
-
-class AnthropicStreamAggregator:
-    """Aggregate Anthropic streaming events into a final message payload."""
-
-    def __init__(self) -> None:
-        self.role: str = "assistant"
-        self.model_name: str | None = None
-        self.usage: dict[str, Any] | None = None
-        self.stop_reason: str | None = None
-        self._active_blocks: dict[int, dict[str, Any]] = {}
-        self._completed_blocks: list[dict[str, Any]] = []
-
-    def consume(self, event: Any) -> None:
-        payload = _to_serializable_dict(event)
-        event_type = payload.get("type")
-
-        if event_type == "message_start":
-            message = _to_serializable_dict(payload.get("message", {}))
-            role = message.get("role")
-            if role:
-                self.role = role
-            if message.get("model"):
-                self.model_name = message["model"]
-            # Extract initial usage information if available
-            usage_data = message.get("usage")
-            if usage_data:
-                self.usage = _to_serializable_dict(usage_data)
-        elif event_type == "message_delta":
-            # Update usage and stop_reason from delta events
-            delta = _to_serializable_dict(payload.get("delta", {}))
-            stop_reason = delta.get("stop_reason")
-            if isinstance(stop_reason, str) and stop_reason:
-                self.stop_reason = stop_reason
-            usage_data = delta.get("usage") or payload.get("usage")
-            if usage_data:
-                merged = _to_serializable_dict(usage_data)
-                if self.usage is not None:
-                    self.usage.update(merged)
-                else:
-                    self.usage = merged
-        elif event_type == "content_block_start":
-            index = payload.get("index")
-            block = _to_serializable_dict(payload.get("content_block", {}))
-            if block and isinstance(index, int):
-                # Some Anthropic SDK stream traces can surface duplicate content_block_start events
-                # for the same index (sometimes with missing fields like name/id). Never overwrite a
-                # previously-seen block with a more empty one; merge only meaningful fields.
-                existing = self._active_blocks.get(index)
-                if existing is not None:
-                    existing_input_buffer = existing.get("_input_buffer", "")
-                    for key, value in block.items():
-                        if key == "_input_buffer":
-                            continue
-                        # Only merge "meaningful" values; don't clobber with None/empty.
-                        if value in (None, "", {}, []):
-                            continue
-                        if existing.get(key) in (None, "", {}, []):
-                            existing[key] = value
-                    existing["_input_buffer"] = existing_input_buffer
-                else:
-                    block["_input_buffer"] = ""
-                    self._active_blocks[index] = block
-        elif event_type == "content_block_delta":
-            self._apply_block_delta(payload)
-        elif event_type == "content_block_stop":
-            self._finalize_block(payload.get("index"))
-        elif event_type == "message_stop":
-            # Extract final usage information from message_stop event
-            message = _to_serializable_dict(payload.get("message", {}))
-            usage_data = message.get("usage")
-            if usage_data:
-                self.usage = _to_serializable_dict(usage_data)
-            self._flush_active_blocks()
-
-    def finalize(self) -> dict[str, Any]:
-        self._flush_active_blocks()
-        if not self._completed_blocks:
-            raise RuntimeError("No stream chunks were received from Anthropic messages stream")
-        message: dict[str, Any] = {
-            "role": self.role or "assistant",
-            "content": self._completed_blocks,
-        }
-        if self.model_name:
-            message["model"] = self.model_name
-        if self.stop_reason:
-            message["stop_reason"] = self.stop_reason
-        if self.usage is not None:
-            message["usage"] = self.usage
-        return message
-
-    def _apply_block_delta(self, payload: dict[str, Any]) -> None:
-        index = payload.get("index")
-        if not isinstance(index, int):
-            return
-        delta = _to_serializable_dict(payload.get("delta", {}))
-        # Avoid defaulting to text: in rare malformed streams we might see deltas before start,
-        # and for tool blocks we can infer the type from the delta itself.
-        block = self._active_blocks.setdefault(index, {"_input_buffer": ""})
-        delta_type = delta.get("type")
-        if delta_type == "text_delta":
-            block["type"] = "text"
-            # content_block_start 可能将 text 初始化为 None，.get() 的默认值不会覆盖已有的 None
-            block["text"] = (block.get("text") or "") + (delta.get("text") or "")
-        elif delta_type == "thinking_delta":
-            # Anthropic streams thinking in fragments; append like text.
-            block["type"] = "thinking"
-            block["thinking"] = (block.get("thinking") or "") + (delta.get("thinking") or "")
-        elif delta_type == "signature_delta":
-            # signature 只会到达一次（与官方 SDK 行为一致），直接赋值
-            block["signature"] = delta.get("signature") or ""
-        elif delta_type == "input_json_delta":
-            block.setdefault("type", "tool_use")
-            fragment = delta.get("partial_json") or ""
-            block["_input_buffer"] = (block.get("_input_buffer") or "") + fragment
-        else:
-            # For other delta types, merge raw structure
-            for key, value in delta.items():
-                if key == "type":
-                    continue
-                block[key] = value
-
-    def _finalize_block(self, index: int | None) -> None:
-        if index is None:
-            return
-        block = self._active_blocks.pop(index, None)
-        if not block:
-            return
-        input_buffer = block.pop("_input_buffer", None)
-        if input_buffer:
-            try:
-                block["input"] = json.loads(input_buffer)
-            except json.JSONDecodeError:
-                # eager_input_streaming 跳过 JSON 验证，可能产生拼接或截断的 JSON；
-                # 用 raw_decode 提取第一个合法 JSON 对象。
-                try:
-                    first_obj, _ = json.JSONDecoder().raw_decode(input_buffer.lstrip())
-                    block["input"] = first_obj
-                    logger.warning(
-                        "⚠️ Anthropic tool input contained extra data after first JSON object "
-                        "(eager_input_streaming); used first object only. raw length=%d",
-                        len(input_buffer),
-                    )
-                except (json.JSONDecodeError, ValueError):
-                    # 模型生成的 tool input 可能包含未转义的引号等 JSON 瑕疵；
-                    # 用 repair_json 尝试修复，与 OpenAI 路径 (ModelToolCall.from_openai) 保持一致。
-                    try:
-                        repaired = repair_json(input_buffer)
-                        block["input"] = json.loads(repaired)
-                        logger.warning(
-                            "⚠️ Anthropic tool input had malformed JSON; repaired successfully. raw length=%d",
-                            len(input_buffer),
-                        )
-                    except Exception:
-                        block["input"] = input_buffer
-        self._completed_blocks.append(block)
-
-    def _flush_active_blocks(self) -> None:
-        remaining = list(self._active_blocks.keys())
-        for idx in remaining:
-            self._finalize_block(idx)
-
-
-class ResponseMessageBuilder:
-    """Helper for assembling streamed Responses API assistant messages."""
-
-    def __init__(self, item_id: str, role: str = "assistant", phase: str | None = None) -> None:
-        self.item_id = item_id
-        self.role = role
-        self.phase = phase
-        self._parts: dict[int, dict[str, Any]] = {}
-
-    def add_part(self, index: int, part: dict[str, Any]) -> None:
-        self._parts[index] = part
-
-    def update_from_item(self, item: Mapping[str, Any]) -> None:
-        role = item.get("role")
-        if isinstance(role, str) and role:
-            self.role = role
-        phase = item.get("phase")
-        if isinstance(phase, str) and phase:
-            self.phase = phase
-
-    def append_text(self, index: int, delta_text: str) -> None:
-        part = self._parts.setdefault(index, {"type": "output_text", "text": ""})
-        part["type"] = part.get("type") or "output_text"
-        part["text"] = (part.get("text") or "") + delta_text
-
-    def to_output_item(self) -> dict[str, Any]:
-        content: list[dict[str, Any]] = []
-        for index in sorted(self._parts):
-            part = self._parts[index]
-            content.append(part)
-        item: dict[str, Any] = {
-            "type": "message",
-            "role": self.role or "assistant",
-            "id": self.item_id,
-            "content": content,
-        }
-        if self.phase is not None:
-            item["phase"] = self.phase
-        return item
-
-
-class ResponseToolCallBuilder:
-    """Helper for assembling streamed Responses API tool calls."""
-
-    def __init__(self, item_id: str) -> None:
-        self.item_id = item_id
-        self.call_id = item_id
-        self.name: str | None = None
-        self.arguments: str = ""
-
-    def update_from_item(self, item: dict[str, Any]) -> None:
-        if item.get("call_id"):
-            self.call_id = item["call_id"]
-        if item.get("name"):
-            self.name = item["name"]
-        arguments = item.get("arguments")
-        if isinstance(arguments, str):
-            self.arguments = arguments
-
-    def append_arguments(self, delta: str) -> None:
-        if not delta:
-            return
-        self.arguments = f"{self.arguments}{delta}"
-
-    def set_arguments(self, arguments: str) -> None:
-        if not arguments:
-            return
-        self.arguments = arguments
-
-    def to_output_item(self) -> dict[str, Any]:
-        return {
-            "type": "function_call",
-            "id": self.item_id,
-            "call_id": self.call_id,
-            "name": self.name or "unknown",
-            "arguments": self.arguments,
-        }
-
-
-class ReasoningSummaryBuilder:
-    """Helper for assembling streamed reasoning summary output."""
-
-    def __init__(
-        self,
-        item_id: str,
-        *,
-        content: list[dict[str, Any]] | None = None,
-        summary: list[dict[str, Any]] | None = None,
-        encrypted_content: str | None = None,
-    ) -> None:
-        self.item_id = item_id
-        self.content: list[dict[str, Any]] = list(content or [])
-        self.encrypted_content: str | None = encrypted_content
-        self._summary_parts: dict[int, dict[str, Any]] = {}
-        self._summary_order: list[int] = []
-        self._seed_initial_summary(summary)
-
-    def update_from_item(self, item: dict[str, Any]) -> None:
-        content = item.get("content")
-        if isinstance(content, list):
-            content_dicts: list[dict[str, Any]] = []
-            content_list: list[Mapping[str, Any]] = cast(list[Mapping[str, Any]], content)
-            for content_part in content_list:
-                content_dicts.append(dict(content_part))
-            self.content = content_dicts
-        encrypted = item.get("encrypted_content")
-        if isinstance(encrypted, str):
-            self.encrypted_content = encrypted
-        summary = item.get("summary")
-        if isinstance(summary, list):
-            summary_parts: list[dict[str, Any]] = []
-            summary_list: list[Mapping[str, Any]] = cast(list[Mapping[str, Any]], summary)
-            for summary_part in summary_list:
-                summary_parts.append(dict(summary_part))
-            self._seed_initial_summary(summary_parts)
-
-    def _seed_initial_summary(self, summary: list[dict[str, Any]] | None) -> None:
-        if not summary or self._summary_parts:
-            return
-        for idx, part in enumerate(summary):
-            entry = dict(part)
-            self._summary_parts[idx] = entry
-            if idx not in self._summary_order:
-                self._summary_order.append(idx)
-
-    def append_summary_delta(self, index: int, delta_text: str) -> None:
-        entry = self._summary_parts.setdefault(index, {"type": "summary_text", "text": ""})
-        entry["text"] = f"{entry.get('text', '')}{delta_text}"
-        if index not in self._summary_order:
-            self._summary_order.append(index)
-
-    def to_output_item(self) -> dict[str, Any]:
-        summary_parts = [self._summary_parts[idx] for idx in sorted(self._summary_order)]
-        item: dict[str, Any] = {
-            "type": "reasoning",
-            "id": self.item_id,
-        }
-        if self.encrypted_content is not None:
-            item["encrypted_content"] = self.encrypted_content
-        if self.content:
-            item["content"] = self.content
-        # Always include summary — API requires it even as [] for encrypted reasoning items
-        item["summary"] = summary_parts
-        return item
-
-
-class OpenAIResponsesStreamAggregator:
-    """Aggregate Responses API streaming events into a final Response payload."""
-
-    def __init__(self) -> None:
-        self._message_builders: dict[str, ResponseMessageBuilder] = {}
-        self._tool_builders: dict[str, ResponseToolCallBuilder] = {}
-        self._reasoning_builders: dict[str, ReasoningSummaryBuilder] = {}
-        self._output_order: list[str] = []
-        self._completed_response: dict[str, Any] | None = None
-        self.response_id: str | None = None
-        self.model_name: str | None = None
-        self.usage: Any | None = None
-
-    def consume(self, event: Any) -> None:
-        payload = _to_serializable_dict(event)
-        event_type = payload.get("type")
-
-        if event_type == "response.output_item.added":
-            self._handle_output_item_added(payload)
-        elif event_type == "response.output_item.done":
-            self._handle_output_item_done(payload)
-        elif event_type == "response.content_part.added":
-            self._handle_content_part_added(payload)
-        elif event_type == "response.output_text.delta":
-            self._handle_text_delta(payload)
-        elif event_type == "response.function_call_arguments.delta":
-            self._handle_function_arguments_delta(payload)
-        elif event_type == "response.function_call_arguments.done":
-            self._handle_function_arguments_done(payload)
-        elif event_type == "response.reasoning_summary_text.delta":
-            self._handle_reasoning_delta(payload)
-        elif event_type == "response.completed":
-            response_data = _to_serializable_dict(payload.get("response", {}))
-            self._completed_response = response_data
-            self.response_id = response_data.get("id") or self.response_id
-            self.model_name = response_data.get("model") or self.model_name
-            usage = response_data.get("usage")
-            if usage:
-                self.usage = usage
-        elif event_type == "response.created":
-            response_data = _to_serializable_dict(payload.get("response", {}))
-            self.response_id = response_data.get("id") or self.response_id
-            self.model_name = response_data.get("model") or self.model_name
-
-    def finalize(self) -> dict[str, Any]:
-        output_items: list[dict[str, Any]] = []
-
-        for item_id in self._output_order:
-            if item_id in self._message_builders:
-                output_items.append(self._message_builders[item_id].to_output_item())
-            elif item_id in self._tool_builders:
-                output_items.append(self._tool_builders[item_id].to_output_item())
-            elif item_id in self._reasoning_builders:
-                output_items.append(self._reasoning_builders[item_id].to_output_item())
-
-        # Append any builders that were not in the initial output order
-        for item_id, message_builder in self._message_builders.items():
-            if item_id not in self._output_order:
-                output_items.append(message_builder.to_output_item())
-        for item_id, tool_builder in self._tool_builders.items():
-            if item_id not in self._output_order:
-                output_items.append(tool_builder.to_output_item())
-        for item_id, reasoning_builder in self._reasoning_builders.items():
-            if item_id not in self._output_order:
-                output_items.append(reasoning_builder.to_output_item())
-
-        if not output_items and self._completed_response is not None:
-            return self._completed_response
-
-        response_payload: dict[str, Any] = {
-            "id": self.response_id,
-            "model": self.model_name,
-            "output": output_items,
-        }
-        if self.usage is not None:
-            response_payload["usage"] = self.usage
-        return response_payload
-
-    def _handle_output_item_added(self, payload: dict[str, Any]) -> None:
-        item = _to_serializable_dict(payload.get("item", {}))
-        item_id = item.get("id")
-        if not item_id:
-            return
-        if item_id not in self._output_order:
-            self._output_order.append(item_id)
-
-        item_type = item.get("type")
-        if item_type == "message":
-            message_builder = self._message_builders.setdefault(
-                item_id,
-                ResponseMessageBuilder(item_id, item.get("role", "assistant"), item.get("phase")),
-            )
-            message_builder.update_from_item(item)
-            content_list: list[Any] = item.get("content") or []
-            for idx, part in enumerate(content_list):
-                message_builder.add_part(idx, _to_serializable_dict(part))
-        elif item_type == "function_call":
-            tool_builder = self._tool_builders.setdefault(item_id, ResponseToolCallBuilder(item_id))
-            tool_builder.update_from_item(item)
-        elif item_type == "reasoning":
-            reasoning_builder = self._reasoning_builders.setdefault(
-                item_id,
-                ReasoningSummaryBuilder(
-                    item_id,
-                    content=item.get("content"),
-                    summary=item.get("summary"),
-                    encrypted_content=item.get("encrypted_content"),
-                ),
-            )
-            reasoning_builder.update_from_item(item)
-
-    def _handle_output_item_done(self, payload: dict[str, Any]) -> None:
-        """Handle response.output_item.done to capture final encrypted_content for reasoning items."""
-        item = _to_serializable_dict(payload.get("item", {}))
-        item_id = item.get("id")
-        if not item_id:
-            return
-        item_type = item.get("type")
-        if item_type == "message":
-            message_builder = self._message_builders.get(item_id)
-            if message_builder is not None:
-                message_builder.update_from_item(item)
-        elif item_type == "reasoning":
-            reasoning_builder = self._reasoning_builders.get(item_id)
-            if reasoning_builder is not None:
-                reasoning_builder.update_from_item(item)
-
-    def _handle_content_part_added(self, payload: dict[str, Any]) -> None:
-        item_id = payload.get("item_id")
-        if not item_id:
-            return
-        message_builder = self._message_builders.setdefault(item_id, ResponseMessageBuilder(item_id))
-        message_builder.add_part(payload.get("content_index", 0), _to_serializable_dict(payload.get("part", {})))
-
-    def _handle_text_delta(self, payload: dict[str, Any]) -> None:
-        item_id = payload.get("item_id")
-        if not item_id:
-            return
-        message_builder = self._message_builders.setdefault(item_id, ResponseMessageBuilder(item_id))
-        delta_text = payload.get("delta", "")
-        if not isinstance(delta_text, str):
-            delta_text = str(delta_text)
-        message_builder.append_text(payload.get("content_index", 0), delta_text)
-
-    def _handle_function_arguments_delta(self, payload: dict[str, Any]) -> None:
-        item_id = payload.get("item_id")
-        if not item_id:
-            return
-        tool_builder = self._tool_builders.setdefault(item_id, ResponseToolCallBuilder(item_id))
-        tool_builder.append_arguments(payload.get("delta", ""))
-
-    def _handle_function_arguments_done(self, payload: dict[str, Any]) -> None:
-        item_id = payload.get("item_id")
-        if not item_id:
-            return
-        tool_builder = self._tool_builders.setdefault(item_id, ResponseToolCallBuilder(item_id))
-        tool_builder.set_arguments(payload.get("arguments", ""))
-
-    def _handle_reasoning_delta(self, payload: dict[str, Any]) -> None:
-        item_id = payload.get("item_id") or f"_reasoning_{payload.get('output_index', 0)}"
-        summary_index = payload.get("summary_index", 0)
-        delta = payload.get("delta", "")
-        if not isinstance(delta, str):
-            delta = str(delta)
-        reasoning_builder = self._reasoning_builders.setdefault(item_id, ReasoningSummaryBuilder(item_id))
-        reasoning_builder.append_summary_delta(summary_index, delta)
-
-
-class GeminiRestStreamAggregator:
-    """Aggregate Gemini REST API SSE stream chunks into a final response dict.
-
-    RFC-0003: Gemini REST 流式响应聚合器
-
-    Each SSE chunk from Gemini streamGenerateContent has the same structure
-    as a non-streaming generateContent response.  This aggregator merges
-    text deltas, thinking content, thought signatures, function calls,
-    and usage metadata across all chunks into a single dict compatible
-    with ModelResponse.from_gemini_rest().
-    """
-
-    def __init__(self) -> None:
-        self._content_parts: list[str] = []
-        self._reasoning_parts: list[str] = []
-        self._thought_signature: str | None = None
-        self._tool_calls: list[dict[str, Any]] = []
-        self._usage_metadata: dict[str, Any] = {}
-        self.model_name: str | None = None
-
-    def consume(self, chunk_json: dict[str, Any]) -> None:
-        """Process a single SSE chunk (parsed JSON dict).
-
-        RFC-0003: 处理单个 SSE 数据块
-        """
-        # 1. 提取 candidates
-        candidates_raw = chunk_json.get("candidates")
-        if not isinstance(candidates_raw, Sequence) or isinstance(candidates_raw, str | bytes | bytearray):
-            return
-
-        candidates: list[Mapping[str, object]] = []
-        for candidate_item in cast(Sequence[object], candidates_raw):
-            if isinstance(candidate_item, Mapping):
-                candidates.append(cast(Mapping[str, object], candidate_item))
-        if not candidates:
-            return
-
-        candidate = candidates[0]
-        content_raw = candidate.get("content")
-        content_obj: Mapping[str, object] = cast(Mapping[str, object], content_raw) if isinstance(content_raw, Mapping) else {}
-
-        parts_raw = content_obj.get("parts")
-        if not isinstance(parts_raw, Sequence) or isinstance(parts_raw, str | bytes | bytearray):
-            parts: list[Mapping[str, object]] = []
-        else:
-            parts = []
-            for part_item in cast(Sequence[object], parts_raw):
-                if isinstance(part_item, Mapping):
-                    parts.append(cast(Mapping[str, object], part_item))
-
-        # 2. 遍历 parts，分类聚合
-        for part in parts:
-            if part.get("thought"):
-                text = part.get("text")
-                if isinstance(text, str) and text:
-                    self._reasoning_parts.append(text)
-
-            if "thoughtSignature" in part:
-                thought_signature = part["thoughtSignature"]
-                if isinstance(thought_signature, str):
-                    self._thought_signature = thought_signature
-
-            if "text" in part and not part.get("thought"):
-                content_text = part.get("text")
-                if isinstance(content_text, str):
-                    self._content_parts.append(content_text)
-
-            if "functionCall" in part:
-                self._tool_calls.append(dict(part))
-
-        # 3. 提取 usage metadata（通常在最后一个 chunk）
-        usage_meta = chunk_json.get("usageMetadata")
-        if usage_meta:
-            self._usage_metadata = usage_meta
-
-        # 4. 提取 model name（如果存在）
-        model = chunk_json.get("modelVersion")
-        if isinstance(model, str):
-            self.model_name = model
-
-    def finalize(self) -> dict[str, Any]:
-        """Return aggregated response dict compatible with ModelResponse.from_gemini_rest().
-
-        RFC-0003: 返回与 ModelResponse.from_gemini_rest() 兼容的聚合响应
-        """
-        if not self._content_parts and not self._tool_calls and not self._reasoning_parts:
-            raise RuntimeError("No stream chunks were received from Gemini REST API")
-
-        # Build parts list matching Gemini response structure
-        parts: list[dict[str, Any]] = []
-
-        if self._reasoning_parts:
-            parts.append({"text": "".join(self._reasoning_parts), "thought": True})
-
-        if self._thought_signature is not None:
-            parts.append({"thoughtSignature": self._thought_signature})
-
-        if self._content_parts:
-            parts.append({"text": "".join(self._content_parts)})
-
-        for tc_part in self._tool_calls:
-            parts.append(tc_part)
-
-        result: dict[str, Any] = {
-            "candidates": [{"content": {"parts": parts, "role": "model"}}],
-        }
-        if self._usage_metadata:
-            result["usageMetadata"] = self._usage_metadata
-
-        return result
 
 
 def _iter_gemini_sse_chunks(response: requests.Response) -> Iterator[dict[str, Any]]:
@@ -3246,7 +2554,11 @@ def call_llm_with_gemini_rest(
 
             RFC-0003: 执行 Gemini REST 流式请求
             """
-            aggregator = GeminiRestStreamAggregator()
+            from nexau.archs.llm.llm_aggregators.gemini_rest.gemini_rest_event_aggregator import GeminiResponse  # noqa: PLC0415
+
+            run_id = _resolve_run_id(model_call_params)
+            emitter = _get_event_emitter(middleware_manager)
+            aggregator = GeminiRestEventAggregator(on_event=emitter, run_id=run_id)
             _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
 
             if should_trace and tracer is not None:
@@ -3285,12 +2597,12 @@ def call_llm_with_gemini_rest(
                             )
                             if processed_chunk is None:
                                 continue
-                            aggregator.consume(processed_chunk)
+                            aggregator.aggregate(cast(GeminiResponse, processed_chunk))
                     except requests.exceptions.ReadTimeout as exc:
                         raise StreamIdleTimeoutError(
                             f"Gemini REST stream idle timeout ({_read_timeout}s): {exc}",
                         ) from exc
-                    result = aggregator.finalize()
+                    result = cast(dict[str, Any], aggregator.build())
                     trace_ctx.set_outputs(_enrich_gemini_trace_outputs(result, model_name))
                     if first_token_time is not None:
                         trace_ctx.set_attributes(
@@ -3321,12 +2633,12 @@ def call_llm_with_gemini_rest(
                         )
                         if processed_chunk is None:
                             continue
-                        aggregator.consume(processed_chunk)
+                        aggregator.aggregate(cast(GeminiResponse, processed_chunk))
                 except requests.exceptions.ReadTimeout as exc:
                     raise StreamIdleTimeoutError(
                         f"Gemini REST stream idle timeout ({_read_timeout}s): {exc}",
                     ) from exc
-                return aggregator.finalize()
+                return cast(dict[str, Any], aggregator.build())
 
         try:
             response_json = do_stream_request()
@@ -3500,7 +2812,11 @@ async def call_llm_with_gemini_rest_async(
     _connect_timeout = llm_config.get_connect_timeout()
 
     if stream_requested:
-        aggregator = GeminiRestStreamAggregator()
+        from nexau.archs.llm.llm_aggregators.gemini_rest.gemini_rest_event_aggregator import GeminiResponse  # noqa: PLC0415
+
+        run_id = _resolve_run_id(model_call_params)
+        emitter = _get_event_emitter(middleware_manager)
+        aggregator = GeminiRestEventAggregator(on_event=emitter, run_id=run_id)
         _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
 
         try:
@@ -3532,8 +2848,8 @@ async def call_llm_with_gemini_rest_async(
                                 )
                                 if processed_chunk is None:
                                     continue
-                                aggregator.consume(processed_chunk)
-                        result = aggregator.finalize()
+                                aggregator.aggregate(cast(GeminiResponse, processed_chunk))
+                        result = cast(dict[str, Any], aggregator.build())
                         trace_ctx.set_outputs(_enrich_gemini_trace_outputs(result, model_name))
                         if first_token_time is not None:
                             trace_ctx.set_attributes(
@@ -3556,8 +2872,8 @@ async def call_llm_with_gemini_rest_async(
                             )
                             if processed_chunk is None:
                                 continue
-                            aggregator.consume(processed_chunk)
-                    return ModelResponse.from_gemini_rest(aggregator.finalize())
+                            aggregator.aggregate(cast(GeminiResponse, processed_chunk))
+                    return ModelResponse.from_gemini_rest(cast(dict[str, Any], aggregator.build()))
         except httpx.ReadTimeout as exc:
             raise StreamIdleTimeoutError(
                 f"Gemini REST stream idle timeout ({_read_timeout}s, async): {exc}",

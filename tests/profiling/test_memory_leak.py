@@ -440,39 +440,11 @@ class TestMemoryLeakRegression:
 
         asyncio.run(_test())
 
-    def test_aggregators_cleared_after_model(self):
-        """openai_chat_completion_aggregators should be cleared in after_model."""
-        from nexau.archs.main_sub.execution.hooks import AfterModelHookInput
-        from nexau.archs.main_sub.execution.middleware.agent_events_middleware import AgentEventsMiddleware
-
-        mw = AgentEventsMiddleware(session_id="test")
-
-        # Simulate some aggregators accumulated during streaming
-        mw.openai_chat_completion_aggregators["chatcmpl_1"] = Mock()
-        mw.openai_chat_completion_aggregators["chatcmpl_2"] = Mock()
-        assert len(mw.openai_chat_completion_aggregators) == 2
-
-        # Call after_model
-        agent_state = AgentState(
-            agent_name="test",
-            agent_id="test",
-            run_id="r",
-            root_run_id="r",
-            context=AgentContext(),
-            global_storage=GlobalStorage(),
-            tool_registry=ToolRegistry(),
-        )
-        hook_input = AfterModelHookInput(
-            agent_state=agent_state,
-            max_iterations=10,
-            current_iteration=0,
-            messages=[],
-            original_response="test",
-        )
-        mw.after_model(hook_input)
-
-        assert len(mw.openai_chat_completion_aggregators) == 0, "aggregators should be cleared after after_model"
-        print("\n  ✅ openai_chat_completion_aggregators cleared after after_model")
+    # ``test_aggregators_cleared_after_model`` was retired with RFC-0023
+    # §阶段 ③.2 — Set A aggregators now live inside ``llm_caller`` (one
+    # short-lived instance per stream call, garbage-collected on return),
+    # so the unbounded-growth concern that motivated the test no longer
+    # applies. The middleware no longer keeps any aggregator state.
 
     @patch.dict(os.environ, {}, clear=False)
     def test_langfuse_end_span_does_not_flush(self):

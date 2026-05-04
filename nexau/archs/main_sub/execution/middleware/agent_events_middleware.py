@@ -20,17 +20,7 @@ import json
 import logging
 from collections.abc import Callable
 from datetime import datetime
-from typing import TYPE_CHECKING, TypeGuard, cast
 
-from openai.types.chat import ChatCompletionChunk
-from openai.types.responses import ResponseStreamEvent
-
-from nexau.archs.llm.llm_aggregators import (
-    AnthropicEventAggregator,
-    GeminiRestEventAggregator,
-    OpenAIChatCompletionAggregator,
-    OpenAIResponsesAggregator,
-)
 from nexau.archs.llm.llm_aggregators.events import (
     Event,
     RunErrorEvent,
@@ -46,13 +36,8 @@ from nexau.archs.main_sub.execution.hooks import (
     BeforeAgentHookInput,
     HookResult,
     Middleware,
-    ModelCallParams,
 )
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
-
-if TYPE_CHECKING:
-    from anthropic.types import RawMessageStreamEvent
-
 
 logger = logging.getLogger(__name__)
 
@@ -62,39 +47,15 @@ def _noop_event_handler(_: Event) -> None:
     return None
 
 
-def is_anthropic_event(event: object) -> TypeGuard[RawMessageStreamEvent]:
-    return event.__class__.__module__.startswith("anthropic.")
-
-
-def is_openai_responses_event(event: object) -> TypeGuard[ResponseStreamEvent]:
-    event_module = event.__class__.__module__
-    return event_module.startswith("openai.types.responses") or event_module.startswith("openai.lib.streaming")
-
-
-def is_gemini_rest_chunk(chunk: object) -> TypeGuard[dict[str, object]]:
-    """Check if a chunk is a Gemini REST API streaming dict."""
-    return isinstance(chunk, dict) and "candidates" in chunk
-
-
 class AgentEventsMiddleware(Middleware):
-    """Middleware that connects llm_aggregators events to streaming callbacks.
+    """Middleware that surfaces aggregator events to the user's callback.
 
-    This middleware bridges the gap between:
-    1. llm_aggregators layer: which processes raw stream chunks (ChatCompletionChunk,
-       ResponseStreamEvent, MessageDeltaEvent)
-    2. Agent execution layer: which needs streaming callbacks
-
-    The middleware accepts an on_event callback that will receive unified Event objects
-    (from nexau.archs.llm.llm_aggregators.events), which are produced by the aggregators
-    when they process stream chunks.
-
-    Architecture:
-    - In wrap_model_call: LLM caller passes stream chunks to middleware via stream_chunk
-    - LLM aggregators: Convert raw chunks to unified Event objects and call on_event
-    - This middleware: Provides on_event to llm_aggregators, and proxy to user's callback
-
-    Note: The stream_chunk receives raw chunks from the LLM api (ChatCompletionChunk,
-    ResponseStreamEvent, or MessageDeltaEvent), not Event objects.
+    RFC-0023 §阶段 ③ end state — Set A aggregators now live inside
+    ``llm_caller`` (one instance per stream call); they pull this
+    middleware's ``on_event`` via ``Middleware.get_event_handler`` and
+    drive emission directly. This middleware no longer instantiates or
+    drives any aggregator: it only owns the ``on_event`` sink and emits
+    lifecycle / tool / usage events around the model call.
     """
 
     def __init__(
@@ -106,51 +67,14 @@ class AgentEventsMiddleware(Middleware):
         """Initialize the AgentEventsMiddleware.
 
         Args:
-            on_event: Callback that receives unified Event objects from llm_aggregators.
-                      These events are emitted by the aggregator when it processes stream
-                      chunks from the LLM.
+            on_event: Callback that receives unified Event objects. The
+                Set A aggregators owned by ``llm_caller`` resolve this
+                callback via ``get_event_handler`` and call it directly
+                as they parse stream chunks; lifecycle hooks below also
+                emit through it.
         """
         self.session_id = session_id
         self.on_event = on_event
-        self.openai_chat_completion_aggregators: dict[str, OpenAIChatCompletionAggregator] = {}
-        # Use lazy initialization to avoid passing on_event too early
-        self._openai_responses_aggregator: OpenAIResponsesAggregator | None = None
-        self._gemini_rest_aggregator: GeminiRestEventAggregator | None = None
-        self._anthropic_aggregator: AnthropicEventAggregator | None = None
-        # Track current run_id per aggregator to detect stream boundaries
-        self._current_gemini_run_id: str = ""
-
-    def openai_responses_aggregator(self, *, run_id: str) -> OpenAIResponsesAggregator:
-        """Lazy initialization for OpenAIResponsesAggregator."""
-        if self._openai_responses_aggregator is None:
-            self._openai_responses_aggregator = OpenAIResponsesAggregator(
-                on_event=self.on_event,
-                run_id=run_id,
-            )
-        return self._openai_responses_aggregator
-
-    def gemini_rest_aggregator(self, *, run_id: str) -> GeminiRestEventAggregator:
-        """Lazy initialization for GeminiRestEventAggregator."""
-        if self._gemini_rest_aggregator is None:
-            self._gemini_rest_aggregator = GeminiRestEventAggregator(
-                on_event=self.on_event,
-                run_id=run_id,
-            )
-            self._current_gemini_run_id = run_id
-        elif self._current_gemini_run_id != run_id:
-            # New agent run — clear stale state from the previous stream
-            self._gemini_rest_aggregator.clear()
-            self._current_gemini_run_id = run_id
-        return self._gemini_rest_aggregator
-
-    def anthropic_aggregator(self, *, run_id: str) -> AnthropicEventAggregator:
-        """Lazy initialization for AnthropicEventAggregator."""
-        if self._anthropic_aggregator is None:
-            self._anthropic_aggregator = AnthropicEventAggregator(
-                on_event=self.on_event,
-                run_id=run_id,
-            )
-        return self._anthropic_aggregator
 
     def before_agent(self, hook_input: BeforeAgentHookInput) -> HookResult:
         """Hook called before agent execution starts.
@@ -242,19 +166,12 @@ class AgentEventsMiddleware(Middleware):
     def after_model(self, hook_input: AfterModelHookInput) -> HookResult:
         """Emit a usage update event after each completed LLM call.
 
-        Transition note (RFC-0023 §阶段 ② → ③): with §阶段 ② landed, Set A's
-        per-provider aggregators now emit ``ModelCallFinishedEvent`` carrying
-        ``usage`` themselves. ``model_response.usage`` (read here) and the
-        new event are equivalent during the bridge period. We keep the
-        middleware reading ``model_response`` for one release so live SSE
-        ``UsageUpdateEvent`` timing/shape doesn't shift under existing
-        front-end consumers; §阶段 ③ retires Set B and this branch will
-        switch to subscribing ``ModelCallFinishedEvent`` instead.
+        ``llm_caller`` produces ``ModelResponse.usage`` from the Set A
+        aggregator's ``build()`` output (RFC-0023 §阶段 ③). The event we
+        emit here mirrors that field; downstream consumers of
+        ``UsageUpdateEvent`` see the same numbers Set A would surface
+        via ``ModelCallFinishedEvent``.
         """
-
-        # GC: discard finished per-call aggregators to prevent unbounded dict growth.
-        self.openai_chat_completion_aggregators.clear()
-
         if hook_input.model_response is None:
             return HookResult.no_changes()
 
@@ -266,74 +183,3 @@ class AgentEventsMiddleware(Middleware):
             )
         )
         return HookResult.no_changes()
-
-    def stream_chunk(
-        self,
-        chunk: ChatCompletionChunk | ResponseStreamEvent | RawMessageStreamEvent | dict[str, object],
-        params: ModelCallParams,
-    ) -> ChatCompletionChunk | ResponseStreamEvent | RawMessageStreamEvent | dict[str, object]:
-        """Process raw stream chunks from LLM.
-
-        This hook receives raw chunks from the LLM API streaming response. The chunks
-        are one of these types:
-        - ChatCompletionChunk (OpenAI Chat Completions API)
-        - ResponseStreamEvent (OpenAI Responses API)
-        - MessageDeltaEvent (Anthropic Messages API)
-        - dict (Gemini REST API)
-
-        Note: The actual Event objects (from llm_aggregators.events) are generated
-        internally by the aggregator and passed to the on_event callback. The aggregator
-        needs to be initialized with this middleware's on_event callback.
-
-        Args:
-            chunk: Raw chunk from LLM streaming API
-            params: Current model call parameters
-
-        Returns:
-            The chunk (potentially modified) to pass to the next middleware
-        """
-
-        # Get run_id from agent_state - agent_state is always present in stream_chunk
-        if params.agent_state is None:
-            raise RuntimeError("agent_state is required in stream_chunk for run_id")
-        run_id = params.agent_state.run_id
-
-        # logger.debug("============stream_chunk============: %s", chunk.model_dump_json())
-
-        if isinstance(chunk, ChatCompletionChunk):
-            openai_chat_completion_aggregator = self.openai_chat_completion_aggregators.get(chunk.id)
-            if not openai_chat_completion_aggregator:
-                openai_chat_completion_aggregator = OpenAIChatCompletionAggregator(
-                    on_event=self.on_event,
-                    run_id=run_id,
-                )
-                self.openai_chat_completion_aggregators[chunk.id] = openai_chat_completion_aggregator
-            openai_chat_completion_aggregator.aggregate(chunk)
-
-        if is_openai_responses_event(chunk):
-            openai_responses_aggregator = self.openai_responses_aggregator(run_id=run_id)
-            if chunk.type == "response.created":
-                self.openai_responses_aggregator(run_id=run_id).clear()
-            openai_responses_aggregator.aggregate(chunk)
-
-        if is_gemini_rest_chunk(chunk):
-            gemini_aggregator = self.gemini_rest_aggregator(run_id=run_id)
-            # ``GeminiRestEventAggregator.aggregate`` is typed against the
-            # strict ``GeminiResponse`` TypedDict; the wire-level dict has
-            # the right shape but isn't statically narrowed past
-            # ``dict[str, object]``. Cast at the boundary.
-            from nexau.archs.llm.llm_aggregators.gemini_rest.gemini_rest_event_aggregator import GeminiResponse  # noqa: PLC0415
-
-            gemini_aggregator.aggregate(cast(GeminiResponse, chunk))
-
-        if is_anthropic_event(chunk):
-            anthropic_agg = self.anthropic_aggregator(run_id=run_id)
-            if chunk.type == "message_start":
-                anthropic_agg.clear()
-            anthropic_agg.aggregate(chunk)
-
-        # This middleware doesn't modify chunks, just observes them
-        # The actual event emission happens in the aggregator's on_event callback
-        # that was passed to the llm_aggregator instance
-
-        return chunk
