@@ -98,6 +98,59 @@ except (ImportError, ModuleNotFoundError, AttributeError):
 E2B_AVAILABLE = _e2b_available
 
 
+def _post_sandbox_refreshes(
+    sandbox_id: str,
+    duration: int,
+    api_url: str | None = None,
+    api_key: str | None = None,
+) -> None:
+    """Call POST /sandboxes/{sandbox_id}/refreshes (E2B-compat 心跳续期 endpoint).
+
+    跟 set_timeout 区别:
+    - set_timeout 是用户显式 set,任何值都生效(允许缩短)
+    - refreshes 是 SDK 心跳,**不允许缩短** (extend-only) — 后端用 GREATEST(current, $duration)
+
+    路径 /sandboxes/{id}/refreshes 在 NAC backend 和 E2B SaaS 都实现,
+    所以这个调用对两个 backend 都正确。
+
+    Args:
+        sandbox_id: Sandbox ID
+        duration: 期望的 timeout 秒数(后端会 max(current, duration))
+        api_url: Backend API URL,缺省走 E2B_API_URL env
+        api_key: API key,缺省走 E2B_API_KEY env
+
+    Raises:
+        SandboxNotFoundException: 404
+        E2B SDK exceptions: 其他错误(409 sandbox not running 等)
+    """
+    if Sandbox is None:
+        raise RuntimeError("E2B SDK not installed; cannot call /sandboxes/.../refreshes")
+
+    # Lazy import — 跟 E2B SDK 内部 set_timeout 同模式
+    from e2b.api import handle_api_exception
+    from e2b.api.client.api.sandboxes import post_sandboxes_sandbox_id_refreshes
+    from e2b.api.client.models import PostSandboxesSandboxIDRefreshesBody
+    from e2b.api.client_sync import get_api_client
+    from e2b.connection_config import ConnectionConfig
+    from e2b.exceptions import NotFoundException
+
+    config = ConnectionConfig(api_url=api_url, api_key=api_key)
+    if config.debug:
+        return
+
+    api_client = get_api_client(config)
+    res = post_sandboxes_sandbox_id_refreshes.sync_detailed(
+        sandbox_id,
+        client=api_client,
+        body=PostSandboxesSandboxIDRefreshesBody(duration=duration),
+    )
+
+    if res.status_code == 404:
+        raise NotFoundException(f"Sandbox {sandbox_id} not found")
+    if res.status_code >= 300:
+        raise handle_api_exception(res)
+
+
 @dataclass(kw_only=True)
 class E2BSandbox(BaseSandbox):
     """
@@ -2035,9 +2088,23 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
     # -------------------------------------------------------------------------
 
     def _start_keepalive(self, sandbox_id: str | None, interval: int) -> None:
-        """Start a daemon thread that periodically calls set_timeout.
+        """Start a daemon thread that periodically refreshes the sandbox idle timer.
 
         Prevents the idle checker from pausing the sandbox during long agent runs.
+
+        ## 为什么用 refresh 而不是 set_timeout(2026-05 修)
+
+        `set_timeout` 是 "用户显式 set,任何值都生效"(allowShorter=true);
+        `refresh` 是 "心跳续期,不能缩短现有 timeout"(allowShorter=false)。
+
+        之前 keepalive 调 set_timeout(mgr_timeout) 每 60s 一次,如果用户
+        显式 sandbox.set_timeout(7200) 想扩到 2h → 60s 后被这条心跳 silently
+        覆盖回 mgr_timeout(默认 300)→ 5 分钟后被 idle pause。
+
+        改用 /refreshes endpoint(extend-only 语义)修这个 bug。
+
+        路径 `/sandboxes/{id}/refreshes` 是 NAC 跟 E2B SaaS 双方都实现的,
+        所以这个 SDK 行为对两个 backend 都正确。
         """
         if interval <= 0 or not sandbox_id or Sandbox is None:
             return
@@ -2051,13 +2118,13 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
         def _loop() -> None:
             while not self._keepalive_stop_event.wait(interval):
                 try:
-                    sandbox_cls.set_timeout(
-                        sandbox_id,
-                        mgr_timeout,
+                    _post_sandbox_refreshes(
+                        sandbox_id=sandbox_id,
+                        duration=mgr_timeout,
                         api_url=mgr_api_url,
                         api_key=mgr_api_key,
                     )
-                    logger.debug(f"Keepalive sent: {sandbox_id[:8]}...")
+                    logger.debug(f"Keepalive (refresh) sent: {sandbox_id[:8]}...")
                 except Exception as exc:
                     err_msg = str(exc).lower()
                     if "409" in err_msg or "not running" in err_msg:

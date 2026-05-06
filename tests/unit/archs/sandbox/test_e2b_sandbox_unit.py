@@ -1000,29 +1000,35 @@ class TestManagerDefensive:
         assert manager._keepalive_thread is None
 
     def test_keepalive_starts_and_stops(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 注:keepalive 现在调 _post_sandbox_refreshes(/refreshes endpoint),
+        # 而不是 Sandbox.set_timeout —— 修了 set_timeout silently 覆盖用户值的 bug
         backend = _FakeSandbox()
-        cls = _enable_fake_e2b(monkeypatch, backend)
-        set_timeout_calls = []
-        cls.set_timeout = lambda sid, t, **kw: set_timeout_calls.append(sid)  # type: ignore
+        _enable_fake_e2b(monkeypatch, backend)
+        refresh_calls: list[str] = []
+
+        def fake_refresh(sandbox_id: str, duration: int, **kw: object) -> None:
+            refresh_calls.append(sandbox_id)
+
+        monkeypatch.setattr(e2b_module, "_post_sandbox_refreshes", fake_refresh)
         manager = e2b_module.E2BSandboxManager(api_key="key")
         manager._start_keepalive("sbx-ka", 1)
         assert manager._keepalive_thread is not None
         time.sleep(1.5)
         manager._stop_keepalive()
         assert manager._keepalive_thread is None
-        assert len(set_timeout_calls) >= 1
+        assert len(refresh_calls) >= 1, "keepalive 应至少调一次 _post_sandbox_refreshes"
 
     def test_keepalive_handles_409_auto_resume(self, monkeypatch: pytest.MonkeyPatch) -> None:
         backend = _FakeSandbox()
         cls = _enable_fake_e2b(monkeypatch, backend)
         call_count = [0]
 
-        def failing_set_timeout(sid: str, t: int, **kw: object) -> None:
+        def failing_refresh(sandbox_id: str, duration: int, **kw: object) -> None:
             call_count[0] += 1
             if call_count[0] == 1:
                 raise RuntimeError("409 sandbox not running")
 
-        cls.set_timeout = failing_set_timeout  # type: ignore
+        monkeypatch.setattr(e2b_module, "_post_sandbox_refreshes", failing_refresh)
         connect_calls: list[str] = []
 
         def tracking_connect(sandbox_id: str, **kw: object) -> _FakeSandbox:
@@ -1034,22 +1040,30 @@ class TestManagerDefensive:
         manager._start_keepalive("sbx-409", 1)
         time.sleep(1.5)
         manager._stop_keepalive()
-        assert len(connect_calls) >= 1
+        assert len(connect_calls) >= 1, "409 应触发 auto-resume(connect)"
 
     def test_keepalive_handles_generic_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         backend = _FakeSandbox()
-        cls = _enable_fake_e2b(monkeypatch, backend)
-        cls.set_timeout = lambda sid, t, **kw: (_ for _ in ()).throw(RuntimeError("network error"))  # type: ignore
+        _enable_fake_e2b(monkeypatch, backend)
+
+        def err_refresh(sandbox_id: str, duration: int, **kw: object) -> None:
+            raise RuntimeError("network error")
+
+        monkeypatch.setattr(e2b_module, "_post_sandbox_refreshes", err_refresh)
         manager = e2b_module.E2BSandboxManager(api_key="key")
         manager._start_keepalive("sbx-err", 1)
         time.sleep(1.5)
         manager._stop_keepalive()
-        # Should not crash
+        # 不该崩
 
     def test_keepalive_auto_resume_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         backend = _FakeSandbox()
         cls = _enable_fake_e2b(monkeypatch, backend)
-        cls.set_timeout = lambda sid, t, **kw: (_ for _ in ()).throw(RuntimeError("409 not running"))  # type: ignore
+
+        def err_refresh(sandbox_id: str, duration: int, **kw: object) -> None:
+            raise RuntimeError("409 not running")
+
+        monkeypatch.setattr(e2b_module, "_post_sandbox_refreshes", err_refresh)
 
         def failing_connect(sandbox_id: str, **kw: object) -> _FakeSandbox:
             raise RuntimeError("resume failed")
@@ -1098,3 +1112,68 @@ class TestBuildSandboxResetsSingleton:
         assert _FakeTWL.singleton is not None
         manager._build_sandbox_with_connection_config("sbx", "example.com", "token", Version("0.1.4"))
         assert _FakeTWL.singleton is None
+
+
+class TestPostSandboxRefreshes:
+    """Unit tests for the _post_sandbox_refreshes helper(/sandboxes/{id}/refreshes)."""
+
+    def test_helper_calls_refreshes_endpoint_with_duration(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # post_sandboxes_sandbox_id_refreshes 是个**子模块**(不是模块级函数),
+        # 所以 patch 它的 sync_detailed 函数,而不是 parent module 的属性
+        import e2b.api.client_sync as _client_sync
+        import e2b.connection_config as _conn
+        from e2b.api.client.api.sandboxes import post_sandboxes_sandbox_id_refreshes as _refreshes_mod
+
+        captured: dict[str, object] = {}
+
+        def fake_sync_detailed(sandbox_id: str, *, client: object, body: object) -> object:
+            captured["sandbox_id"] = sandbox_id
+            captured["body"] = body
+            return type("Res", (), {"status_code": 204})()
+
+        monkeypatch.setattr(_refreshes_mod, "sync_detailed", fake_sync_detailed)
+        monkeypatch.setattr(_client_sync, "get_api_client", lambda config: object())
+        monkeypatch.setattr(_conn, "ConnectionConfig", lambda **kw: type("C", (), {"debug": False})())
+
+        e2b_module._post_sandbox_refreshes(
+            sandbox_id="sbx-test",
+            duration=14400,
+            api_url="http://nac",
+            api_key="key",
+        )
+
+        assert captured["sandbox_id"] == "sbx-test"
+        assert captured["body"].duration == 14400  # type: ignore[attr-defined]
+
+    def test_helper_skips_in_debug_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # config.debug=True → 直接 return,不发请求(对齐 E2B SDK set_timeout 同模式)
+        import e2b.connection_config as _conn
+        from e2b.api.client.api.sandboxes import post_sandboxes_sandbox_id_refreshes as _refreshes_mod
+
+        called = [False]
+
+        def fake_sync_detailed(sandbox_id: str, *, client: object, body: object) -> object:
+            called[0] = True
+            return object()
+
+        monkeypatch.setattr(_refreshes_mod, "sync_detailed", fake_sync_detailed)
+        monkeypatch.setattr(_conn, "ConnectionConfig", lambda **kw: type("C", (), {"debug": True})())
+
+        e2b_module._post_sandbox_refreshes(sandbox_id="sbx", duration=300)
+        assert not called[0], "debug 模式应跳过 refresh 调用"
+
+    def test_helper_raises_404_as_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import e2b.api.client_sync as _client_sync
+        import e2b.connection_config as _conn
+        from e2b.api.client.api.sandboxes import post_sandboxes_sandbox_id_refreshes as _refreshes_mod
+        from e2b.exceptions import NotFoundException
+
+        def fake_sync_detailed(sandbox_id: str, *, client: object, body: object) -> object:
+            return type("Res", (), {"status_code": 404})()
+
+        monkeypatch.setattr(_refreshes_mod, "sync_detailed", fake_sync_detailed)
+        monkeypatch.setattr(_client_sync, "get_api_client", lambda config: object())
+        monkeypatch.setattr(_conn, "ConnectionConfig", lambda **kw: type("C", (), {"debug": False})())
+
+        with pytest.raises(NotFoundException, match="not found"):
+            e2b_module._post_sandbox_refreshes(sandbox_id="missing", duration=300)
