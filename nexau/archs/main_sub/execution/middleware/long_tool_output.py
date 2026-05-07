@@ -49,9 +49,11 @@ import logging
 import os
 import time
 from collections.abc import Sequence
-from typing import cast
+from enum import Enum
+from typing import TYPE_CHECKING, cast
 
-from nexau.archs.sandbox.base_sandbox import BaseSandbox, SandboxStatus
+if TYPE_CHECKING:
+    from nexau.archs.sandbox.base_sandbox import BaseSandbox
 
 from ..hooks import AfterToolHookInput, HookResult, Middleware
 
@@ -98,6 +100,18 @@ impossible to persist the full output via the Sandbox API.  Bypassing it
 avoids the error and is semantically correct — skill content loaded into
 context should not be truncated.
 """
+
+
+def _sandbox_status_value(status: object) -> str:
+    """Return the portable string value for sandbox status-like objects."""
+
+    if isinstance(status, str):
+        return status
+    if isinstance(status, Enum):
+        enum_value = status.value
+        if isinstance(enum_value, str):
+            return enum_value
+    return str(status)
 
 
 class LongToolOutputMiddleware(Middleware):
@@ -386,7 +400,7 @@ class LongToolOutputMiddleware(Middleware):
             create_directories=True,
         )
 
-        if result.status != SandboxStatus.SUCCESS:
+        if _sandbox_status_value(result.status) != "success":
             raise RuntimeError(f"[LongToolOutputMiddleware] Failed to write temp file via sandbox: {result.error or 'unknown error'}")
 
         return filepath

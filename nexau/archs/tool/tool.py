@@ -21,6 +21,8 @@ structured definition，再由边界 adapter 延迟转换为 OpenAI / Anthropic 
 Gemini 所需的 provider schema。
 """
 
+from __future__ import annotations
+
 import asyncio
 import dataclasses
 import inspect
@@ -30,16 +32,18 @@ from collections.abc import Callable, Mapping
 from copy import deepcopy
 from pathlib import Path
 from types import UnionType
-from typing import Annotated, Any, Literal, TypedDict, Union, cast, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict, Union, cast, get_args, get_origin, get_type_hints
 
 import jsonschema
 import yaml
-from anthropic.types import ToolParam
 from jsonschema.validators import validator_for
-from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 from pydantic import BaseModel, ConfigDict, Field
 
 from .formatters import ToolFormatter, ToolFormatterContext, resolve_tool_formatter
+
+if TYPE_CHECKING:
+    from anthropic.types import ToolParam
+    from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 
 logger = logging.getLogger(__name__)
 _UNRESOLVED_ANNOTATION = object()
@@ -309,7 +313,7 @@ class Tool:
         description: str | None = None,
         description_suffix: str = "",
         defer_loading: bool | None = None,
-    ) -> "Tool":
+    ) -> Tool:
         """Load tool definition from YAML file and bind to implementation."""
         path = Path(yaml_path)
         if not path.exists():

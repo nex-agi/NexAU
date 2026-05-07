@@ -23,14 +23,15 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
-from nexau.archs.sandbox.base_sandbox import BaseSandbox
-from nexau.archs.tool.tool import StructuredToolDefinitionLike
 from nexau.core.messages import Message
 
 from .model_response import ModelResponse
 from .parse_structures import ParsedResponse
 
 if TYPE_CHECKING:
+    from nexau.archs.sandbox.base_sandbox import BaseSandbox
+    from nexau.archs.tool.tool import StructuredToolDefinitionLike
+
     from ..agent_state import AgentState
     from ..token_trace_session import TokenTraceSession
     from .executor import AgentStopReason

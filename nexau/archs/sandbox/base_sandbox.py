@@ -20,6 +20,8 @@ Sandboxes isolate tool execution from the host system, improving security and en
 deployment in production environments.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import re
@@ -31,13 +33,15 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from threading import Lock, Thread
-from typing import Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from nexau.archs.main_sub.skill import Skill
-from nexau.archs.session.session_manager import SessionManager
 from nexau.core.utils import run_async_function_sync
+
+if TYPE_CHECKING:
+    from nexau.archs.main_sub.skill import Skill
+    from nexau.archs.session.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 

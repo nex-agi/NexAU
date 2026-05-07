@@ -12,7 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .agent import Agent
-from .context_value import ContextValue
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .agent import Agent
+    from .context_value import ContextValue
 
 __all__ = ["Agent", "ContextValue"]
+
+
+def _cache_export(name: str, value: object) -> object:
+    globals()[name] = value
+    return value
+
+
+def __getattr__(name: str) -> object:
+    """Lazily resolve main_sub exports so leaf modules can import cheaply."""
+
+    if name == "Agent":
+        from .agent import Agent
+
+        return _cache_export(name, Agent)
+    if name == "ContextValue":
+        from .context_value import ContextValue
+
+        return _cache_export(name, ContextValue)
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
