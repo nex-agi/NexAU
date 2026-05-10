@@ -102,6 +102,7 @@ class TestCallSubAgentCreateMode:
             "Analyze data",
             None,
             parent_agent_state=mock_agent_state,
+            trace_id=None,
         )
 
     def test_create_mode_passes_none_sub_agent_id(self, mock_agent_state):
@@ -116,6 +117,32 @@ class TestCallSubAgentCreateMode:
         call_args = mock_agent_state.subagent_manager.call_sub_agent.call_args
         # 2. 确认 sub_agent_id 参数为 None（创建新子代理）
         assert call_args[0][2] is None
+
+    def test_create_mode_forwards_ctx_trace_id(self, mock_agent_state):
+        """RFC-0024: ctx.trace_id must propagate to SubAgentManager.
+
+        Locks in the post-AgentState-deprecation contract: sub-agent
+        inheritance happens through the explicit ``call_sub_agent(trace_id=)``
+        chain, not via a backref on AgentState.
+        """
+        from nexau.archs.main_sub.framework_context import FrameworkContext
+
+        ctx = FrameworkContext.for_testing()
+        ctx.trace_id = "trace_inherited_xyz"
+
+        call_sub_agent(
+            sub_agent_name="researcher",
+            message="Analyze data",
+            agent_state=mock_agent_state,
+            ctx=ctx,
+        )
+        mock_agent_state.subagent_manager.call_sub_agent.assert_called_once_with(
+            "researcher",
+            "Analyze data",
+            None,
+            parent_agent_state=mock_agent_state,
+            trace_id="trace_inherited_xyz",
+        )
 
     def test_empty_string_sub_agent_id_normalized_to_none(self, mock_agent_state):
         """Empty string sub_agent_id should be normalized to None (create mode).
@@ -173,6 +200,7 @@ class TestCallSubAgentResumeMode:
             "Continue the task",
             "existing-456",
             parent_agent_state=mock_agent_state,
+            trace_id=None,
         )
 
     def test_resume_mode_preserves_sub_agent_id(self, mock_agent_state):

@@ -74,6 +74,7 @@ class SubAgentManager:
         parent_agent_state: AgentState | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         parallel_execution_id: str | None = None,
+        trace_id: str | None = None,
     ) -> str:
         """Call a sub-agent like a tool call.
 
@@ -185,6 +186,7 @@ class SubAgentManager:
                 context=effective_context,
                 parent_agent_state=parent_agent_state,
                 custom_llm_client_provider=custom_llm_client_provider,
+                trace_id=trace_id,
             )
             result = (
                 f"[sub_agent_id: {actual_sub_agent_id}] {result}\n"
@@ -227,6 +229,7 @@ class SubAgentManager:
         parent_agent_state: AgentState | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         parallel_execution_id: str | None = None,
+        trace_id: str | None = None,
     ) -> str:
         """Async version of call_sub_agent — runs on the main event loop.
 
@@ -306,6 +309,7 @@ class SubAgentManager:
                 context=effective_context,
                 parent_agent_state=parent_agent_state,
                 custom_llm_client_provider=custom_llm_client_provider,
+                trace_id=trace_id,
             )
             result = (
                 f"[sub_agent_id: {actual_sub_agent_id}] {result}\n"

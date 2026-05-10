@@ -14,6 +14,7 @@ from typing import Any
 
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.execution import SubAgentManager
+from nexau.archs.main_sub.framework_context import FrameworkContext
 
 
 def _extract_sub_agent_id(text: str) -> str | None:
@@ -31,6 +32,7 @@ def call_sub_agent(
     message: str,
     sub_agent_id: str | None = None,
     agent_state: AgentState | None = None,
+    ctx: FrameworkContext | None = None,
 ) -> dict[str, Any]:
     """Delegate work to a sub-agent.
 
@@ -44,6 +46,9 @@ def call_sub_agent(
         message: Task/question for the sub-agent.
         sub_agent_id: Optional identifier of a previously finished sub-agent run.
         agent_state: Injected by the framework; provides access to the sub-agent manager.
+        ctx: Injected by the framework; carries RFC-0024 ``trace_id`` so the
+            whole sub-agent call tree shares one caller-supplied trace id
+            without an implicit AgentState backref.
 
     Returns:
         Dict with `status` and either `result` or `error`.
@@ -65,12 +70,15 @@ def call_sub_agent(
         }
 
     # 3. 路由到 SubAgentManager.call_sub_agent()
+    # RFC-0024: 显式透传 trace_id 而非通过 AgentState backref。
+    trace_id = ctx.trace_id if ctx is not None else None
     try:
         result = subagent_manager.call_sub_agent(
             sub_agent_name,
             message,
             sub_agent_id,
             parent_agent_state=agent_state,
+            trace_id=trace_id,
         )
         # RFC-0015: 从返回字符串开头提取实际 sub_agent_id（新建子代理时输入参数为 None）
         actual_sub_agent_id = _extract_sub_agent_id(result)

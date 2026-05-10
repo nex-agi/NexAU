@@ -214,11 +214,20 @@ class FrameworkContext:
         tool_name: str = "",
         allow_rules: list[str] | None = None,
         deny_rules: list[str] | None = None,
+        trace_id: str | None = None,
     ) -> None:
         self.agent_name = agent_name
         self.agent_id = agent_id
         self.run_id = run_id
         self.root_run_id = root_run_id
+
+        # RFC-0024: caller-supplied W3C trace id (32-hex). Opaque to nexau —
+        # populated by ``Agent.run_async(trace_id=...)``, threaded into the
+        # Executor → FrameworkContext, and inherited explicitly by sub-agents
+        # via ``call_sub_agent(trace_id=...)``. Surfaced into RUN_START rows
+        # and the live ``RunStartedEvent`` so a single trace links the whole
+        # call tree. None when caller didn't supply one.
+        self.trace_id: str | None = trace_id
 
         # RFC-0019: 权限数据字段
         self.session_id = session_id
@@ -268,6 +277,7 @@ class FrameworkContext:
             tool_name=tool_name,
             allow_rules=allow_rules,
             deny_rules=deny_rules,
+            trace_id=self.trace_id,
         )
 
     @classmethod

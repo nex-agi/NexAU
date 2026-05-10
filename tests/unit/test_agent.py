@@ -432,7 +432,7 @@ class TestAgent:
 
             captured_client = {}
 
-            async def fake_execute(history, agent_state, *, runtime_client, custom_llm_client_provider=None):
+            async def fake_execute(history, agent_state, *, runtime_client, custom_llm_client_provider=None, trace_id=None):
                 captured_client["client"] = runtime_client
                 return "ok", history or []
 
@@ -452,7 +452,7 @@ class TestAgent:
 
             captured_history: dict[str, list[Message]] = {}
 
-            async def fake_execute(history, agent_state, *, runtime_client, custom_llm_client_provider=None):
+            async def fake_execute(history, agent_state, *, runtime_client, custom_llm_client_provider=None, trace_id=None):
                 captured_history["history"] = list(history) if history else []
                 return "ok", history or []
 
@@ -935,7 +935,7 @@ class TestAgent:
             provider = Mock(side_effect=lambda name: custom_client if name == agent_config.name else None)
             captured_kwargs: dict[str, object] = {}
 
-            def fake_execute(messages, agent_state, *, runtime_client, custom_llm_client_provider):
+            def fake_execute(messages, agent_state, *, runtime_client, custom_llm_client_provider, trace_id=None):
                 captured_kwargs["runtime_client"] = runtime_client
                 captured_kwargs["custom_llm_client_provider"] = custom_llm_client_provider
                 return "Test response", messages + [Message(role=Role.ASSISTANT, content=[TextBlock(text="Test response")])]
@@ -965,7 +965,7 @@ class TestAgent:
             provider = Mock(side_effect=Exception("boom"))
             captured_kwargs: dict[str, object] = {}
 
-            def fake_execute(messages, agent_state, *, runtime_client, custom_llm_client_provider):
+            def fake_execute(messages, agent_state, *, runtime_client, custom_llm_client_provider, trace_id=None):
                 captured_kwargs["runtime_client"] = runtime_client
                 captured_kwargs["custom_llm_client_provider"] = custom_llm_client_provider
                 return "Test response", messages + [Message(role=Role.ASSISTANT, content=[TextBlock(text="Test response")])]
@@ -1004,7 +1004,9 @@ class TestAgent:
 
             called_args: dict[str, object] = {}
 
-            def fake_run_inner(agent_state, merged_context, *, runtime_client, custom_llm_client_provider, on_history_update=None):
+            def fake_run_inner(
+                agent_state, merged_context, *, runtime_client, custom_llm_client_provider, on_history_update=None, trace_id=None
+            ):
                 called_args["runtime_client"] = runtime_client
                 called_args["custom_llm_client_provider"] = custom_llm_client_provider
                 return "Traced response"

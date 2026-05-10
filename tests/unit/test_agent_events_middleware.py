@@ -65,7 +65,33 @@ class TestAgentEventsMiddleware:
         assert isinstance(event, RunStartedEvent)
         assert event.thread_id == "test_session"
         assert event.run_id == "test_run_123"
+        # RFC-0024: with no framework_context supplied (legacy direct-build
+        # path) trace_id must collapse to None — pydantic would reject a
+        # bare Mock here, so this also locks in the None fallback semantics.
+        assert event.trace_id is None
         assert not result.has_modifications()
+
+    def test_before_agent_reads_trace_id_from_framework_context(self, middleware, mock_agent_state, events_captured):
+        """RFC-0024: trace_id flows from FrameworkContext, not AgentState.
+
+        Locks in the post-refactor contract: ``AgentEventsMiddleware`` must
+        read ``hook_input.framework_context.trace_id`` so AgentState can
+        finish its deprecation path without breaking observability.
+        """
+        from nexau.archs.main_sub.framework_context import FrameworkContext
+
+        ctx = FrameworkContext.for_testing()
+        ctx.trace_id = "trace_abc_123"
+
+        middleware.before_agent(
+            BeforeAgentHookInput(
+                agent_state=mock_agent_state,
+                messages=[],
+                framework_context=ctx,
+            )
+        )
+        assert len(events_captured) == 1
+        assert events_captured[0].trace_id == "trace_abc_123"
 
     def test_after_agent_emits_run_finished_event(self, middleware, mock_agent_state, events_captured):
         hook_input = AfterAgentHookInput(

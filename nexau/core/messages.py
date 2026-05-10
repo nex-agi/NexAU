@@ -271,6 +271,18 @@ class ToolResultBlock(ContentBlock):
     # We now also support mixed multimodal content (text + images).
     content: str | list[ToolResultContentBlock]
     is_error: bool = False
+    # RFC-0024: post-``ToolExecutor.finalize_tool_execution`` raw output kept
+    # alongside the formatted ``content`` so downstream UI consumers can
+    # render typed fields (returnDisplay, duration_ms, exit_code, custom
+    # meta…) without reverse-parsing whatever the formatter (RFC-0017 XML
+    # envelope or custom) produced. ``None`` only when the tool produced
+    # nothing structured (i.e. a scalar that even ``finalize_tool_execution``
+    # didn't wrap into a dict). Excluded from JSON when None to avoid noise
+    # on existing readers. UI consumers that want to skip trivial
+    # ``{"result": <scalar>}`` wrappings should do that filtering themselves
+    # — the framework keeps this field faithful to its name rather than
+    # layering a second policy on top.
+    raw_output: dict[str, Any] | list[Any] | None = Field(default=None)
 
 
 BlockType = TextBlock | ImageBlock | ReasoningBlock | ToolUseBlock | ToolResultBlock

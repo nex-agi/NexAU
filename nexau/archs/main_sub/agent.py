@@ -941,6 +941,7 @@ class Agent:
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         variables: ContextValue | None = None,
         run_id: str | None = None,
+        trace_id: str | None = None,
     ) -> str | tuple[str, dict[str, Any]]:
         """Run agent asynchronously with a message and return response.
 
@@ -993,6 +994,7 @@ class Agent:
                 custom_llm_client_provider=custom_llm_client_provider,
                 run_id=run_id,
                 variables=variables,
+                trace_id=trace_id,
             )
 
     async def _run_async_inner(
@@ -1007,6 +1009,7 @@ class Agent:
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         run_id: str,
         variables: ContextValue | None = None,
+        trace_id: str | None = None,
     ) -> str | tuple[str, dict[str, Any]]:
         """Inner implementation of run_async without lock handling.
 
@@ -1238,12 +1241,23 @@ class Agent:
             # is wired separately (RFC-0024).
             #
             # Both root and sub-agent runs write their own RUN_START.
+            #
+            # RFC-0024: trace_id is an opaque caller-supplied W3C string;
+            # nexau never auto-derives it (OTel global / ContextVar / env)
+            # because callers' observability stacks differ — see RFC-0024 §3
+            # for the NAC vs xiaobei (isolated SdkTracerProvider) case.
+            # Sub-agents inherit it explicitly via the
+            # ``call_sub_agent(trace_id=...)`` chain
+            # (agent_tool → SubAgentManager → sub_agent.run_async); no implicit
+            # backref through AgentState. Threaded into Executor below so
+            # AgentEventsMiddleware emits the same value on RunStartedEvent.
             await self._session_manager.agent_run_action.persist_run_start(
                 key=history_key,
                 run_id=run_id,
                 root_run_id=root_run_id,
                 parent_run_id=parent_run_id,
                 agent_name=self.agent_name,
+                trace_id=trace_id,
             )
 
             # RFC-0009: 懒创建 token trace session，跨 run 复用
@@ -1304,6 +1318,7 @@ class Agent:
                         merged_context=merged_context,
                         runtime_client=runtime_client,
                         custom_llm_client_provider=custom_llm_client_provider,
+                        trace_id=trace_id,
                     )
                 else:
                     response = await self._run_inner(
@@ -1311,6 +1326,7 @@ class Agent:
                         merged_context,
                         runtime_client=runtime_client,
                         custom_llm_client_provider=custom_llm_client_provider,
+                        trace_id=trace_id,
                     )
 
                 # RFC-0022 Phase 2: stop_signal triggered → cancelled, not ok.
@@ -1427,6 +1443,7 @@ class Agent:
         parent_agent_state: AgentState | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         variables: ContextValue | None = None,
+        trace_id: str | None = None,
     ) -> str | tuple[str, dict[str, Any]]:
         """Run agent with a message and return response (sync entry point).
 
@@ -1468,6 +1485,7 @@ class Agent:
                 parent_agent_state=parent_agent_state,
                 custom_llm_client_provider=custom_llm_client_provider,
                 variables=variables,
+                trace_id=trace_id,
             )
         )
 
@@ -1480,6 +1498,7 @@ class Agent:
         merged_context: dict[str, Any],
         runtime_client: Any,
         custom_llm_client_provider: Callable[[str], Any] | None,
+        trace_id: str | None = None,
     ) -> str:
         """Execute agent with tracing enabled."""
         span_name = f"Agent: {self.agent_name}"
@@ -1500,6 +1519,7 @@ class Agent:
                     merged_context,
                     runtime_client=runtime_client,
                     custom_llm_client_provider=custom_llm_client_provider,
+                    trace_id=trace_id,
                 )
                 trace_ctx.set_outputs({"response": response})
                 return response
@@ -1513,6 +1533,7 @@ class Agent:
         *,
         runtime_client: Any,
         custom_llm_client_provider: Callable[[str], Any] | None,
+        trace_id: str | None = None,
     ) -> str:
         """Inner execution logic without tracing wrapper.
 
@@ -1527,6 +1548,7 @@ class Agent:
                 agent_state,
                 runtime_client=runtime_client,
                 custom_llm_client_provider=custom_llm_client_provider,
+                trace_id=trace_id,
             )
             # HistoryList will automatically persist any changes made by executor
             logger.debug(

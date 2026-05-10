@@ -1250,10 +1250,20 @@ class TestToolExecutorIntegration:
 
 
 class TestToolExecutorReturnDisplayStripping:
-    """Test that returnDisplay is stripped from tool results before returning to LLM."""
+    """returnDisplay handling under RFC-0024.
 
-    def test_return_display_stripped_from_result(self, agent_state):
-        """returnDisplay should be removed from the result dict."""
+    Pre-RFC-0024 behaviour: returnDisplay was stripped from raw_output
+    immediately after the after_tool middleware, leaving the persisted
+    ToolResultBlock without the UI hint. That violated the "persisted ⊇
+    event" invariant — replay couldn't reconstitute the live UI.
+
+    Post-RFC-0024: returnDisplay stays on raw_output (so it persists into
+    ToolResultBlock.raw_output for downstream UI consumers); only the
+    LLM-facing llm_tool_output strips it (to avoid token waste).
+    """
+
+    def test_return_display_preserved_on_raw_output(self, agent_state):
+        """RFC-0024: returnDisplay stays on raw_output for UI persistence."""
 
         def tool_with_display(file_path: str, agent_state=None) -> dict:
             return {
@@ -1280,11 +1290,12 @@ class TestToolExecutorReturnDisplayStripping:
             tool_call_id="call_123",
         )
 
-        assert "returnDisplay" not in result
+        # RFC-0024: returnDisplay survives on raw_output
+        assert result["returnDisplay"] == "Read 42 lines"
         assert result["content"] == "file contents here"
 
-    def test_return_display_streamed_to_middleware_before_stripping(self, agent_state):
-        """Middleware (e.g. AgentEventsMiddleware) should still see returnDisplay."""
+    def test_return_display_streamed_to_middleware_and_persisted(self, agent_state):
+        """Middleware sees returnDisplay AND it stays on raw_output (RFC-0024)."""
         captured_return_display = None
 
         def after_hook(hook_input: AfterToolHookInput) -> HookResult:
@@ -1324,8 +1335,9 @@ class TestToolExecutorReturnDisplayStripping:
 
         # Middleware saw returnDisplay (for streaming to frontend)
         assert captured_return_display == "Summary for UI"
-        # But final result does not contain it (for LLM)
-        assert "returnDisplay" not in result
+        # RFC-0024: raw_output retains returnDisplay so persisted
+        # ToolResultBlock.raw_output exposes it to UI consumers.
+        assert result["returnDisplay"] == "Summary for UI"
         assert result["content"] == "data"
 
     def test_return_display_stripped_from_llm_output(self, agent_state):

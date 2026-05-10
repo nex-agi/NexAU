@@ -90,12 +90,22 @@ class AgentEventsMiddleware(Middleware):
         """
         agent_state = hook_input.agent_state
 
+        # RFC-0024: live event trace_id mirrors the persisted RUN_START value.
+        # Source: ``framework_context.trace_id``, populated by
+        # ``Executor.execute_async(trace_id=...)`` from
+        # ``Agent._run_async_inner``. AgentState no longer carries trace_id
+        # (it's on the deprecation path); we fall back to None when
+        # ``framework_context`` isn't supplied (legacy direct-build callers
+        # in tests).
+        framework_context = hook_input.framework_context
+        trace_id = framework_context.trace_id if framework_context is not None else None
         self.on_event(
             RunStartedEvent(
                 thread_id=self.session_id,
                 root_run_id=agent_state.root_run_id,
                 run_id=agent_state.run_id,
                 agent_id=agent_state.agent_id,
+                trace_id=trace_id,
                 timestamp=int(datetime.now().timestamp() * 1000),
             )
         )

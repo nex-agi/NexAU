@@ -48,6 +48,12 @@ class BeforeAgentHookInput:
 
     agent_state: AgentState
     messages: list[Message]
+    # RFC-0024 / RFC-0006: typed framework context. Read by hooks that need
+    # caller-supplied trace_id (e.g. ``AgentEventsMiddleware`` for
+    # ``RunStartedEvent.trace_id``) without reaching into ``AgentState``,
+    # which is on the deprecation path. Optional for back-compat with
+    # tests that build the hook input directly without an executor.
+    framework_context: FrameworkContext | None = None
 
 
 @dataclass

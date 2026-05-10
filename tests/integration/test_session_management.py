@@ -54,8 +54,9 @@ def _patch_execute_async(
         agent_state: object,
         runtime_client: object | None = None,
         custom_llm_client_provider: object | None = None,
+        trace_id: str | None = None,
     ) -> tuple[str, list[Message]]:
-        del agent_state, runtime_client, custom_llm_client_provider
+        del agent_state, runtime_client, custom_llm_client_provider, trace_id
 
         non_system_texts = [msg.get_text_content() for msg in history if msg.role != Role.SYSTEM]
 

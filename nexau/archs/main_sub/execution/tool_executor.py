@@ -369,11 +369,13 @@ class ToolExecutor:
             )
             raw_output["_is_stop_tool"] = False
 
-        # Strip returnDisplay — already streamed to frontend via ToolCallResultEvent
-        # in after_tool middleware. Keeping it doubles token consumption for the LLM.
-        # 对 llm_tool_output 再做一次浅层 strip，是为了覆盖 formatter 未走 XML
-        # 路径、而是直接返回 dict 的场景；XML 字符串路径在 formatter 阶段已处理。
-        raw_output.pop("returnDisplay", None)
+        # RFC-0024: returnDisplay is preserved on raw_output going forward so
+        # the persisted ToolResultBlock.raw_output retains it for downstream
+        # UI replay. The LLM-facing `llm_tool_output` is still stripped to
+        # avoid token waste — it's the only consumer that doesn't want it.
+        # (Pre-RFC-0024: we used to pop returnDisplay from raw_output here too,
+        #  which made the persisted view a strict subset of the live event view
+        #  — see NAC RFC-0088 v2 §3.5 for why that was a SSOT-breaking bug.)
         llm_tool_output = self._strip_display_only_from_llm_output(llm_tool_output)
 
         return ToolExecutionResult(raw_output=raw_output, llm_tool_output=llm_tool_output)

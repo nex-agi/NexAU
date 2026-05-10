@@ -449,7 +449,6 @@ class AgentRunActionService:
         status: RunStatus,
         parent_run_id: str | None = None,
         reason: str | None = None,
-        trace_id: str | None = None,
     ) -> AgentRunActionModel | None:
         """Persist a RUN_END lifecycle marker (RFC-0022 Phase 2).
 
@@ -458,6 +457,10 @@ class AgentRunActionService:
 
         ``status`` is business-required (Literal['ok','error','cancelled']
         enforced by the factory).
+
+        RFC-0024: trace_id is RUN_START only. The schema field on
+        ``RunEndExtra`` is kept as a protobuf-compat parking lot for
+        forward readers but the writer never populates it.
         """
         record = AgentRunActionModel.create_run_end(
             user_id=key.user_id,
@@ -469,7 +472,6 @@ class AgentRunActionService:
             agent_name=agent_name,
             status=status,
             reason=reason,
-            trace_id=trace_id,
             idempotency_key=f"{run_id}:end",
         )
         try:

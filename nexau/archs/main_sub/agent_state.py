@@ -91,15 +91,12 @@ class AgentState:
         self.token_trace_session = token_trace_session
         self._subagent_manager = subagent_manager
         self.skill_registry: dict[str, Skill] = skill_registry or {}
-        # RFC-0026: ``history`` field removed.
-        #
-        # Phase 3 added it as a back-reference so write-side middlewares
-        # could emit typed REPLACE via ``history.emit_typed_replace(...)``.
-        # RFC-0026 routed that channel through ``FrameworkContext.history``
-        # instead — middleware emits via ``ctx.history.replace(messages,
-        # extra=variant)`` (RPC-friendly, narrow API surface). AgentState is
-        # on the deprecation path (replaced by ``FrameworkContext``); no
-        # new attributes here.
+        # RFC-0026: ``history`` field removed (RFC-0022 Phase 3 backref
+        # was superseded by FrameworkContext.history).
+        # RFC-0024: ``trace_id`` lives on FrameworkContext, not here.
+        # AgentState is on the deprecation path; new fields go to
+        # FrameworkContext. Sub-agent inheritance is now explicit via
+        # ``call_sub_agent(trace_id=...)`` rather than via this backref.
 
     @property
     def subagent_manager(self) -> Optional["SubAgentManager"]:

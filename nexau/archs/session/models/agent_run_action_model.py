@@ -785,13 +785,16 @@ class AgentRunActionModel(SQLModel, table=True):
         reason: str | None = None,
         parent_run_id: str | None = None,
         agent_name: str = "",
-        trace_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> AgentRunActionModel:
         """Create a RUN_END lifecycle marker.
 
         ``status`` is business-required (Literal enforced at factory). Defaults
         ``finished_at_ns`` to ``time.time_ns()`` if not provided.
+
+        RFC-0024: trace_id is RUN_START only — not accepted here. The
+        ``RunEndExtra.trace_id`` schema slot stays for forward-compat reads
+        but no writer populates it.
         """
         if finished_at_ns is None:
             finished_at_ns = time.time_ns()
@@ -799,7 +802,6 @@ class AgentRunActionModel(SQLModel, table=True):
             status=status,
             finished_at_ns=finished_at_ns,
             reason=reason,
-            trace_id=trace_id,
         )
         return cls(
             user_id=user_id,

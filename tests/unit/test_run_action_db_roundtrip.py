@@ -696,3 +696,360 @@ def test_forward_compat_no_class_c_action_types_in_phase_1():
         f"If you intend to add a Class C type, see RFC-0022 §设计原则 §6 "
         f"for the reader-version-gate requirement, then update this test."
     )
+
+
+# ============================================================================
+# RFC-0024: ToolResultBlock.raw_output roundtrip
+# ============================================================================
+
+
+def test_tool_result_block_raw_output_roundtrip_db():
+    """RFC-0024: ToolResultBlock.raw_output survives DB roundtrip.
+
+    The new field carries the tool's raw structured return value (returnDisplay,
+    duration_ms, custom meta) so downstream UI consumers can render typed fields
+    without reverse-parsing the formatter output. Verify the field round-trips
+    cleanly through APPEND.append_messages → JSON column → SELECT → parse.
+    """
+    import asyncio
+
+    from nexau.core.messages import Message, Role, ToolResultBlock
+
+    raw_output = {
+        "content": "Output: ok\n",
+        "returnDisplay": "Done in 320ms",
+        "duration_ms": 320,
+        "exit_code": 0,
+        "stdout_file": "/tmp/foo/stdout.txt",
+    }
+
+    tool_msg = Message(
+        role=Role.TOOL,
+        content=[
+            ToolResultBlock(
+                tool_use_id="call_1",
+                content="Output: ok\n",
+                raw_output=raw_output,
+            )
+        ],
+    )
+
+    async def run():
+        async with _engine() as eng:
+            written = AgentRunActionModel.create_append(
+                user_id="u",
+                session_id="s",
+                agent_id="a",
+                run_id="r1",
+                root_run_id="r1",
+                messages=[tool_msg],
+                iter_index=0,
+                iter_kind="tool_round",
+                idempotency_key="r1:0",
+            )
+            await eng.create(written)
+
+            result = await eng.find_first(
+                AgentRunActionModel,
+                filters=ComparisonFilter.eq("action_id", written.action_id),
+            )
+            assert result is not None
+            assert result.append_messages is not None
+            stored = result.append_messages[0]
+            # `append_messages` round-trips Message objects (pydantic models).
+            block = stored.content[0]
+            block_dict = block.model_dump() if hasattr(block, "model_dump") else block
+            assert block_dict["type"] == "tool_result"
+            assert block_dict["raw_output"] == raw_output
+
+    asyncio.run(run())
+
+
+def test_tool_result_block_raw_output_none_excluded():
+    """ToolResultBlock with raw_output=None should serialize cleanly.
+
+    Plain-string-returning tools leave raw_output as None; verify the
+    serialized JSON either omits the field entirely or carries explicit null
+    (both are valid for downstream readers using `extra='allow'`).
+    """
+    import json
+
+    from nexau.core.messages import ToolResultBlock
+
+    block = ToolResultBlock(tool_use_id="call_1", content="just a string")
+    serialized = json.loads(block.model_dump_json())
+    # Field present (None) is OK; absent is OK. Just must not blow up.
+    assert serialized["type"] == "tool_result"
+    assert serialized["content"] == "just a string"
+    assert serialized.get("raw_output") in (None,)
+
+
+# ----------------------------------------------------------------------------
+# RFC-0024 edge cases — trace_id absence / inheritance, raw_output non-dict
+# shapes. Pre-merge safety net: lock down the behaviour the user-visible
+# Compare panel + tracing UI rely on.
+# ----------------------------------------------------------------------------
+
+
+def test_run_start_extra_omitted_when_no_payload_fields_set():
+    """``create_run_start`` with no user_message_blocks / fresh_context /
+    trace_id collapses ``extra`` to NULL (not an empty dict).
+
+    Why: callers without an observability stack pass ``trace_id=None``.
+    Persisted row should be ``extra=NULL``, not ``extra='{}'`` — the
+    latter forces every reader to disambiguate "extra exists but
+    empty" from "no extra at all" and bloats storage on long sessions.
+    """
+    import asyncio
+
+    async def run():
+        async with _engine() as eng:
+            written = AgentRunActionModel.create_run_start(
+                user_id="u",
+                session_id="s",
+                agent_id="a",
+                run_id="r_no_extra",
+                root_run_id="r_no_extra",
+                idempotency_key="r_no_extra:start",
+                # Intentional: no trace_id / user_message_blocks / fresh_context.
+            )
+            await eng.create(written)
+            row = await eng.find_first(
+                AgentRunActionModel,
+                filters=ComparisonFilter.eq("action_id", written.action_id),
+            )
+            assert row is not None
+            assert row.extra is None, f"expected extra=NULL, got {row.extra!r}"
+
+    asyncio.run(run())
+
+
+def test_run_start_extra_only_trace_id_persists_just_that_field():
+    """Only ``trace_id`` set → persisted ``extra`` carries exactly that
+    one field (no leaking-None entries via ``model_dump(exclude_none=True)``).
+    """
+    import asyncio
+
+    async def run():
+        async with _engine() as eng:
+            written = AgentRunActionModel.create_run_start(
+                user_id="u",
+                session_id="s",
+                agent_id="a",
+                run_id="r_tid",
+                root_run_id="r_tid",
+                trace_id="trace_only",
+                idempotency_key="r_tid:start",
+            )
+            await eng.create(written)
+            row = await eng.find_first(
+                AgentRunActionModel,
+                filters=ComparisonFilter.eq("action_id", written.action_id),
+            )
+            assert row is not None
+            assert row.extra == {"trace_id": "trace_only"}, f"unexpected extra: {row.extra!r}"
+            extra = row.parse_extra()
+            assert isinstance(extra, RunStartExtra)
+            assert extra.trace_id == "trace_only"
+
+    asyncio.run(run())
+
+
+def test_subagent_run_start_carries_inherited_trace_id():
+    """Sub-agent RUN_START persisted with the same trace_id as parent.
+
+    Persistence-side proof of explicit trace_id propagation through the
+    ``call_sub_agent(trace_id=...)`` chain (agent_tool → SubAgentManager →
+    sub_agent.run_async). Single Langfuse trace covers the whole task tree.
+    """
+    import asyncio
+
+    async def run():
+        async with _engine() as eng:
+            await eng.create(
+                AgentRunActionModel.create_run_start(
+                    user_id="u",
+                    session_id="s",
+                    agent_id="parent_agent",
+                    run_id="r_parent",
+                    root_run_id="r_parent",
+                    agent_name="parent",
+                    trace_id="trace_shared",
+                    idempotency_key="r_parent:start",
+                )
+            )
+            child = AgentRunActionModel.create_run_start(
+                user_id="u",
+                session_id="s",
+                agent_id="child_agent",
+                run_id="r_child",
+                root_run_id="r_parent",
+                parent_run_id="r_parent",
+                agent_name="child",
+                # Simulates effective_trace_id resolution from parent_agent_state.
+                trace_id="trace_shared",
+                idempotency_key="r_child:start",
+            )
+            await eng.create(child)
+
+            row = await eng.find_first(
+                AgentRunActionModel,
+                filters=ComparisonFilter.eq("action_id", child.action_id),
+            )
+            assert row is not None
+            extra = row.parse_extra()
+            assert isinstance(extra, RunStartExtra)
+            assert extra.trace_id == "trace_shared"
+            assert row.parent_run_id == "r_parent"
+            assert row.root_run_id == "r_parent"
+
+    asyncio.run(run())
+
+
+def test_subagent_can_override_inherited_trace_id():
+    """Explicit non-None trace_id on the sub-agent wins over the parent's.
+
+    Lets advanced callers fork the trace tree (e.g. running a sub-agent
+    under an isolated Langfuse trace).
+    """
+    import asyncio
+
+    async def run():
+        async with _engine() as eng:
+            await eng.create(
+                AgentRunActionModel.create_run_start(
+                    user_id="u",
+                    session_id="s",
+                    agent_id="parent",
+                    run_id="rA",
+                    root_run_id="rA",
+                    trace_id="trace_A",
+                    idempotency_key="rA:start",
+                )
+            )
+            child = AgentRunActionModel.create_run_start(
+                user_id="u",
+                session_id="s",
+                agent_id="child",
+                run_id="rB",
+                root_run_id="rA",
+                parent_run_id="rA",
+                trace_id="trace_B",  # explicit, overrides parent
+                idempotency_key="rB:start",
+            )
+            await eng.create(child)
+            row = await eng.find_first(
+                AgentRunActionModel,
+                filters=ComparisonFilter.eq("action_id", child.action_id),
+            )
+            assert row is not None
+            extra = row.parse_extra()
+            assert isinstance(extra, RunStartExtra)
+            assert extra.trace_id == "trace_B"
+
+    asyncio.run(run())
+
+
+def test_tool_result_block_raw_output_as_list_roundtrip():
+    """``raw_output`` is typed ``dict | list | None``. Many tools return
+    list-shaped structured output (table rows, search hits, batched API
+    responses) — the persisted block must carry the list verbatim, not
+    silently coerce to dict.
+    """
+    import asyncio
+
+    from nexau.core.messages import Message, Role, ToolResultBlock
+
+    raw_output: list[dict[str, object]] = [
+        {"name": "alice", "score": 0.9},
+        {"name": "bob", "score": 0.7},
+    ]
+    tool_msg = Message(
+        role=Role.TOOL,
+        content=[
+            ToolResultBlock(
+                tool_use_id="call_list",
+                content="2 results",
+                raw_output=raw_output,
+            )
+        ],
+    )
+
+    async def run():
+        async with _engine() as eng:
+            written = AgentRunActionModel.create_append(
+                user_id="u",
+                session_id="s",
+                agent_id="a",
+                run_id="r_list",
+                root_run_id="r_list",
+                messages=[tool_msg],
+                iter_index=0,
+                iter_kind="tool_round",
+                idempotency_key="r_list:0",
+            )
+            await eng.create(written)
+            row = await eng.find_first(
+                AgentRunActionModel,
+                filters=ComparisonFilter.eq("action_id", written.action_id),
+            )
+            assert row is not None
+            assert row.append_messages is not None
+            stored_block = row.append_messages[0].content[0]
+            block_dict = stored_block.model_dump() if hasattr(stored_block, "model_dump") else stored_block
+            assert block_dict["raw_output"] == raw_output, f"list raw_output not preserved: {block_dict['raw_output']!r}"
+
+    asyncio.run(run())
+
+
+def test_tool_result_block_raw_output_with_unicode_and_nested_dict_roundtrip():
+    """Realistic raw_output: nested dict + unicode + list mix. Common
+    case for tools returning i18n strings or nested metadata. Pydantic
+    + JSON column must round-trip without loss.
+    """
+
+    from nexau.core.messages import Message, Role, ToolResultBlock
+
+    raw_output: dict[str, object] = {
+        "returnDisplay": "搜索完成（中文）",
+        "duration_ms": 432,
+        "results": [
+            {"title": "测试 / тест", "score": 0.95, "tags": ["分析", "🚀"]},
+            {"title": "edge case", "score": 0.88, "tags": []},
+        ],
+        "meta": {"engine": "v2", "timestamp_ns": 1778000000_000_000_000},
+    }
+    tool_msg = Message(
+        role=Role.TOOL,
+        content=[
+            ToolResultBlock(
+                tool_use_id="call_unicode",
+                content="搜索完成",
+                raw_output=raw_output,
+            )
+        ],
+    )
+
+    async def run():
+        async with _engine() as eng:
+            written = AgentRunActionModel.create_append(
+                user_id="u",
+                session_id="s",
+                agent_id="a",
+                run_id="r_uni",
+                root_run_id="r_uni",
+                messages=[tool_msg],
+                iter_index=0,
+                iter_kind="tool_round",
+                idempotency_key="r_uni:0",
+            )
+            await eng.create(written)
+            row = await eng.find_first(
+                AgentRunActionModel,
+                filters=ComparisonFilter.eq("action_id", written.action_id),
+            )
+            assert row is not None
+            assert row.append_messages is not None
+            stored_block = row.append_messages[0].content[0]
+            block_dict = stored_block.model_dump() if hasattr(stored_block, "model_dump") else stored_block
+            assert block_dict["raw_output"] == raw_output

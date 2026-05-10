@@ -96,6 +96,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _coerce_raw_output(output: object) -> dict[str, Any] | list[Any] | None:
+    """Narrow generic feedback ``output`` to the dict/list shape that
+    ``ToolResultBlock.raw_output`` accepts. ``None`` / scalars → ``None``
+    (Pydantic schema only allows ``dict | list | None``).
+
+    Boundary helper: ``output`` arrives as ``object`` from feedback dicts;
+    ``cast`` localises the unsafe narrowing here so the two call sites stay
+    pyright-clean. Pydantic validates downstream on construction.
+
+    Stores verbatim what ``ToolExecutor.finalize_tool_execution`` produced
+    (which already wraps non-dict tool returns into ``{"result": <X>}``,
+    [tool_executor.py:361]). UI consumers needing to skip the trivial
+    ``{"result": <scalar>}`` wrapping should do that filtering themselves —
+    the framework keeps ``raw_output`` faithful to the field name (truly
+    raw post-normalization) rather than layering a second policy on top.
+    """
+    if isinstance(output, (dict, list)):
+        return cast("dict[str, Any] | list[Any]", output)
+    return None
+
+
 def _sync_history(
     history: object,
     messages: list[Message],
@@ -619,12 +640,17 @@ class Executor:
         *,
         runtime_client: Any | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
+        trace_id: str | None = None,
     ) -> tuple[str, list[Message]]:
         """Execute agent task with full orchestration.
 
         Args:
             history: Complete conversation history including system prompt and user message
             agent_state: AgentState containing agent context and global storage
+            trace_id: RFC-0024 caller-supplied W3C trace id, threaded into
+                FrameworkContext so middleware (e.g. AgentEventsMiddleware
+                emitting ``RunStartedEvent.trace_id``) can read it without
+                touching the deprecated AgentState.
 
         Returns:
             Tuple of (agent_response, updated_messages_history)
@@ -636,6 +662,7 @@ class Executor:
         # RFC-0006: 构建 FrameworkContext，供工具函数通过 ctx 参数访问框架服务
         # RFC-0026: pass HistoryList handle so middleware (compaction)
         # can emit typed REPLACE via ctx.history.replace(...).
+        # RFC-0024: trace_id lives here, not on AgentState.
         framework_context = FrameworkContext(
             agent_name=self.agent_name,
             agent_id=self.agent_id,
@@ -644,6 +671,7 @@ class Executor:
             _tool_registry=self._tool_registry,
             _shutdown_event=self._shutdown_event,
             _history=history if isinstance(history, HistoryList) else None,
+            trace_id=trace_id,
         )
 
         # RFC-0019: 预加载权限规则缓存
@@ -696,6 +724,7 @@ class Executor:
                 before_agent_hook_input = BeforeAgentHookInput(
                     agent_state=agent_state,
                     messages=messages,
+                    framework_context=framework_context,
                 )
                 try:
                     messages = self.middleware_manager.run_before_agent(
@@ -938,6 +967,9 @@ class Executor:
                         if not call_id:
                             continue
 
+                        # RFC-0024: pass raw_output through so the persisted
+                        # ToolResultBlock retains structured fields (returnDisplay,
+                        # duration_ms, custom meta) for downstream UI consumers.
                         tool_result_block = ToolResultBlock(
                             tool_use_id=str(call_id),
                             content=coerce_tool_result_content(
@@ -945,6 +977,7 @@ class Executor:
                                 fallback_text=None,
                             ),
                             is_error=bool(feedback.get("is_error")),
+                            raw_output=_coerce_raw_output(output),
                         )
 
                         # micro-compact: 设置 created_at 时间戳
@@ -1161,6 +1194,7 @@ class Executor:
         *,
         runtime_client: Any | None = None,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
+        trace_id: str | None = None,
     ) -> tuple[str, list[Message]]:
         """Fully async execution — runs on the main event loop.
 
@@ -1197,6 +1231,8 @@ class Executor:
                 # RFC-0026: typed REPLACE writers (compaction) reach
                 # HistoryList through ctx.history.replace(...).
                 _history=history if isinstance(history, HistoryList) else None,
+                # RFC-0024: caller-supplied trace_id, FrameworkContext-owned.
+                trace_id=trace_id,
             ),
             runtime_client=runtime_client,
             custom_llm_client_provider=custom_llm_client_provider,
@@ -1315,6 +1351,7 @@ class Executor:
             before_agent_hook_input = BeforeAgentHookInput(
                 agent_state=state.agent_state,
                 messages=state.messages,
+                framework_context=state.framework_context,
             )
             try:
                 state.messages = await asyncio.to_thread(
@@ -1587,6 +1624,7 @@ class Executor:
                 if not call_id:
                     continue
 
+                # RFC-0024: pass raw_output through (dict/list only).
                 tool_result_block = ToolResultBlock(
                     tool_use_id=str(call_id),
                     content=coerce_tool_result_content(
@@ -1594,6 +1632,7 @@ class Executor:
                         fallback_text=None,
                     ),
                     is_error=bool(feedback.get("is_error")),
+                    raw_output=_coerce_raw_output(output),
                 )
                 # micro-compact: 设置 created_at 时间戳
                 from datetime import UTC, datetime

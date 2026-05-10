@@ -235,11 +235,17 @@ class RunStartedEvent(AgUiRunStartedEvent):
     Attributes:
         agent_id: ID of the agent
         root_run_id: ID of the root run
+        trace_id: W3C trace id (32-hex) from the OTel span context that
+            wrapped agent.run(). Optional — None when no OTel span is
+            active. RFC-0024: surfaced here so consumers (UI, tooling)
+            can wire trace links live without an out-of-band side channel
+            (NAC playground used to stamp this in the gateway tap).
     """
 
     agent_id: str
     # run_id is in base class
     root_run_id: str
+    trace_id: str | None = None
 
 
 class RunErrorEvent(AgUiRunErrorEvent):

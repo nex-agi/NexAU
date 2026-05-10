@@ -28,6 +28,11 @@ dependencies = [
   "nest_asyncio>=1.6.0", # Allow nested event loops for sync/async interop
   "transformers>=4.40,<5",
   "alembic>=1.18.4",
+  # RFC-0019 (PR #481): nexau/archs/permissions/helpers.py imports
+  # pathspec for gitignore-style path matching used by built-in tool
+  # permission helpers. Was missed when #481 landed; runtime fails
+  # at module-import time without it.
+  "pathspec>=0.12.0",
 ]
 description = "A general-purpose agent framework"
 name = "nexau"
