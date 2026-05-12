@@ -88,6 +88,7 @@ class LangfuseTracer(BaseTracer):
         trace_id: str | None = None,
         tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
+        version: str | None = None,
         debug: bool = False,
         enabled: bool = True,
     ):
@@ -102,6 +103,10 @@ class LangfuseTracer(BaseTracer):
             trace_id: Langfuse trace ID
             tags: Langfuse tags
             metadata: Langfuse metadata
+            version: Langfuse trace version (native trace field, shows as the
+                Langfuse "version" column — not a tag). Note: Langfuse v3 has no
+                per-trace ``release`` field on ``update_trace``; ``release`` is a
+                client-level setting (``LANGFUSE_RELEASE`` / ``Langfuse(release=...)``).
             debug: Enable debug logging
             enabled: Whether tracing is enabled (can be disabled for testing)
 
@@ -123,6 +128,7 @@ class LangfuseTracer(BaseTracer):
         self.user_id = user_id
         self.tags = tags
         self.metadata = metadata
+        self.version = version
         self.trace_id = trace_id
         # Store config passed at construction time; actual keys may be injected later via env.
         self._init_public_key = public_key
@@ -448,6 +454,10 @@ class LangfuseTracer(BaseTracer):
                     langfuse_span.update_trace(session_id=self.session_id)
                 if self.tags:
                     langfuse_span.update_trace(tags=self.tags)
+                # Native trace field — shows up as the Langfuse "version" column,
+                # not in the free-form tag list.
+                if self.version:
+                    langfuse_span.update_trace(version=self.version)
 
             # End the span (for timing)
             if hasattr(langfuse_span, "end"):

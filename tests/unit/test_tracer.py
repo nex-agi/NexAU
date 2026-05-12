@@ -523,6 +523,27 @@ def test_langfuse_tracer_end_span_updates_trace_fields_when_supported() -> None:
     ]
 
 
+def test_langfuse_tracer_end_span_forwards_version() -> None:
+    """`version` is a native Langfuse trace field (the "version" column), not a tag."""
+    tracer = LangfuseTracer(debug=True, version="v-abc")
+    span = tracer.start_span("root", SpanType.TOOL)
+    assert span.vendor_obj is not None
+
+    trace_vendor = DummyLangfuseObjectWithTrace()
+    span.vendor_obj = trace_vendor
+    tracer.end_span(span, outputs={"result": "ok"})
+
+    assert {"version": "v-abc"} in trace_vendor.update_trace_calls
+
+    # 未设置时不应产生空的 version 调用
+    tracer_none = LangfuseTracer(debug=True)
+    span2 = tracer_none.start_span("root", SpanType.TOOL)
+    trace_vendor2 = DummyLangfuseObjectWithTrace()
+    span2.vendor_obj = trace_vendor2
+    tracer_none.end_span(span2, outputs={"result": "ok"})
+    assert all("version" not in c for c in trace_vendor2.update_trace_calls)
+
+
 def test_langfuse_tracer_disabled_skips_client():
     tracer = LangfuseTracer(enabled=False)
     span = tracer.start_span("noop", SpanType.AGENT)
