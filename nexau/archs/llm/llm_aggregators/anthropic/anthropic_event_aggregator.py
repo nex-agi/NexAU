@@ -267,13 +267,28 @@ class AnthropicEventAggregator(Aggregator[RawMessageStreamEvent, AnthropicMessag
         return int(datetime.now().timestamp() * 1000)
 
     def _handle_message_start(self, event: RawMessageStartEvent) -> None:
-        self._message_id = event.message.id
+        message = cast(AnthropicMessage | None, event.message)
+        if message is None:
+            _logger.warning("Received Anthropic message_start with null message; using empty message metadata")
+            if not self._started:
+                self._started = True
+                self._on_event(
+                    TextMessageStartEvent(
+                        message_id=self._message_id,
+                        role="assistant",
+                        timestamp=self._ts(),
+                        run_id=self._run_id,
+                    )
+                )
+            return
+
+        self._message_id = message.id
         # Capture per-call metadata for ModelCallFinishedEvent (RFC-0023 §阶段 ②)
-        self._model_call_id = event.message.id
-        self._model_name = event.message.model
+        self._model_call_id = message.id
+        self._model_name = message.model
         # ``event.message.usage`` is the SDK ``Usage`` (non-Optional). Copy
         # so subsequent message_delta merges don't mutate the source object.
-        self._usage = event.message.usage.model_copy()
+        self._usage = message.usage.model_copy()
         if not self._started:
             self._started = True
             self._on_event(

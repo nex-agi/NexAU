@@ -68,6 +68,11 @@ def _make_message_start(message_id: str = "msg_01XYZ") -> RawMessageStartEvent:
     )
 
 
+def _make_null_message_start() -> RawMessageStartEvent:
+    """Helper to reproduce SDK construct_type accepting message=None."""
+    return RawMessageStartEvent.model_construct(type="message_start", message=None)
+
+
 def _make_text_block_start(index: int = 0) -> RawContentBlockStartEvent:
     return RawContentBlockStartEvent(
         type="content_block_start",
@@ -239,6 +244,41 @@ class TestTextMessageFlow:
 
         start_events = [e for e in events if isinstance(e, TextMessageStartEvent)]
         assert len(start_events) == 1
+
+    def test_null_message_start_falls_back_to_empty_metadata(self, caplog: pytest.LogCaptureFixture):
+        """Gateway pathology: message_start may carry message=None."""
+        events: list[object] = []
+        agg = AnthropicEventAggregator(on_event=events.append, run_id="run_null")
+
+        agg.aggregate(_make_null_message_start())
+        agg.aggregate(_make_text_delta(0, "still streams"))
+        agg.aggregate(_make_message_delta())
+        agg.aggregate(_make_message_stop())
+
+        types = [type(e).__name__ for e in events]
+        assert types == [
+            "TextMessageStartEvent",
+            "TextMessageContentEvent",
+            "TextMessageEndEvent",
+            "ModelCallFinishedEvent",
+        ]
+
+        start = events[0]
+        assert isinstance(start, TextMessageStartEvent)
+        assert start.message_id == ""
+        assert start.run_id == "run_null"
+
+        content = events[1]
+        assert isinstance(content, TextMessageContentEvent)
+        assert content.message_id == ""
+        assert content.delta == "still streams"
+
+        msg = agg.build()
+        assert msg.id == ""
+        assert msg.model == ""
+        assert msg.usage.input_tokens == 0
+        assert msg.usage.output_tokens == 42
+        assert "message_start with null message" in caplog.text
 
 
 class TestToolCallFlow:
