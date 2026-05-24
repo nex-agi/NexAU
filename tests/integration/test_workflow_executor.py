@@ -259,7 +259,8 @@ async def _run_subgraph_human_resume_uses_scoped_state_and_definition_snapshot(t
     parent_path = _write_subgraph_parent(tmp_path)
     workflow = WorkflowConfig.from_yaml(parent_path)
     store = WorkflowStore(InMemoryDatabaseEngine())
-    executor = WorkflowExecutor(workflow=workflow, store=store)
+    tracer = InMemoryTracer()
+    executor = WorkflowExecutor(workflow=workflow, store=store, tracer=tracer)
 
     waiting = await executor.run_async(inputs={"requirement": "checkout retry"}, run_id="wf_subgraph_review")
 
@@ -279,7 +280,7 @@ async def _run_subgraph_human_resume_uses_scoped_state_and_definition_snapshot(t
 
     _write_review_subgraph(tmp_path / "graphs" / "review_cases.workflow.yaml", version="v2")
     recovered_workflow = WorkflowConfig.from_yaml(parent_path)
-    recovered_executor = WorkflowExecutor(workflow=recovered_workflow, store=store)
+    recovered_executor = WorkflowExecutor(workflow=recovered_workflow, store=store, tracer=tracer)
     completed = await recovered_executor.resume_async(
         run_id="wf_subgraph_review",
         checkpoint_id=waiting.checkpoint_id,
@@ -304,6 +305,12 @@ async def _run_subgraph_human_resume_uses_scoped_state_and_definition_snapshot(t
     scoped_completed = {(event.node_id, event.scope_path) for event in events if event.event_type == "node_completed"}
     assert ("start", "review_cases/start") in scoped_completed
     assert ("finish", "review_cases/finish") in scoped_completed
+
+    subgraph_spans = [span for span in tracer.spans.values() if span.type == SpanType.WORKFLOW_SUBGRAPH]
+    assert len(subgraph_spans) == 2
+    waiting_subgraph_span = subgraph_spans[0]
+    assert waiting_subgraph_span.error is None
+    assert waiting_subgraph_span.outputs == {"status": "waiting"}
 
 
 def test_subgraph_inside_while_keeps_iteration_scopes(tmp_path: Path) -> None:

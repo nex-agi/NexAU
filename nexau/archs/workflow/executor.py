@@ -925,6 +925,7 @@ class WorkflowExecutor:
             payload=event_payload(graph_ref=node.graph, scope_prefix=subgraph_scope, **self._event_metadata(frame=child_frame)),
         )
 
+        output: JsonObject | None = None
         try:
             if self.tracer is None:
                 output = await self._execute_frame_until_boundary(
@@ -951,16 +952,24 @@ class WorkflowExecutor:
                         "workflow.depth": child_frame.depth,
                     },
                 )
+                paused_error: _WorkflowBoundaryPausedError | None = None
                 with trace_ctx:
-                    output = await self._execute_frame_until_boundary(
-                        run_id=run_id,
-                        frame=child_frame,
-                        folded=current_folded,
-                        session_manager=session_manager,
-                        user_id=user_id,
-                        session_id=session_id,
-                    )
-                    trace_ctx.set_outputs({"output": output})
+                    try:
+                        output = await self._execute_frame_until_boundary(
+                            run_id=run_id,
+                            frame=child_frame,
+                            folded=current_folded,
+                            session_manager=session_manager,
+                            user_id=user_id,
+                            session_id=session_id,
+                        )
+                    except _WorkflowBoundaryPausedError as exc:
+                        paused_error = exc
+                        trace_ctx.set_outputs({"status": exc.status.value})
+                    else:
+                        trace_ctx.set_outputs({"output": output})
+                if paused_error is not None:
+                    raise paused_error
         except _WorkflowBoundaryPausedError as exc:
             await self.store.append_event(
                 run_id=run_id,
@@ -984,6 +993,9 @@ class WorkflowExecutor:
                 ),
             )
             raise
+
+        if output is None:
+            raise WorkflowExecutionError(f"Subgraph {node.graph!r} did not produce output")
 
         final_folded = await self.store.fold(run_id)
         state_patch: JsonObject | None = None
