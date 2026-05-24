@@ -10,6 +10,7 @@ from nexau.archs.transports.http.config import HTTPConfig
 from nexau.archs.transports.http.models import AgentRequest, AgentResponse, StopRequest, StopResponse
 from nexau.archs.transports.http.sse_client import SSEClient
 from nexau.archs.transports.http.sse_server import SSETransportServer
+from nexau.archs.transports.http.workflow_routes import WorkflowRegistry, create_workflow_router
 
 __all__ = [
     "HTTPConfig",
@@ -19,4 +20,6 @@ __all__ = [
     "AgentResponse",
     "StopRequest",
     "StopResponse",
+    "WorkflowRegistry",
+    "create_workflow_router",
 ]

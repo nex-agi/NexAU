@@ -92,6 +92,10 @@ class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
     max_running_subagents: int = Field(default=5, ge=0)
     max_iterations: int = Field(default=100, ge=1)
     tool_call_mode: str = "structured"
+    output_schema: dict[str, Any] | None = None
+    output_mode: Literal["auto", "native", "complete_task", "json_block"] = "auto"
+    output_retries: int = Field(default=3, ge=0)
+    output_name: str | None = None
     retry_attempts: int = Field(default=5, ge=0)
     retry_backoff_max_seconds: int = Field(default=30, ge=1)
     timeout: int = Field(default=300, ge=1)

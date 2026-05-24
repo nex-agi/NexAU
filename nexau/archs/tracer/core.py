@@ -34,6 +34,8 @@ class SpanType(str, Enum):
     TOOL = "TOOL"
     LLM = "LLM"
     COMPACTION = "COMPACTION"
+    WORKFLOW = "WORKFLOW"
+    WORKFLOW_NODE = "WORKFLOW_NODE"
 
 
 @dataclass
