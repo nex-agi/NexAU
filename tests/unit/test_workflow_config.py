@@ -9,6 +9,7 @@ import pytest
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.config import AgentConfig
 from nexau.archs.workflow import WorkflowConfig
+from nexau.archs.workflow.types import json_object
 
 
 def _base_workflow() -> dict[str, object]:
@@ -145,7 +146,10 @@ def test_workflow_config_loads_external_subgraph(tmp_path: Path) -> None:
 
     assert config.nodes["call_child"].type == "subgraph"
     assert config.included_graphs["child_review"].name == "child_review"
-    assert config.definition_snapshot()["_included_graphs"]["child_review"]["name"] == "child_review"
+    snapshot = config.definition_snapshot()
+    included_graphs = json_object(snapshot["_included_graphs"], label="snapshot._included_graphs")
+    child_snapshot = json_object(included_graphs["child_review"], label="snapshot._included_graphs.child_review")
+    assert child_snapshot["name"] == "child_review"
 
 
 def test_workflow_config_rejects_unknown_subgraph_reference() -> None:

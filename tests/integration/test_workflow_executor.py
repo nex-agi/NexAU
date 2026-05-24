@@ -22,7 +22,7 @@ from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import Span, SpanType
 from nexau.archs.workflow import WorkflowConfig, WorkflowExecutor, WorkflowResumeError, WorkflowStore
 from nexau.archs.workflow.store import event_payload
-from nexau.archs.workflow.types import JsonObject
+from nexau.archs.workflow.types import JsonObject, json_object
 
 
 def _qa_workflow() -> WorkflowConfig:
@@ -275,7 +275,10 @@ async def _run_subgraph_human_resume_uses_scoped_state_and_definition_snapshot(t
 
     folded = await store.fold("wf_subgraph_review")
     assert "review" not in folded.node_outputs
-    assert folded.node_context("review_cases")["start"]["output"]["policy"] == "strict"
+    review_node_context = folded.node_context("review_cases")
+    start_context = json_object(review_node_context["start"], label="review_cases.start")
+    start_output = json_object(start_context["output"], label="review_cases.start.output")
+    assert start_output["policy"] == "strict"
     assert folded.scoped_state["review_cases"] == {"policy": "strict"}
 
     _write_review_subgraph(tmp_path / "graphs" / "review_cases.workflow.yaml", version="v2")
