@@ -5,10 +5,12 @@ RFC-0027: Agent Workflow 编排与结构化输出
 
 from nexau.archs.workflow.config import (
     DurableConfig,
+    GraphRef,
     RetryPolicy,
     WorkflowBranch,
     WorkflowConfig,
     WorkflowConfigError,
+    WorkflowGraphConfig,
     WorkflowIncludes,
     WorkflowInputSpec,
     WorkflowNode,
@@ -32,10 +34,12 @@ from nexau.archs.workflow.types import JsonArray, JsonObject, JsonValue
 
 __all__ = [
     "DurableConfig",
+    "GraphRef",
     "RetryPolicy",
     "WorkflowBranch",
     "WorkflowConfig",
     "WorkflowConfigError",
+    "WorkflowGraphConfig",
     "WorkflowIncludes",
     "WorkflowInputSpec",
     "WorkflowNode",

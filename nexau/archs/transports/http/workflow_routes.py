@@ -204,6 +204,10 @@ def create_workflow_router(registry: WorkflowRegistry) -> APIRouter:
                     "node_id": event.node_id,
                     "scope_path": event.scope_path,
                     "attempt": event.attempt,
+                    "graph_id": event.payload.get("graph_id"),
+                    "parent_node_id": event.payload.get("parent_node_id"),
+                    "subgraph": event.payload.get("subgraph"),
+                    "depth": event.payload.get("depth"),
                     "payload": event.payload,
                     "created_at": event.created_at.isoformat(),
                 }

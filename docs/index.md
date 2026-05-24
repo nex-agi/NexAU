@@ -37,3 +37,4 @@ NexAU is a general-purpose agent framework for building intelligent agents with 
     * **[Streaming Events](./advanced-guides/streaming-events.md)** ⚠️ *Experimental*: Incremental, provider-agnostic events (text deltas, tool calls, etc.) for streaming UIs.
     * **[Session Management](./advanced-guides/session-management.md)** ⚠️ *Experimental*: Stateful session persistence, agent tracking, and concurrency control.
     * **[Transport System](./advanced-guides/transports.md)** ⚠️ *Experimental*: Multi-protocol communication (HTTP/SSE, stdio today; WebSocket, gRPC may be added later).
+    * **[Workflows](./advanced-guides/workflows.md)** ⚠️ *Experimental*: Durable YAML workflows, human checkpoints, and external subgraphs.

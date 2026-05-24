@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from nexau.archs.llm.llm_config import LLMConfig
@@ -93,3 +95,111 @@ def test_agent_config_loads_structured_output_fields() -> None:
     assert config.output_mode == "json_block"
     assert config.output_retries == 2
     assert config.output_name == "agent_result"
+
+
+def test_workflow_config_loads_external_subgraph(tmp_path: Path) -> None:
+    child_path = tmp_path / "child.workflow.yaml"
+    child_path.write_text(
+        "\n".join(
+            [
+                "type: workflow",
+                'version: "1"',
+                "name: child_review",
+                "nodes:",
+                "  start:",
+                "    type: start",
+                "  finish:",
+                "    type: end",
+                "    output:",
+                "      ok: true",
+                "edges:",
+                "  start: finish",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    parent_path = tmp_path / "parent.workflow.yaml"
+    parent_path.write_text(
+        "\n".join(
+            [
+                "type: workflow",
+                'version: "1"',
+                "name: parent",
+                "includes:",
+                "  graphs:",
+                "    child_review: ./child.workflow.yaml",
+                "nodes:",
+                "  start:",
+                "    type: start",
+                "  call_child:",
+                "    type: subgraph",
+                "    graph: child_review",
+                "edges:",
+                "  start: call_child",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = WorkflowConfig.from_yaml(parent_path)
+
+    assert config.nodes["call_child"].type == "subgraph"
+    assert config.included_graphs["child_review"].name == "child_review"
+    assert config.definition_snapshot()["_included_graphs"]["child_review"]["name"] == "child_review"
+
+
+def test_workflow_config_rejects_unknown_subgraph_reference() -> None:
+    data = _base_workflow()
+    data["nodes"] = {
+        "start": {"type": "start"},
+        "call_child": {"type": "subgraph", "graph": "missing_child"},
+    }
+    data["edges"] = {"start": "call_child"}
+
+    with pytest.raises(ValueError, match="unknown includes.graphs"):
+        WorkflowConfig.model_validate(data)
+
+
+def test_workflow_config_rejects_recursive_graph_includes(tmp_path: Path) -> None:
+    parent_path = tmp_path / "parent.workflow.yaml"
+    child_path = tmp_path / "child.workflow.yaml"
+    parent_path.write_text(
+        "\n".join(
+            [
+                "type: workflow",
+                'version: "1"',
+                "name: parent",
+                "includes:",
+                "  graphs:",
+                "    child: ./child.workflow.yaml",
+                "nodes:",
+                "  start:",
+                "    type: start",
+                "  call_child:",
+                "    type: subgraph",
+                "    graph: child",
+                "edges:",
+                "  start: call_child",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    child_path.write_text(
+        "\n".join(
+            [
+                "type: workflow",
+                'version: "1"',
+                "name: child",
+                "includes:",
+                "  graphs:",
+                "    parent: ./parent.workflow.yaml",
+                "nodes:",
+                "  start:",
+                "    type: start",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="recursion"):
+        WorkflowConfig.from_yaml(parent_path)

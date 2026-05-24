@@ -23,6 +23,8 @@ includes:
   agents:
     qa_planner: ./agents/qa_planner.yaml
     qa_runner: ./agents/qa_runner.yaml
+  graphs:
+    human_case_review: ./graphs/human_case_review.workflow.yaml
 
 nodes:
   start:
@@ -71,11 +73,12 @@ nodes:
         - cases
 
   review_cases:
-    type: human
-    prompt: Review the generated QA cases before execution.
+    type: subgraph
+    graph: human_case_review
     input:
       requirement: "{{ nodes.start.output.requirement }}"
       cases: "{{ nodes.generate_cases.output.cases }}"
+      reviewer_hint: Review the generated QA cases before execution.
     output_schema:
       type: object
       additionalProperties: false
@@ -87,9 +90,12 @@ nodes:
           minItems: 1
           items:
             type: object
+        review_note:
+          type: string
       required:
         - approved
         - cases
+        - review_note
 
   route_review:
     type: if_else
@@ -145,6 +151,7 @@ nodes:
     output:
       status: completed
       requirement: "{{ nodes.start.output.requirement }}"
+      review_note: "{{ nodes.review_cases.output.review_note }}"
       result_count: "{{ state.results.size() }}"
       results: "{{ state.results }}"
 
@@ -157,6 +164,7 @@ nodes:
     output:
       status: rejected
       requirement: "{{ nodes.start.output.requirement }}"
+      review_note: "{{ nodes.review_cases.output.review_note }}"
       result_count: 0
       cases: "{{ nodes.review_cases.output.cases }}"
       results: []

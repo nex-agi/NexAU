@@ -116,6 +116,438 @@ def _qa_workflow() -> WorkflowConfig:
     )
 
 
+def _write_subgraph_parent(tmp_path: Path) -> Path:
+    graph_dir = tmp_path / "graphs"
+    graph_dir.mkdir()
+    _write_review_subgraph(graph_dir / "review_cases.workflow.yaml", version="v1")
+    parent_path = tmp_path / "qa_subgraph.workflow.yaml"
+    parent_path.write_text(
+        "\n".join(
+            [
+                "type: workflow",
+                'version: "1"',
+                "name: qa_subgraph",
+                "durable:",
+                "  mode: node_boundary",
+                "  default_retry_policy:",
+                "    max_attempts: 2",
+                "includes:",
+                "  graphs:",
+                "    review_cases_graph: ./graphs/review_cases.workflow.yaml",
+                "nodes:",
+                "  start:",
+                "    type: start",
+                "    output:",
+                '      requirement: "{{ inputs.requirement }}"',
+                "      cases:",
+                "        - id: C001",
+                "          title: checkout",
+                "        - id: C002",
+                "          title: retry",
+                "  remember_policy:",
+                "    type: set_state",
+                "    update:",
+                "      reviewer_policy: strict",
+                "  review_cases:",
+                "    type: subgraph",
+                "    graph: review_cases_graph",
+                "    input:",
+                '      cases: "{{ nodes.start.output.cases }}"',
+                '      reviewer_hint: "QA lead review"',
+                "    state_in:",
+                '      policy: "{{ state.reviewer_policy }}"',
+                "    state_out:",
+                '      reviewed_case_count: "{{ nodes.finish.output.cases.length }}"',
+                '      review_policy_seen: "{{ state.policy }}"',
+                "    output_schema:",
+                "      type: object",
+                "      properties:",
+                "        approved:",
+                "          type: boolean",
+                "        cases:",
+                "          type: array",
+                "        policy:",
+                "          type: string",
+                "        version:",
+                "          type: string",
+                "      required: [approved, cases, policy, version]",
+                "  summarize:",
+                "    type: end",
+                "    output:",
+                '      approved: "{{ nodes.review_cases.output.approved }}"',
+                '      case_count: "{{ state.reviewed_case_count }}"',
+                '      policy: "{{ nodes.review_cases.output.policy }}"',
+                '      version: "{{ nodes.review_cases.output.version }}"',
+                "edges:",
+                "  start: remember_policy",
+                "  remember_policy: review_cases",
+                "  review_cases: summarize",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return parent_path
+
+
+def _write_review_subgraph(path: Path, *, version: str) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "type: workflow",
+                'version: "1"',
+                "name: review_cases_graph",
+                "description: Review generated QA cases inside a reusable child graph.",
+                "inputs:",
+                "  cases:",
+                "    type: array",
+                "  reviewer_hint:",
+                "    type: string",
+                "output_schema:",
+                "  type: object",
+                "  properties:",
+                "    approved:",
+                "      type: boolean",
+                "    cases:",
+                "      type: array",
+                "    policy:",
+                "      type: string",
+                "    version:",
+                "      type: string",
+                "  required: [approved, cases, policy, version]",
+                "nodes:",
+                "  start:",
+                "    type: start",
+                "    output:",
+                '      cases: "{{ inputs.cases }}"',
+                '      reviewer_hint: "{{ inputs.reviewer_hint }}"',
+                '      policy: "{{ state.policy }}"',
+                "  review:",
+                "    type: human",
+                '    prompt: "{{ nodes.start.output.reviewer_hint }}"',
+                "    input:",
+                '      cases: "{{ nodes.start.output.cases }}"',
+                '      policy: "{{ nodes.start.output.policy }}"',
+                "    output_schema:",
+                "      type: object",
+                "      properties:",
+                "        approved:",
+                "          type: boolean",
+                "        cases:",
+                "          type: array",
+                "      required: [approved, cases]",
+                "  finish:",
+                "    type: end",
+                "    output:",
+                '      approved: "{{ nodes.review.output.approved }}"',
+                '      cases: "{{ nodes.review.output.cases }}"',
+                '      policy: "{{ nodes.start.output.policy }}"',
+                f"      version: {version}",
+                "edges:",
+                "  start: review",
+                "  review: finish",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_subgraph_human_resume_uses_scoped_state_and_definition_snapshot(tmp_path: Path) -> None:
+    asyncio.run(_run_subgraph_human_resume_uses_scoped_state_and_definition_snapshot(tmp_path))
+
+
+async def _run_subgraph_human_resume_uses_scoped_state_and_definition_snapshot(tmp_path: Path) -> None:
+    parent_path = _write_subgraph_parent(tmp_path)
+    workflow = WorkflowConfig.from_yaml(parent_path)
+    store = WorkflowStore(InMemoryDatabaseEngine())
+    executor = WorkflowExecutor(workflow=workflow, store=store)
+
+    waiting = await executor.run_async(inputs={"requirement": "checkout retry"}, run_id="wf_subgraph_review")
+
+    assert waiting.status.value == "waiting"
+    assert waiting.checkpoint_id is not None
+    checkpoint = await store.get_checkpoint(waiting.checkpoint_id)
+    assert checkpoint is not None
+    assert checkpoint.node_id == "review"
+    assert checkpoint.scope_path == "review_cases/review"
+    assert checkpoint.prompt == "QA lead review"
+    assert checkpoint.input["policy"] == "strict"
+
+    folded = await store.fold("wf_subgraph_review")
+    assert "review" not in folded.node_outputs
+    assert folded.node_context("review_cases")["start"]["output"]["policy"] == "strict"
+    assert folded.scoped_state["review_cases"] == {"policy": "strict"}
+
+    _write_review_subgraph(tmp_path / "graphs" / "review_cases.workflow.yaml", version="v2")
+    recovered_workflow = WorkflowConfig.from_yaml(parent_path)
+    recovered_executor = WorkflowExecutor(workflow=recovered_workflow, store=store)
+    completed = await recovered_executor.resume_async(
+        run_id="wf_subgraph_review",
+        checkpoint_id=waiting.checkpoint_id,
+        output={
+            "approved": True,
+            "cases": [
+                {"id": "C001", "title": "checkout"},
+                {"id": "C002", "title": "retry"},
+            ],
+        },
+    )
+
+    assert completed.status.value == "completed"
+    assert completed.output == {"approved": True, "case_count": 2, "policy": "strict", "version": "v1"}
+    assert completed.state == {"reviewer_policy": "strict", "reviewed_case_count": 2, "review_policy_seen": "strict"}
+
+    events = await store.list_events("wf_subgraph_review")
+    event_types = [event.event_type for event in events]
+    assert "subgraph_started" in event_types
+    assert "subgraph_waiting" in event_types
+    assert "subgraph_completed" in event_types
+    scoped_completed = {(event.node_id, event.scope_path) for event in events if event.event_type == "node_completed"}
+    assert ("start", "review_cases/start") in scoped_completed
+    assert ("finish", "review_cases/finish") in scoped_completed
+
+
+def test_subgraph_inside_while_keeps_iteration_scopes(tmp_path: Path) -> None:
+    asyncio.run(_run_subgraph_inside_while_keeps_iteration_scopes(tmp_path))
+
+
+async def _run_subgraph_inside_while_keeps_iteration_scopes(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphs"
+    graph_dir.mkdir()
+    child_path = graph_dir / "process_item.workflow.yaml"
+    child_path.write_text(
+        "\n".join(
+            [
+                "type: workflow",
+                'version: "1"',
+                "name: process_item",
+                "inputs:",
+                "  items:",
+                "    type: array",
+                "  results:",
+                "    type: array",
+                "nodes:",
+                "  start:",
+                "    type: start",
+                "    output:",
+                '      current: "{{ inputs.items[0] }}"',
+                '      remaining: "{{ inputs.items[1:] }}"',
+                '      results: "{{ inputs.results }}"',
+                "  finish:",
+                "    type: end",
+                "    output:",
+                '      remaining: "{{ nodes.start.output.remaining }}"',
+                '      results: "{{ nodes.start.output.results + [nodes.start.output.current] }}"',
+                "edges:",
+                "  start: finish",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    parent_path = tmp_path / "while_subgraph.workflow.yaml"
+    parent_path.write_text(
+        "\n".join(
+            [
+                "type: workflow",
+                'version: "1"',
+                "name: while_subgraph",
+                "includes:",
+                "  graphs:",
+                "    process_item: ./graphs/process_item.workflow.yaml",
+                "nodes:",
+                "  start:",
+                "    type: start",
+                "    output:",
+                '      items: "{{ inputs.items }}"',
+                "  process_all:",
+                "    type: while",
+                "    condition: state.remaining.length > 0",
+                "    max_iterations: 5",
+                '    scope_key: "{{ state.remaining[0] }}"',
+                "    body: process_one",
+                "    init:",
+                '      remaining: "{{ nodes.start.output.items }}"',
+                "      results: []",
+                "  process_one:",
+                "    type: subgraph",
+                "    graph: process_item",
+                "    input:",
+                '      items: "{{ state.remaining }}"',
+                '      results: "{{ state.results }}"',
+                "    state_out:",
+                '      remaining: "{{ nodes.finish.output.remaining }}"',
+                '      results: "{{ nodes.finish.output.results }}"',
+                "  finish:",
+                "    type: end",
+                "    output:",
+                '      results: "{{ state.results }}"',
+                "edges:",
+                "  start: process_all",
+                "  process_all: finish",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    store = WorkflowStore(InMemoryDatabaseEngine())
+    executor = WorkflowExecutor(workflow=WorkflowConfig.from_yaml(parent_path), store=store)
+    result = await executor.run_async(inputs={"items": ["A", "B"]}, run_id="wf_while_subgraph")
+
+    assert result.status.value == "completed"
+    assert result.output == {"results": ["A", "B"]}
+    events = await store.list_events("wf_while_subgraph")
+    completed_scopes = {event.scope_path for event in events if event.event_type == "node_completed"}
+    assert "process_all[A]/process_one/start" in completed_scopes
+    assert "process_all[B]/process_one/start" in completed_scopes
+
+
+def test_subgraph_internal_external_write_reconcile(tmp_path: Path) -> None:
+    asyncio.run(_run_subgraph_internal_external_write_reconcile(tmp_path))
+
+
+async def _run_subgraph_internal_external_write_reconcile(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphs"
+    graph_dir.mkdir()
+    child_path = graph_dir / "send.workflow.yaml"
+    child_path.write_text(
+        "\n".join(
+            [
+                "type: workflow",
+                'version: "1"',
+                "name: send_graph",
+                "nodes:",
+                "  start:",
+                "    type: start",
+                "    output:",
+                '      value: "{{ inputs.value }}"',
+                "  send:",
+                "    type: tool",
+                "    tool: send_tool",
+                "    side_effect: external_write",
+                '    idempotency_key: "{{ run.id }}:{{ node.scope_path }}"',
+                "    input:",
+                '      value: "{{ nodes.start.output.value }}"',
+                "  finish:",
+                "    type: end",
+                "    output:",
+                '      sent: "{{ nodes.send.output.sent }}"',
+                "edges:",
+                "  start: send",
+                "  send: finish",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    parent_path = tmp_path / "parent.workflow.yaml"
+    parent_path.write_text(
+        "\n".join(
+            [
+                "type: workflow",
+                'version: "1"',
+                "name: subgraph_uncertain",
+                "durable:",
+                "  mode: node_boundary",
+                "  default_retry_policy:",
+                "    max_attempts: 1",
+                "    on_uncertain: human_review",
+                "includes:",
+                "  graphs:",
+                "    send_graph: ./graphs/send.workflow.yaml",
+                "nodes:",
+                "  start:",
+                "    type: start",
+                "    output:",
+                '      value: "{{ inputs.value }}"',
+                "  call_send:",
+                "    type: subgraph",
+                "    graph: send_graph",
+                "    input:",
+                '      value: "{{ nodes.start.output.value }}"',
+                "  finish:",
+                "    type: end",
+                "    output:",
+                '      sent: "{{ nodes.call_send.output.sent }}"',
+                "edges:",
+                "  start: call_send",
+                "  call_send: finish",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    workflow = WorkflowConfig.from_yaml(parent_path)
+    store = WorkflowStore(InMemoryDatabaseEngine())
+    snapshot = workflow.definition_snapshot()
+    await store.create_run(
+        run_id="wf_subgraph_uncertain",
+        workflow_name=workflow.name,
+        inputs={"value": "ok"},
+        definition_snapshot=snapshot,
+    )
+    await store.append_event(
+        run_id="wf_subgraph_uncertain",
+        event_type="workflow_run_started",
+        payload=event_payload(inputs={"value": "ok"}, definition_snapshot=snapshot),
+    )
+    await store.append_event(
+        run_id="wf_subgraph_uncertain",
+        event_type="node_completed",
+        node_id="start",
+        payload=event_payload(output={"value": "ok"}),
+    )
+    await store.append_event(
+        run_id="wf_subgraph_uncertain",
+        event_type="node_started",
+        node_id="call_send",
+        payload=event_payload(input={"value": "ok"}),
+    )
+    await store.upsert_node_run(
+        run_id="wf_subgraph_uncertain",
+        node_id="call_send",
+        scope_path="",
+        status=WorkflowNodeStatus.RUNNING,
+        attempt=1,
+        node_input={"value": "ok"},
+    )
+    await store.append_event(
+        run_id="wf_subgraph_uncertain",
+        event_type="node_completed",
+        node_id="start",
+        scope_path="call_send/start",
+        payload=event_payload(output={"value": "ok"}),
+    )
+    await store.append_event(
+        run_id="wf_subgraph_uncertain",
+        event_type="node_started",
+        node_id="send",
+        scope_path="call_send/send",
+        attempt=1,
+        payload=event_payload(input={"value": "ok"}),
+    )
+    await store.upsert_node_run(
+        run_id="wf_subgraph_uncertain",
+        node_id="send",
+        scope_path="call_send/send",
+        status=WorkflowNodeStatus.RUNNING,
+        attempt=1,
+        node_input={"value": "ok"},
+        lease_expires_at=datetime.now() - timedelta(seconds=10),
+    )
+
+    executor = WorkflowExecutor(workflow=workflow, store=store)
+    uncertain = await executor.run_async(inputs={"value": "ok"}, run_id="wf_subgraph_uncertain")
+
+    assert uncertain.status.value == "uncertain"
+    reconciled = await executor.reconcile_async(
+        run_id="wf_subgraph_uncertain",
+        node_id="send",
+        scope_path="call_send/send",
+        decision="completed",
+        output={"sent": True},
+    )
+
+    assert reconciled.status.value == "completed"
+    assert reconciled.output == {"sent": True}
+
+
 def test_full_qa_workflow_human_resume_durable_recovery() -> None:
     asyncio.run(_run_full_qa_workflow_human_resume_durable_recovery())
 

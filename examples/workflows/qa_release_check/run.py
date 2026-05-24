@@ -201,6 +201,10 @@ async def run_workflow(args: argparse.Namespace) -> None:
         print("included agents:")
         for agent_name, agent_path in workflow.includes.agents.items():
             print(f"  - {agent_name}: {agent_path}")
+        print("included graphs:")
+        for graph_name, graph_path in workflow.includes.graphs.items():
+            graph = workflow.included_graphs[graph_name]
+            print(f"  - {graph_name}: {graph_path} ({len(graph.nodes)} nodes)")
         return
 
     tracer = build_langfuse_tracer(args)
@@ -242,6 +246,7 @@ async def run_workflow(args: argparse.Namespace) -> None:
 
         if checkpoint is not None:
             print(f"checkpoint: {checkpoint.checkpoint_id}")
+            print(f"checkpoint scope: {checkpoint.scope_path}")
             print(f"prompt: {checkpoint.prompt}")
             print("review input:")
             print(dump_json(checkpoint.input))
@@ -249,6 +254,7 @@ async def run_workflow(args: argparse.Namespace) -> None:
         review_output: JsonObject = {
             "approved": not args.reject,
             "cases": json_value(cases),
+            "review_note": "Auto-approved by the example runner." if not args.reject else "Rejected by the example runner.",
         }
 
         print("resuming checkpoint with:")
@@ -264,10 +270,14 @@ async def run_workflow(args: argparse.Namespace) -> None:
         )
 
         events = await store.list_events(run_id)
+        subgraph_events = [event for event in events if event.event_type.startswith("subgraph_")]
         print(f"final status: {completed.status.value}")
         print("final output:")
         print(dump_json(completed.output))
         print(f"event count: {len(events)}")
+        print("subgraph events:")
+        for event in subgraph_events:
+            print(f"  - {event.event_type}: node={event.node_id}, scope={event.scope_path}, graph={event.payload.get('graph_id')}")
     finally:
         close_tracer(tracer)
 

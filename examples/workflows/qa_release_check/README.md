@@ -1,13 +1,14 @@
 # QA Release Check Workflow
 
-这个例子演示如何把多个 Agent 串成一个真实 Workflow：Planner Agent 先根据需求生成 QA 测试用例，Workflow 暂停到人工审核节点，脚本模拟人工批准后 resume，Runner Agent 再逐条执行测试用例并汇总结果。
+这个例子演示如何把多个 Agent 和一个可复用子图串成真实 Workflow：父图中的 Planner Agent 先根据需求生成 QA 测试用例，然后通过 `type: subgraph` 调用 `graphs/human_case_review.workflow.yaml`。子图内部暂停到人工审核节点，脚本模拟人工批准后 resume，父图再让 Runner Agent 逐条执行测试用例并汇总结果。
 
 ## 文件结构
 
-- `qa_release.workflow.yaml`: Workflow 定义，包含 `start`、`agent`、`human`、`if_else`、`while`、`transform`、`end` 节点。
+- `qa_release.workflow.yaml`: 父 Workflow 定义，包含 `start`、`agent`、`subgraph`、`if_else`、`while`、`transform`、`end` 节点。
+- `graphs/human_case_review.workflow.yaml`: 独立子图文件，包含 human checkpoint 和明确的 output contract。
 - `agents/qa_planner.yaml`: 生成测试用例的 Agent。
 - `agents/qa_runner.yaml`: 执行单个测试用例并返回结构化结果的 Agent。
-- `run.py`: 从 YAML 加载 Workflow，启动运行，读取 human checkpoint，再用审核结果恢复执行。
+- `run.py`: 从 YAML 加载父图和子图，启动运行，读取子图内部 human checkpoint，再用审核结果恢复执行。
 
 ## 准备环境
 
@@ -86,15 +87,33 @@ includes:
     qa_runner: ./agents/qa_runner.yaml
 ```
 
-Human 节点会把 run 状态变成 `waiting`，并返回 `checkpoint_id`。业务系统保存这个 ID，用户审核后调用 `resume_async(...)` 继续执行：
+父图通过 `includes.graphs` 引用独立子图文件，再用 `type: subgraph` 把它当作一个节点调用：
+
+```yaml
+includes:
+  graphs:
+    human_case_review: ./graphs/human_case_review.workflow.yaml
+
+nodes:
+  review_cases:
+    type: subgraph
+    graph: human_case_review
+    input:
+      requirement: "{{ nodes.start.output.requirement }}"
+      cases: "{{ nodes.generate_cases.output.cases }}"
+```
+
+子图内部的 Human 节点会把整个 run 状态变成 `waiting`，checkpoint 的 `scope_path` 类似 `review_cases/review`。业务系统保存这个 ID，用户审核后调用 `resume_async(...)` 继续执行：
 
 ```python
 completed = await executor.resume_async(
     run_id=waiting.run_id,
     checkpoint_id=waiting.checkpoint_id,
-    output={"approved": True, "cases": reviewed_cases},
+    output={"approved": True, "cases": reviewed_cases, "review_note": "Approved."},
 )
 ```
+
+子图的输出会作为父图 `review_cases` 节点的输出暴露，后续节点只读取 `nodes.review_cases.output`，不能隐式读取子图内部的 `nodes.review`。
 
 `while` 节点用 CEL 表达式控制循环，用 `update` 把每次 Agent 输出追加到 durable state：
 

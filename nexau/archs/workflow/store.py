@@ -39,6 +39,22 @@ def _empty_node_status() -> dict[str, str]:
     return {}
 
 
+def _empty_scoped_state() -> dict[str, JsonObject]:
+    return {}
+
+
+def _empty_node_scope_paths() -> dict[str, str]:
+    return {}
+
+
+def _empty_node_ids() -> dict[str, str]:
+    return {}
+
+
+def _empty_completed_node_order() -> list[str]:
+    return []
+
+
 def _empty_string_set() -> set[str]:
     return set()
 
@@ -56,6 +72,19 @@ def event_payload(**items: JsonValue) -> JsonObject:
     return dict(items)
 
 
+def _payload_state_scope(payload: JsonObject) -> str:
+    raw_scope = payload.get("state_scope_path", "")
+    return raw_scope if isinstance(raw_scope, str) else ""
+
+
+def _apply_state_patch(folded: FoldedWorkflowState, *, patch: JsonObject, state_scope_path: str) -> None:
+    if state_scope_path == "":
+        folded.state = merge_json_objects(folded.state, patch)
+        return
+    existing = folded.scoped_state.get(state_scope_path, {})
+    folded.scoped_state[state_scope_path] = merge_json_objects(existing, patch)
+
+
 @dataclass
 class FoldedWorkflowState:
     """State derived by folding the workflow event log."""
@@ -67,6 +96,13 @@ class FoldedWorkflowState:
     output: JsonObject | None = None
     node_outputs: dict[str, JsonObject] = field(default_factory=_empty_node_outputs)
     node_status: dict[str, str] = field(default_factory=_empty_node_status)
+    scoped_state: dict[str, JsonObject] = field(default_factory=_empty_scoped_state)
+    node_inputs_by_key: dict[str, JsonObject] = field(default_factory=_empty_node_outputs)
+    node_outputs_by_key: dict[str, JsonObject] = field(default_factory=_empty_node_outputs)
+    node_status_by_key: dict[str, str] = field(default_factory=_empty_node_status)
+    node_scope_paths_by_key: dict[str, str] = field(default_factory=_empty_node_scope_paths)
+    node_ids_by_key: dict[str, str] = field(default_factory=_empty_node_ids)
+    completed_node_order: list[str] = field(default_factory=_empty_completed_node_order)
     completed_node_runs: set[str] = field(default_factory=_empty_string_set)
     failed_node_runs: set[str] = field(default_factory=_empty_string_set)
     uncertain_node_runs: set[str] = field(default_factory=_empty_string_set)
@@ -76,17 +112,53 @@ class FoldedWorkflowState:
     last_completed_node_id: str | None = None
     last_completed_scope_path: str = ""
 
-    def node_context(self) -> JsonObject:
+    def node_context(self, scope_prefix: str = "") -> JsonObject:
         """Return the ``nodes`` expression context."""
 
         result: JsonObject = {}
-        for node_id, status in self.node_status.items():
+        for key, status in self.node_status_by_key.items():
+            node_id = self.node_ids_by_key.get(key)
+            scope_path = self.node_scope_paths_by_key.get(key)
+            if node_id is None or scope_path is None:
+                continue
+            if not self._is_top_level_node_scope(scope_prefix, node_id, scope_path):
+                continue
             node_entry: JsonObject = {"status": status}
-            output = self.node_outputs.get(node_id)
+            output = self.node_outputs_by_key.get(key)
             if output is not None:
                 node_entry["output"] = output
             result[node_id] = node_entry
         return result
+
+    def state_for_scope(self, state_scope_path: str) -> JsonObject:
+        """Return the durable state object for a graph frame."""
+
+        if state_scope_path == "":
+            return self.state
+        return self.scoped_state.get(state_scope_path, {})
+
+    def output_for_node(self, run_id: str, node_id: str, scope_path: str) -> JsonObject | None:
+        """Return a scoped node output when present."""
+
+        return self.node_outputs_by_key.get(node_run_key(run_id, node_id, scope_path))
+
+    def last_completed_node_id_for_scope(self, scope_prefix: str, candidate_node_ids: set[str]) -> str | None:
+        """Return the last completed top-level node inside a graph frame."""
+
+        for key in reversed(self.completed_node_order):
+            node_id = self.node_ids_by_key.get(key)
+            scope_path = self.node_scope_paths_by_key.get(key)
+            if node_id is None or scope_path is None or node_id not in candidate_node_ids:
+                continue
+            if self._is_top_level_node_scope(scope_prefix, node_id, scope_path):
+                return node_id
+        return None
+
+    @staticmethod
+    def _is_top_level_node_scope(scope_prefix: str, node_id: str, scope_path: str) -> bool:
+        if scope_prefix == "":
+            return scope_path == ""
+        return scope_path == f"{scope_prefix}/{node_id}"
 
 
 class WorkflowStore:
@@ -206,42 +278,78 @@ class WorkflowStore:
                     folded.inputs = json_object(raw_inputs, label="workflow_run_started.inputs")
                 case "node_scheduled":
                     if event.node_id is not None:
-                        folded.node_status[event.node_id] = WorkflowNodeStatus.SCHEDULED.value
+                        key = node_run_key(run_id, event.node_id, event.scope_path)
+                        folded.node_status_by_key[key] = WorkflowNodeStatus.SCHEDULED.value
+                        folded.node_scope_paths_by_key[key] = event.scope_path
+                        folded.node_ids_by_key[key] = event.node_id
+                        if event.scope_path == "":
+                            folded.node_status[event.node_id] = WorkflowNodeStatus.SCHEDULED.value
                 case "node_started":
                     if event.node_id is not None:
-                        folded.node_status[event.node_id] = WorkflowNodeStatus.RUNNING.value
+                        key = node_run_key(run_id, event.node_id, event.scope_path)
+                        folded.node_status_by_key[key] = WorkflowNodeStatus.RUNNING.value
+                        folded.node_scope_paths_by_key[key] = event.scope_path
+                        folded.node_ids_by_key[key] = event.node_id
+                        raw_input = payload.get("input")
+                        if raw_input is not None:
+                            folded.node_inputs_by_key[key] = json_object(raw_input, label="node_started.input")
+                        if event.scope_path == "":
+                            folded.node_status[event.node_id] = WorkflowNodeStatus.RUNNING.value
                 case "node_completed":
                     if event.node_id is not None:
                         key = node_run_key(run_id, event.node_id, event.scope_path)
                         folded.completed_node_runs.add(key)
                         folded.failed_node_runs.discard(key)
                         folded.uncertain_node_runs.discard(key)
-                        folded.node_status[event.node_id] = WorkflowNodeStatus.COMPLETED.value
+                        folded.node_status_by_key[key] = WorkflowNodeStatus.COMPLETED.value
+                        folded.node_scope_paths_by_key[key] = event.scope_path
+                        folded.node_ids_by_key[key] = event.node_id
                         if folded.status in {WorkflowRunStatus.FAILED, WorkflowRunStatus.UNCERTAIN}:
                             folded.status = WorkflowRunStatus.RUNNING
                         raw_output = payload.get("output", {})
                         output = json_object(raw_output, label="node_completed.output")
-                        folded.node_outputs[event.node_id] = output
+                        folded.node_outputs_by_key[key] = output
                         raw_patch = payload.get("state_patch")
                         if raw_patch is not None:
-                            folded.state = merge_json_objects(folded.state, json_object(raw_patch, label="node_completed.state_patch"))
-                        folded.last_completed_node_id = event.node_id
-                        folded.last_completed_scope_path = event.scope_path
+                            _apply_state_patch(
+                                folded,
+                                patch=json_object(raw_patch, label="node_completed.state_patch"),
+                                state_scope_path=_payload_state_scope(payload),
+                            )
+                        folded.completed_node_order.append(key)
+                        if event.scope_path == "":
+                            folded.node_status[event.node_id] = WorkflowNodeStatus.COMPLETED.value
+                            folded.node_outputs[event.node_id] = output
+                            folded.last_completed_node_id = event.node_id
+                            folded.last_completed_scope_path = event.scope_path
                 case "node_failed":
                     if event.node_id is not None:
                         key = node_run_key(run_id, event.node_id, event.scope_path)
                         folded.failed_node_runs.add(key)
-                        folded.node_status[event.node_id] = WorkflowNodeStatus.FAILED.value
+                        folded.node_status_by_key[key] = WorkflowNodeStatus.FAILED.value
+                        folded.node_scope_paths_by_key[key] = event.scope_path
+                        folded.node_ids_by_key[key] = event.node_id
+                        if event.scope_path == "":
+                            folded.node_status[event.node_id] = WorkflowNodeStatus.FAILED.value
                         folded.status = WorkflowRunStatus.FAILED
                 case "node_retry_scheduled":
                     if event.node_id is not None:
-                        folded.node_status[event.node_id] = WorkflowNodeStatus.SCHEDULED.value
+                        key = node_run_key(run_id, event.node_id, event.scope_path)
+                        folded.node_status_by_key[key] = WorkflowNodeStatus.SCHEDULED.value
+                        folded.node_scope_paths_by_key[key] = event.scope_path
+                        folded.node_ids_by_key[key] = event.node_id
+                        if event.scope_path == "":
+                            folded.node_status[event.node_id] = WorkflowNodeStatus.SCHEDULED.value
                         folded.status = WorkflowRunStatus.RUNNING
                 case "node_uncertain":
                     if event.node_id is not None:
                         key = node_run_key(run_id, event.node_id, event.scope_path)
                         folded.uncertain_node_runs.add(key)
-                        folded.node_status[event.node_id] = WorkflowNodeStatus.UNCERTAIN.value
+                        folded.node_status_by_key[key] = WorkflowNodeStatus.UNCERTAIN.value
+                        folded.node_scope_paths_by_key[key] = event.scope_path
+                        folded.node_ids_by_key[key] = event.node_id
+                        if event.scope_path == "":
+                            folded.node_status[event.node_id] = WorkflowNodeStatus.UNCERTAIN.value
                         folded.status = WorkflowRunStatus.UNCERTAIN
                 case "checkpoint_created":
                     checkpoint_id = str(payload.get("checkpoint_id", ""))
@@ -251,7 +359,12 @@ class WorkflowStore:
                     folded.waiting_node_id = event.node_id
                     folded.waiting_scope_path = event.scope_path
                     if event.node_id is not None:
-                        folded.node_status[event.node_id] = WorkflowNodeStatus.WAITING.value
+                        key = node_run_key(run_id, event.node_id, event.scope_path)
+                        folded.node_status_by_key[key] = WorkflowNodeStatus.WAITING.value
+                        folded.node_scope_paths_by_key[key] = event.scope_path
+                        folded.node_ids_by_key[key] = event.node_id
+                        if event.scope_path == "":
+                            folded.node_status[event.node_id] = WorkflowNodeStatus.WAITING.value
                 case "checkpoint_resumed":
                     checkpoint_id = str(payload.get("checkpoint_id", ""))
                     checkpoints[checkpoint_id] = WorkflowCheckpointStatus.RESUMED.value
@@ -262,7 +375,11 @@ class WorkflowStore:
                     folded.status = WorkflowRunStatus.RUNNING
                 case "state_patched":
                     raw_patch = payload.get("patch", {})
-                    folded.state = merge_json_objects(folded.state, json_object(raw_patch, label="state_patched.patch"))
+                    _apply_state_patch(
+                        folded,
+                        patch=json_object(raw_patch, label="state_patched.patch"),
+                        state_scope_path=_payload_state_scope(payload),
+                    )
                 case "workflow_run_completed":
                     raw_output = payload.get("output", {})
                     folded.output = json_object(raw_output, label="workflow_run_completed.output")
