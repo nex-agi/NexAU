@@ -55,7 +55,7 @@ def _start_http_server_subprocess(port: int) -> subprocess.Popen:
 def _wait_for_health(base_url: str, timeout_sec: float = 30.0) -> None:
     for _ in range(int(timeout_sec / 0.2) + 1):
         try:
-            r = httpx.get(f"{base_url}/health", timeout=1.0)
+            r = httpx.get(f"{base_url}/health", timeout=1.0, trust_env=False)
             if r.status_code == 200:
                 return
         except Exception:
@@ -89,6 +89,7 @@ class TestConcurrentRequests:
                     f"{base}/query",
                     json={"messages": "Say hello briefly", "user_id": user_id},
                     timeout=90.0,
+                    trust_env=False,
                 )
                 return {"status": response.status_code, "user_id": user_id}
 
@@ -114,7 +115,7 @@ class TestConcurrentRequests:
             _wait_for_health(base)
 
             def stream_request(user_id: str) -> dict:
-                with httpx.Client(timeout=90.0) as client:
+                with httpx.Client(timeout=90.0, trust_env=False) as client:
                     with client.stream(
                         "POST",
                         f"{base}/stream",
@@ -158,6 +159,7 @@ class TestSessionIsolationHttp:
                     "session_id": "session_a",
                 },
                 timeout=90.0,
+                trust_env=False,
             )
             assert response1.status_code == 200
 
@@ -170,6 +172,7 @@ class TestSessionIsolationHttp:
                     "session_id": "session_b",
                 },
                 timeout=90.0,
+                trust_env=False,
             )
             assert response2.status_code == 200
             data2 = response2.json()
@@ -200,6 +203,7 @@ class TestSessionIsolationHttp:
                     "session_id": session_id,
                 },
                 timeout=90.0,
+                trust_env=False,
             )
             assert response1.status_code == 200
 
@@ -212,6 +216,7 @@ class TestSessionIsolationHttp:
                     "session_id": session_id,
                 },
                 timeout=90.0,
+                trust_env=False,
             )
             assert response2.status_code == 200
             data2 = response2.json()
@@ -239,6 +244,7 @@ class TestErrorHandlingHttp:
                 content="not valid json",
                 headers={"Content-Type": "application/json"},
                 timeout=10.0,
+                trust_env=False,
             )
             # Should return 422 (Unprocessable Entity)
             assert response.status_code == 422
@@ -259,6 +265,7 @@ class TestErrorHandlingHttp:
                 f"{base}/query",
                 json={"user_id": "test_user"},
                 timeout=10.0,
+                trust_env=False,
             )
             assert response.status_code == 422
 
@@ -274,7 +281,7 @@ class TestErrorHandlingHttp:
             _wait_for_health(base)
 
             # Health check should be fast
-            response = httpx.get(f"{base}/health", timeout=2.0)
+            response = httpx.get(f"{base}/health", timeout=2.0, trust_env=False)
             assert response.status_code == 200
             data = response.json()
             assert data.get("status") == "healthy"
@@ -302,6 +309,7 @@ class TestLargePayloads:
                 f"{base}/query",
                 json={"messages": long_message, "user_id": "test_user"},
                 timeout=90.0,
+                trust_env=False,
             )
 
             # Should handle long message
@@ -325,7 +333,7 @@ class TestStreamingRobustness:
             base = f"http://127.0.0.1:{port}"
             _wait_for_health(base)
 
-            with httpx.Client(timeout=90.0) as client:
+            with httpx.Client(timeout=90.0, trust_env=False) as client:
                 with client.stream(
                     "POST",
                     f"{base}/stream",
@@ -367,7 +375,7 @@ class TestStreamingRobustness:
             session_id = "stream_context_session"
 
             # First stream
-            with httpx.Client(timeout=90.0) as client:
+            with httpx.Client(timeout=90.0, trust_env=False) as client:
                 with client.stream(
                     "POST",
                     f"{base}/stream",
@@ -381,7 +389,7 @@ class TestStreamingRobustness:
                     list(response.iter_lines())
 
             # Second stream - should have context
-            with httpx.Client(timeout=90.0) as client:
+            with httpx.Client(timeout=90.0, trust_env=False) as client:
                 with client.stream(
                     "POST",
                     f"{base}/stream",

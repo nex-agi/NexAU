@@ -24,7 +24,7 @@ from nexau.archs.main_sub.agent_context import GlobalStorage
 from .agent_lock_service import AgentLockService
 from .agent_run_action_service import AgentRunActionService
 from .agent_service import AgentService
-from .models import AgentModel, AgentRunActionModel, PermissionRuleModel, SessionModel
+from .models import WORKFLOW_MODELS, AgentModel, AgentRunActionModel, PermissionRuleModel, SessionModel
 from .models.agent_lock import AgentLockModel
 from .orm import AndFilter, ComparisonFilter, DatabaseEngine, LoopSafeDatabaseEngine
 from .task_lock_service import TaskLockService
@@ -253,6 +253,7 @@ class SessionManager:
                 AgentRunActionModel,
                 AgentLockModel,
                 PermissionRuleModel,
+                *WORKFLOW_MODELS,
             ]
         )
         self._models_initialized = True

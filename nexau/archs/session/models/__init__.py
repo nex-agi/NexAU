@@ -38,6 +38,18 @@ from .team_member import TeamMemberModel
 from .team_message import TeamMessageModel
 from .team_task import TeamTaskModel
 from .team_task_lock import TeamTaskLockModel
+from .workflow import (
+    WORKFLOW_MODELS,
+    WorkflowCheckpointModel,
+    WorkflowCheckpointStatus,
+    WorkflowEventModel,
+    WorkflowLeaseModel,
+    WorkflowNodeRunModel,
+    WorkflowNodeStatus,
+    WorkflowRunModel,
+    WorkflowRunStatus,
+    WorkflowStateModel,
+)
 
 __all__ = [
     "SessionModel",
@@ -51,4 +63,14 @@ __all__ = [
     "TeamMessageModel",
     "TeamTaskModel",
     "TeamTaskLockModel",
+    "WORKFLOW_MODELS",
+    "WorkflowEventModel",
+    "WorkflowRunModel",
+    "WorkflowRunStatus",
+    "WorkflowNodeRunModel",
+    "WorkflowNodeStatus",
+    "WorkflowCheckpointModel",
+    "WorkflowCheckpointStatus",
+    "WorkflowLeaseModel",
+    "WorkflowStateModel",
 ]

@@ -1,0 +1,25 @@
+type: agent
+name: qa_planner
+description: Creates concise QA test cases for a product requirement.
+system_prompt_type: string
+system_prompt: |
+  You are a senior QA planner.
+
+  Given a JSON input with:
+  - requirement: the product behavior to verify
+  - max_cases: maximum number of test cases to create
+
+  Create focused functional test cases that can be reviewed and executed by a
+  downstream workflow. Use stable IDs such as C001 and C002. Keep each case
+  concise and actionable.
+
+  Return only the structured output requested by the workflow.
+tool_call_mode: structured
+max_iterations: 4
+llm_config:
+  model: ${env.LLM_MODEL}
+  base_url: ${env.LLM_BASE_URL}
+  api_key: ${env.LLM_API_KEY}
+  api_type: ${env.LLM_API_TYPE}
+  temperature: 0.2
+  max_tokens: 1200

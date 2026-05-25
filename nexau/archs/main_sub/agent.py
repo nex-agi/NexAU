@@ -31,7 +31,7 @@ import uuid
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
     from nexau.archs.main_sub.framework_context import FrameworkContext
@@ -1488,6 +1488,72 @@ class Agent:
                 trace_id=trace_id,
             )
         )
+
+    async def run_structured_async(
+        self,
+        *,
+        message: str,
+        output_schema: dict[str, Any] | None = None,
+        output_mode: Literal["auto", "native", "complete_task", "json_block"] | None = None,
+        output_retries: int | None = None,
+        output_name: str | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Run the agent and return schema-valid structured output.
+
+        RFC-0027: Agent structured output API
+
+        This is an additive API. ``run()`` and ``run_async()`` keep their
+        existing text-returning behavior when no structured output is requested.
+        """
+
+        from nexau.archs.workflow.structured_output import run_agent_structured_async
+        from nexau.archs.workflow.types import json_object
+
+        schema = output_schema or self.config.output_schema
+        if schema is None:
+            raise ValueError("output_schema is required for run_structured_async()")
+
+        result = await run_agent_structured_async(
+            config=self.config,
+            message=message,
+            output_schema=json_object(schema, label="output_schema"),
+            output_mode=output_mode or self.config.output_mode,
+            output_retries=self.config.output_retries if output_retries is None else output_retries,
+            output_name=output_name or self.config.output_name,
+            session_manager=self._session_manager,
+            user_id=self._user_id,
+            session_id=self._session_id,
+            run_id=run_id,
+        )
+        return cast(dict[str, Any], result)
+
+    def run_structured(
+        self,
+        *,
+        message: str,
+        output_schema: dict[str, Any] | None = None,
+        output_mode: Literal["auto", "native", "complete_task", "json_block"] | None = None,
+        output_retries: int | None = None,
+        output_name: str | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Synchronous wrapper for ``run_structured_async``."""
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(
+                self.run_structured_async(
+                    message=message,
+                    output_schema=output_schema,
+                    output_mode=output_mode,
+                    output_retries=output_retries,
+                    output_name=output_name,
+                    run_id=run_id,
+                )
+            )
+        raise RuntimeError("Agent.run_structured() cannot be called from within a running event loop. Use await run_structured_async().")
 
     async def _run_with_tracing(
         self,

@@ -43,6 +43,8 @@ from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.archs.main_sub.execution.stop_result import StopResult
 from nexau.archs.session import InMemoryDatabaseEngine, SessionManager
 
+pytestmark = pytest.mark.llm
+
 # ── LLM configuration from environment ──────────────────────────────
 
 # 兼容两种 CI 环境：nexau-cloud-runtime 用 NEXAU_SCHEDULER_SIDECAR_LLM_API_KEY，nexau 用 LLM_API_KEY

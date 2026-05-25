@@ -1,0 +1,199 @@
+type: workflow
+version: "1"
+name: qa_release_check
+description: LLM-backed QA release gate with human review and durable resume.
+
+inputs:
+  requirement:
+    type: string
+    description: Product requirement or release change to verify.
+
+vars:
+  max_cases: 2
+
+durable:
+  mode: node_boundary
+  lease_timeout_seconds: 60
+  default_parallelism: 2
+  max_parallelism: 3
+  default_retry_policy:
+    max_attempts: 2
+    backoff: exponential
+    on_uncertain: human_review
+
+includes:
+  agents:
+    qa_planner: ./agents/qa_planner.yaml
+    qa_runner: ./agents/qa_runner.yaml
+  graphs:
+    human_case_review: ./graphs/human_case_review.workflow.yaml
+
+nodes:
+  start:
+    type: start
+    output:
+      requirement: "{{ inputs.requirement }}"
+      max_cases: "{{ vars.max_cases }}"
+
+  generate_cases:
+    type: agent
+    agent: qa_planner
+    input:
+      requirement: "{{ nodes.start.output.requirement }}"
+      max_cases: "{{ nodes.start.output.max_cases }}"
+    output_mode: complete_task
+    output_retries: 2
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        cases:
+          type: array
+          minItems: 1
+          maxItems: 3
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              id:
+                type: string
+              title:
+                type: string
+              steps:
+                type: array
+                minItems: 1
+                items:
+                  type: string
+              expected:
+                type: string
+            required:
+              - id
+              - title
+              - steps
+              - expected
+      required:
+        - cases
+
+  review_cases:
+    type: subgraph
+    graph: human_case_review
+    input:
+      requirement: "{{ nodes.start.output.requirement }}"
+      cases: "{{ nodes.generate_cases.output.cases }}"
+      reviewer_hint: Review the generated QA cases before execution.
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        approved:
+          type: boolean
+        cases:
+          type: array
+          minItems: 1
+          items:
+            type: object
+        review_note:
+          type: string
+      required:
+        - approved
+        - cases
+        - review_note
+
+  route_review:
+    type: if_else
+    branches:
+      - if: "nodes.review_cases.output.approved == true"
+        next: run_cases
+    else: finish_rejected
+
+  run_cases:
+    type: parallel_map
+    items: "{{ nodes.review_cases.output.cases }}"
+    item_name: qa_case
+    index_name: qa_case_index
+    item_key: "{{ qa_case.id }}"
+    max_concurrency: 2
+    result_order: input
+    failure_policy: collect_errors
+    body: run_one_case
+    collect:
+      output:
+        results: "{{ results }}"
+        errors: "{{ errors }}"
+        stats: "{{ stats }}"
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        results:
+          type: array
+        errors:
+          type: array
+        stats:
+          type: object
+      required:
+        - results
+        - errors
+        - stats
+
+  run_one_case:
+    type: agent
+    agent: qa_runner
+    side_effect: external_write
+    idempotency_key: "{{ run.id }}:{{ node.scope_path }}"
+    input:
+      requirement: "{{ inputs.requirement }}"
+      case: "{{ qa_case }}"
+      case_index: "{{ qa_case_index }}"
+    output_mode: complete_task
+    output_retries: 2
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        case_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - passed
+            - failed
+            - blocked
+        evidence:
+          type: string
+      required:
+        - case_id
+        - status
+        - evidence
+
+  summarize:
+    type: transform
+    output:
+      status: completed
+      requirement: "{{ nodes.start.output.requirement }}"
+      review_note: "{{ nodes.review_cases.output.review_note }}"
+      result_count: "{{ nodes.run_cases.output.stats.completed }}"
+      error_count: "{{ nodes.run_cases.output.stats.failed }}"
+      results: "{{ nodes.run_cases.output.results }}"
+      errors: "{{ nodes.run_cases.output.errors }}"
+
+  finish:
+    type: end
+    output: "{{ nodes.summarize.output }}"
+
+  finish_rejected:
+    type: end
+    output:
+      status: rejected
+      requirement: "{{ nodes.start.output.requirement }}"
+      review_note: "{{ nodes.review_cases.output.review_note }}"
+      result_count: 0
+      cases: "{{ nodes.review_cases.output.cases }}"
+      results: []
+
+edges:
+  start: generate_cases
+  generate_cases: review_cases
+  review_cases: route_review
+  run_cases: summarize
+  summarize: finish
