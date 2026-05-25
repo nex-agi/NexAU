@@ -1048,6 +1048,440 @@ async def _run_note_set_state_and_end_nodes() -> None:
     assert result.state == {"remembered": "stored"}
 
 
+def _parallel_agent_workflow(*, failure_policy: str = "collect_errors") -> WorkflowConfig:
+    return WorkflowConfig.model_validate(
+        {
+            "type": "workflow",
+            "version": "1",
+            "name": f"parallel_agent_{failure_policy}",
+            "durable": {"mode": "node_boundary", "default_parallelism": 2, "max_parallelism": 4},
+            "nodes": {
+                "start": {"type": "start", "output": {"items": "{{ inputs.items }}"}},
+                "map_items": {
+                    "type": "parallel_map",
+                    "items": "{{ nodes.start.output.items }}",
+                    "item_name": "case",
+                    "item_key": "{{ case.id }}",
+                    "max_concurrency": 2,
+                    "body": "run_item",
+                    "result_order": "input",
+                    "failure_policy": failure_policy,
+                    "state_in": {"seed": "{{ case.id }}"},
+                    "state_out": {"mapped_count": "{{ stats.completed }}"},
+                    "collect": {"output": {"results": "{{ results }}", "errors": "{{ errors }}", "stats": "{{ stats }}"}},
+                },
+                "run_item": {
+                    "type": "agent",
+                    "agent": "parallel_worker",
+                    "input": {"case": "{{ case }}", "seed": "{{ state.seed }}"},
+                    "output_schema": {
+                        "type": "object",
+                        "properties": {"item_id": {"type": "string"}, "seed": {"type": "string"}},
+                        "required": ["item_id", "seed"],
+                    },
+                    "update": {"last_item": "{{ nodes.run_item.output.item_id }}"},
+                },
+                "finish": {
+                    "type": "end",
+                    "output": {
+                        "results": "{{ nodes.map_items.output.results }}",
+                        "errors": "{{ nodes.map_items.output.errors }}",
+                        "stats": "{{ nodes.map_items.output.stats }}",
+                        "mapped_count": "{{ state.mapped_count }}",
+                    },
+                },
+            },
+            "edges": {"start": "map_items", "map_items": "finish"},
+        }
+    )
+
+
+def test_parallel_map_agent_enforces_concurrency_collects_ordered_results_and_state() -> None:
+    asyncio.run(_run_parallel_map_agent_enforces_concurrency_collects_ordered_results_and_state())
+
+
+async def _run_parallel_map_agent_enforces_concurrency_collects_ordered_results_and_state() -> None:
+    active = 0
+    max_active = 0
+    lock = asyncio.Lock()
+    calls: list[str] = []
+    tracer = InMemoryTracer()
+
+    async def fake_agent_runner(
+        *,
+        agent_name: str,
+        agent_config: object | None,
+        input_data: JsonObject,
+        output_schema: JsonObject | None,
+        run_id: str,
+        node_id: str,
+        scope_path: str,
+    ) -> JsonObject:
+        nonlocal active, max_active
+        del agent_name, agent_config, output_schema, run_id, node_id
+        async with lock:
+            active += 1
+            max_active = max(max_active, active)
+        case = json_object(input_data["case"], label="case")
+        case_id = str(case["id"])
+        calls.append(scope_path)
+        await asyncio.sleep({"A": 0.03, "B": 0.01, "C": 0.0}[case_id])
+        async with lock:
+            active -= 1
+        return {"item_id": case_id, "seed": str(input_data["seed"])}
+
+    store = WorkflowStore(InMemoryDatabaseEngine())
+    executor = WorkflowExecutor(workflow=_parallel_agent_workflow(), store=store, agent_runner=fake_agent_runner, tracer=tracer)
+    result = await executor.run_async(
+        inputs={"items": [{"id": "A"}, {"id": "B"}, {"id": "C"}]},
+        run_id="wf_parallel_agent",
+    )
+
+    assert result.status.value == "completed"
+    assert max_active == 2
+    assert calls == ["map_items[A]/run_item", "map_items[B]/run_item", "map_items[C]/run_item"]
+    assert result.output is not None
+    result_entries = result.output["results"]
+    assert isinstance(result_entries, list)
+    assert [json_object(entry, label="result")["key"] for entry in result_entries] == ["A", "B", "C"]
+    assert result.output["stats"] == {"total": 3, "completed": 3, "failed": 0, "waiting": 0, "uncertain": 0}
+    assert result.output["mapped_count"] == 3
+
+    folded = await store.fold("wf_parallel_agent")
+    assert folded.scoped_state["map_items[A]"] == {"seed": "A", "last_item": "A"}
+    assert folded.scoped_state["map_items[B]"] == {"seed": "B", "last_item": "B"}
+    assert folded.scoped_state["map_items[C]"] == {"seed": "C", "last_item": "C"}
+    events = await store.list_events("wf_parallel_agent")
+    assert any(event.event_type == "parallel_map_started" for event in events)
+    item_events = [event for event in events if event.event_type == "parallel_item_completed"]
+    assert {event.payload["item_key"] for event in item_events} == {"A", "B", "C"}
+    item_spans = [span for span in tracer.spans.values() if span.type == SpanType.WORKFLOW_PARALLEL_ITEM]
+    assert len(item_spans) == 3
+    assert {span.attributes["workflow.item_key"] for span in item_spans} == {"A", "B", "C"}
+
+
+def test_parallel_map_tool_body_and_empty_items() -> None:
+    asyncio.run(_run_parallel_map_tool_body_and_empty_items())
+
+
+async def _run_parallel_map_tool_body_and_empty_items() -> None:
+    workflow = WorkflowConfig.model_validate(
+        {
+            "type": "workflow",
+            "version": "1",
+            "name": "parallel_tool",
+            "nodes": {
+                "start": {"type": "start", "output": {"items": "{{ inputs.items }}"}},
+                "map_items": {
+                    "type": "parallel_map",
+                    "items": "{{ nodes.start.output.items }}",
+                    "item_name": "item",
+                    "item_key": "{{ item.id }}",
+                    "max_concurrency": 2,
+                    "body": "double_item",
+                    "failure_policy": "collect_errors",
+                },
+                "double_item": {"type": "tool", "tool": "double_tool", "input": {"value": "{{ item.value }}"}},
+            },
+            "edges": {"start": "map_items"},
+        }
+    )
+    tool = Tool(
+        name="double_tool",
+        description="Double.",
+        input_schema={"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"]},
+        implementation=lambda value: {"doubled": value * 2},
+    )
+
+    executor = WorkflowExecutor(workflow=workflow, store=WorkflowStore(InMemoryDatabaseEngine()), tools={"double_tool": tool})
+    result = await executor.run_async(inputs={"items": [{"id": "one", "value": 1}, {"id": "two", "value": 2}]}, run_id="wf_parallel_tool")
+    assert result.status.value == "completed"
+    assert result.output is not None
+    results = result.output["results"]
+    assert isinstance(results, list)
+    assert [json_object(entry, label="entry")["output"] for entry in results] == [{"doubled": 2}, {"doubled": 4}]
+
+    empty = await WorkflowExecutor(workflow=workflow, store=WorkflowStore(InMemoryDatabaseEngine()), tools={"double_tool": tool}).run_async(
+        inputs={"items": []},
+        run_id="wf_parallel_tool_empty",
+    )
+    assert empty.status.value == "completed"
+    assert empty.output == {"results": [], "errors": [], "stats": {"total": 0, "completed": 0, "failed": 0, "waiting": 0, "uncertain": 0}}
+
+
+@pytest.mark.parametrize(
+    "failure_policy, expected_status, expected_calls",
+    [
+        ("fail_fast", "failed", ["A", "B"]),
+        ("fail_after_all", "failed", ["A", "B", "C"]),
+        ("collect_errors", "completed", ["A", "B", "C"]),
+    ],
+)
+def test_parallel_map_failure_policies(failure_policy: str, expected_status: str, expected_calls: list[str]) -> None:
+    asyncio.run(_run_parallel_map_failure_policies(failure_policy, expected_status, expected_calls))
+
+
+async def _run_parallel_map_failure_policies(failure_policy: str, expected_status: str, expected_calls: list[str]) -> None:
+    calls: list[str] = []
+
+    async def fake_agent_runner(
+        *,
+        agent_name: str,
+        agent_config: object | None,
+        input_data: JsonObject,
+        output_schema: JsonObject | None,
+        run_id: str,
+        node_id: str,
+        scope_path: str,
+    ) -> JsonObject:
+        del agent_name, agent_config, output_schema, run_id, node_id, scope_path
+        case = json_object(input_data["case"], label="case")
+        case_id = str(case["id"])
+        calls.append(case_id)
+        if case_id == "B":
+            raise RuntimeError("B failed")
+        return {"item_id": case_id, "seed": str(input_data["seed"])}
+
+    workflow = _parallel_agent_workflow(failure_policy=failure_policy)
+    workflow.nodes["map_items"].max_concurrency = 1
+    result = await WorkflowExecutor(
+        workflow=workflow,
+        store=WorkflowStore(InMemoryDatabaseEngine()),
+        agent_runner=fake_agent_runner,
+    ).run_async(inputs={"items": [{"id": "A"}, {"id": "B"}, {"id": "C"}]}, run_id=f"wf_parallel_{failure_policy}")
+
+    assert result.status.value == expected_status
+    assert calls == expected_calls
+    if expected_status == "completed":
+        assert result.output is not None
+        errors = result.output["errors"]
+        assert isinstance(errors, list)
+        assert json_object(errors[0], label="error")["key"] == "B"
+
+
+def test_parallel_map_subgraph_multiple_human_checkpoints_resume_independently(tmp_path: Path) -> None:
+    asyncio.run(_run_parallel_map_subgraph_multiple_human_checkpoints_resume_independently(tmp_path))
+
+
+async def _run_parallel_map_subgraph_multiple_human_checkpoints_resume_independently(tmp_path: Path) -> None:
+    graph_dir = tmp_path / "graphs"
+    graph_dir.mkdir()
+    review_path = graph_dir / "review_item.workflow.yaml"
+    review_path.write_text(
+        "\n".join(
+            [
+                "type: workflow",
+                'version: "1"',
+                "name: review_item",
+                "inputs:",
+                "  item:",
+                "    type: object",
+                "nodes:",
+                "  start:",
+                "    type: start",
+                "    output:",
+                '      id: "{{ inputs.item.id }}"',
+                "  review:",
+                "    type: human",
+                "    prompt: Review item.",
+                "    input:",
+                '      id: "{{ nodes.start.output.id }}"',
+                "    output_schema:",
+                "      type: object",
+                "      properties:",
+                "        approved:",
+                "          type: boolean",
+                "      required: [approved]",
+                "  finish:",
+                "    type: end",
+                "    output:",
+                '      id: "{{ nodes.start.output.id }}"',
+                '      approved: "{{ nodes.review.output.approved }}"',
+                "edges:",
+                "  start: review",
+                "  review: finish",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    workflow_path = tmp_path / "parallel_subgraph.workflow.yaml"
+    workflow_path.write_text(
+        "\n".join(
+            [
+                "type: workflow",
+                'version: "1"',
+                "name: parallel_subgraph",
+                "includes:",
+                "  graphs:",
+                "    review_item: ./graphs/review_item.workflow.yaml",
+                "nodes:",
+                "  start:",
+                "    type: start",
+                "    output:",
+                '      items: "{{ inputs.items }}"',
+                "  map_items:",
+                "    type: parallel_map",
+                '    items: "{{ nodes.start.output.items }}"',
+                "    item_name: item",
+                '    item_key: "{{ item.id }}"',
+                "    max_concurrency: 2",
+                "    body: review_one",
+                "    failure_policy: collect_errors",
+                "  review_one:",
+                "    type: subgraph",
+                "    graph: review_item",
+                "    input:",
+                '      item: "{{ item }}"',
+                "edges:",
+                "  start: map_items",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    store = WorkflowStore(InMemoryDatabaseEngine())
+    executor = WorkflowExecutor(workflow=WorkflowConfig.from_yaml(workflow_path), store=store)
+    waiting = await executor.run_async(inputs={"items": [{"id": "A"}, {"id": "B"}]}, run_id="wf_parallel_subgraph")
+
+    assert waiting.status.value == "waiting"
+    assert len(waiting.checkpoint_ids) == 2
+    folded = await store.fold("wf_parallel_subgraph")
+    assert set(folded.waiting_checkpoint_ids) == set(waiting.checkpoint_ids)
+
+    first_resume = await executor.resume_async(
+        run_id="wf_parallel_subgraph",
+        checkpoint_id=waiting.checkpoint_ids[0],
+        output={"approved": True},
+    )
+    assert first_resume.status.value == "waiting"
+    assert first_resume.checkpoint_ids == (waiting.checkpoint_ids[1],)
+
+    completed = await executor.resume_async(
+        run_id="wf_parallel_subgraph",
+        checkpoint_id=waiting.checkpoint_ids[1],
+        output={"approved": False},
+    )
+    assert completed.status.value == "completed"
+    assert completed.output is not None
+    results = completed.output["results"]
+    assert isinstance(results, list)
+    assert [json_object(entry, label="entry")["key"] for entry in results] == ["A", "B"]
+    events = await store.list_events("wf_parallel_subgraph")
+    completed_scopes = {event.scope_path for event in events if event.event_type == "node_completed"}
+    assert "map_items[A]/review_one/start" in completed_scopes
+    assert "map_items[B]/review_one/start" in completed_scopes
+
+
+def test_parallel_map_external_write_uncertain_reconcile() -> None:
+    asyncio.run(_run_parallel_map_external_write_uncertain_reconcile())
+
+
+async def _run_parallel_map_external_write_uncertain_reconcile() -> None:
+    workflow = WorkflowConfig.model_validate(
+        {
+            "type": "workflow",
+            "version": "1",
+            "name": "parallel_uncertain",
+            "durable": {"mode": "node_boundary", "default_retry_policy": {"max_attempts": 1, "on_uncertain": "human_review"}},
+            "nodes": {
+                "start": {"type": "start", "output": {"items": "{{ inputs.items }}"}},
+                "map_items": {
+                    "type": "parallel_map",
+                    "items": "{{ nodes.start.output.items }}",
+                    "item_key": "{{ item.id }}",
+                    "body": "send_item",
+                    "failure_policy": "collect_errors",
+                },
+                "send_item": {
+                    "type": "agent",
+                    "agent": "sender",
+                    "side_effect": "external_write",
+                    "idempotency_key": "{{ run.id }}:{{ node.scope_path }}",
+                    "input": {"id": "{{ item.id }}"},
+                },
+            },
+            "edges": {"start": "map_items"},
+        }
+    )
+    store = WorkflowStore(InMemoryDatabaseEngine())
+    snapshot = workflow.definition_snapshot()
+    await store.create_run(
+        run_id="wf_parallel_uncertain",
+        workflow_name=workflow.name,
+        inputs={"items": [{"id": "A"}]},
+        definition_snapshot=snapshot,
+    )
+    await store.append_event(
+        run_id="wf_parallel_uncertain",
+        event_type="workflow_run_started",
+        payload=event_payload(inputs={"items": [{"id": "A"}]}, definition_snapshot=snapshot),
+    )
+    await store.append_event(
+        run_id="wf_parallel_uncertain",
+        event_type="node_completed",
+        node_id="start",
+        payload=event_payload(output={"items": [{"id": "A"}]}),
+    )
+    await store.append_event(
+        run_id="wf_parallel_uncertain",
+        event_type="node_started",
+        node_id="map_items",
+        payload=event_payload(input={}),
+    )
+    await store.upsert_node_run(
+        run_id="wf_parallel_uncertain",
+        node_id="map_items",
+        scope_path="",
+        status=WorkflowNodeStatus.RUNNING,
+        attempt=1,
+    )
+    await store.append_event(
+        run_id="wf_parallel_uncertain",
+        event_type="parallel_map_started",
+        node_id="map_items",
+        payload=event_payload(
+            body_node_id="send_item",
+            max_concurrency=1,
+            failure_policy="collect_errors",
+            result_order="input",
+            items=[{"index": 0, "key": "A", "item": {"id": "A"}, "scope_path": "map_items[A]", "body_node_id": "send_item"}],
+        ),
+    )
+    await store.append_event(
+        run_id="wf_parallel_uncertain",
+        event_type="node_started",
+        node_id="send_item",
+        scope_path="map_items[A]/send_item",
+        attempt=1,
+        payload=event_payload(input={"id": "A"}, parallel_node_id="map_items", item_scope_path="map_items[A]", item_key="A", item_index=0),
+    )
+    await store.upsert_node_run(
+        run_id="wf_parallel_uncertain",
+        node_id="send_item",
+        scope_path="map_items[A]/send_item",
+        status=WorkflowNodeStatus.RUNNING,
+        attempt=1,
+        node_input={"id": "A"},
+        lease_expires_at=datetime.now() - timedelta(seconds=10),
+    )
+
+    executor = WorkflowExecutor(workflow=workflow, store=store)
+    uncertain = await executor.run_async(inputs={"items": [{"id": "A"}]}, run_id="wf_parallel_uncertain")
+    assert uncertain.status.value == "uncertain"
+
+    reconciled = await executor.reconcile_async(
+        run_id="wf_parallel_uncertain",
+        node_id="send_item",
+        scope_path="map_items[A]/send_item",
+        decision="completed",
+        output={"sent": "A"},
+    )
+    assert reconciled.status.value == "completed"
+    assert reconciled.output is not None
+    results = reconciled.output["results"]
+    assert isinstance(results, list)
+    assert json_object(results[0], label="result")["output"] == {"sent": "A"}
+
+
 def test_lease_expiry_retries_read_only_and_uncertains_external_write() -> None:
     asyncio.run(_run_lease_expiry_retries_read_only_and_uncertains_external_write())
 

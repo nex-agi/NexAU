@@ -38,7 +38,7 @@ from unittest.mock import Mock
 import pytest
 
 from nexau.archs.sandbox.local_sandbox import LocalSandbox
-from nexau.archs.tool.builtin.file_tools.apply_patch import apply_patch
+from nexau.archs.tool.builtin.file_tools.apply_patch import ApplyPatchError, apply_patch
 
 # ---------------------------------------------------------------------------
 # Locate official scenario fixtures
@@ -107,9 +107,13 @@ def test_official_scenario(scenario: Path):
         # 2. Read patch text
         patch_text = (scenario / "patch.txt").read_text(encoding="utf-8")
 
-        # 3. Run apply_patch
+        # 3. Run apply_patch. Official scenarios intentionally ignore the CLI
+        # exit status and compare only the final filesystem state.
         agent_state = _make_agent_state(str(tmp))
-        apply_patch(input=patch_text, agent_state=agent_state)
+        try:
+            apply_patch(input=patch_text, agent_state=agent_state)
+        except ApplyPatchError:
+            pass
 
         # 4. Compare filesystem state against expected/
         actual = _snapshot_dir(tmp)

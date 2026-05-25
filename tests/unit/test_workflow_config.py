@@ -207,3 +207,106 @@ def test_workflow_config_rejects_recursive_graph_includes(tmp_path: Path) -> Non
 
     with pytest.raises(ValueError, match="recursion"):
         WorkflowConfig.from_yaml(parent_path)
+
+
+def test_workflow_config_accepts_parallel_map_definition() -> None:
+    data = _base_workflow()
+    data["durable"] = {"mode": "node_boundary", "default_parallelism": 2, "max_parallelism": 4}
+    data["nodes"] = {
+        "start": {"type": "start", "output": {"items": "{{ inputs.items }}"}},
+        "map_items": {
+            "type": "parallel_map",
+            "items": "{{ nodes.start.output.items }}",
+            "item_name": "case",
+            "index_name": "case_index",
+            "item_key": "{{ case.id }}",
+            "max_concurrency": 2,
+            "body": "run_item",
+            "result_order": "input",
+            "failure_policy": "collect_errors",
+            "collect": {"output": {"results": "{{ results }}", "errors": "{{ errors }}", "stats": "{{ stats }}"}},
+            "state_in": {"seed": "{{ case.id }}"},
+            "state_out": {"mapped": "{{ stats.completed }}"},
+        },
+        "run_item": {
+            "type": "agent",
+            "agent": "worker",
+            "input": {"case": "{{ case }}", "index": "{{ case_index }}"},
+        },
+        "finish": {"type": "end", "output": {"results": "{{ nodes.map_items.output.results }}"}},
+    }
+    data["edges"] = {"start": "map_items", "map_items": "finish"}
+
+    config = WorkflowConfig.model_validate(data)
+
+    assert config.durable.default_parallelism == 2
+    assert config.durable.max_parallelism == 4
+    assert config.nodes["map_items"].type == "parallel_map"
+    assert config.nodes["map_items"].body == "run_item"
+
+
+@pytest.mark.parametrize(
+    "mutate, message",
+    [
+        (lambda node: node.pop("items"), "requires 'items'"),
+        (lambda node: node.pop("body"), "requires 'body'"),
+        (lambda node: node.__setitem__("body", "missing"), "unknown body node"),
+        (lambda node: node.__setitem__("max_concurrency", 5), "max_concurrency exceeds"),
+        (lambda node: node.__setitem__("item_name", "state"), "reserved context name"),
+        (lambda node: node.__setitem__("index_name", "item"), "invalid or reserved"),
+        (lambda node: node.__setitem__("result_order", "random"), "Input should be"),
+        (lambda node: node.__setitem__("failure_policy", "ignore"), "Input should be"),
+    ],
+)
+def test_workflow_config_rejects_invalid_parallel_map_nodes(mutate, message: str) -> None:
+    data = _base_workflow()
+    data["durable"] = {"mode": "node_boundary", "max_parallelism": 4}
+    data["nodes"] = {
+        "start": {"type": "start"},
+        "map_items": {
+            "type": "parallel_map",
+            "items": "{{ inputs.items }}",
+            "body": "run_item",
+            "max_concurrency": 2,
+        },
+        "run_item": {"type": "agent", "agent": "worker"},
+    }
+    data["edges"] = {"start": "map_items"}
+    nodes = json_object(data["nodes"], label="nodes")
+    map_node = json_object(nodes["map_items"], label="map_items")
+    mutate(map_node)
+
+    with pytest.raises(ValueError, match=message):
+        WorkflowConfig.model_validate(data)
+
+
+def test_workflow_config_rejects_parallel_map_body_on_normal_edges() -> None:
+    data = _base_workflow()
+    data["nodes"] = {
+        "start": {"type": "start"},
+        "map_items": {"type": "parallel_map", "items": "{{ inputs.items }}", "body": "run_item"},
+        "run_item": {"type": "agent", "agent": "worker"},
+    }
+    data["edges"] = {"start": "map_items", "map_items": "run_item"}
+
+    with pytest.raises(ValueError, match="must not be referenced by normal edges"):
+        WorkflowConfig.model_validate(data)
+
+
+def test_workflow_config_rejects_parallel_map_external_write_body_without_item_key() -> None:
+    data = _base_workflow()
+    data["durable"] = {"mode": "node_boundary", "default_retry_policy": {"on_uncertain": "human_review"}}
+    data["nodes"] = {
+        "start": {"type": "start"},
+        "map_items": {"type": "parallel_map", "items": "{{ inputs.items }}", "body": "send_item"},
+        "send_item": {
+            "type": "tool",
+            "tool": "send_tool",
+            "side_effect": "external_write",
+            "idempotency_key": "{{ run.id }}:{{ node.scope_path }}",
+        },
+    }
+    data["edges"] = {"start": "map_items"}
+
+    with pytest.raises(ValueError, match="requires explicit item_key"):
+        WorkflowConfig.model_validate(data)

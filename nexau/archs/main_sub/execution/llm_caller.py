@@ -1399,7 +1399,7 @@ def call_llm_with_generate_with_token(
     request_tokens = list(token_trace_session.token_ids)
     request_payload = kwargs.copy()
     request_payload.pop("messages", None)
-    stream_requested = bool(request_payload.pop("stream", False) or getattr(llm_config, "stream", False))
+    stream_requested = bool(request_payload.pop("stream", False) or llm_config.stream)
     if stream_requested:
         logger.warning("Streaming is not supported for generate_with_token; falling back to non-stream mode")
 
@@ -1543,7 +1543,7 @@ def call_llm_with_anthropic_chat_completion(
     cache_control_ttl: str | None = None,
 ) -> ModelResponse:
     """Call Anthropic chat completion with the given messages and return response content."""
-    stream_requested = bool(kwargs.pop("stream", False))
+    stream_requested = bool(kwargs.pop("stream", False) or (llm_config is not None and llm_config.stream))
 
     # Check if tracing is active (there's a current span and we have a tracer)
     should_trace = tracer is not None and get_current_span() is not None
@@ -1714,7 +1714,7 @@ def call_llm_with_openai_chat_completion(
             if typed_msg.get("role") == "assistant" and typed_msg.get("content") == "" and typed_msg.get("tool_calls"):
                 del typed_msg["content"]
     kwargs["messages"] = messages
-    stream_requested = bool(kwargs.pop("stream", False) or getattr(llm_config, "stream", False))
+    stream_requested = bool(kwargs.pop("stream", False) or (llm_config is not None and llm_config.stream))
 
     # Check if tracing is active (there's a current span and we have a tracer)
     should_trace = tracer is not None and get_current_span() is not None
@@ -1861,7 +1861,7 @@ def call_llm_with_openai_responses(
     if tools:
         request_payload["tools"] = normalize_openai_responses_api_tools(tools)
 
-    stream_requested = bool(request_payload.pop("stream", False) or getattr(llm_config, "stream", False))
+    stream_requested = bool(request_payload.pop("stream", False) or (llm_config is not None and llm_config.stream))
 
     request_payload.pop("store", None)
 
@@ -2043,7 +2043,7 @@ async def call_llm_with_openai_chat_completion_async(
             if typed_msg.get("role") == "assistant" and typed_msg.get("content") == "" and typed_msg.get("tool_calls"):
                 del typed_msg["content"]
     kwargs["messages"] = messages
-    stream_requested = bool(kwargs.pop("stream", False) or getattr(llm_config, "stream", False))
+    stream_requested = bool(kwargs.pop("stream", False) or (llm_config is not None and llm_config.stream))
 
     should_trace = tracer is not None and get_current_span() is not None
 
@@ -2138,7 +2138,7 @@ async def call_llm_with_anthropic_chat_completion_async(
     cache_control_ttl: str | None = None,
 ) -> ModelResponse:
     """Async Anthropic chat completion — mirrors sync version with await."""
-    stream_requested = bool(kwargs.pop("stream", False))
+    stream_requested = bool(kwargs.pop("stream", False) or (llm_config is not None and llm_config.stream))
     should_trace = tracer is not None and get_current_span() is not None
 
     def _build_cache_control() -> dict[str, str]:
@@ -2298,7 +2298,7 @@ async def call_llm_with_openai_responses_async(
     if tools:
         request_payload["tools"] = normalize_openai_responses_api_tools(tools)
 
-    stream_requested = bool(request_payload.pop("stream", False) or getattr(llm_config, "stream", False))
+    stream_requested = bool(request_payload.pop("stream", False) or (llm_config is not None and llm_config.stream))
 
     request_payload.pop("store", None)
 
@@ -2615,7 +2615,7 @@ def call_llm_with_gemini_rest(
     Gemini 请求体直接从统一消息表示与 neutral structured tool definitions
     生成，不再把 OpenAI schema 作为 structured tool calling 的主中转格式。
     """
-    stream_requested = bool(kwargs.pop("stream", False) or getattr(llm_config, "stream", False))
+    stream_requested = bool(kwargs.pop("stream", False) or (llm_config is not None and llm_config.stream))
     if not llm_config:
         raise ValueError("llm_config is required for gemini_rest call")
 
@@ -2882,7 +2882,7 @@ async def call_llm_with_gemini_rest_async(
     使用 httpx.AsyncClient 替代 requests.post，在主事件循环上执行
     Gemini REST API 调用（含流式和非流式），避免阻塞 event loop。
     """
-    stream_requested = bool(kwargs.pop("stream", False) or getattr(llm_config, "stream", False))
+    stream_requested = bool(kwargs.pop("stream", False) or llm_config.stream)
     tools = kwargs.get("tools")
 
     # 消息转换

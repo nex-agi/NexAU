@@ -2,6 +2,7 @@
 
 RFC-0027: Workflow DSL 与配置解析
 RFC-0028: Workflow 子图支持
+RFC-0029: Workflow 并行 Map 与结果收集
 
 The parser validates the YAML-facing workflow contract before execution:
 node shapes, edge references, simple control graph cycles, durable side-effect
@@ -34,10 +35,23 @@ WorkflowNodeType = Literal[
     "end",
     "note",
     "subgraph",
+    "parallel_map",
 ]
 SideEffectPolicy = Literal["read_only", "idempotent_write", "external_write", "local_write"]
 WorkflowOutputMode = Literal["auto", "native", "complete_task", "json_block"]
 SubgraphExecutionMode = Literal["inline"]
+ParallelMapResultOrder = Literal["input", "completion"]
+ParallelMapFailurePolicy = Literal["fail_fast", "fail_after_all", "collect_errors"]
+
+PARALLEL_MAP_BODY_NODE_TYPES: set[WorkflowNodeType] = {
+    "agent",
+    "tool",
+    "mcp",
+    "transform",
+    "set_state",
+    "subgraph",
+}
+PARALLEL_MAP_RESERVED_CONTEXT_NAMES = {"inputs", "vars", "state", "nodes", "run", "node", "item_key"}
 
 
 def _empty_json_object() -> JsonObject:
@@ -87,6 +101,14 @@ class DurableConfig(BaseModel):
     default_retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
     lease_timeout_seconds: float = Field(default=30.0, gt=0)
     max_subgraph_depth: int = Field(default=5, ge=0)
+    default_parallelism: int = Field(default=1, ge=1)
+    max_parallelism: int = Field(default=8, ge=1)
+
+    @model_validator(mode="after")
+    def _validate_parallelism(self) -> Self:
+        if self.default_parallelism > self.max_parallelism:
+            raise WorkflowConfigError("durable.default_parallelism must not exceed durable.max_parallelism")
+        return self
 
 
 class WorkflowInputSpec(BaseModel):
@@ -163,6 +185,14 @@ class WorkflowNode(BaseModel):
     max_iterations: int | None = Field(default=None, ge=1)
     scope_key: str | None = None
     body: str | None = None
+    items: JsonValue | None = None
+    item_name: str = "item"
+    index_name: str = "index"
+    item_key: str | None = None
+    max_concurrency: int | None = Field(default=None, ge=1)
+    result_order: ParallelMapResultOrder = "input"
+    failure_policy: ParallelMapFailurePolicy = "fail_fast"
+    collect: JsonObject | None = None
     init: JsonValue | None = None
     state_in: JsonValue | None = None
     state_out: JsonValue | None = None
@@ -321,6 +351,8 @@ class WorkflowConfig(BaseModel):
                     raise WorkflowConfigError(f"if_else node {node_id!r} references unknown else target: {node.else_}")
             if node.type == "while" and node.body is not None and node.body not in self.nodes:
                 raise WorkflowConfigError(f"while node {node_id!r} references unknown body node: {node.body}")
+            if node.type == "parallel_map" and node.body is not None and node.body not in self.nodes:
+                raise WorkflowConfigError(f"parallel_map node {node_id!r} references unknown body node: {node.body}")
 
     def _validate_node_requirements(self) -> None:
         default_uncertain = self.durable.default_retry_policy.on_uncertain
@@ -347,10 +379,41 @@ class WorkflowConfig(BaseModel):
                     raise WorkflowConfigError(f"while node {node_id!r} requires 'max_iterations'")
                 if node.body is None:
                     raise WorkflowConfigError(f"while node {node_id!r} requires 'body'")
+            if node.type == "parallel_map":
+                self._validate_parallel_map_node(node_id, node)
             if node.side_effect in {"idempotent_write", "external_write"}:
                 node_uncertain = node.retry_policy.on_uncertain if node.retry_policy is not None else None
                 if not node.idempotency_key and not node_uncertain and not default_uncertain:
                     raise WorkflowConfigError(f"{node.side_effect} node {node_id!r} requires 'idempotency_key' or an on_uncertain policy")
+
+    def _validate_parallel_map_node(self, node_id: str, node: WorkflowNode) -> None:
+        if node.items is None:
+            raise WorkflowConfigError(f"parallel_map node {node_id!r} requires 'items'")
+        if node.body is None:
+            raise WorkflowConfigError(f"parallel_map node {node_id!r} requires 'body'")
+        body = self.nodes.get(node.body)
+        if body is None:
+            raise WorkflowConfigError(f"parallel_map node {node_id!r} references unknown body node: {node.body}")
+        if body.type not in PARALLEL_MAP_BODY_NODE_TYPES:
+            raise WorkflowConfigError(f"parallel_map node {node_id!r} body {node.body!r} has unsupported type: {body.type}")
+        if self._node_has_incoming_edge(node.body):
+            raise WorkflowConfigError(f"parallel_map node {node_id!r} body {node.body!r} must not be referenced by normal edges")
+        if node.max_concurrency is not None and node.max_concurrency > self.durable.max_parallelism:
+            raise WorkflowConfigError(f"parallel_map node {node_id!r} max_concurrency exceeds durable.max_parallelism")
+        if node.item_name in PARALLEL_MAP_RESERVED_CONTEXT_NAMES:
+            raise WorkflowConfigError(f"parallel_map node {node_id!r} item_name uses a reserved context name: {node.item_name}")
+        if node.index_name in PARALLEL_MAP_RESERVED_CONTEXT_NAMES or node.index_name == node.item_name:
+            raise WorkflowConfigError(
+                f"parallel_map node {node_id!r} index_name uses an invalid or reserved context name: {node.index_name}"
+            )
+        if body.side_effect in {"idempotent_write", "external_write"} and node.item_key is None:
+            raise WorkflowConfigError(f"parallel_map node {node_id!r} requires explicit item_key for side-effecting body {node.body!r}")
+
+    def _node_has_incoming_edge(self, node_id: str) -> bool:
+        for targets in self.edges.values():
+            if node_id in self._iter_edge_targets(targets):
+                return True
+        return False
 
     def _validate_output_schemas(self) -> None:
         for node_id, node in self.nodes.items():

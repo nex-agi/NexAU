@@ -14,6 +14,8 @@ vars:
 durable:
   mode: node_boundary
   lease_timeout_seconds: 60
+  default_parallelism: 2
+  max_parallelism: 3
   default_retry_policy:
     max_attempts: 2
     backoff: exponential
@@ -105,14 +107,34 @@ nodes:
     else: finish_rejected
 
   run_cases:
-    type: while
-    condition: "state.remaining_cases.size() > 0"
-    max_iterations: 5
-    scope_key: "case-{{ state.remaining_cases[0].id }}"
+    type: parallel_map
+    items: "{{ nodes.review_cases.output.cases }}"
+    item_name: qa_case
+    index_name: qa_case_index
+    item_key: "{{ qa_case.id }}"
+    max_concurrency: 2
+    result_order: input
+    failure_policy: collect_errors
     body: run_one_case
-    init:
-      remaining_cases: "{{ nodes.review_cases.output.cases }}"
-      results: []
+    collect:
+      output:
+        results: "{{ results }}"
+        errors: "{{ errors }}"
+        stats: "{{ stats }}"
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        results:
+          type: array
+        errors:
+          type: array
+        stats:
+          type: object
+      required:
+        - results
+        - errors
+        - stats
 
   run_one_case:
     type: agent
@@ -120,8 +142,9 @@ nodes:
     side_effect: external_write
     idempotency_key: "{{ run.id }}:{{ node.scope_path }}"
     input:
-      requirement: "{{ nodes.start.output.requirement }}"
-      case: "{{ state.remaining_cases[0] }}"
+      requirement: "{{ inputs.requirement }}"
+      case: "{{ qa_case }}"
+      case_index: "{{ qa_case_index }}"
     output_mode: complete_task
     output_retries: 2
     output_schema:
@@ -142,9 +165,6 @@ nodes:
         - case_id
         - status
         - evidence
-    update:
-      remaining_cases: "{{ state.remaining_cases[1:] }}"
-      results: "{{ state.results + [nodes.run_one_case.output] }}"
 
   summarize:
     type: transform
@@ -152,8 +172,10 @@ nodes:
       status: completed
       requirement: "{{ nodes.start.output.requirement }}"
       review_note: "{{ nodes.review_cases.output.review_note }}"
-      result_count: "{{ state.results.size() }}"
-      results: "{{ state.results }}"
+      result_count: "{{ nodes.run_cases.output.stats.completed }}"
+      error_count: "{{ nodes.run_cases.output.stats.failed }}"
+      results: "{{ nodes.run_cases.output.results }}"
+      errors: "{{ nodes.run_cases.output.errors }}"
 
   finish:
     type: end

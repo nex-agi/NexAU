@@ -212,10 +212,21 @@ def _build_structured_agent_config(
     output_name: str | None,
     tracer: BaseTracer | None,
 ) -> AgentConfig:
-    structured_config = config.model_copy(deep=True)
+    # Tracers often own live SDK clients (Langfuse/OpenTelemetry) that are not
+    # deepcopy-safe. Preserve those runtime objects by reference while cloning
+    # ordinary agent config.
+    original_tracers = list(config.tracers)
+    original_resolved_tracer = config.resolved_tracer
+    memo: dict[int, object] = {id(runtime_tracer): runtime_tracer for runtime_tracer in original_tracers}
+    if original_resolved_tracer is not None:
+        memo[id(original_resolved_tracer)] = original_resolved_tracer
+    structured_config = deepcopy(config, memo)
     if tracer is not None:
         structured_config.tracers = [tracer]
         structured_config.resolved_tracer = tracer
+    else:
+        structured_config.tracers = list(original_tracers)
+        structured_config.resolved_tracer = original_resolved_tracer
     suffix = structured_prompt_suffix(output_schema, output_mode)
     existing_suffix = structured_config.system_prompt_suffix or ""
     structured_config.system_prompt_suffix = f"{existing_suffix}\n\n{suffix}".strip()

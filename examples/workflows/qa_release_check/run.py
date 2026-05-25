@@ -14,7 +14,16 @@ from nexau.archs.main_sub.config import AgentConfig
 from nexau.archs.session import InMemoryDatabaseEngine, SessionManager
 from nexau.archs.tracer.context import TraceContext
 from nexau.archs.tracer.core import BaseTracer, SpanType
-from nexau.archs.workflow import JsonObject, WorkflowConfig, WorkflowExecutor, WorkflowStore
+from nexau.archs.workflow import (
+    JsonObject,
+    WorkflowConfig,
+    WorkflowExecutor,
+    WorkflowLiveEventBus,
+    WorkflowLiveSubscription,
+    WorkflowRunResult,
+    WorkflowStore,
+    WorkflowStreamOptions,
+)
 from nexau.archs.workflow.executor import AgentNodeRunner
 from nexau.archs.workflow.types import json_object, json_value
 
@@ -86,6 +95,32 @@ def close_tracer(tracer: BaseTracer | None) -> None:
 
 def dump_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+async def print_live_sse_events(subscription: WorkflowLiveSubscription) -> None:
+    print("live workflow SSE events:")
+    async for envelope in subscription:
+        print(f"event: {envelope.type}")
+        print(f"data: {envelope.model_dump_json(exclude_none=True)}")
+        print()
+
+
+def final_stream_payload(result: WorkflowRunResult) -> JsonObject:
+    return {
+        "output": result.output,
+        "state": result.state,
+        "checkpoint_id": result.checkpoint_id,
+        "waiting_checkpoint_ids": list(result.checkpoint_ids),
+    }
+
+
+async def complete_live_sse_events(live_event_bus: WorkflowLiveEventBus, event_task: asyncio.Task[None], result: WorkflowRunResult) -> None:
+    await asyncio.sleep(0)
+    payload = final_stream_payload(result)
+    live_event_bus.publish_status(run_id=result.run_id, status=result.status.value, payload=payload)
+    live_event_bus.publish_complete(run_id=result.run_id, status=result.status.value, payload=payload)
+    live_event_bus.close(result.run_id)
+    await event_task
 
 
 def get_cases(planner_output: JsonObject) -> list[JsonObject]:
@@ -208,26 +243,42 @@ async def run_workflow(args: argparse.Namespace) -> None:
         return
 
     tracer = build_langfuse_tracer(args)
+    live_event_bus: WorkflowLiveEventBus | None = None
+    event_task: asyncio.Task[None] | None = None
+    run_id: str | None = None
+    stream_closed = False
     try:
         if not args.mock_agents:
             require_env()
 
         engine = InMemoryDatabaseEngine()
         session_manager = SessionManager(engine=engine)
-        store = WorkflowStore(engine)
+        live_event_bus = WorkflowLiveEventBus()
+        stream_options = WorkflowStreamOptions(
+            include_agent_events=True,
+            include_text_deltas=True,
+            include_tool_events=True,
+        )
+        store = WorkflowStore(engine, live_event_bus=live_event_bus)
+        current_run_id = args.run_id or f"wf_qa_release_{uuid.uuid4().hex[:8]}"
+        run_id = current_run_id
+        subscription = live_event_bus.subscribe(current_run_id, options=stream_options)
+        event_task = asyncio.create_task(print_live_sse_events(subscription))
         executor = WorkflowExecutor(
             workflow=workflow,
             store=store,
             agents=mock_agent_configs() if args.mock_agents else None,
             agent_runner=build_mock_agent_runner(tracer) if args.mock_agents else None,
             tracer=tracer,
+            live_event_bus=live_event_bus,
+            stream_options=stream_options,
         )
-        run_id = args.run_id or f"wf_qa_release_{uuid.uuid4().hex[:8]}"
 
-        print(f"starting run: {run_id}")
+        print(f"starting run: {current_run_id}")
+        live_event_bus.publish_status(run_id=current_run_id, status="started", payload={"workflow_name": workflow.name})
         waiting = await executor.run_async(
             inputs={"requirement": args.requirement},
-            run_id=run_id,
+            run_id=current_run_id,
             user_id="workflow_example_user",
             session_id=DEFAULT_SESSION_ID,
             session_manager=session_manager,
@@ -237,10 +288,13 @@ async def run_workflow(args: argparse.Namespace) -> None:
         if waiting.checkpoint_id is None:
             print("workflow finished without a human checkpoint:")
             print(dump_json(waiting.output))
+            await complete_live_sse_events(live_event_bus, event_task, waiting)
+            stream_closed = True
             return
 
+        live_event_bus.publish_status(run_id=current_run_id, status=waiting.status.value, payload=final_stream_payload(waiting))
         checkpoint = await store.get_checkpoint(waiting.checkpoint_id)
-        folded = await store.fold(run_id)
+        folded = await store.fold(current_run_id)
         planner_output = folded.node_outputs.get("generate_cases", {})
         cases = get_cases(planner_output)
 
@@ -260,8 +314,9 @@ async def run_workflow(args: argparse.Namespace) -> None:
         print("resuming checkpoint with:")
         print(dump_json(review_output))
 
+        live_event_bus.publish_status(run_id=current_run_id, status="resuming", payload={"checkpoint_id": waiting.checkpoint_id})
         completed = await executor.resume_async(
-            run_id=run_id,
+            run_id=current_run_id,
             checkpoint_id=waiting.checkpoint_id,
             output=review_output,
             user_id="workflow_example_user",
@@ -269,15 +324,18 @@ async def run_workflow(args: argparse.Namespace) -> None:
             session_manager=session_manager,
         )
 
-        events = await store.list_events(run_id)
-        subgraph_events = [event for event in events if event.event_type.startswith("subgraph_")]
         print(f"final status: {completed.status.value}")
         print("final output:")
         print(dump_json(completed.output))
-        print(f"event count: {len(events)}")
-        print("subgraph events:")
-        for event in subgraph_events:
-            print(f"  - {event.event_type}: node={event.node_id}, scope={event.scope_path}, graph={event.payload.get('graph_id')}")
+        await complete_live_sse_events(live_event_bus, event_task, completed)
+        stream_closed = True
+    except Exception as exc:
+        if live_event_bus is not None and event_task is not None and run_id is not None and not stream_closed:
+            live_event_bus.publish_error(run_id=run_id, error=str(exc))
+            live_event_bus.publish_complete(run_id=run_id, status="error", payload={"error": str(exc)})
+            live_event_bus.close(run_id)
+            await event_task
+        raise
     finally:
         close_tracer(tracer)
 

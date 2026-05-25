@@ -1,14 +1,14 @@
 # QA Release Check Workflow
 
-这个例子演示如何把多个 Agent 和一个可复用子图串成真实 Workflow：父图中的 Planner Agent 先根据需求生成 QA 测试用例，然后通过 `type: subgraph` 调用 `graphs/human_case_review.workflow.yaml`。子图内部暂停到人工审核节点，脚本模拟人工批准后 resume，父图再让 Runner Agent 逐条执行测试用例并汇总结果。
+这个例子演示如何把多个 Agent、一个可复用子图和并行 map 串成真实 Workflow：父图中的 Planner Agent 先根据需求生成 QA 测试用例，然后通过 `type: subgraph` 调用 `graphs/human_case_review.workflow.yaml`。子图内部暂停到人工审核节点，脚本模拟人工批准后 resume，父图再用 `type: parallel_map` 并行调用 Runner Agent 执行测试用例并汇总结果。
 
 ## 文件结构
 
-- `qa_release.workflow.yaml`: 父 Workflow 定义，包含 `start`、`agent`、`subgraph`、`if_else`、`while`、`transform`、`end` 节点。
+- `qa_release.workflow.yaml`: 父 Workflow 定义，包含 `start`、`agent`、`subgraph`、`if_else`、`parallel_map`、`transform`、`end` 节点。
 - `graphs/human_case_review.workflow.yaml`: 独立子图文件，包含 human checkpoint 和明确的 output contract。
 - `agents/qa_planner.yaml`: 生成测试用例的 Agent。
 - `agents/qa_runner.yaml`: 执行单个测试用例并返回结构化结果的 Agent。
-- `run.py`: 从 YAML 加载父图和子图，启动运行，读取子图内部 human checkpoint，再用审核结果恢复执行。
+- `run.py`: 从 YAML 加载父图和子图，启动运行，读取子图内部 human checkpoint，再用审核结果恢复执行，并打印 live workflow SSE 事件流。
 
 ## 准备环境
 
@@ -76,6 +76,16 @@ uv run python examples/workflows/qa_release_check/run.py \
 uv run python examples/workflows/qa_release_check/run.py --reject
 ```
 
+脚本运行时会打印 live workflow SSE envelope。`workflow_event` 来自 durable workflow event log；真实 LLM 运行时还会在 Agent 节点内部打印 `agent_event`，包括 text delta、tool call args、tool result、usage 和 run lifecycle。`--mock-agents` 走本地 mock runner，不会产生 LLM/Agent middleware 事件。
+
+```text
+event: workflow_event
+data: {"type":"workflow_event","workflow_event":{"event_type":"node_started", ...}}
+
+event: agent_event
+data: {"type":"agent_event","workflow":{"node_id":"generate_cases", ...},"agent":{"event":{"type":"TEXT_MESSAGE_CONTENT", ...}}}
+```
+
 ## 关键点
 
 Workflow 的 Agent 节点通过 `includes.agents` 引用普通 Agent YAML：
@@ -115,13 +125,37 @@ completed = await executor.resume_async(
 
 子图的输出会作为父图 `review_cases` 节点的输出暴露，后续节点只读取 `nodes.review_cases.output`，不能隐式读取子图内部的 `nodes.review`。
 
-`while` 节点用 CEL 表达式控制循环，用 `update` 把每次 Agent 输出追加到 durable state：
+`parallel_map` 节点把审核后的 case 列表 fan out 到同一个 Runner Agent body。每个 item 都有稳定的 `item_key`，因此 side-effecting Agent body 可以用 scoped idempotency key 安全重试；collect 阶段再把所有 item 输出按输入顺序汇总：
 
 ```yaml
-condition: "state.remaining_cases.size() > 0"
-update:
-  remaining_cases: "{{ state.remaining_cases[1:] }}"
-  results: "{{ state.results + [nodes.run_one_case.output] }}"
+run_cases:
+  type: parallel_map
+  items: "{{ nodes.review_cases.output.cases }}"
+  item_name: qa_case
+  item_key: "{{ qa_case.id }}"
+  max_concurrency: 2
+  result_order: input
+  failure_policy: collect_errors
+  body: run_one_case
+  collect:
+    output:
+      results: "{{ results }}"
+      errors: "{{ errors }}"
+      stats: "{{ stats }}"
+```
+
+`run_one_case` 作为 `parallel_map` body 不会出现在普通 `edges` 中。它通过 `qa_case` / `qa_case_index` 读取当前 item，而不是读取父图 state：
+
+```yaml
+run_one_case:
+  type: agent
+  agent: qa_runner
+  side_effect: external_write
+  idempotency_key: "{{ run.id }}:{{ node.scope_path }}"
+  input:
+    requirement: "{{ inputs.requirement }}"
+    case: "{{ qa_case }}"
+    case_index: "{{ qa_case_index }}"
 ```
 
 这个例子使用 `common-expression-language` 执行 CEL 表达式；NexAU 只在模板层补充了 `.length` 和简单 slice 的兼容转换。

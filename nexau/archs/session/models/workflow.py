@@ -2,6 +2,7 @@
 
 RFC-0027: workflow event log, run summary, node runs, checkpoints, leases, and
 state snapshots.
+RFC-0029: parallel map run summaries can expose multiple open checkpoints.
 """
 
 from __future__ import annotations
@@ -18,6 +19,10 @@ type JsonObject = dict[str, JsonValue]
 
 def _empty_payload() -> JsonObject:
     return {}
+
+
+def _empty_string_list() -> list[str]:
+    return []
 
 
 class WorkflowRunStatus(StrEnum):
@@ -78,6 +83,7 @@ class WorkflowRunModel(SQLModel, table=True):
     state: JsonObject = Field(default_factory=_empty_payload, sa_column=Column(JSON))
     definition_snapshot: JsonObject = Field(default_factory=_empty_payload, sa_column=Column(JSON))
     waiting_checkpoint_id: str | None = Field(default=None, index=True)
+    waiting_checkpoint_ids: list[str] = Field(default_factory=_empty_string_list, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 

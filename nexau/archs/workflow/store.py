@@ -3,6 +3,7 @@
 RFC-0027: append-only event log is the canonical workflow state. Materialized
 run, node, checkpoint, lease, and state rows are maintained for fast lookup,
 but recovery folds events first and treats summaries as indexes.
+RFC-0029: parallel map item state is also derived from the event log.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Protocol
 
 from nexau.archs.session.models.workflow import (
     WORKFLOW_MODELS,
@@ -24,11 +26,20 @@ from nexau.archs.session.models.workflow import (
     WorkflowStateModel,
 )
 from nexau.archs.session.orm import AndFilter, ComparisonFilter, DatabaseEngine
-from nexau.archs.workflow.types import JsonObject, JsonValue, json_object, merge_json_objects
+from nexau.archs.workflow.types import JsonObject, JsonValue, json_array, json_object, merge_json_objects
 
 
 def _empty_json_object() -> JsonObject:
     return {}
+
+
+class WorkflowEventPublisher(Protocol):
+    """Publishes persisted workflow events to optional live subscribers."""
+
+    def publish_workflow_event(self, event: WorkflowEventModel) -> None:
+        """Publish one persisted workflow event."""
+
+        ...
 
 
 def _empty_node_outputs() -> dict[str, JsonObject]:
@@ -59,6 +70,14 @@ def _empty_string_set() -> set[str]:
     return set()
 
 
+def _empty_string_list() -> list[str]:
+    return []
+
+
+def _empty_parallel_maps() -> dict[str, FoldedParallelMapState]:
+    return {}
+
+
 def node_run_key(run_id: str, node_id: str, scope_path: str = "") -> str:
     """Return the stable materialized key for one scoped node instance."""
 
@@ -86,6 +105,50 @@ def _apply_state_patch(folded: FoldedWorkflowState, *, patch: JsonObject, state_
 
 
 @dataclass
+class FoldedParallelMapItem:
+    """One RFC-0029 parallel map item reconstructed from events."""
+
+    index: int
+    key: str
+    item: JsonValue
+    scope_path: str
+    body_node_id: str
+    status: str = "pending"
+    output: JsonObject | None = None
+    error: JsonObject | None = None
+
+
+def _empty_parallel_items() -> list[FoldedParallelMapItem]:
+    return []
+
+
+def _empty_completed_item_order() -> list[str]:
+    return []
+
+
+@dataclass
+class FoldedParallelMapState:
+    """RFC-0029 parallel map state reconstructed from events."""
+
+    node_id: str
+    scope_path: str
+    body_node_id: str
+    max_concurrency: int
+    failure_policy: str
+    result_order: str
+    items: list[FoldedParallelMapItem] = field(default_factory=_empty_parallel_items)
+    completed_item_order: list[str] = field(default_factory=_empty_completed_item_order)
+
+    def item_by_scope(self, scope_path: str) -> FoldedParallelMapItem | None:
+        """Return the item for a durable item scope."""
+
+        for item in self.items:
+            if item.scope_path == scope_path:
+                return item
+        return None
+
+
+@dataclass
 class FoldedWorkflowState:
     """State derived by folding the workflow event log."""
 
@@ -106,6 +169,8 @@ class FoldedWorkflowState:
     completed_node_runs: set[str] = field(default_factory=_empty_string_set)
     failed_node_runs: set[str] = field(default_factory=_empty_string_set)
     uncertain_node_runs: set[str] = field(default_factory=_empty_string_set)
+    parallel_maps: dict[str, FoldedParallelMapState] = field(default_factory=_empty_parallel_maps)
+    waiting_checkpoint_ids: list[str] = field(default_factory=_empty_string_list)
     waiting_checkpoint_id: str | None = None
     waiting_node_id: str | None = None
     waiting_scope_path: str = ""
@@ -142,6 +207,15 @@ class FoldedWorkflowState:
 
         return self.node_outputs_by_key.get(node_run_key(run_id, node_id, scope_path))
 
+    def parallel_item_for_scope(self, scope_path: str) -> FoldedParallelMapItem | None:
+        """Return a parallel item whose scope matches or prefixes *scope_path*."""
+
+        for parallel_map in self.parallel_maps.values():
+            for item in parallel_map.items:
+                if scope_path == item.scope_path or scope_path.startswith(f"{item.scope_path}/"):
+                    return item
+        return None
+
     def last_completed_node_id_for_scope(self, scope_prefix: str, candidate_node_ids: set[str]) -> str | None:
         """Return the last completed top-level node inside a graph frame."""
 
@@ -161,12 +235,93 @@ class FoldedWorkflowState:
         return scope_path == f"{scope_prefix}/{node_id}"
 
 
+def _payload_has_parallel_item(payload: JsonObject) -> bool:
+    return isinstance(payload.get("parallel_node_id"), str)
+
+
+def _payload_int(payload: JsonObject, key: str, *, default: int) -> int:
+    value = payload.get(key, default)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return default
+
+
+def _payload_str(payload: JsonObject, key: str, *, default: str) -> str:
+    value = payload.get(key, default)
+    if isinstance(value, str):
+        return value
+    return default
+
+
+def _parallel_map_from_payload(node_id: str, scope_path: str, payload: JsonObject) -> FoldedParallelMapState:
+    raw_items = payload.get("items", [])
+    item_values = json_array(raw_items, label="parallel_map_started.items") if isinstance(raw_items, list) else []
+    body_node_id = _payload_str(payload, "body_node_id", default="")
+    parallel_map = FoldedParallelMapState(
+        node_id=node_id,
+        scope_path=scope_path,
+        body_node_id=body_node_id,
+        max_concurrency=_payload_int(payload, "max_concurrency", default=1),
+        failure_policy=_payload_str(payload, "failure_policy", default="fail_fast"),
+        result_order=_payload_str(payload, "result_order", default="input"),
+    )
+    for item_value in item_values:
+        if not isinstance(item_value, dict):
+            continue
+        item_payload = json_object(item_value, label="parallel_map_started.items[]")
+        parallel_map.items.append(
+            FoldedParallelMapItem(
+                index=_payload_int(item_payload, "index", default=0),
+                key=_payload_str(item_payload, "key", default=""),
+                item=item_payload.get("item"),
+                scope_path=_payload_str(item_payload, "scope_path", default=""),
+                body_node_id=_payload_str(item_payload, "body_node_id", default=body_node_id),
+            )
+        )
+    return parallel_map
+
+
+def _update_parallel_item(
+    folded: FoldedWorkflowState,
+    run_id: str,
+    node_id: str | None,
+    scope_path: str,
+    payload: JsonObject,
+    *,
+    status: str,
+    output: JsonObject | None = None,
+    error: JsonObject | None = None,
+) -> None:
+    if node_id is None:
+        return
+    parallel_map = folded.parallel_maps.get(node_run_key(run_id, node_id, scope_path))
+    if parallel_map is None:
+        return
+    item_scope = _payload_str(payload, "item_scope_path", default="")
+    item = parallel_map.item_by_scope(item_scope)
+    if item is None:
+        return
+    item.status = status
+    if output is not None:
+        item.output = output
+        if item.scope_path not in parallel_map.completed_item_order:
+            parallel_map.completed_item_order.append(item.scope_path)
+    if error is not None:
+        item.error = error
+
+
 class WorkflowStore:
     """Repository for workflow durable execution models."""
 
-    def __init__(self, engine: DatabaseEngine):
+    def __init__(self, engine: DatabaseEngine, live_event_bus: WorkflowEventPublisher | None = None):
         self._engine = engine
         self._initialized = False
+        self._live_event_bus = live_event_bus
+
+    def set_live_event_bus(self, live_event_bus: WorkflowEventPublisher | None) -> None:
+        """Attach or clear the optional RFC-0030 live event publisher."""
+
+        self._live_event_bus = live_event_bus
 
     async def setup(self) -> None:
         """Initialize workflow storage models."""
@@ -214,6 +369,7 @@ class WorkflowStore:
         output: JsonObject | None = None,
         state: JsonObject | None = None,
         waiting_checkpoint_id: str | None = None,
+        waiting_checkpoint_ids: list[str] | None = None,
     ) -> WorkflowRunModel:
         """Update a materialized run summary."""
 
@@ -224,6 +380,8 @@ class WorkflowStore:
         if state is not None:
             run.state = dict(state)
         run.waiting_checkpoint_id = waiting_checkpoint_id
+        if waiting_checkpoint_ids is not None:
+            run.waiting_checkpoint_ids = list(waiting_checkpoint_ids)
         run.updated_at = datetime.now()
         return await self._engine.update(run)
 
@@ -251,7 +409,10 @@ class WorkflowStore:
             attempt=attempt,
             payload=dict(payload or {}),
         )
-        return await self._engine.create(event)
+        saved = await self._engine.create(event)
+        if self._live_event_bus is not None:
+            self._live_event_bus.publish_workflow_event(saved)
+        return saved
 
     async def list_events(self, run_id: str) -> list[WorkflowEventModel]:
         """List events for a run in canonical order."""
@@ -269,6 +430,29 @@ class WorkflowStore:
         events = await self.list_events(run_id)
         folded = FoldedWorkflowState(run_id=run_id)
         checkpoints: dict[str, str] = {}
+        checkpoint_nodes: dict[str, tuple[str | None, str]] = {}
+
+        def refresh_waiting_checkpoints() -> None:
+            open_ids = [checkpoint_id for checkpoint_id, status in checkpoints.items() if status == WorkflowCheckpointStatus.OPEN.value]
+            folded.waiting_checkpoint_ids = open_ids
+            folded.waiting_checkpoint_id = open_ids[0] if open_ids else None
+            if folded.waiting_checkpoint_id is not None:
+                node_id, scope_path = checkpoint_nodes.get(folded.waiting_checkpoint_id, (None, ""))
+                folded.waiting_node_id = node_id
+                folded.waiting_scope_path = scope_path
+                if folded.status not in {
+                    WorkflowRunStatus.COMPLETED,
+                    WorkflowRunStatus.FAILED,
+                    WorkflowRunStatus.CANCELLED,
+                    WorkflowRunStatus.UNCERTAIN,
+                }:
+                    folded.status = WorkflowRunStatus.WAITING
+                return
+            folded.waiting_node_id = None
+            folded.waiting_scope_path = ""
+            if folded.status == WorkflowRunStatus.WAITING:
+                folded.status = WorkflowRunStatus.RUNNING
+
         for event in events:
             payload = json_object(event.payload, label="workflow event payload")
             match event.event_type:
@@ -331,7 +515,8 @@ class WorkflowStore:
                         folded.node_ids_by_key[key] = event.node_id
                         if event.scope_path == "":
                             folded.node_status[event.node_id] = WorkflowNodeStatus.FAILED.value
-                        folded.status = WorkflowRunStatus.FAILED
+                        if not _payload_has_parallel_item(payload):
+                            folded.status = WorkflowRunStatus.FAILED
                 case "node_retry_scheduled":
                     if event.node_id is not None:
                         key = node_run_key(run_id, event.node_id, event.scope_path)
@@ -354,10 +539,8 @@ class WorkflowStore:
                 case "checkpoint_created":
                     checkpoint_id = str(payload.get("checkpoint_id", ""))
                     checkpoints[checkpoint_id] = WorkflowCheckpointStatus.OPEN.value
-                    folded.status = WorkflowRunStatus.WAITING
-                    folded.waiting_checkpoint_id = checkpoint_id
-                    folded.waiting_node_id = event.node_id
-                    folded.waiting_scope_path = event.scope_path
+                    checkpoint_nodes[checkpoint_id] = (event.node_id, event.scope_path)
+                    refresh_waiting_checkpoints()
                     if event.node_id is not None:
                         key = node_run_key(run_id, event.node_id, event.scope_path)
                         folded.node_status_by_key[key] = WorkflowNodeStatus.WAITING.value
@@ -368,11 +551,7 @@ class WorkflowStore:
                 case "checkpoint_resumed":
                     checkpoint_id = str(payload.get("checkpoint_id", ""))
                     checkpoints[checkpoint_id] = WorkflowCheckpointStatus.RESUMED.value
-                    if folded.waiting_checkpoint_id == checkpoint_id:
-                        folded.waiting_checkpoint_id = None
-                        folded.waiting_node_id = None
-                        folded.waiting_scope_path = ""
-                    folded.status = WorkflowRunStatus.RUNNING
+                    refresh_waiting_checkpoints()
                 case "state_patched":
                     raw_patch = payload.get("patch", {})
                     _apply_state_patch(
@@ -388,6 +567,57 @@ class WorkflowStore:
                     folded.status = WorkflowRunStatus.FAILED
                 case "workflow_run_cancelled":
                     folded.status = WorkflowRunStatus.CANCELLED
+                case "parallel_map_started":
+                    if event.node_id is not None:
+                        parallel_key = node_run_key(run_id, event.node_id, event.scope_path)
+                        folded.parallel_maps[parallel_key] = _parallel_map_from_payload(event.node_id, event.scope_path, payload)
+                case "parallel_item_scheduled":
+                    _update_parallel_item(
+                        folded,
+                        run_id,
+                        event.node_id,
+                        event.scope_path,
+                        payload,
+                        status=WorkflowNodeStatus.SCHEDULED.value,
+                    )
+                case "parallel_item_completed":
+                    _update_parallel_item(
+                        folded,
+                        run_id,
+                        event.node_id,
+                        event.scope_path,
+                        payload,
+                        status=WorkflowNodeStatus.COMPLETED.value,
+                        output=json_object(payload.get("output", {}), label="parallel_item_completed.output"),
+                    )
+                case "parallel_item_failed":
+                    _update_parallel_item(
+                        folded,
+                        run_id,
+                        event.node_id,
+                        event.scope_path,
+                        payload,
+                        status=WorkflowNodeStatus.FAILED.value,
+                        error=json_object(payload.get("error", {}), label="parallel_item_failed.error"),
+                    )
+                case "parallel_item_waiting":
+                    _update_parallel_item(
+                        folded,
+                        run_id,
+                        event.node_id,
+                        event.scope_path,
+                        payload,
+                        status=WorkflowNodeStatus.WAITING.value,
+                    )
+                case "parallel_item_uncertain":
+                    _update_parallel_item(
+                        folded,
+                        run_id,
+                        event.node_id,
+                        event.scope_path,
+                        payload,
+                        status=WorkflowNodeStatus.UNCERTAIN.value,
+                    )
                 case _:
                     continue
 
