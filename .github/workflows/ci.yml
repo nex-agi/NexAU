@@ -331,16 +331,24 @@ jobs:
     - *install-uv
     - *install-deps
 
-    - name: Verify E2B credentials
+    - name: Check E2B credentials
+      id: e2b_credentials
       env:
         E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
       run: |
         if [ -z "$E2B_API_KEY" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            echo "::notice::E2B_API_KEY secret is not available for this PR run; skipping E2B SaaS tests."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "::error::E2B_API_KEY secret is not set. E2B tests would be silently skipped."
           exit 1
         fi
+        echo "available=true" >> "$GITHUB_OUTPUT"
 
     - name: Debug environment
+      if: steps.e2b_credentials.outputs.available == 'true'
       run: |
         echo "=== Python version ==="
         python --version
@@ -352,6 +360,7 @@ jobs:
         uv run pip list 2>/dev/null | grep -iE "greenlet|sqlalchemy|aiosqlite|sqlmodel" || true
 
     - name: Run tests with coverage (E2B SaaS)
+      if: steps.e2b_credentials.outputs.available == 'true'
       timeout-minutes: 30
       env:
         LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
@@ -408,7 +417,7 @@ jobs:
       # unrelated flake (e.g. ``test_interrupt_persistence`` cancellation
       # timing) blocks the codecov/patch gate by leaving stale carryforward
       # results, masking real coverage on the latest commit.
-      if: always()
+      if: always() && steps.e2b_credentials.outputs.available == 'true'
       uses: codecov/codecov-action@v5
       with:
         name: test-coverage-saas
@@ -420,6 +429,7 @@ jobs:
         CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
     - name: Upload test coverage HTML
+      if: always() && steps.e2b_credentials.outputs.available == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: test-coverage-html-saas
@@ -438,26 +448,44 @@ jobs:
     - *install-uv
     - *install-deps
 
-    - name: Verify E2B Self-Host credentials
+    - name: Check E2B Self-Host credentials
+      id: e2b_selfhost_credentials
       env:
         E2B_API_KEY: ${{ secrets.E2B_SELFHOST_API_KEY }}
         E2B_API_URL: ${{ vars.E2B_SELFHOST_API_URL }}
         E2B_DOMAIN: ${{ vars.E2B_SELFHOST_DOMAIN }}
       run: |
         if [ -z "$E2B_API_KEY" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            echo "::notice::E2B_SELFHOST_API_KEY secret is not available for this PR run; skipping E2B self-host tests."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "::error::E2B_SELFHOST_API_KEY secret is not set. Self-host E2B tests would be silently skipped."
           exit 1
         fi
         if [ -z "$E2B_API_URL" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            echo "::notice::E2B_SELFHOST_API_URL variable is not available for this PR run; skipping E2B self-host tests."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "::error::E2B_SELFHOST_API_URL variable is not set."
           exit 1
         fi
         if [ -z "$E2B_DOMAIN" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            echo "::notice::E2B_SELFHOST_DOMAIN variable is not available for this PR run; skipping E2B self-host tests."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "::error::E2B_SELFHOST_DOMAIN variable is not set."
           exit 1
         fi
+        echo "available=true" >> "$GITHUB_OUTPUT"
 
     - name: Run tests with coverage (E2B Self-Host)
+      if: steps.e2b_selfhost_credentials.outputs.available == 'true'
       env:
         LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         LLM_MODEL: ${{ vars.LLM_MODEL }}
@@ -474,7 +502,7 @@ jobs:
     - name: Upload test coverage to Codecov
       # Mirror the test-saas job: upload coverage even on test failure
       # so an unrelated flake doesn't masquerade as a coverage regression.
-      if: always()
+      if: always() && steps.e2b_selfhost_credentials.outputs.available == 'true'
       uses: codecov/codecov-action@v5
       with:
         name: test-coverage-selfhost
@@ -486,6 +514,7 @@ jobs:
         CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
     - name: Upload test coverage HTML
+      if: always() && steps.e2b_selfhost_credentials.outputs.available == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: test-coverage-html-selfhost
