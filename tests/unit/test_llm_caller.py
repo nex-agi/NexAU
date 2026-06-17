@@ -2126,3 +2126,98 @@ class TestAnthropicCacheControl:
         assistant_blocks = sent_messages[1]["content"]
         assert assistant_blocks[0] == {"type": "thinking", "thinking": "openai responses reasoning"}
         assert "signature" not in assistant_blocks[0]
+
+
+class TestAnthropicCacheControlBreakpointClamp:
+    """Tests for clamping total cache_control breakpoints to Anthropic's limit of 4."""
+
+    @staticmethod
+    def _ephemeral() -> dict[str, str]:
+        return {"type": "ephemeral"}
+
+    def test_breakpoints_clamped_to_four_with_many_cacheable_blocks(self):
+        """Six cacheable system blocks + a user block must not exceed four breakpoints."""
+        from nexau.archs.main_sub.execution.llm_caller import _apply_anthropic_cache_control
+
+        system_messages: list[dict[str, object]] = [
+            {"type": "text", "text": f"block {i}", "_cache": True} for i in range(6)
+        ]
+        user_messages: list[dict[str, object]] = [
+            {"role": "user", "content": [{"type": "text", "text": "hello"}]}
+        ]
+
+        _apply_anthropic_cache_control(system_messages, user_messages, self._ephemeral)
+
+        cached_system = [b for b in system_messages if "cache_control" in b]
+        user_content = user_messages[-1]["content"]
+        assert isinstance(user_content, list)
+        cached_user = [b for b in user_content if "cache_control" in b]
+
+        total = len(cached_system) + len(cached_user)
+        assert total == 4, total
+        # Prefix-first allocation: all four land on the leading system blocks,
+        # leaving none for the user block.
+        assert len(cached_system) == 4
+        assert len(cached_user) == 0
+        # The _cache scaffolding flag is always consumed.
+        assert all("_cache" not in b for b in system_messages)
+
+    def test_user_block_cached_when_system_blocks_leave_headroom(self):
+        """With few system blocks, the trailing user block still gets a breakpoint."""
+        from nexau.archs.main_sub.execution.llm_caller import _apply_anthropic_cache_control
+
+        system_messages: list[dict[str, object]] = [
+            {"type": "text", "text": "static", "_cache": True},
+            {"type": "text", "text": "dynamic", "_cache": False},
+        ]
+        user_messages: list[dict[str, object]] = [
+            {"role": "user", "content": [{"type": "text", "text": "hello"}]}
+        ]
+
+        _apply_anthropic_cache_control(system_messages, user_messages, self._ephemeral)
+
+        assert system_messages[0].get("cache_control") == {"type": "ephemeral"}
+        assert "cache_control" not in system_messages[1]
+        user_content = user_messages[-1]["content"]
+        assert isinstance(user_content, list)
+        assert user_content[0].get("cache_control") == {"type": "ephemeral"}
+
+    def test_exactly_four_cacheable_system_blocks_leaves_user_uncached(self):
+        """Four cacheable system blocks exhaust the budget before the user block."""
+        from nexau.archs.main_sub.execution.llm_caller import _apply_anthropic_cache_control
+
+        system_messages: list[dict[str, object]] = [
+            {"type": "text", "text": f"block {i}", "_cache": True} for i in range(4)
+        ]
+        user_messages: list[dict[str, object]] = [
+            {"role": "user", "content": [{"type": "text", "text": "hello"}]}
+        ]
+
+        _apply_anthropic_cache_control(system_messages, user_messages, self._ephemeral)
+
+        assert all(b.get("cache_control") == {"type": "ephemeral"} for b in system_messages)
+        user_content = user_messages[-1]["content"]
+        assert isinstance(user_content, list)
+        assert "cache_control" not in user_content[0]
+
+    def test_thinking_blocks_are_skipped_for_user_breakpoint(self):
+        """A leading thinking block is skipped so cache_control lands on a real block."""
+        from nexau.archs.main_sub.execution.llm_caller import _apply_anthropic_cache_control
+
+        system_messages: list[dict[str, object]] = []
+        user_messages: list[dict[str, object]] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "thinking", "thinking": "..."},
+                    {"type": "text", "text": "hello"},
+                ],
+            }
+        ]
+
+        _apply_anthropic_cache_control(system_messages, user_messages, self._ephemeral)
+
+        user_content = user_messages[-1]["content"]
+        assert isinstance(user_content, list)
+        assert "cache_control" not in user_content[0]
+        assert user_content[1].get("cache_control") == {"type": "ephemeral"}

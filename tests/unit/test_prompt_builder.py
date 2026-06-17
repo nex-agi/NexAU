@@ -204,6 +204,48 @@ class TestBuildSystemPrompt:
         mock_base.assert_called_once()
         mock_caps.assert_called_once()
 
+    def test_runtime_date_is_date_only_for_cache_stability(self):
+        """The runtime ``date`` must not carry a time-of-day component.
+
+        It lands in the cached system-prompt prefix (the ``{{date}}`` template
+        variable used by shipped agents). A second-precision timestamp there
+        changes the prefix on every request and collapses the cache hit rate,
+        so the value must be date-only and stable within a calendar day.
+        """
+        import re
+
+        from nexau.archs.main_sub.runtime_context import build_runtime_prompt_context, get_runtime_date
+
+        date_value = get_runtime_date()
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_value), date_value
+        # No time-of-day component (HH:MM:SS) anywhere in the value.
+        assert not re.search(r"\d{2}:\d{2}", date_value), date_value
+
+        context = build_runtime_prompt_context()
+        assert context["date"] == date_value
+        assert not re.search(r"\d{2}:\d{2}", str(context["date"]))
+
+    def test_runtime_date_renders_without_time_in_cached_prompt(self, mock_config):
+        """The rendered system prompt prefix carries no time-of-day from ``{{date}}``."""
+        import re
+
+        from nexau.archs.main_sub.prompt_builder import SystemPromptPart
+        from nexau.archs.main_sub.runtime_context import build_runtime_prompt_context
+
+        builder = PromptBuilder()
+        runtime_context = build_runtime_prompt_context()
+        rendered = f"Date: {runtime_context['date']}.\n"
+
+        with patch.object(builder, "_get_base_system_prompt", return_value=[SystemPromptPart(text=rendered)]):
+            with patch.object(builder, "_build_capabilities_docs", return_value="Caps\n"):
+                with patch.object(builder, "_get_tool_execution_instructions", return_value="Inst\n"):
+                    result = builder.build_system_prompt(
+                        mock_config,
+                        runtime_context=runtime_context,
+                    )
+
+        assert not re.search(r"\d{2}:\d{2}:\d{2}", result[0].text), result[0].text
+
     def test_build_system_prompt_does_not_force_runtime_platform_contract(self, mock_config):
         """Runtime environment facts stay available as template variables only."""
         from nexau.archs.main_sub.prompt_builder import SystemPromptPart

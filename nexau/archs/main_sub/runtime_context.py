@@ -25,8 +25,15 @@ from typing import Any
 
 
 def get_runtime_date() -> str:
-    """Return the current local date-time string used in prompts."""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    """Return the current local date string used in prompts.
+
+    The value lands in the cached system-prompt prefix (the ``{{date}}``
+    template variable used by shipped agents). Caching is a prefix match, so a
+    second-precision timestamp here changes the prefix on every request and
+    drives the cache hit rate to zero. Returning a date-only string keeps the
+    cached prefix stable for the lifetime of a calendar day.
+    """
+    return datetime.now().strftime("%Y-%m-%d")
 
 
 def current_username() -> str:

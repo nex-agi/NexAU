@@ -1532,6 +1532,44 @@ def _strip_responses_api_artifacts(messages: list[Any]) -> list[Any]:
     return sanitized
 
 
+# Anthropic rejects requests carrying more than four ``cache_control``
+# breakpoints with a 400 error. We allocate them prefix-first (system blocks
+# before the trailing user block) so the largest stable prefix stays cached.
+_MAX_CACHE_CONTROL_BREAKPOINTS = 4
+
+
+def _apply_anthropic_cache_control(
+    system_messages: list[dict[str, Any]],
+    user_messages: list[dict[str, Any]],
+    build_cache_control: Callable[[], dict[str, str]],
+) -> None:
+    """Apply Anthropic ``cache_control`` to system and user message blocks.
+
+    System blocks carry a ``_cache`` flag from ``SystemPromptBlock``
+    configuration; when absent the default is to cache. The total number of
+    breakpoints is clamped to :data:`_MAX_CACHE_CONTROL_BREAKPOINTS` because
+    Anthropic returns a 400 error when a request exceeds four. Breakpoints are
+    assigned prefix-first so the longest stable prefix remains cacheable.
+    """
+    remaining = _MAX_CACHE_CONTROL_BREAKPOINTS
+
+    for sys_block in system_messages:
+        should_cache = sys_block.pop("_cache", True)
+        if should_cache and remaining > 0:
+            sys_block["cache_control"] = build_cache_control()
+            remaining -= 1
+
+    if remaining > 0 and user_messages and user_messages[-1].get("content"):
+        content = cast(list[dict[str, Any]] | str | None, user_messages[-1].get("content"))
+        if isinstance(content, list) and content:
+            # RFC-0014: thinking/redacted_thinking blocks 不允许携带 cache_control
+            no_cache_types = {"thinking", "redacted_thinking"}
+            for block in content:
+                if block.get("type") not in no_cache_types:
+                    block["cache_control"] = build_cache_control()
+                    break
+
+
 def call_llm_with_anthropic_chat_completion(
     client: Any,
     kwargs: dict[str, Any],
@@ -1558,25 +1596,7 @@ def call_llm_with_anthropic_chat_completion(
         system_messages: list[dict[str, Any]],
         user_messages: list[dict[str, Any]],
     ) -> None:
-        """Apply Anthropic cache_control to system and user message blocks.
-
-        System blocks carry a ``_cache`` flag from SystemPromptBlock
-        configuration; when absent the default is to cache.
-        """
-        for sys_block in system_messages:
-            should_cache = sys_block.pop("_cache", True)
-            if should_cache:
-                sys_block["cache_control"] = _build_cache_control()
-
-        if user_messages and user_messages[-1].get("content"):
-            content = cast(list[dict[str, Any]] | str | None, user_messages[-1].get("content"))
-            if isinstance(content, list) and content:
-                # RFC-0014: thinking/redacted_thinking blocks 不允许携带 cache_control
-                no_cache_types = {"thinking", "redacted_thinking"}
-                for block in content:
-                    if block.get("type") not in no_cache_types:
-                        block["cache_control"] = _build_cache_control()
-                        break
+        _apply_anthropic_cache_control(system_messages, user_messages, _build_cache_control)
 
     def _build_anthropic_messages() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         if type(model_call_params) is not ModelCallParams:
@@ -2151,19 +2171,7 @@ async def call_llm_with_anthropic_chat_completion_async(
         system_messages: list[dict[str, Any]],
         user_messages: list[dict[str, Any]],
     ) -> None:
-        for sys_block in system_messages:
-            should_cache = sys_block.pop("_cache", True)
-            if should_cache:
-                sys_block["cache_control"] = _build_cache_control()
-        if user_messages and user_messages[-1].get("content"):
-            content = cast(list[dict[str, Any]] | str | None, user_messages[-1].get("content"))
-            if isinstance(content, list) and content:
-                # RFC-0014: thinking/redacted_thinking blocks 不允许携带 cache_control
-                no_cache_types = {"thinking", "redacted_thinking"}
-                for block in content:
-                    if block.get("type") not in no_cache_types:
-                        block["cache_control"] = _build_cache_control()
-                        break
+        _apply_anthropic_cache_control(system_messages, user_messages, _build_cache_control)
 
     def _build_anthropic_messages() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         if type(model_call_params) is not ModelCallParams:
