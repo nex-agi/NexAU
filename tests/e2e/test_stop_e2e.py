@@ -50,7 +50,7 @@ pytestmark = pytest.mark.llm
 # 兼容两种 CI 环境：nexau-cloud-runtime 用 NEXAU_SCHEDULER_SIDECAR_LLM_API_KEY，nexau 用 LLM_API_KEY
 _LLM_API_KEY = os.environ.get("NEXAU_SCHEDULER_SIDECAR_LLM_API_KEY") or os.environ.get("LLM_API_KEY", "")
 _LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://14.103.60.158:3001/v1")
-_LLM_MODEL = "nex-agi/deepseek-v3.1-nex-1"
+_LLM_MODEL = os.environ.get("LLM_MODEL", "nex-agi/deepseek-v3.1-nex-1")
 
 # Short prompt for fast LLM responses
 _FAST_PROMPT = "What is 2+2? Answer with just the number."
