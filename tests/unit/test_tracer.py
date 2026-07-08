@@ -535,6 +535,49 @@ def test_sanitize_usage_total_uses_canonical_key_not_double_counted():
     assert langfuse_total == 320  # 修复前会是 ~646（320 拆分 + 320 total_tokens）
 
 
+def test_sanitize_usage_anthropic_nested_cache_buckets_not_double_counted():
+    """回归：Anthropic 嵌套 details 子桶不得被提升后二次累加进 total。
+
+    Anthropic 原始 usage 无字面量 total，且把 cache_creation 的 TTL 明细放在嵌套
+    `cache_creation` 子 dict、thinking 明细放在 `output_tokens_details` 子 dict：
+
+        {"input_tokens": 4644, "cache_creation_input_tokens": 37112,
+         "cache_creation": {"ephemeral_5m_input_tokens": 37112, "ephemeral_1h_input_tokens": 0},
+         "output_tokens": 101, "output_tokens_details": {"thinking_tokens": 0}}
+
+    _flatten_usage_dict 会把 ephemeral_5m/1h、thinking_tokens 提升到顶层，它们与
+    顶层 cache_creation_input_tokens / output_tokens 重叠。Anthropic 无 total →
+    Langfuse 全量求和 → cache_creation 被算两次（实测 total 多算 37112）。修复：
+    这些重叠子桶映射为 None 丢弃，顶层聚合字段已承载其值。
+    """
+    raw: dict[str, object] = {
+        "input_tokens": 4644,
+        "cache_creation_input_tokens": 37112,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {"ephemeral_5m_input_tokens": 37112, "ephemeral_1h_input_tokens": 0},
+        "output_tokens": 101,
+        "output_tokens_details": {"thinking_tokens": 0},
+    }
+    result = _sanitize_usage(raw)
+
+    # 重叠子桶被丢弃，只保留顶层互斥聚合项
+    assert "ephemeral_5m_input_tokens" not in result
+    assert "ephemeral_1h_input_tokens" not in result
+    assert "thinking_tokens" not in result
+    assert result == {
+        "input_tokens": 4644,
+        "cache_creation_input_tokens": 37112,
+        "cache_read_input_tokens": 0,
+        "completion_tokens": 101,
+    }
+
+    # Anthropic 无字面量 total → Langfuse 对拆分项求和。修复后求和 = 4 个互斥项之和，
+    # 不含重复的 cache_creation 明细。
+    langfuse_total = result["total"] if "total" in result else sum(result.values())
+    assert langfuse_total == 4644 + 37112 + 0 + 101  # 41857
+    # 修复前：+ ephemeral_5m 37112（被提升双计）≈ 78969，几乎 2×。
+
+
 def test_sanitize_usage_omits_zero_total_to_allow_langfuse_fallback():
     """total<=0（直接构造、未填总数）时不写 `total`，让 Langfuse 回落到对拆分项求和。
 
