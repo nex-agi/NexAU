@@ -199,6 +199,7 @@ def read_file(
     enable_visual: bool = False,
     image_detail: str | None = None,
     image_max_size: int | None = None,
+    image_token_budget: int | None = None,
     video_frame_interval: int | None = None,
     video_max_frames: int | None = None,
     video_frame_width: int | None = None,
@@ -220,7 +221,9 @@ def read_file(
         limit: Optional maximum number of lines to read
         enable_visual: Whether to read image/video files via read_visual_file
         image_detail: Optional read_visual_file image detail level
-        image_max_size: Optional read_visual_file image max width
+        image_max_size: Optional read_visual_file longest-edge cap in pixels
+        image_token_budget: Optional read_visual_file per-image token budget
+            (official-formula tokens, 784 px/token); default 4_784
         video_frame_interval: Optional read_visual_file video frame interval
         video_max_frames: Optional read_visual_file max frame count
         video_frame_width: Optional read_visual_file video frame width
@@ -270,6 +273,7 @@ def read_file(
                     file_path=file_path,
                     image_detail=image_detail,
                     image_max_size=image_max_size,
+                    image_token_budget=image_token_budget,
                     video_frame_interval=video_frame_interval,
                     video_max_frames=video_max_frames,
                     video_frame_width=video_frame_width,

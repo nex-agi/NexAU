@@ -14,18 +14,55 @@
 
 """Token counting utilities for agents."""
 
+import base64
+import binascii
 import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Final, cast
 
+from nexau.archs.main_sub.utils.image_probe import estimate_tokens_from_dimensions, probe_dimensions
 from nexau.core.messages import ImageBlock, Message, ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
 
 logger = logging.getLogger(__name__)
 
 TokenCounterFn = Callable[[Sequence[Message], Sequence[Mapping[str, object]] | None], int]
 
-_IMAGE_TOKEN_ESTIMATE: Final[int] = 85
+# Incident fix (session bf6ef5c923ce; Rust counterpart nexau-rs#94): the
+# previous flat `_IMAGE_TOKEN_ESTIMATE = 85` undercounted real images by 2-3
+# orders of magnitude, so context-compaction's trigger check saw an
+# image-heavy history as "tiny" while the real prompt sent to the provider blew
+# past its context window (`prompt is too long: 2,212,433 tokens > 1,000,000
+# maximum`). Charge by real pixel dimensions instead, recovered cheaply from
+# the image's own format header, using Anthropic's official patch formula
+# (`estimate_tokens_from_dimensions` in `image_probe`, the same formula the
+# read tools' downscale step budgets against); see `_estimate_image_tokens`.
+
+# Charged when pixel dimensions can't be determined: a URL-only ImageBlock (no
+# local bytes to inspect), an unrecognized image format (the prober covers
+# PNG/JPEG/GIF/BMP — e.g. a webp read within bound and passed through
+# un-re-encoded lands here), or a corrupt/truncated header.
+#
+# Images produced by the read tools are bounded below this by the
+# budget-derived downscale cap (`DEFAULT_IMAGE_TOKEN_BUDGET` in
+# read_visual_file, 4_784 official-formula tokens ≈ 3.75 megapixels), so this
+# fallback exists for *foreign* images that never passed through those tools —
+# user-pasted or URL-sourced blocks of arbitrary resolution. Derived as a
+# 2048x2048 image under the official patch formula (5_476 tokens): a
+# conservative-but-plausible estimate rather than the old flat 85.
+# Overestimating an unprobeable image merely compacts a little early;
+# underestimating it is the incident class this constant exists to prevent.
+# Kept identical to the Rust `FALLBACK_IMAGE_TOKENS` for cross-repo parity.
+_FALLBACK_IMAGE_TOKENS: Final[int] = estimate_tokens_from_dimensions(2048, 2048)
+
+# Base64 prefix decoded for header parsing before falling back to
+# `_FALLBACK_IMAGE_TOKENS`. Bounds decode cost regardless of image size: PNG's
+# dimensions sit in the first 24 bytes; JPEG's SOF marker is virtually always
+# within a few tens of KB even behind a large embedded EXIF/thumbnail preview.
+# ~150KB of decoded header room is ample for both without ever decoding a full
+# multi-MB payload just to read its dimensions.
+_PROBE_PREFIX_BASE64_CHARS: Final[int] = 200_000
+
 _MESSAGE_OVERHEAD_TOKENS: Final[int] = 3
 _BLOCK_OVERHEAD_TOKENS: Final[int] = 1
 _TOOL_USE_OVERHEAD_TOKENS: Final[int] = 8
@@ -41,6 +78,45 @@ except ImportError:
 
 tiktoken: Any | None = _tiktoken
 TIKTOKEN_AVAILABLE: Final[bool] = _tiktoken is not None
+
+
+# ── Image token estimation ──────────────────────────────────────────────────
+
+
+def _estimate_image_tokens(image: ImageBlock) -> int:
+    """Token cost for one image block.
+
+    Incident fix (Rust counterpart nexau-rs#94): 用官方 patch 公式按真实像素估算。
+
+    Charges Anthropic's official patch-formula cost
+    (`estimate_tokens_from_dimensions`) when dimensions can be recovered from
+    the inline image bytes, else the conservative `_FALLBACK_IMAGE_TOKENS`.
+    """
+    dimensions = _probe_image_dimensions(image)
+    if dimensions is None:
+        return _FALLBACK_IMAGE_TOKENS
+    return estimate_tokens_from_dimensions(*dimensions)
+
+
+def _probe_image_dimensions(image: ImageBlock) -> tuple[int, int] | None:
+    """Recover ``(width, height)`` from an ImageBlock's inline base64 bytes.
+
+    Decodes at most a bounded prefix (`_PROBE_PREFIX_BASE64_CHARS`). Returns
+    ``None`` for URL-only blocks (no local bytes to inspect) or when the header
+    can't be parsed within budget.
+    """
+    encoded = image.base64
+    if not encoded:
+        return None
+    prefix_len = min(len(encoded), _PROBE_PREFIX_BASE64_CHARS)
+    # base64 decodes in 4-character groups; trim to a multiple of 4 so a
+    # mid-group cut doesn't raise an "invalid length" error.
+    prefix = encoded[: prefix_len - (prefix_len % 4)]
+    try:
+        raw = base64.b64decode(prefix, validate=False)
+    except (ValueError, binascii.Error):
+        return None
+    return probe_dimensions(raw)
 
 
 class TokenCounter:
@@ -227,7 +303,7 @@ class TokenCounter:
             return total
 
         if isinstance(block, ImageBlock):
-            return _BLOCK_OVERHEAD_TOKENS + _IMAGE_TOKEN_ESTIMATE
+            return _BLOCK_OVERHEAD_TOKENS + _estimate_image_tokens(block)
 
         if isinstance(block, ToolUseBlock):
             total = _TOOL_USE_OVERHEAD_TOKENS
@@ -269,7 +345,7 @@ class TokenCounter:
             if isinstance(block, TextBlock):
                 total += _BLOCK_OVERHEAD_TOKENS + text_encoder(block.text)
             else:
-                total += _BLOCK_OVERHEAD_TOKENS + _IMAGE_TOKEN_ESTIMATE
+                total += _BLOCK_OVERHEAD_TOKENS + _estimate_image_tokens(block)
         return total
 
     @staticmethod
