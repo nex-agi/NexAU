@@ -86,11 +86,17 @@ def _validate_choice_options(index: int, q: dict[str, Any]) -> dict[str, Any] | 
     """Validate choice-type question options. Returns error dict or None."""
     options = q.get("options", [])
     if not options or len(options) < 2:
+        msg = (
+            f"Question {index + 1}: type='choice' (the default) needs an "
+            f"'options' array with 2-4 items, but got {len(options)}. To let "
+            f"the user type a free-form value (path, name, number, …), set "
+            f"type='text' with an optional 'placeholder' and no 'options'."
+        )
         return {
-            "content": f"Question {index + 1}: type='choice' requires 'options' array with 2-4 items.",
-            "returnDisplay": "Error: Insufficient options.",
+            "content": msg,
+            "returnDisplay": "Error: choice needs 2-4 options (or use type='text').",
             "error": {
-                "message": f"Question {index + 1}: type='choice' requires 'options' array with 2-4 items.",
+                "message": msg,
                 "type": "INVALID_PARAMETER",
             },
         }
