@@ -138,6 +138,46 @@ def test_anthropic_serializer_splits_tool_result_images_and_applies_cache_contro
     }
 
 
+def test_anthropic_serializer_orders_all_tool_results_before_sibling_images() -> None:
+    """Regression: parallel image tool results must not interleave.
+
+    Anthropic only matches the leading run of `tool_result` blocks in the
+    next user message: `[TR, IMG, TR, IMG]` makes every tool_use id after
+    the first fail with "`tool_use` ids were found without `tool_result`
+    blocks immediately after" (400). The flush must emit all tool results
+    first, then the hoisted sibling images.
+    """
+    _system, convo = serialize_ump_to_anthropic_messages_payload(
+        [
+            Message(
+                role=Role.TOOL,
+                content=[
+                    ToolResultBlock(
+                        tool_use_id="call_1",
+                        content=[ImageBlock(url="https://example.com/a.jpg")],
+                    ),
+                ],
+            ),
+            Message(
+                role=Role.TOOL,
+                content=[
+                    ToolResultBlock(
+                        tool_use_id="call_2",
+                        content=[TextBlock(text="caption"), ImageBlock(url="https://example.com/b.jpg")],
+                    ),
+                ],
+            ),
+        ]
+    )
+
+    blocks = convo[0]["content"]
+    assert [block["type"] for block in blocks] == ["tool_result", "tool_result", "image", "image"]
+    assert blocks[0]["tool_use_id"] == "call_1"
+    assert blocks[1]["tool_use_id"] == "call_2"
+    assert blocks[2]["source"]["url"] == "https://example.com/a.jpg"
+    assert blocks[3]["source"]["url"] == "https://example.com/b.jpg"
+
+
 def test_gemini_serializer_emits_thought_signature_and_function_response() -> None:
     contents, system_instruction = serialize_ump_to_gemini_messages_payload(
         [
