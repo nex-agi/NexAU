@@ -2361,12 +2361,20 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
 
         logger.info(f"E2B sandbox created with ID: {sandbox.sandbox_id}")
 
-        # Ensure work_dir exists (it may not exist if user configured a custom path)
-        try:
-            sandbox.create_directory(str(sandbox.work_dir))
-            logger.debug(f"Work directory ensured: {sandbox.work_dir}")
-        except Exception as e:
-            logger.warning(f"Failed to create work directory {sandbox.work_dir}: {e}")
+        # NAC self-host provisions and bind-mounts the canonical work directory
+        # before publishing Sandbox Ready. Reissuing mkdir through envd adds a
+        # redundant synchronous data-plane round trip to every create (and
+        # amplifies concurrent-create latency). SaaS and custom paths retain the
+        # defensive ensure because they do not share that platform contract.
+        platform_provisioned_work_dir = sandbox_config.force_http and PurePosixPath(str(sandbox.work_dir)) == PurePosixPath(
+            E2B_DEFAULT_WORK_DIR
+        )
+        if not platform_provisioned_work_dir:
+            try:
+                sandbox.create_directory(str(sandbox.work_dir))
+                logger.debug(f"Work directory ensured: {sandbox.work_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to create work directory {sandbox.work_dir}: {e}")
 
         # Persist sandbox state
         self.persist_sandbox_state(session_manager, user_id, session_id, sandbox)
