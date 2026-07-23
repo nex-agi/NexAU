@@ -10,6 +10,14 @@ from nexau.archs.main_sub.config.config import AgentConfig
 from nexau.archs.tracer.adapters.langfuse import LangfuseTracer
 
 _PLUGIN_DEFAULT_PROMPT_FRAGMENT = "Read the relevant code before editing, keep changes scoped, and verify behavior with focused tests."
+_RUNTIME_BUILTIN_TOOL_NAMES = {
+    "ask_user",
+    "complete_task",
+    "read_file",
+    "run_shell_command",
+    "write_file",
+    "write_todos",
+}
 _REQUIRED_ENV = {
     "LLM_MODEL": "test-model",
     "LLM_BASE_URL": "http://example.test/v1",
@@ -57,20 +65,17 @@ def _assert_coding_plugin_config(config: AgentConfig) -> None:
     assert isinstance(worker_prompt, str)
     assert _PLUGIN_DEFAULT_PROMPT_FRAGMENT in explore_prompt
     assert _PLUGIN_DEFAULT_PROMPT_FRAGMENT in worker_prompt
-    assert {tool.name for tool in config.sub_agents["explore"].tools} == {
+    explore_tool_names = {tool.name for tool in config.sub_agents["explore"].tools}
+    assert explore_tool_names == _RUNTIME_BUILTIN_TOOL_NAMES | {
         "list_directory",
-        "read_file",
-        "run_shell_command",
         "search_file_content",
     }
-    assert {tool.name for tool in config.sub_agents["worker"].tools} == {
+    worker_tool_names = {tool.name for tool in config.sub_agents["worker"].tools}
+    assert worker_tool_names == _RUNTIME_BUILTIN_TOOL_NAMES | {
         "apply_patch",
         "list_directory",
-        "read_file",
         "replace",
-        "run_shell_command",
         "search_file_content",
-        "write_todos",
     }
 
     assert config.middlewares is not None

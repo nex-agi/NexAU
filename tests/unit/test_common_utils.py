@@ -14,6 +14,8 @@
 
 """Unit tests for common utility functions."""
 
+import importlib
+
 import pytest
 
 
@@ -59,6 +61,22 @@ class TestImportFromString:
         from collections import OrderedDict
 
         assert result is OrderedDict
+
+    def test_import_from_string_resolves_lazy_export_shadowed_by_submodule(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Resolve a lazy callable export after its submodule shadows it."""
+        from nexau.archs.main_sub.utils.common import import_from_string
+
+        read_file_module = importlib.import_module("nexau.archs.tool.builtin.file_tools.read_file")
+        file_tools_package = importlib.import_module("nexau.archs.tool.builtin.file_tools")
+        monkeypatch.setitem(file_tools_package.__dict__, "read_file", read_file_module)
+        assert file_tools_package.__dict__["read_file"] is read_file_module
+
+        result = import_from_string("nexau.archs.tool.builtin.file_tools:read_file")
+
+        assert result is read_file_module.read_file
 
 
 class TestLoadYamlWithVars:

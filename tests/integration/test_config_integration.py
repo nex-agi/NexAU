@@ -91,8 +91,17 @@ class TestConfigIntegration:
             # Load config - returns Agent object
             agent = Agent.from_yaml(Path(config_path))
             assert agent.config.name == "agent_with_tools"
-            assert len(agent.config.tools) == 1
-            assert agent.config.tools[0].name == "test_tool"
+            tool_names = [tool.name for tool in agent.config.tools]
+            assert set(tool_names) == {
+                "ask_user",
+                "complete_task",
+                "read_file",
+                "run_shell_command",
+                "test_tool",
+                "write_file",
+                "write_todos",
+            }
+            assert len(tool_names) == 7
 
     @pytest.mark.integration
     def test_agent_from_yaml_with_subagents(self):

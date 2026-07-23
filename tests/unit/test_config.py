@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import importlib
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -262,6 +263,86 @@ class TestSchemaNormalization:
 
         with pytest.raises(SchemaConfigError, match="YAML parsing error"):
             AgentConfigSchema.from_yaml(str(bad_path))
+
+
+class TestBuiltinToolAutoInjectionRFC0197:
+    """Tests for RFC-0197 runtime built-in tool injection."""
+
+    BUILTIN_TOOL_NAMES = {
+        "run_shell_command",
+        "read_file",
+        "write_file",
+        "write_todos",
+        "complete_task",
+        "ask_user",
+    }
+
+    def test_builtin_tools_auto_injected(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        read_file_module = importlib.import_module("nexau.archs.tool.builtin.file_tools.read_file")
+        file_tools_package = importlib.import_module("nexau.archs.tool.builtin.file_tools")
+        monkeypatch.setitem(file_tools_package.__dict__, "read_file", read_file_module)
+        assert file_tools_package.__dict__["read_file"] is read_file_module
+
+        config = AgentConfig.from_dict(
+            {
+                "type": "agent",
+                "name": "minimal",
+                "llm_config": {"model": "gpt-4o-mini"},
+                "plugins": [],
+                "tools": [],
+            },
+            base_path=tmp_path,
+        )
+
+        tools_by_name = {tool.name: tool for tool in config.tools}
+        assert set(tools_by_name) == self.BUILTIN_TOOL_NAMES
+        assert tools_by_name["read_file"].implementation is read_file_module.read_file
+        assert tools_by_name["read_file"].implementation_import_path == "nexau.archs.tool.builtin.file_tools:read_file"
+
+    def test_builtin_tools_dedup_no_double_register(self, tmp_path: Path) -> None:
+        declared_schema = tmp_path / "declared_complete_task.tool.yaml"
+        declared_schema.write_text(
+            textwrap.dedent(
+                """
+                type: tool
+                name: complete_task
+                description: Explicit complete_task override.
+                input_schema:
+                  type: object
+                  properties: {}
+                  additionalProperties: false
+                """,
+            ).lstrip(),
+            encoding="utf-8",
+        )
+        config = AgentConfig.from_dict(
+            {
+                "type": "agent",
+                "name": "override",
+                "llm_config": {"model": "gpt-4o-mini"},
+                "plugins": [],
+                "tools": [
+                    {
+                        "name": "complete_task",
+                        "yaml_path": str(declared_schema),
+                        "binding": "builtins:print",
+                    },
+                ],
+            },
+            base_path=tmp_path,
+        )
+
+        tool_names = [tool.name for tool in config.tools]
+        declared_tools = [tool for tool in config.tools if tool.name == "complete_task"]
+        assert set(tool_names) == self.BUILTIN_TOOL_NAMES
+        assert len(tool_names) == len(self.BUILTIN_TOOL_NAMES)
+        assert len(declared_tools) == 1
+        assert declared_tools[0].description == "Explicit complete_task override."
+        assert declared_tools[0].implementation is print
 
 
 class TestAgentConfigBuilderCore:

@@ -60,6 +60,16 @@ THook = TypeVar("THook", bound=object)
 YamlValue = dict[str, Any] | list[Any] | str | int | float | bool | None
 HookConfig = str | dict[str, Any] | Callable[..., Any]
 
+_BUILTIN_TOOL_SCHEMA_ROOT = "nexau:archs/tool/builtin/schemas"
+_BUILTIN_TOOL_BINDINGS: tuple[tuple[str, str], ...] = (
+    ("run_shell_command", "nexau.archs.tool.builtin.shell_tools:run_shell_command"),
+    ("read_file", "nexau.archs.tool.builtin.file_tools:read_file"),
+    ("write_file", "nexau.archs.tool.builtin.file_tools:write_file"),
+    ("write_todos", "nexau.archs.tool.builtin.session_tools:write_todos"),
+    ("complete_task", "nexau.archs.tool.builtin.session_tools:complete_task"),
+    ("ask_user", "nexau.archs.tool.builtin.session_tools:ask_user"),
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -138,6 +148,46 @@ def _require_dict(value: object, *, context: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ConfigError(f"{context} must be a dictionary")
     return cast(dict[str, Any], value)
+
+
+def _inject_builtin_tools(config: dict[str, Any]) -> None:
+    """Inject runtime built-in tools without replacing declared tools.
+
+    RFC-0197: NexAU runtime 内置基础工具
+
+    插件贡献与 agent 自声明的同名工具优先，runtime 仅补齐缺失项。
+    """
+    tools_raw: object = config.get("tools")
+    if tools_raw is None:
+        tools: list[object] = []
+        config["tools"] = tools
+    elif isinstance(tools_raw, list):
+        tools = cast(list[object], tools_raw)
+    else:
+        raise ConfigError("'tools' must be a list")
+
+    # 1. 收集插件展开与 agent 自声明的工具名
+    existing_names: set[str] = set()
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        tool_entry = cast(dict[object, object], tool)
+        name = tool_entry.get("name")
+        if isinstance(name, str):
+            existing_names.add(name)
+
+    # 2. 按声明顺序补齐缺失的 runtime 内置工具
+    for name, binding in _BUILTIN_TOOL_BINDINGS:
+        if name in existing_names:
+            continue
+        tools.append(
+            {
+                "name": name,
+                "yaml_path": f"{_BUILTIN_TOOL_SCHEMA_ROOT}/{name}.tool.yaml",
+                "binding": binding,
+            },
+        )
+        existing_names.add(name)
 
 
 class AgentConfig(
@@ -288,6 +338,9 @@ class AgentConfig(
             ignored_plugins = config_dict.pop("plugins", [])
             if ignored_plugins:
                 logger.info("sub_agent_load plugins_ignored=%d", len(ignored_plugins))
+
+        # RFC-0197: 在插件与 agent 工具合并后补齐 runtime 内置工具
+        _inject_builtin_tools(config_dict)
 
         agent_builder = AgentConfigBuilder(
             config_dict,

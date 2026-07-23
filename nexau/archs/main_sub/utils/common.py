@@ -4,6 +4,7 @@ import importlib.util
 import os
 import re
 import sys
+from types import ModuleType
 from typing import Any, cast
 
 import yaml
@@ -19,8 +20,9 @@ YamlValue = dict[str, Any] | list[Any] | str | int | float | bool | None
 
 
 def import_from_string(import_string: str) -> Any:
-    """
-    Import a function or class from a string specification.
+    """Import a function or class from a string specification.
+
+    RFC-0197: 解析被同名子模块遮蔽的 lazy package export。
 
     Args:
         import_string: String in format "module.path:function_name"
@@ -51,9 +53,14 @@ def import_from_string(import_string: str) -> Any:
 
         missing = object()
         attribute = module.__dict__.get(attr_name, missing)
+        module_getattr = module.__dict__.get("__getattr__")
+        if isinstance(attribute, ModuleType) and callable(module_getattr):
+            try:
+                return module_getattr(attr_name)
+            except AttributeError:
+                pass
         if attribute is not missing:
             return attribute
-        module_getattr = module.__dict__.get("__getattr__")
         if callable(module_getattr):
             try:
                 return module_getattr(attr_name)

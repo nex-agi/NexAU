@@ -98,6 +98,7 @@ nexau = [
   "archs/main_sub/execution/middleware/context_compaction/prompts/*.md",
   "archs/main_sub/team/tools/*.yaml",
   "archs/tool/builtin/description/*.yaml",
+  "archs/tool/builtin/schemas/*.tool.yaml",
   "cli/dist/*.js",
   "cli/dist/*.js.map",
   # RFC-0022: alembic migrations bundled with the wheel so users don't
