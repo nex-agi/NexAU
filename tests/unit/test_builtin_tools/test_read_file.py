@@ -22,6 +22,16 @@ from unittest.mock import Mock
 
 import pytest
 
+# Budget constants + area-cap geometry relocated to the shared image_probe
+# module (single source for the read downscale, the persist-time in-memory
+# resize, and the token counter); tool-specific helpers still come from
+# read_visual_file.
+from nexau.archs.main_sub.utils.image_probe import (
+    DEFAULT_IMAGE_MAX_PIXELS,
+    DEFAULT_IMAGE_TOKEN_BUDGET,
+    OFFICIAL_PIXELS_PER_TOKEN,
+    area_capped_dimensions,
+)
 from nexau.archs.sandbox import CommandResult, FileOperationResult, SandboxStatus
 from nexau.archs.tool.builtin.file_tools.read_file import (
     MAX_TOTAL_OUTPUT_CHARS,
@@ -30,10 +40,6 @@ from nexau.archs.tool.builtin.file_tools.read_file import (
     read_file,
 )
 from nexau.archs.tool.builtin.file_tools.read_visual_file import (
-    DEFAULT_IMAGE_MAX_PIXELS,
-    DEFAULT_IMAGE_TOKEN_BUDGET,
-    OFFICIAL_PIXELS_PER_TOKEN,
-    _area_capped_dimensions,
     _edge_capped_dimensions,
     _ffmpeg_scale_in_sandbox,
     _read_video_frames,
@@ -673,7 +679,7 @@ class TestImageDownscaleTokenBudget:
 
         result = read_visual_file(file_path="photo.png", agent_state=_make_agent_state(sandbox))
 
-        target = _area_capped_dimensions(4000, 3000, DEFAULT_IMAGE_MAX_PIXELS)
+        target = area_capped_dimensions(4000, 3000, DEFAULT_IMAGE_MAX_PIXELS)
         assert target is not None
         ffmpeg_cmd = sandbox.execute_shell.call_args.args[0]
         assert f"scale={target[0]}:{target[1]}" in ffmpeg_cmd
@@ -757,7 +763,7 @@ class TestImageDownscaleTokenBudget:
         square image costs ~4x a panoramic one, while the area cap lands every
         aspect ratio on the same pixel count — the same worst-case token cost."""
         for width, height in [(4000, 3000), (3000, 3000), (8000, 1000)]:
-            target = _area_capped_dimensions(width, height, DEFAULT_IMAGE_MAX_PIXELS)
+            target = area_capped_dimensions(width, height, DEFAULT_IMAGE_MAX_PIXELS)
             assert target is not None
             target_width, target_height = target
             assert target_width % 2 == 0 and target_height % 2 == 0, "ffmpeg mjpeg 4:2:0 needs even dims"
@@ -766,7 +772,7 @@ class TestImageDownscaleTokenBudget:
             assert area >= DEFAULT_IMAGE_MAX_PIXELS * 0.97, f"{width}x{height} → {target_width}x{target_height} far below the cap"
 
     def test_area_cap_is_noop_within_bound(self):
-        assert _area_capped_dimensions(1000, 800, DEFAULT_IMAGE_MAX_PIXELS) is None
+        assert area_capped_dimensions(1000, 800, DEFAULT_IMAGE_MAX_PIXELS) is None
 
     def test_edge_cap_bounds_longest_edge_not_just_width(self):
         """A tall-narrow image (long mobile screenshot) must be bounded too —
@@ -794,7 +800,7 @@ class TestImageDownscaleTokenBudget:
 
         result = read_visual_file(file_path="photo.png", image_token_budget=400, agent_state=_make_agent_state(sandbox))
 
-        target = _area_capped_dimensions(4000, 3000, 400 * OFFICIAL_PIXELS_PER_TOKEN)
+        target = area_capped_dimensions(4000, 3000, 400 * OFFICIAL_PIXELS_PER_TOKEN)
         assert target is not None
         assert target[0] * target[1] <= 400 * OFFICIAL_PIXELS_PER_TOKEN
         ffmpeg_cmd = sandbox.execute_shell.call_args.args[0]

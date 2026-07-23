@@ -22,14 +22,32 @@ from pathlib import Path
 from typing import Any, Final
 
 from nexau.archs.main_sub.agent_state import AgentState
-from nexau.archs.main_sub.utils.image_probe import probe_dimensions
+from nexau.archs.main_sub.utils.image_probe import (
+    DEFAULT_IMAGE_MAX_PIXELS,
+    OFFICIAL_PIXELS_PER_TOKEN,
+    OVERSIZED_IMAGE_FILE_SIZE_BYTES,
+    OVERSIZED_IMAGE_PIXELS,
+    area_capped_dimensions,
+    floor_even_dimension,
+    probe_dimensions,
+)
 from nexau.archs.sandbox import BaseSandbox, CommandResult, SandboxStatus
 from nexau.archs.tool.builtin._sandbox_utils import get_sandbox, resolve_path
 
 logger = logging.getLogger(__name__)
 
-# Max file size for images (videos are streamed by ffmpeg, so no size limit)
-MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10MB
+# Oversized-image thresholds live in `image_probe` (single source, shared with
+# the persistence-entry omit gate and mirrored by Rust `nexau-rs`): a file
+# above `OVERSIZED_IMAGE_FILE_SIZE_BYTES` (20MB) is never pulled into process
+# memory — it is compressed by ffmpeg inside the sandbox first — and an image
+# probed above `OVERSIZED_IMAGE_PIXELS` (60MP) must likewise be compressed
+# before it may reach the model. When ffmpeg is unavailable in the sandbox,
+# reading such an image fails with a structured error instead of falling back
+# to the original bytes (which would blow the context window or be rejected
+# by the provider API). Only SVG keeps a plain size rejection: its rasterized
+# PNG exists in memory, not at a sandbox path, so ffmpeg cannot compress it.
+#
+# Videos are streamed by ffmpeg (frame extraction), so they carry no size cap.
 
 # Incident fix (session bf6ef5c923ce; Rust counterpart nexau-rs#94): a
 # full-resolution image can push a single prompt past the model's context
@@ -39,39 +57,14 @@ MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10MB
 # size cap), except the budget→size exchange rate is pixels, not base64
 # bytes, because providers bill images by pixel area.
 #
-# The official Anthropic vision formula is patch-based: an image costs
-# ceil(width/28) x ceil(height/28) visual tokens — one token per 28x28-pixel
-# patch, i.e. 784 pixels per token (older docs' pixels/750 was an
-# approximation; the patch formula matched northgate measurements to ±1 token
-# across five sizes on 2026-07-07). Per-image ceilings are tier-dependent:
-# standard-tier models (Sonnet 4.6, Haiku, older) are server-downscaled to
-# ≤1568px long edge / ≤1_568 tokens; high-resolution models (Opus 4.7/4.8,
-# Fable 5) to ≤2576px / ≤4_784 tokens. Gateway channels implement those caps
-# inconsistently, so we enforce the bound client-side. Budgets are
-# denominated in official-formula tokens — the same patch formula
-# token_counter charges context cost with, so a budgeted image and its
-# accounted cost agree.
-OFFICIAL_PIXELS_PER_TOKEN: Final[int] = 784
-
-# Per-image token budget (official-formula tokens) applied when the caller
-# passes neither `image_max_size` nor `image_token_budget`. 4_784 matches the
-# official high-resolution tier's own per-image ceiling — the tier the
-# production model (claude-opus-4-8) is in: 4_784 x 784 ≈ 3.75 megapixels,
-# e.g. a ~2582x1452 16:9 screenshot at full fidelity. Standard-tier models
-# server-downscale anything above ~1_568 tokens themselves, so the generous
-# default costs nothing extra there. A full-cap image is both budgeted and
-# accounted at ~4_784 official-formula tokens — deployments wanting image-heavy
-# histories to compact sooner can lower this via the `image_token_budget`
-# argument (binding `extra_kwargs`); accounting stays consistent for any
-# setting because token_counter uses the same patch formula.
-# Keep in sync with the Rust `DEFAULT_IMAGE_TOKEN_BUDGET` in nexau-rs.
-DEFAULT_IMAGE_TOKEN_BUDGET: Final[int] = 4_784
-
-# Pixel-area ceiling derived from the default budget. Bounding area — not
-# edge length — matches how token cost actually scales: under a shared edge
-# cap a square image costs ~4x a panoramic one, while an area cap prices
-# every aspect ratio identically.
-DEFAULT_IMAGE_MAX_PIXELS: Final[int] = DEFAULT_IMAGE_TOKEN_BUDGET * OFFICIAL_PIXELS_PER_TOKEN
+# The budget constants and the area-cap geometry
+# (`OFFICIAL_PIXELS_PER_TOKEN`, `DEFAULT_IMAGE_TOKEN_BUDGET`,
+# `DEFAULT_IMAGE_MAX_PIXELS`, `floor_even_dimension`, `area_capped_dimensions`)
+# live in `image_probe` — the shared low-level image module — so this
+# ffmpeg-based read downscale, the Pillow-based persistence downscale
+# (`resize_base64_image_if_oversized`) and the token counter all cap against the
+# same exchange rate. They are imported above; the tests still import them from
+# here (re-export) for calibration parity assertions.
 
 # The only image media types the Anthropic API documents as supported.
 # Anything else must be transcoded before reaching the model even when its
@@ -112,10 +105,26 @@ VIDEO_MAX_FRAMES = 10  # Return at most 10 frames
 SVG_CONVERSION_HINT = (
     "SVG files cannot be read directly. Install Inkscape in the sandbox/host so read_visual_file can convert SVG to PNG, then retry."
 )
+FFMPEG_INSTALL_HINT = "Install ffmpeg into the sandbox image/template (or on the host for LocalSandbox), then retry."
 
 
 class SvgConversionUnavailableError(RuntimeError):
     """Raised when SVG rasterization cannot run because Inkscape is unavailable."""
+
+
+class FfmpegUnavailableError(RuntimeError):
+    """Raised when an oversized image must be compressed but the sandbox has no ffmpeg."""
+
+
+class OversizedImageCompressionError(RuntimeError):
+    """Raised when an oversized image's mandatory ffmpeg compression failed.
+
+    Oversized images (> ``OVERSIZED_IMAGE_FILE_SIZE_BYTES`` or
+    > ``OVERSIZED_IMAGE_PIXELS``) have no graceful fallback: sending the
+    original bytes would blow the context window or be rejected by the
+    provider, so a failed compression surfaces as a structured tool error
+    rather than degrading to the original image.
+    """
 
 
 def _detect_file_type(file_path: str) -> str:
@@ -140,21 +149,39 @@ def _command_output_text(result: CommandResult) -> str:
     return "\n".join(parts)
 
 
-def _is_missing_inkscape(result: CommandResult) -> bool:
-    """Return True if a failed command result indicates Inkscape is unavailable."""
-    output = _command_output_text(result).lower()
+_MISSING_PROGRAM_HINTS = (
+    "command not found",
+    "not found",
+    "not recognized as an internal or external command",
+    "is not recognized",
+    "no such file or directory",
+)
+
+
+def _is_missing_program(result: CommandResult, program: str) -> bool:
+    """Return True if a failed command result indicates *program* is unavailable.
+
+    Exit code 127 is the POSIX shell's command-not-found signal. The textual
+    hints (Windows cmd and friends) must co-occur with the program name on the
+    same line: a shell reports a missing binary as e.g. ``ffmpeg: command not
+    found``, whereas the program's own failure output (which for ffmpeg always
+    includes a banner line containing its name) keeps hints like ``No such
+    file or directory`` on lines that don't mention the program.
+    """
     if result.exit_code == 127:
         return True
-    if "inkscape" not in output:
-        return False
-    missing_hints = (
-        "command not found",
-        "not found",
-        "not recognized as an internal or external command",
-        "is not recognized",
-        "no such file or directory",
-    )
-    return any(hint in output for hint in missing_hints)
+    output = _command_output_text(result).lower()
+    return any(program in line and any(hint in line for hint in _MISSING_PROGRAM_HINTS) for line in output.splitlines())
+
+
+def _is_missing_inkscape(result: CommandResult) -> bool:
+    """Return True if a failed command result indicates Inkscape is unavailable."""
+    return _is_missing_program(result, "inkscape")
+
+
+def _is_missing_ffmpeg(result: CommandResult) -> bool:
+    """Return True if a failed command result indicates ffmpeg is unavailable."""
+    return _is_missing_program(result, "ffmpeg")
 
 
 def _convert_svg_to_png_in_sandbox(
@@ -243,10 +270,10 @@ def _read_video_frames(
         cmd_result = sandbox.execute_shell(ffmpeg_cmd, timeout=60_000)
 
         if cmd_result.status != SandboxStatus.SUCCESS or cmd_result.exit_code != 0:
-            stderr = cmd_result.stderr or cmd_result.stdout or ""
-            if "not found" in stderr.lower() or cmd_result.exit_code == 127:
-                raise RuntimeError("ffmpeg not found in sandbox. Install ffmpeg to process video files.")
-            raise RuntimeError(f"ffmpeg failed (exit {cmd_result.exit_code}): {stderr[:500]}")
+            if _is_missing_ffmpeg(cmd_result):
+                raise RuntimeError(f"ffmpeg not found in sandbox. {FFMPEG_INSTALL_HINT}")
+            diagnostics = _command_output_text(cmd_result)
+            raise RuntimeError(f"ffmpeg failed (exit {cmd_result.exit_code}): {diagnostics[:500]}")
 
         # 3. List extracted frame files via sandbox filesystem APIs.
         frame_infos = sandbox.list_files(tmp_dir, recursive=False, pattern="frame_*.jpg")
@@ -300,19 +327,6 @@ def _read_video_frames(
         sandbox.delete_file(tmp_dir)
 
 
-def _floor_even_dimension(value: float) -> int:
-    """Floor ``value`` to an even pixel count (minimum 2).
-
-    ffmpeg's default mjpeg pixel format uses 4:2:0 chroma subsampling, which
-    requires even dimensions — an odd target would make the encode fail and
-    silently skip the downscale via the graceful-fallback path. Flooring
-    (never rounding up) keeps every cap guarantee intact: an even-floored
-    dimension is <= the exact scaled dimension.
-    """
-    floored = math.floor(value)
-    return max(2, floored - (floored % 2))
-
-
 def _edge_capped_dimensions(width: int, height: int, max_edge: int) -> tuple[int, int] | None:
     """Target dimensions for a longest-edge cap, or ``None`` if within bound.
 
@@ -326,22 +340,8 @@ def _edge_capped_dimensions(width: int, height: int, max_edge: int) -> tuple[int
     if max(width, height) <= max_edge:
         return None
     if width >= height:
-        return _floor_even_dimension(max_edge), _floor_even_dimension(height * max_edge / width)
-    return _floor_even_dimension(width * max_edge / height), _floor_even_dimension(max_edge)
-
-
-def _area_capped_dimensions(width: int, height: int, max_pixels: int) -> tuple[int, int] | None:
-    """Target dimensions for a pixel-area cap, or ``None`` if within bound.
-
-    Both dimensions scale by ``sqrt(max_pixels / area)`` and floor to even, so
-    the resulting area can never exceed ``max_pixels`` — i.e. the image's real
-    token cost can never exceed the budget the cap was derived from.
-    """
-    pixels = width * height
-    if pixels <= max_pixels:
-        return None
-    scale = math.sqrt(max_pixels / pixels)
-    return _floor_even_dimension(width * scale), _floor_even_dimension(height * scale)
+        return floor_even_dimension(max_edge), floor_even_dimension(height * max_edge / width)
+    return floor_even_dimension(width * max_edge / height), floor_even_dimension(max_edge)
 
 
 def _longest_edge_scale_expr(max_edge: int) -> str:
@@ -362,21 +362,44 @@ def _ffmpeg_scale_in_sandbox(
     file_path: str,
     sandbox: BaseSandbox,
     scale_expr: str,
-) -> bytes | None:
-    """Re-encode image via ffmpeg in sandbox, returning JPEG bytes or None on failure."""
+    single_frame: bool = False,
+) -> bytes:
+    """Re-encode image via ffmpeg in sandbox, returning the compressed JPEG bytes.
+
+    Raises:
+        FfmpegUnavailableError: ffmpeg is not installed in the sandbox.
+        RuntimeError: ffmpeg ran but failed, or its output could not be read.
+
+    The default-downscale caller (`_downscale_image_content`) catches all of
+    these and degrades to the original bytes; the oversized-image caller
+    (`_read_image_file`) lets them surface as structured tool errors because
+    an oversized original must never reach the model.
+
+    ``single_frame`` adds ``-frames:v 1``: without it, an animated GIF/WebP
+    input makes ffmpeg fail against the single-file ``.jpg`` output ("Cannot
+    write more than one file with the same name"). The mandatory oversized
+    path sets it — first frame beats a hard error for an image that must be
+    compressed to be readable at all. The graceful default path deliberately
+    does NOT: there the ffmpeg failure falls back to the original bytes,
+    preserving the animation (persistence-side "never flatten" semantics).
+    """
     tmp_out = sandbox.join_path(sandbox.get_temp_dir(), f"nexau_resized_{uuid.uuid4().hex[:12]}.jpg")
     try:
+        frames_arg = "-frames:v 1 " if single_frame else ""
         cmd = (
             f"ffmpeg -i {shlex.quote(sandbox.to_shell_path(file_path))} "
-            f"-vf {shlex.quote(scale_expr)} -q:v 2 {shlex.quote(sandbox.to_shell_path(tmp_out))} -y 2>&1"
+            f"-vf {shlex.quote(scale_expr)} {frames_arg}-q:v 2 {shlex.quote(sandbox.to_shell_path(tmp_out))} -y 2>&1"
         )
         result = sandbox.execute_shell(cmd, timeout=30_000)
         if result.status != SandboxStatus.SUCCESS or result.exit_code != 0:
-            return None
+            if _is_missing_ffmpeg(result):
+                raise FfmpegUnavailableError("ffmpeg is not available in the sandbox")
+            diagnostics = _command_output_text(result)
+            raise RuntimeError(f"ffmpeg image compression failed (exit {result.exit_code}): {diagnostics[:500]}")
 
         res = sandbox.read_file(tmp_out, binary=True)
         if res.status != SandboxStatus.SUCCESS or not res.content:
-            return None
+            raise RuntimeError(res.error or "Failed to read ffmpeg-compressed image output")
 
         if isinstance(res.content, (bytes, bytearray)):
             return bytes(res.content)
@@ -447,7 +470,7 @@ def _downscale_image_content(
             # ratio (modulo -2's even-rounding, ~0.1% slack at worst).
             scale_expr = _longest_edge_scale_expr(math.isqrt(max_pixels))
         else:
-            area_target = _area_capped_dimensions(dimensions[0], dimensions[1], max_pixels)
+            area_target = area_capped_dimensions(dimensions[0], dimensions[1], max_pixels)
             if area_target is not None:
                 scale_expr = f"scale={area_target[0]}:{area_target[1]}"
             elif mime_type not in _API_SAFE_IMAGE_MIME_TYPES:
@@ -458,7 +481,8 @@ def _downscale_image_content(
     # Downscale must never fail the read: since this runs by default on every
     # image, any ffmpeg/sandbox hiccup falls back to the original bytes rather
     # than surfacing a tool error (graceful-degradation parity with the Rust
-    # `downscale_image_bytes`).
+    # `downscale_image_bytes`). Oversized images never take this path — their
+    # compression is mandatory and raises instead (see `_read_image_file`).
     try:
         return _ffmpeg_scale_in_sandbox(file_path, sandbox, scale_expr)
     except Exception:
@@ -466,9 +490,101 @@ def _downscale_image_content(
         return None
 
 
+def _oversized_scale_expr(
+    dimensions: tuple[int, int] | None,
+    image_max_size: int | None,
+    image_token_budget: int | None,
+) -> str:
+    """ffmpeg scale expression for an oversized image's mandatory compression.
+
+    Mirrors `_downscale_image_content`'s bound resolution (explicit
+    `image_max_size` wins, else the token-budget area cap), with two
+    differences required by the oversized contract:
+
+    - The `0`-disables-downscaling escape hatch does not apply: an image over
+      the oversized thresholds must be compressed to be readable at all, so a
+      non-positive bound falls back to the default token budget instead of
+      disabling the resize.
+    - There is no "within bound → None" outcome: a >20MB file whose pixel
+      count is already within bound (e.g. an uncompressed BMP/TIFF) still
+      needs the ffmpeg re-encode to shrink its byte size, so the
+      even-dimensions pure-transcode expression is returned for that case.
+
+    When `dimensions` is None (file too large to pull into memory for header
+    probing, or an unprobeable format), the shrink-only longest-edge
+    expression lets ffmpeg bound the size without knowing it up front.
+    """
+
+    # 不变量:强制压缩的产物永远 <= OVERSIZED_IMAGE_PIXELS。一个显式的大
+    # `image_max_size`/`image_token_budget`(如 30000 / 巨大预算)会让 edge/area
+    # 目标判定"界内"落到纯转码 —— 但 >60MP 的产物随后必被持久化 omit 成占位,
+    # 工具却报成功。因此纯转码 fallback 前先按 60MP 硬上限回夹一次。
+    def _transcode_or_hard_cap() -> str:
+        if dimensions is not None:
+            hard_target = area_capped_dimensions(dimensions[0], dimensions[1], OVERSIZED_IMAGE_PIXELS)
+            if hard_target is not None:
+                return f"scale={hard_target[0]}:{hard_target[1]}"
+        return _EVEN_DIMENSIONS_SCALE_EXPR
+
+    if image_max_size is not None and image_max_size > 0:
+        if dimensions is None:
+            return _longest_edge_scale_expr(image_max_size)
+        edge_target = _edge_capped_dimensions(dimensions[0], dimensions[1], image_max_size)
+        if edge_target is not None:
+            return f"scale={edge_target[0]}:{edge_target[1]}"
+        return _transcode_or_hard_cap()
+
+    if image_token_budget is not None and image_token_budget > 0:
+        max_pixels = image_token_budget * OFFICIAL_PIXELS_PER_TOKEN
+    else:
+        max_pixels = DEFAULT_IMAGE_MAX_PIXELS
+    if dimensions is None:
+        return _longest_edge_scale_expr(math.isqrt(max_pixels))
+    area_target = area_capped_dimensions(dimensions[0], dimensions[1], max_pixels)
+    if area_target is not None:
+        return f"scale={area_target[0]}:{area_target[1]}"
+    return _transcode_or_hard_cap()
+
+
+def _compress_oversized_image(
+    file_path: str,
+    sandbox: BaseSandbox,
+    dimensions: tuple[int, int] | None,
+    image_max_size: int | None,
+    image_token_budget: int | None,
+    oversized_reason: str,
+) -> bytes:
+    """Mandatory sandbox-ffmpeg compression for an oversized image.
+
+    Unlike the default downscale there is no original-bytes fallback: an
+    oversized original must never reach the model, so a missing ffmpeg or a
+    failed compression surfaces as a structured error.
+
+    Raises:
+        FfmpegUnavailableError: with the user-facing "install ffmpeg" message.
+        OversizedImageCompressionError: ffmpeg ran but compression failed.
+    """
+    scale_expr = _oversized_scale_expr(dimensions, image_max_size, image_token_budget)
+    try:
+        return _ffmpeg_scale_in_sandbox(file_path, sandbox, scale_expr, single_frame=True)
+    except FfmpegUnavailableError:
+        raise FfmpegUnavailableError(
+            f"Image file '{file_path}' is too large to read directly ({oversized_reason}). "
+            "Reading it requires compressing it with ffmpeg inside the sandbox, but ffmpeg "
+            f"is not available there — the image cannot be read. {FFMPEG_INSTALL_HINT} "
+            "Alternatively, provide a smaller image."
+        ) from None
+    except Exception as e:
+        raise OversizedImageCompressionError(
+            f"Image file '{file_path}' is too large to read directly ({oversized_reason}) "
+            f"and compressing it with ffmpeg in the sandbox failed: {e}"
+        ) from e
+
+
 def _read_image_file(
     file_path: str,
     sandbox: BaseSandbox,
+    file_size: int,
     image_detail: str = "auto",
     image_max_size: int | None = None,
     image_token_budget: int | None = None,
@@ -477,6 +593,12 @@ def _read_image_file(
 
     Returns {"type": "image", "image_url": "data:...;base64,...", "detail": "..."}
     so coerce_tool_result_content can convert to ImageBlock.
+
+    Oversized images (> `OVERSIZED_IMAGE_FILE_SIZE_BYTES` on disk, or probed
+    > `OVERSIZED_IMAGE_PIXELS`) must be compressed by ffmpeg in the sandbox
+    before anything reaches the model; a file over the byte threshold is never
+    pulled into process memory at all — only the compressed output is read
+    back. Within-bound images keep the graceful default downscale.
     """
     ext = Path(file_path).suffix.lower()
     content: bytes
@@ -486,6 +608,25 @@ def _read_image_file(
         content = _convert_svg_to_png_in_sandbox(file_path, sandbox)
         mime_type = "image/png"
     else:
+        if file_size > OVERSIZED_IMAGE_FILE_SIZE_BYTES:
+            # Over the byte threshold: never pull the original into process
+            # memory — compress at the sandbox path and read back only the
+            # (small) JPEG output. Dimensions stay unprobed (probing needs
+            # bytes); the shrink-only ffmpeg expression bounds them anyway.
+            compressed = _compress_oversized_image(
+                file_path,
+                sandbox,
+                None,
+                image_max_size,
+                image_token_budget,
+                f"{file_size} bytes > {OVERSIZED_IMAGE_FILE_SIZE_BYTES} bytes limit",
+            )
+            return {
+                "type": "image",
+                "image_url": f"data:image/jpeg;base64,{base64.b64encode(compressed).decode('utf-8')}",
+                "detail": image_detail,
+            }
+
         res = sandbox.read_file(file_path, binary=True)
         if res.status != SandboxStatus.SUCCESS:
             raise RuntimeError(res.error or "Failed to read image file")
@@ -496,6 +637,22 @@ def _read_image_file(
             content = res.content.encode("utf-8", errors="replace")
         else:
             content = b""
+
+        dimensions = probe_dimensions(content)
+        if dimensions is not None and dimensions[0] * dimensions[1] > OVERSIZED_IMAGE_PIXELS:
+            compressed = _compress_oversized_image(
+                file_path,
+                sandbox,
+                dimensions,
+                image_max_size,
+                image_token_budget,
+                f"{dimensions[0]}x{dimensions[1]} = {dimensions[0] * dimensions[1]} pixels > {OVERSIZED_IMAGE_PIXELS} pixels limit",
+            )
+            return {
+                "type": "image",
+                "image_url": f"data:image/jpeg;base64,{base64.b64encode(compressed).decode('utf-8')}",
+                "detail": image_detail,
+            }
 
         guessed_mime_type, _ = mimetypes.guess_type(file_path)
         mime_type = guessed_mime_type or f"image/{ext[1:]}"
@@ -539,6 +696,13 @@ def read_visual_file(
     PNG via Inkscape; when Inkscape is unavailable, the tool returns an
     SVG_REQUIRES_INKSCAPE error with an actionable hint. Video files are
     processed by extracting key frames via ffmpeg in the sandbox.
+
+    Oversized images (file > 20MB, or > 60 megapixels) are mandatorily
+    compressed via ffmpeg in the sandbox before anything reaches the model —
+    a >20MB file is never pulled into process memory, only its compressed
+    output is. When the sandbox has no ffmpeg, reading such an image fails
+    with an OVERSIZED_IMAGE_REQUIRES_FFMPEG error instead of falling back to
+    the original bytes.
 
     For text files, use the read_file tool instead.
 
@@ -671,13 +835,20 @@ def read_visual_file(
 
         # Handle image files
         if file_type == "image":
-            # Check file size for images
             file_size = int(info.size or 0)
-            if file_size > MAX_FILE_SIZE_BYTES:
-                error_msg = f"Image file too large ({file_size} bytes). Maximum size is {MAX_FILE_SIZE_BYTES} bytes."
+            # SVG keeps a plain size rejection: it is rasterized via Inkscape
+            # into in-memory PNG bytes, which ffmpeg (a file-path consumer)
+            # cannot compress afterwards. Every other format goes through the
+            # oversized-compression path inside `_read_image_file` instead of
+            # being rejected up front.
+            if Path(resolved_path).suffix.lower() == ".svg" and file_size > OVERSIZED_IMAGE_FILE_SIZE_BYTES:
+                error_msg = (
+                    f"SVG file too large ({file_size} bytes). Maximum size is {OVERSIZED_IMAGE_FILE_SIZE_BYTES} bytes"
+                    " — oversized SVG cannot be compressed via ffmpeg because its rasterized form only exists in memory."
+                )
                 return {
                     "content": error_msg,
-                    "returnDisplay": "Image file too large.",
+                    "returnDisplay": "SVG file too large.",
                     "error": {
                         "message": error_msg,
                         "type": "FILE_TOO_LARGE",
@@ -687,6 +858,7 @@ def read_visual_file(
             image_content = _read_image_file(
                 resolved_path,
                 sandbox,
+                file_size,
                 image_detail=image_detail or "auto",
                 image_max_size=image_max_size,
                 image_token_budget=image_token_budget,
@@ -725,6 +897,26 @@ def read_visual_file(
             "error": {
                 "message": error_msg,
                 "type": "SVG_REQUIRES_INKSCAPE",
+            },
+        }
+    except FfmpegUnavailableError as e:
+        error_msg = str(e)
+        return {
+            "content": error_msg,
+            "returnDisplay": "Image too large; ffmpeg is unavailable in the sandbox so it cannot be compressed.",
+            "error": {
+                "message": error_msg,
+                "type": "OVERSIZED_IMAGE_REQUIRES_FFMPEG",
+            },
+        }
+    except OversizedImageCompressionError as e:
+        error_msg = str(e)
+        return {
+            "content": error_msg,
+            "returnDisplay": "Image too large; ffmpeg compression failed.",
+            "error": {
+                "message": error_msg,
+                "type": "FILE_TOO_LARGE",
             },
         }
     except Exception as e:

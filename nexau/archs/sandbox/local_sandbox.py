@@ -61,6 +61,11 @@ from .base_sandbox import (
 
 logger = logging.getLogger(__name__)
 
+# get_file_info 编码探测的采样上限(64KB):探测本就是采样语义,全量读会让
+# metadata 查询变成 O(文件大小) 的 IO/内存操作(21MB 图先整个进进程)。
+# 与 E2BSandbox 侧同名常量保持一致语义。
+_ENCODING_PROBE_MAX_BYTES = 64 * 1024
+
 
 @dataclass(kw_only=True)
 class LocalSandbox(BaseSandbox):
@@ -1019,8 +1024,12 @@ class LocalSandbox(BaseSandbox):
             stat_result = path.stat()
 
             if path.is_file():
+                # 编码探测只读前 64KB 采样:此前的全量 read 让 get_file_info
+                # 变成 O(文件大小) 的内存/IO 操作 —— read_visual_file 对 >20MB
+                # 图刻意不读原图的保证,曾被这一行悄悄打破(拿 metadata 先把
+                # 21MB 读进进程)。chardet 类探测本就是采样语义,前缀足够。
                 with open(path, "rb") as f:
-                    raw_data = f.read()
+                    raw_data = f.read(_ENCODING_PROBE_MAX_BYTES)
                     encoding = self._detect_file_encoding(raw_data)
             else:
                 encoding = None

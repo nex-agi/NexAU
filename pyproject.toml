@@ -29,6 +29,11 @@ dependencies = [
   "nest_asyncio>=1.6.0", # Allow nested event loops for sync/async interop
   "transformers>=4.40,<5",
   "alembic>=1.18.4",
+  # Pillow: pure-in-memory image downscale. Used by HistoryList to cap
+  # oversized images to their pixel/token budget at the persistence entry
+  # point (resize_base64_image_if_oversized in utils/image_probe.py) — runtime
+  # necessary, so a main dependency rather than an optional group.
+  "pillow>=10.0.0",
   # RFC-0019 (PR #481): nexau/archs/permissions/helpers.py imports
   # pathspec for gitignore-style path matching used by built-in tool
   # permission helpers. Was missed when #481 landed; runtime fails

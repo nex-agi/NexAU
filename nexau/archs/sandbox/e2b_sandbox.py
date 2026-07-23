@@ -71,6 +71,11 @@ from .base_sandbox import (
 
 logger = logging.getLogger(__name__)
 
+# get_file_info 编码探测的文件大小上限(1MiB):E2B SDK 的 read 没有 range
+# 参数,超过此值的文件跳过探测(encoding=None),避免为 metadata 把整个
+# 文件从沙盒下载进 runtime 进程。语义与 LocalSandbox 的 64KB 采样一致。
+_ENCODING_PROBE_MAX_BYTES = 1024 * 1024
+
 BASH_TOOL_RESULTS_BASE_PATH = "/tmp/nexau_bash_tool_results"
 """Remote Linux directory used for E2B shell stdout/stderr artifacts."""
 
@@ -1555,7 +1560,12 @@ class E2BSandbox(BaseSandbox):
                 # Check owner write permission (bit 7)
                 writable = bool(entry.mode & 0o200)
 
-            if entry.type == FileType.FILE:
+            # 编码探测上限:E2B SDK 的 read 没有 range 参数,探测一个大文件的
+            # 编码意味着为了 metadata 把整个文件(如 21MB 图)从沙盒下载进
+            # runtime 进程 —— read_visual_file 对超大图"不读原图"的保证曾被
+            # 这里悄悄打破。大文件直接跳过探测(encoding 无消费方依赖精确值,
+            # 文本读取走 UTF-8 lossy 不看它)。
+            if entry.type == FileType.FILE and (entry.size or 0) <= _ENCODING_PROBE_MAX_BYTES:
                 raw_data = self._retry_on_transient(
                     lambda: self._sandbox._filesystem.read(resolved_path, format="bytes")  # type: ignore[union-attr]
                 )
