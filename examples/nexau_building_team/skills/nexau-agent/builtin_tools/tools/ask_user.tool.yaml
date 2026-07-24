@@ -27,6 +27,7 @@ input_schema:
         required:
           - question
           - header
+          - type
         properties:
           question:
             type: string
@@ -53,11 +54,17 @@ input_schema:
               MUST use 'text'; a 'choice' with empty `options` is rejected.
           options:
             type: array
+            minItems: 2
+            maxItems: 4
             description: >-
               The selectable choices for 'choice' type questions. Provide 2-4
               options. An 'Other' option is automatically added. Not needed for
               'text' or 'yesno' types. Can't produce at least 2 real options?
-              Don't send an empty list — use `type: text` instead.
+              Don't send an empty list — use `type: text` instead. Order options
+              by recommendation: put the recommended/default answer first, and
+              suffix that option label with " (Recommended)" for English
+              questions or "（推荐）" for Chinese questions. Mark only one option
+              as recommended.
             items:
               type: object
               required:

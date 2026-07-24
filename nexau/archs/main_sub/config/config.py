@@ -431,7 +431,7 @@ class AgentConfig(
 
             # 2. 注册 Agent 工具
             agent_tool = Tool.from_yaml(
-                str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "agent_tool.yaml"),
+                str(nexau_package_path / "archs" / "tool" / "builtin" / "schemas" / "Agent.tool.yaml"),
                 binding=call_sub_agent,
                 description_suffix=sub_agent_description_suffix,
             )

@@ -6,6 +6,8 @@ description: >-
   pattern. Returns the lines containing matches, along with their file paths and
   line numbers.
 
+  Uses ripgrep when available and falls back to a pure-Python search. Results are
+  limited to 500 matches for performance.
 input_schema:
   type: object
   properties:

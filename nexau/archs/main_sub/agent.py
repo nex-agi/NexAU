@@ -225,7 +225,7 @@ class Agent:
         # 没有 deferred 工具时不暴露 ToolSearch，避免模型 payload 中出现无用工具
         if self._tool_registry.deferred_count > 0:
             tool_search_tool = Tool.from_yaml(
-                str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "tool_search.yaml"),
+                str(nexau_package_path / "archs" / "tool" / "builtin" / "schemas" / "ToolSearch.tool.yaml"),
                 binding=tool_search,
                 as_skill=False,
             )

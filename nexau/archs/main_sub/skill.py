@@ -237,7 +237,7 @@ def build_load_skill_tool(tools: list[Tool], skills: list[Skill]) -> Tool | None
     if has_skilled_tools or skills:
         skill_description_suffix = generate_skill_tool_description(skills, tools)
         return Tool.from_yaml(
-            str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "skill_tool.yaml"),
+            str(nexau_package_path / "archs" / "tool" / "builtin" / "schemas" / "LoadSkill.tool.yaml"),
             binding=load_skill,
             as_skill=False,
             description_suffix=skill_description_suffix,

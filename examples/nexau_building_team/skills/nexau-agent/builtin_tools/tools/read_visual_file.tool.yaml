@@ -5,6 +5,13 @@ description: >-
   Supports images (PNG, JPG, GIF, WEBP, SVG, BMP) and video files (MP4, AVI,
   MOV, MKV, WEBM, FLV, WMV, M4V). Video files are processed by extracting
   key frames via ffmpeg. For text files, use the read_file tool instead.
+# The public schema exposes only `file_path`, matching the other example
+# configs and the Rust `build_spec`. Visual tuning (`image_detail`,
+# `image_max_size`, `image_token_budget`, `video_frame_*`) is binding-time
+# only — set it via `extra_kwargs` on the tool ref, never as an LLM-visible
+# parameter. Exposing `image_max_size` lets the model treat it as a zoom knob
+# and repeatedly re-read at ever-larger sizes, blowing past the context
+# window (observed: a single image read climbing to ~690k prompt tokens).
 input_schema:
   type: object
   properties:
