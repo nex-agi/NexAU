@@ -92,16 +92,19 @@ class TestConfigIntegration:
             agent = Agent.from_yaml(Path(config_path))
             assert agent.config.name == "agent_with_tools"
             tool_names = [tool.name for tool in agent.config.tools]
+            # RFC-0028: web_search 是条件注入的内置工具——tests/conftest.py 全局提供了
+            # SERPER_API_KEY，因此它在测试环境下属于 runtime 内置工具集合。
             assert set(tool_names) == {
                 "ask_user",
                 "complete_task",
                 "read_file",
                 "run_shell_command",
                 "test_tool",
+                "web_search",
                 "write_file",
                 "write_todos",
             }
-            assert len(tool_names) == 7
+            assert len(tool_names) == 8
 
     @pytest.mark.integration
     def test_agent_from_yaml_with_subagents(self):

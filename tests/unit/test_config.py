@@ -282,6 +282,9 @@ class TestBuiltinToolAutoInjectionRFC0197:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # RFC-0028: web_search 是条件注入，本用例断言的是"零配置内置工具"集合
+        monkeypatch.delenv("SEARCH_API_KEY", raising=False)
+        monkeypatch.delenv("SERPER_API_KEY", raising=False)
         read_file_module = importlib.import_module("nexau.archs.tool.builtin.file_tools.read_file")
         file_tools_package = importlib.import_module("nexau.archs.tool.builtin.file_tools")
         monkeypatch.setitem(file_tools_package.__dict__, "read_file", read_file_module)
@@ -303,7 +306,63 @@ class TestBuiltinToolAutoInjectionRFC0197:
         assert tools_by_name["read_file"].implementation is read_file_module.read_file
         assert tools_by_name["read_file"].implementation_import_path == "nexau.archs.tool.builtin.file_tools:read_file"
 
-    def test_builtin_tools_dedup_no_double_register(self, tmp_path: Path) -> None:
+    def test_websearch_not_injected_without_api_key(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """RFC-0028: 没配搜索密钥时不注入 web_search，避免工具列表里出现一调就报错的工具。"""
+        monkeypatch.delenv("SEARCH_API_KEY", raising=False)
+        monkeypatch.delenv("SERPER_API_KEY", raising=False)
+
+        config = AgentConfig.from_dict(
+            {
+                "type": "agent",
+                "name": "minimal",
+                "llm_config": {"model": "gpt-4o-mini"},
+                "plugins": [],
+                "tools": [],
+            },
+            base_path=tmp_path,
+        )
+
+        assert "web_search" not in {tool.name for tool in config.tools}
+
+    @pytest.mark.parametrize("env_key", ["SEARCH_API_KEY", "SERPER_API_KEY"])
+    def test_websearch_injected_when_api_key_present(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        env_key: str,
+    ) -> None:
+        """RFC-0028: 配了密钥（含向后兼容的 SERPER_API_KEY）就自动获得 web_search。"""
+        monkeypatch.delenv("SEARCH_API_KEY", raising=False)
+        monkeypatch.delenv("SERPER_API_KEY", raising=False)
+        monkeypatch.setenv(env_key, "dummy-key")
+
+        config = AgentConfig.from_dict(
+            {
+                "type": "agent",
+                "name": "minimal",
+                "llm_config": {"model": "gpt-4o-mini"},
+                "plugins": [],
+                "tools": [],
+            },
+            base_path=tmp_path,
+        )
+
+        tools_by_name = {tool.name: tool for tool in config.tools}
+        assert "web_search" in tools_by_name
+        assert tools_by_name["web_search"].implementation_import_path == "nexau.archs.tool.builtin.web_tools:web_search"
+
+    def test_builtin_tools_dedup_no_double_register(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # RFC-0028: web_search 是条件注入，本用例断言的是"零配置内置工具"集合
+        monkeypatch.delenv("SEARCH_API_KEY", raising=False)
+        monkeypatch.delenv("SERPER_API_KEY", raising=False)
         declared_schema = tmp_path / "declared_complete_task.tool.yaml"
         declared_schema.write_text(
             textwrap.dedent(

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import warnings
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager, nullcontext
@@ -69,6 +70,30 @@ _BUILTIN_TOOL_BINDINGS: tuple[tuple[str, str], ...] = (
     ("complete_task", "nexau.archs.tool.builtin.session_tools:complete_task"),
     ("ask_user", "nexau.archs.tool.builtin.session_tools:ask_user"),
 )
+
+# RFC-0028: 聚合 Web 搜索。与上面那些"零配置即可用"的内置工具不同，
+# 它必须有搜索服务商密钥才能工作，因此**仅在配置了密钥时才注入**——
+# 否则每个 Agent 的工具列表里都会多一个一调就报错的工具，白占上下文还诱导误用。
+_CONDITIONAL_BUILTIN_TOOL_BINDINGS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "web_search",
+        "nexau.archs.tool.builtin.web_tools:web_search",
+        ("SEARCH_API_KEY", "SERPER_API_KEY"),
+    ),
+)
+
+
+def _conditional_builtin_bindings() -> tuple[tuple[str, str], ...]:
+    """筛出当前环境已具备前置条件的条件式内置工具。
+
+    RFC-0028: 只要任一候选环境变量非空即视为已配置。
+    """
+    enabled: list[tuple[str, str]] = []
+    for name, binding, env_keys in _CONDITIONAL_BUILTIN_TOOL_BINDINGS:
+        if any((os.getenv(key) or "").strip() for key in env_keys):
+            enabled.append((name, binding))
+    return tuple(enabled)
+
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +202,7 @@ def _inject_builtin_tools(config: dict[str, Any]) -> None:
             existing_names.add(name)
 
     # 2. 按声明顺序补齐缺失的 runtime 内置工具
-    for name, binding in _BUILTIN_TOOL_BINDINGS:
+    for name, binding in _BUILTIN_TOOL_BINDINGS + _conditional_builtin_bindings():
         if name in existing_names:
             continue
         tools.append(

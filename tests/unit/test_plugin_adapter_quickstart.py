@@ -10,7 +10,10 @@ from nexau.archs.main_sub.config.config import AgentConfig
 from nexau.archs.tracer.adapters.langfuse import LangfuseTracer
 
 _PLUGIN_DEFAULT_PROMPT_FRAGMENT = "Read the relevant code before editing, keep changes scoped, and verify behavior with focused tests."
+# RFC-0028: web_search 是条件注入的内置工具——tests/conftest.py 全局提供了
+# SERPER_API_KEY，因此在测试环境下它属于 runtime 内置工具集合。
 _RUNTIME_BUILTIN_TOOL_NAMES = {
+    "web_search",
     "ask_user",
     "complete_task",
     "read_file",
