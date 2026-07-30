@@ -365,7 +365,7 @@ class AgentConfig(
         """
         if self._is_finalized:
             return self
-        from nexau.archs.tool.builtin.agent_tool import call_sub_agent
+        from nexau.archs.tool.builtin.agent_tool import call_sub_agent_async
 
         nexau_package_path = Path(__file__).parent.parent.parent.parent
         if self.sub_agents:
@@ -379,7 +379,7 @@ class AgentConfig(
             # 2. 注册 Agent 工具
             agent_tool = Tool.from_yaml(
                 str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "agent_tool.yaml"),
-                binding=call_sub_agent,
+                binding=call_sub_agent_async,
                 description_suffix=sub_agent_description_suffix,
             )
             self.tools.append(agent_tool)
@@ -908,12 +908,16 @@ class AgentConfigBuilder:
             try:
                 sub_agent_name: str | None
                 sub_agent_source_id: str | None
+                sub_agent_timeout_seconds: float | None
+                sub_agent_max_calls_per_run: int | None
                 sub_agent_config_path_raw: str | None
                 inline_config: dict[str, Any] | None
                 inline_base_path: Path | None
                 if isinstance(sub_config, ExpandedSubAgentConfig):
                     sub_agent_name = sub_config.name
                     sub_agent_source_id = sub_config.source_id
+                    sub_agent_timeout_seconds = sub_config.timeout_seconds
+                    sub_agent_max_calls_per_run = sub_config.max_calls_per_run
                     sub_agent_config_path_raw = sub_config.config_path
                     inline_config = sub_config.inline_config
                     inline_base_path = sub_config.inline_base_path
@@ -921,6 +925,8 @@ class AgentConfigBuilder:
                     sub_config_dict = cast(dict[str, Any], sub_config)
                     sub_agent_name = cast(str | None, sub_config_dict.get("name"))
                     sub_agent_source_id = cast(str | None, sub_config_dict.get("source_id"))
+                    sub_agent_timeout_seconds = cast(float | None, sub_config_dict.get("timeout_seconds"))
+                    sub_agent_max_calls_per_run = cast(int | None, sub_config_dict.get("max_calls_per_run"))
                     sub_agent_config_path_raw = cast(str | None, sub_config_dict.get("config_path"))
                     inline_config = None
                     inline_base_path = None
@@ -962,6 +968,8 @@ class AgentConfigBuilder:
                     sub_agent_config.source_id = sub_agent_source_id
                 elif sub_agent_config.source_id is None:
                     sub_agent_config.source_id = f"local:sub_agent:{sub_agent_config.name}"
+                sub_agent_config.timeout_seconds = sub_agent_timeout_seconds
+                sub_agent_config.max_calls_per_run = sub_agent_max_calls_per_run
                 sub_agent_name_final = sub_agent_config.name
                 if sub_agent_name_final in sub_agents:
                     existing_source = sub_agents[sub_agent_name_final].source_id

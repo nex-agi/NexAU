@@ -9,6 +9,12 @@ description: >-
 
   Available sub-agent names are listed in the tool description for your context.
   `sub_agent_name` must match one of the parent agent's configured sub-agents.
+
+  Sub-agents may be configured with an optional invocation deadline and a
+  per-parent-run call budget. A deadline returns a terminal partial result with
+  reason `AGENT_DEADLINE_EXCEEDED`; an exhausted budget returns a terminal
+  partial result with reason `DELEGATION_BUDGET_EXHAUSTED`. Omitted controls
+  preserve the unlimited, backward-compatible behavior.
 formatter: nexau.archs.tool.formatters.agent:format_agent_tool_output
 input_schema:
   type: object

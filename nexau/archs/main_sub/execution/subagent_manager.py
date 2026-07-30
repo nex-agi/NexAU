@@ -14,10 +14,11 @@
 
 """Sub-agent management and lifecycle control."""
 
+import asyncio
 import logging
 import threading
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import AgentConfig
@@ -29,6 +30,10 @@ if TYPE_CHECKING:
     from nexau.archs.session import SessionManager
 
 logger = logging.getLogger(__name__)
+
+
+class SubAgentBudgetExhaustedError(RuntimeError):
+    """Raised when a parent execution has exhausted a sub-agent call budget."""
 
 
 class SubAgentManager:
@@ -69,6 +74,20 @@ class SubAgentManager:
         # list(running_sub_agents.values()) 做 GIL-原子快照后再迭代, 避免
         # iteration-during-mutation 问题。无显式锁。
         self.running_sub_agents: dict[str, Agent] = {}
+        self._calls_by_parent_run: dict[str, int] = {}
+        self._budget_lock = threading.Lock()
+
+    def _admit_call(self, sub_agent_name: str, parent_agent_state: AgentState | None) -> None:
+        """Reserve one call from a per-parent-run budget."""
+        limit = self.sub_agents[sub_agent_name].max_calls_per_run
+        if limit is None or parent_agent_state is None:
+            return
+        run_id = parent_agent_state.run_id
+        with self._budget_lock:
+            used = self._calls_by_parent_run.get(run_id, 0)
+            if used >= limit:
+                raise SubAgentBudgetExhaustedError(sub_agent_name)
+            self._calls_by_parent_run[run_id] = used + 1
 
     def call_sub_agent(
         self,
@@ -113,6 +132,8 @@ class SubAgentManager:
             error_msg = f"Sub-agent '{sub_agent_name}' not found"
             logger.error(f"❌ {error_msg}")
             raise ValueError(error_msg)
+
+        self._admit_call(sub_agent_name, parent_agent_state)
 
         sub_agent_config = self.sub_agents[sub_agent_name]
         caller_sandbox_manager = parent_agent_state.sandbox_manager if parent_agent_state is not None else None
@@ -266,6 +287,8 @@ class SubAgentManager:
             logger.error(f"❌ {error_msg}")
             raise ValueError(error_msg)
 
+        self._admit_call(sub_agent_name, parent_agent_state)
+
         sub_agent_config = self.sub_agents[sub_agent_name]
         caller_sandbox_manager = parent_agent_state.sandbox_manager if parent_agent_state is not None else None
         if parent_agent_state is not None:
@@ -313,13 +336,43 @@ class SubAgentManager:
             if parallel_execution_id and parent_agent_state:
                 parent_agent_state.set_global_value("parallel_execution_id", parallel_execution_id)
 
-            result = await sub_agent.run_async(
-                message=message,
-                context=effective_context,
-                parent_agent_state=parent_agent_state,
-                custom_llm_client_provider=custom_llm_client_provider,
-                trace_id=trace_id,
+            child_task = asyncio.create_task(
+                sub_agent.run_async(
+                    message=message,
+                    context=effective_context,
+                    parent_agent_state=parent_agent_state,
+                    custom_llm_client_provider=custom_llm_client_provider,
+                    trace_id=trace_id,
+                )
             )
+            try:
+                done, pending = await asyncio.wait(
+                    {child_task},
+                    timeout=sub_agent_config.timeout_seconds,
+                )
+                if pending:
+                    sub_agent.executor.force_stop()
+                    child_task.cancel()
+                    await asyncio.wait_for(asyncio.gather(child_task, return_exceptions=True), timeout=1.0)
+                    try:
+                        sub_agent.sync_cleanup()
+                    except Exception:
+                        logger.warning("Failed to synchronously clean up deadline-exceeded sub-agent", exc_info=True)
+                    return cast(
+                        str,
+                        {
+                            "status": "partial",
+                            "reason": "AGENT_DEADLINE_EXCEEDED",
+                            "terminal": True,
+                            "sub_agent_name": sub_agent_name,
+                            "response": "Sub-agent deadline exceeded before it completed.",
+                        },
+                    )
+                result = next(iter(done)).result()
+            except TimeoutError:
+                raise RuntimeError("Sub-agent deadline cleanup timed out") from None
+            if isinstance(result, dict):
+                return cast(str, result)
             result = (
                 f"[sub_agent_id: {actual_sub_agent_id}] {result}\n"
                 f"Sub-agent finished (sub_agent_name: {sub_agent.agent_name}, "

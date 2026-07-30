@@ -95,5 +95,7 @@ class AgentConfigBase[TTool, TSkill, TSubAgent, THook](BaseModel):
     retry_attempts: int = Field(default=5, ge=0)
     retry_backoff_max_seconds: int = Field(default=30, ge=1)
     timeout: int = Field(default=300, ge=1)
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    max_calls_per_run: int | None = Field(default=None, gt=0)
     tracers: list[Any] = Field(default_factory=list)
     skipped_components: list[str] = Field(default_factory=list)

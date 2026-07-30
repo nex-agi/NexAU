@@ -54,6 +54,8 @@ class SubAgentConfigEntry(BaseModel):
     name: str
     config_path: str
     source_id: str | None = None
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    max_calls_per_run: int | None = Field(default=None, gt=0)
 
 
 class MCPServerBaseModel(BaseModel):

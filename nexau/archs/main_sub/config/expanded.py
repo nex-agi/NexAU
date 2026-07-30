@@ -17,3 +17,5 @@ class ExpandedSubAgentConfig:
     source_id: str
     inline_config: dict[str, YamlValue]
     inline_base_path: Path
+    timeout_seconds: float | None = None
+    max_calls_per_run: int | None = None

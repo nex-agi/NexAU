@@ -71,8 +71,19 @@ For a more declarative approach, you can define an agent's entire configuration 
       - name: web_read
           yaml_path: ./tools/WebRead.yaml
         binding: nexau.archs.tool.builtin.web_tools:web_fetch
-    sub_agents: []
+    sub_agents:
+      - name: researcher
+        config_path: ./agents/researcher.yaml
+        # Optional invocation controls; omitted means unlimited/backward compatible.
+        timeout_seconds: 60.0
+        max_calls_per_run: 2
     ```
+
+    `timeout_seconds` is measured from the Agent tool invocation and returns a
+    structured terminal `partial` result with reason `AGENT_DEADLINE_EXCEEDED`.
+    `max_calls_per_run` is counted independently for each parent execution; a
+    later run starts with a fresh budget. Exhaustion returns
+    `DELEGATION_BUDGET_EXHAUSTED` without starting another child.
 
 2.  **Load and use the agent in Python:**
 

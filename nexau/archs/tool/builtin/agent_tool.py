@@ -14,6 +14,7 @@ from typing import Any
 
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.execution import SubAgentManager
+from nexau.archs.main_sub.execution.subagent_manager import SubAgentBudgetExhaustedError
 from nexau.archs.main_sub.framework_context import FrameworkContext
 
 
@@ -27,7 +28,7 @@ def _extract_sub_agent_id(text: str) -> str | None:
     return match.group(1) if match else None
 
 
-def call_sub_agent(
+async def call_sub_agent_async(
     sub_agent_name: str,
     message: str,
     sub_agent_id: str | None = None,
@@ -73,13 +74,23 @@ def call_sub_agent(
     # RFC-0024: 显式透传 trace_id 而非通过 AgentState backref。
     trace_id = ctx.trace_id if ctx is not None else None
     try:
-        result = subagent_manager.call_sub_agent(
+        result = await subagent_manager.call_sub_agent_async(
             sub_agent_name,
             message,
             sub_agent_id,
             parent_agent_state=agent_state,
             trace_id=trace_id,
         )
+        if isinstance(result, dict):
+            return result
+        if result.endswith("[Note: Maximum iteration limit reached]"):
+            return {
+                "status": "partial",
+                "reason": "MAX_ITERATIONS_REACHED",
+                "terminal": True,
+                "sub_agent_name": sub_agent_name,
+                "response": result,
+            }
         # RFC-0015: 从返回字符串开头提取实际 sub_agent_id（新建子代理时输入参数为 None）
         actual_sub_agent_id = _extract_sub_agent_id(result)
         return {
@@ -88,6 +99,14 @@ def call_sub_agent(
             "sub_agent_id": actual_sub_agent_id,
             "message": message,
             "result": result,
+        }
+    except SubAgentBudgetExhaustedError:
+        return {
+            "status": "partial",
+            "reason": "DELEGATION_BUDGET_EXHAUSTED",
+            "terminal": True,
+            "sub_agent_name": sub_agent_name,
+            "response": "The configured sub-agent call budget for this parent run is exhausted.",
         }
     except Exception as exc:
         # RFC-0015: 异常消息也包含 [sub_agent_id: ...] 前缀
@@ -101,4 +120,53 @@ def call_sub_agent(
         }
 
 
-__all__ = ["call_sub_agent"]
+def call_sub_agent(
+    sub_agent_name: str,
+    message: str,
+    sub_agent_id: str | None = None,
+    agent_state: AgentState | None = None,
+    ctx: FrameworkContext | None = None,
+) -> dict[str, Any]:
+    """Synchronous compatibility binding for legacy executor callers."""
+    if not sub_agent_id:
+        sub_agent_id = None
+    if agent_state is None:
+        return {"status": "error", "error": "Agent state not available"}
+    manager = agent_state.subagent_manager
+    if manager is None:
+        return {"status": "error", "error": "Sub-agent manager not available on agent_state"}
+    try:
+        result = manager.call_sub_agent(
+            sub_agent_name,
+            message,
+            sub_agent_id,
+            parent_agent_state=agent_state,
+            trace_id=ctx.trace_id if ctx is not None else None,
+        )
+        actual_id = _extract_sub_agent_id(result)
+        return {
+            "status": "success",
+            "sub_agent_name": sub_agent_name,
+            "sub_agent_id": actual_id,
+            "message": message,
+            "result": result,
+        }
+    except SubAgentBudgetExhaustedError:
+        return {
+            "status": "partial",
+            "reason": "DELEGATION_BUDGET_EXHAUSTED",
+            "terminal": True,
+            "sub_agent_name": sub_agent_name,
+            "response": "The configured sub-agent call budget for this parent run is exhausted.",
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "sub_agent_name": sub_agent_name,
+            "sub_agent_id": _extract_sub_agent_id(str(exc)),
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+        }
+
+
+__all__ = ["call_sub_agent", "call_sub_agent_async"]
