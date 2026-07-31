@@ -21,7 +21,9 @@ from nexau.archs.main_sub.execution.hooks import BeforeModelHookInput
 from nexau.archs.main_sub.execution.middleware.round_and_token_reminder import (
     RoundAndTokenReminderMiddleware,
 )
+from nexau.archs.main_sub.history_list import HistoryList
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
+from nexau.core.messages import Message, Role
 
 
 @pytest.fixture
@@ -52,10 +54,58 @@ def test_before_model_adds_iteration_hint(agent_state: AgentState, base_messages
 
     assert result.messages is not None
     assert len(result.messages) == len(base_messages) + 1
+    assert result.messages[:-1] == base_messages
+    assert result.messages[-1].role == Role.FRAMEWORK
 
     appended = result.messages[-1].get_text_content()
     assert "iteration 4/5" in appended
     assert "iteration(s) remaining" in appended
+
+
+def test_before_model_never_mutates_the_last_user_message(agent_state: AgentState):
+    """The reminder is a separate FRAMEWORK row even after a real USER turn."""
+
+    user = Message.user("visible question")
+    messages = [Message.assistant("previous answer"), user]
+    original_user = user.model_copy(deep=True)
+    middleware = RoundAndTokenReminderMiddleware(max_context_tokens=1000)
+    hook_input = BeforeModelHookInput(
+        agent_state=agent_state,
+        max_iterations=5,
+        current_iteration=2,
+        messages=messages,
+    )
+
+    result = middleware.before_model(hook_input)
+
+    assert result.messages is not None
+    assert result.messages[:-1] == messages
+    assert result.messages[-1].role == Role.FRAMEWORK
+    assert user == original_user
+    assert user.get_text_content() == "visible question"
+
+
+def test_reminder_is_an_append_in_history(agent_state: AgentState, base_messages):
+    """A distinct FRAMEWORK reminder cannot masquerade as compaction."""
+
+    history = HistoryList(base_messages)
+    middleware = RoundAndTokenReminderMiddleware(max_context_tokens=1000)
+    hook_input = BeforeModelHookInput(
+        agent_state=agent_state,
+        max_iterations=5,
+        current_iteration=2,
+        messages=list(history),
+    )
+
+    result = middleware.before_model(hook_input)
+    assert result.messages is not None
+    history.replace_all(result.messages)
+    append_messages, replace_messages, _current = history._prepare_flush()  # noqa: SLF001
+
+    assert replace_messages is None
+    assert append_messages is not None
+    assert len(append_messages) == 1
+    assert append_messages[0].role == Role.FRAMEWORK
 
 
 def test_before_model_adds_token_hint(agent_state: AgentState, base_messages):

@@ -70,22 +70,10 @@ class RoundAndTokenReminderMiddleware(Middleware):
         )
         hint_content = f"{iteration_hint}\n\n{token_hint}"
 
-        updated_messages = list(hook_input.messages)
-        if updated_messages[-1].role not in (Role.USER, Role.FRAMEWORK):
-            updated_messages.append(Message(role=Role.FRAMEWORK, content=[TextBlock(text=hint_content)]))
-        else:
-            last = updated_messages[-1]
-            blocks = list(last.content)
-            appended = False
-            for idx in range(len(blocks) - 1, -1, -1):
-                block = blocks[idx]
-                if isinstance(block, TextBlock):
-                    blocks[idx] = TextBlock(text=f"{block.text}\n\n{hint_content}")
-                    appended = True
-                    break
-            if not appended:
-                blocks.append(TextBlock(text=hint_content))
-            updated_messages[-1] = last.model_copy(update={"content": blocks})
+        updated_messages = [
+            *hook_input.messages,
+            Message(role=Role.FRAMEWORK, content=[TextBlock(text=hint_content)]),
+        ]
 
         logger.info("[RoundAndTokenReminderMiddleware] Added iteration/token hint message")
         return HookResult.with_modifications(messages=updated_messages)

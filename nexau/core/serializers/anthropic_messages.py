@@ -12,6 +12,7 @@ import logging
 from typing import Any, cast
 
 from nexau.core.messages import ImageBlock, Message, ReasoningBlock, Role, TextBlock, ToolResultBlock, ToolUseBlock
+from nexau.core.serializers.user_projection import coalesce_user_shaped_messages
 
 _logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ def serialize_ump_to_anthropic_messages_payload(
             convo.append({"role": Role.USER.value, "content": leading + trailing})
             pending_tool_results.clear()
 
-    for msg in messages:
+    for msg in coalesce_user_shaped_messages(messages):
         if msg.role == Role.SYSTEM:
             system_text = msg.get_text_content()
             if system_text:
@@ -173,7 +174,7 @@ def serialize_ump_to_anthropic_messages_payload(
                 content_blocks.append({"type": "text", "text": "[reasoning omitted]"})
 
         role = msg.role.value
-        if msg.role in (Role.TOOL, Role.FRAMEWORK):
+        if msg.role == Role.TOOL:
             role = Role.USER.value
 
         if msg.role == Role.TOOL:

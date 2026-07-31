@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from nexau.core.messages import ImageBlock, Message, ReasoningBlock, Role, TextBlock, ToolResultBlock, ToolUseBlock
+from nexau.core.serializers.user_projection import project_user_shaped_messages
 
 
 def serialize_ump_to_gemini_messages_payload(
@@ -36,14 +37,15 @@ def serialize_ump_to_gemini_messages_payload(
                 return
         gemini_contents.append({"role": Role.USER.value, "parts": [response_part]})
 
-    for message in messages:
+    for projection in project_user_shaped_messages(messages):
+        message = projection.message
         if message.role == Role.SYSTEM:
             for block in message.content:
                 if isinstance(block, TextBlock) and block.text:
                     system_parts.append({"text": block.text})
             continue
 
-        if message.role in (Role.USER, Role.FRAMEWORK):
+        if message.role == Role.USER:
             user_parts: list[dict[str, Any]] = []
             for block in message.content:
                 if isinstance(block, TextBlock) and block.text:
@@ -58,6 +60,14 @@ def serialize_ump_to_gemini_messages_payload(
                         )
                     elif block.url:
                         user_parts.append({"file_data": {"file_uri": block.url}})
+            if projection.contains_framework and gemini_contents and gemini_contents[-1]["role"] == Role.USER.value:
+                previous_parts = cast(list[dict[str, Any]], gemini_contents[-1].get("parts", []))
+                if any("functionResponse" in part for part in previous_parts):
+                    # Gemini requires user/model alternation. Keep the tool
+                    # response first and append the framework instruction to
+                    # the same provider USER turn.
+                    previous_parts.extend(user_parts)
+                    continue
             gemini_contents.append({"role": Role.USER.value, "parts": user_parts})
             continue
 
