@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import importlib
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -265,53 +264,15 @@ class TestSchemaNormalization:
             AgentConfigSchema.from_yaml(str(bad_path))
 
 
-class TestBuiltinToolAutoInjectionRFC0197:
-    """Tests for RFC-0197 runtime built-in tool injection."""
-
-    BUILTIN_TOOL_NAMES = {
-        "run_shell_command",
-        "read_file",
-        "write_file",
-        "write_todos",
-        "complete_task",
-        "ask_user",
-    }
-
-    def test_builtin_tools_auto_injected(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        # RFC-0028: web_search 是条件注入，本用例断言的是"零配置内置工具"集合
-        monkeypatch.delenv("SEARCH_API_KEY", raising=False)
-        monkeypatch.delenv("SERPER_API_KEY", raising=False)
-        read_file_module = importlib.import_module("nexau.archs.tool.builtin.file_tools.read_file")
-        file_tools_package = importlib.import_module("nexau.archs.tool.builtin.file_tools")
-        monkeypatch.setitem(file_tools_package.__dict__, "read_file", read_file_module)
-        assert file_tools_package.__dict__["read_file"] is read_file_module
-
-        config = AgentConfig.from_dict(
-            {
-                "type": "agent",
-                "name": "minimal",
-                "llm_config": {"model": "gpt-4o-mini"},
-                "plugins": [],
-                "tools": [],
-            },
-            base_path=tmp_path,
-        )
-
-        tools_by_name = {tool.name: tool for tool in config.tools}
-        assert set(tools_by_name) == self.BUILTIN_TOOL_NAMES
-        assert tools_by_name["read_file"].implementation is read_file_module.read_file
-        assert tools_by_name["read_file"].implementation_import_path == "nexau.archs.tool.builtin.file_tools:read_file"
+class TestConditionalBuiltinToolInjection:
+    """Tests for conditional runtime built-in tool injection."""
 
     def test_websearch_not_injected_without_api_key(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """RFC-0028: 没配搜索密钥时不注入 web_search，避免工具列表里出现一调就报错的工具。"""
+        """RFC-0028: 没配搜索密钥时不注入 web_search。"""
         monkeypatch.delenv("SEARCH_API_KEY", raising=False)
         monkeypatch.delenv("SERPER_API_KEY", raising=False)
 
@@ -335,7 +296,7 @@ class TestBuiltinToolAutoInjectionRFC0197:
         monkeypatch: pytest.MonkeyPatch,
         env_key: str,
     ) -> None:
-        """RFC-0028: 配了密钥（含向后兼容的 SERPER_API_KEY）就自动获得 web_search。"""
+        """RFC-0028: 配了搜索密钥就自动获得 web_search。"""
         monkeypatch.delenv("SEARCH_API_KEY", raising=False)
         monkeypatch.delenv("SERPER_API_KEY", raising=False)
         monkeypatch.setenv(env_key, "dummy-key")
@@ -355,53 +316,38 @@ class TestBuiltinToolAutoInjectionRFC0197:
         assert "web_search" in tools_by_name
         assert tools_by_name["web_search"].implementation_import_path == "nexau.archs.tool.builtin.web_tools:web_search"
 
-    def test_builtin_tools_dedup_no_double_register(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        # RFC-0028: web_search 是条件注入，本用例断言的是"零配置内置工具"集合
-        monkeypatch.delenv("SEARCH_API_KEY", raising=False)
-        monkeypatch.delenv("SERPER_API_KEY", raising=False)
-        declared_schema = tmp_path / "declared_complete_task.tool.yaml"
-        declared_schema.write_text(
-            textwrap.dedent(
-                """
-                type: tool
-                name: complete_task
-                description: Explicit complete_task override.
-                input_schema:
-                  type: object
-                  properties: {}
-                  additionalProperties: false
-                """,
-            ).lstrip(),
-            encoding="utf-8",
-        )
-        config = AgentConfig.from_dict(
-            {
-                "type": "agent",
-                "name": "override",
-                "llm_config": {"model": "gpt-4o-mini"},
-                "plugins": [],
-                "tools": [
-                    {
-                        "name": "complete_task",
-                        "yaml_path": str(declared_schema),
-                        "binding": "builtins:print",
-                    },
-                ],
-            },
-            base_path=tmp_path,
-        )
 
-        tool_names = [tool.name for tool in config.tools]
-        declared_tools = [tool for tool in config.tools if tool.name == "complete_task"]
-        assert set(tool_names) == self.BUILTIN_TOOL_NAMES
-        assert len(tool_names) == len(self.BUILTIN_TOOL_NAMES)
-        assert len(declared_tools) == 1
-        assert declared_tools[0].description == "Explicit complete_task override."
-        assert declared_tools[0].implementation is print
+def test_minimal_agent_does_not_receive_runtime_builtin_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A minimal agent must not receive undeclared runtime built-in tools."""
+    monkeypatch.delenv("SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            type: agent
+            name: minimal
+            llm_config:
+              model: gpt-4o-mini
+            """,
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    config = AgentConfig.from_yaml(config_path)
+
+    forbidden_tool_names = {
+        "run_shell_command",
+        "read_file",
+        "write_file",
+        "write_todos",
+        "complete_task",
+        "ask_user",
+    }
+    assert forbidden_tool_names.isdisjoint({tool.name for tool in config.tools})
 
 
 class TestAgentConfigBuilderCore:

@@ -62,14 +62,6 @@ YamlValue = dict[str, Any] | list[Any] | str | int | float | bool | None
 HookConfig = str | dict[str, Any] | Callable[..., Any]
 
 _BUILTIN_TOOL_SCHEMA_ROOT = "nexau:archs/tool/builtin/schemas"
-_BUILTIN_TOOL_BINDINGS: tuple[tuple[str, str], ...] = (
-    ("run_shell_command", "nexau.archs.tool.builtin.shell_tools:run_shell_command"),
-    ("read_file", "nexau.archs.tool.builtin.file_tools:read_file"),
-    ("write_file", "nexau.archs.tool.builtin.file_tools:write_file"),
-    ("write_todos", "nexau.archs.tool.builtin.session_tools:write_todos"),
-    ("complete_task", "nexau.archs.tool.builtin.session_tools:complete_task"),
-    ("ask_user", "nexau.archs.tool.builtin.session_tools:ask_user"),
-)
 
 # RFC-0028: 聚合 Web 搜索。与上面那些"零配置即可用"的内置工具不同，
 # 它必须有搜索服务商密钥才能工作，因此**仅在配置了密钥时才注入**——
@@ -176,9 +168,7 @@ def _require_dict(value: object, *, context: str) -> dict[str, Any]:
 
 
 def _inject_builtin_tools(config: dict[str, Any]) -> None:
-    """Inject runtime built-in tools without replacing declared tools.
-
-    RFC-0197: NexAU runtime 内置基础工具
+    """Inject conditional runtime built-in tools without replacing declared tools.
 
     插件贡献与 agent 自声明的同名工具优先，runtime 仅补齐缺失项。
     """
@@ -201,8 +191,8 @@ def _inject_builtin_tools(config: dict[str, Any]) -> None:
         if isinstance(name, str):
             existing_names.add(name)
 
-    # 2. 按声明顺序补齐缺失的 runtime 内置工具
-    for name, binding in _BUILTIN_TOOL_BINDINGS + _conditional_builtin_bindings():
+    # 2. 按声明顺序补齐已满足前置条件的 runtime 内置工具
+    for name, binding in _conditional_builtin_bindings():
         if name in existing_names:
             continue
         tools.append(
@@ -364,7 +354,7 @@ class AgentConfig(
             if ignored_plugins:
                 logger.info("sub_agent_load plugins_ignored=%d", len(ignored_plugins))
 
-        # RFC-0197: 在插件与 agent 工具合并后补齐 runtime 内置工具
+        # 在插件与 agent 工具合并后补齐已满足前置条件的 runtime 内置工具
         _inject_builtin_tools(config_dict)
 
         agent_builder = AgentConfigBuilder(

@@ -10,17 +10,6 @@ from nexau.archs.main_sub.config.config import AgentConfig
 from nexau.archs.tracer.adapters.langfuse import LangfuseTracer
 
 _PLUGIN_DEFAULT_PROMPT_FRAGMENT = "Read the relevant code before editing, keep changes scoped, and verify behavior with focused tests."
-# RFC-0028: web_search 是条件注入的内置工具——tests/conftest.py 全局提供了
-# SERPER_API_KEY，因此在测试环境下它属于 runtime 内置工具集合。
-_RUNTIME_BUILTIN_TOOL_NAMES = {
-    "web_search",
-    "ask_user",
-    "complete_task",
-    "read_file",
-    "run_shell_command",
-    "write_file",
-    "write_todos",
-}
 _REQUIRED_ENV = {
     "LLM_MODEL": "test-model",
     "LLM_BASE_URL": "http://example.test/v1",
@@ -35,6 +24,8 @@ _REQUIRED_ENV = {
 def _set_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key, value in _REQUIRED_ENV.items():
         monkeypatch.setenv(key, value)
+    monkeypatch.delenv("SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
 
 
 def _module_file(module: ModuleType) -> Path:
@@ -68,17 +59,20 @@ def _assert_coding_plugin_config(config: AgentConfig) -> None:
     assert isinstance(worker_prompt, str)
     assert _PLUGIN_DEFAULT_PROMPT_FRAGMENT in explore_prompt
     assert _PLUGIN_DEFAULT_PROMPT_FRAGMENT in worker_prompt
-    explore_tool_names = {tool.name for tool in config.sub_agents["explore"].tools}
-    assert explore_tool_names == _RUNTIME_BUILTIN_TOOL_NAMES | {
+    assert {tool.name for tool in config.sub_agents["explore"].tools} == {
         "list_directory",
+        "read_file",
+        "run_shell_command",
         "search_file_content",
     }
-    worker_tool_names = {tool.name for tool in config.sub_agents["worker"].tools}
-    assert worker_tool_names == _RUNTIME_BUILTIN_TOOL_NAMES | {
+    assert {tool.name for tool in config.sub_agents["worker"].tools} == {
         "apply_patch",
         "list_directory",
+        "read_file",
         "replace",
+        "run_shell_command",
         "search_file_content",
+        "write_todos",
     }
 
     assert config.middlewares is not None
