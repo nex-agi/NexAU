@@ -4,9 +4,27 @@ from typing import Any
 from _pytest.logging import LogCaptureFixture
 
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
-from nexau.core.messages import Role, TextBlock, ToolResultBlock, ToolUseBlock
+from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, ToolUseBlock
 from nexau.core.serializers.anthropic_messages import serialize_ump_to_anthropic_messages_payload
 from nexau.core.serializers.openai_chat import serialize_ump_to_openai_chat_payload
+
+
+def test_framework_role_survives_public_dict_history_round_trip() -> None:
+    """Canonical FRAMEWORK JSON must not be downgraded to a real USER."""
+
+    original = Message(
+        role=Role.FRAMEWORK,
+        content=[TextBlock(text="iteration reminder")],
+    )
+    wire_message = original.model_dump(mode="json")
+
+    normalized = messages_from_legacy_openai_chat([wire_message])
+    lowercase = messages_from_legacy_openai_chat([{"role": "framework", "content": "lowercase reminder"}])
+
+    assert normalized[0].role == Role.FRAMEWORK
+    assert normalized[0].get_text_content() == "iteration reminder"
+    assert lowercase[0].role == Role.FRAMEWORK
+    assert lowercase[0].get_text_content() == "lowercase reminder"
 
 
 def test_legacy_roundtrip_text_only() -> None:

@@ -44,6 +44,17 @@ _TO_LANGFUSE_FIELD: dict[str, str | None] = {
     "cache_read_tokens": "cache_read_input_tokens",
     "cache_creation_tokens": "cache_creation_input_tokens",
     "input_tokens_uncached": None,
+    # Anthropic 嵌套 details 子桶。_flatten_usage_dict 会把它们从 `cache_creation` /
+    # `output_tokens_details` 子 dict 提升到顶层，此时与顶层聚合字段**重叠**：
+    # ephemeral_5m/1h 之和 == cache_creation_input_tokens，thinking_tokens ⊆
+    # output_tokens。Anthropic usage 无字面量 total，Langfuse ingestion 对
+    # usage_details 全部值求和当 total，于是这些子桶被二次累加、total 虚高
+    # （实测 cache_creation_input_tokens=37112 与其明细 ephemeral_5m=37112 同时入账，
+    # total 多算 37112，接近 2×）。映射为 None 丢弃——顶层聚合字段已承载其值，
+    # 与上面 `input_tokens_uncached` 同理。
+    "ephemeral_5m_input_tokens": None,
+    "ephemeral_1h_input_tokens": None,
+    "thinking_tokens": None,
     # provider/会话预聚合的总数必须用 Langfuse 规范的字面量 `total` key 上报。
     # Langfuse ingestion（worker IngestionService）的逻辑是：usage_details 里若不存在
     # 字面量 `total` key，就把 map 里**所有值求和**当作 total。`total_tokens`（带后缀）

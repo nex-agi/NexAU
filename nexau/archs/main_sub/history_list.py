@@ -20,10 +20,20 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Iterable
 from typing import TYPE_CHECKING, Any, SupportsIndex
 
-from nexau.core.messages import Message, Role
+from nexau.archs.main_sub.utils.image_probe import (
+    OVERSIZED_IMAGE_PLACEHOLDER,
+    image_exceeds_hard_limit,
+    resize_base64_image_if_oversized,
+)
+from nexau.core.messages import (
+    ImageBlock,
+    Message,
+    Role,
+    TextBlock,
+)
 
 if TYPE_CHECKING:
     from concurrent.futures import Future as ConcurrentFuture
@@ -32,6 +42,44 @@ if TYPE_CHECKING:
     from nexau.archs.session.models.agent_run_action_model import ReplaceVariantBase
 
 logger = logging.getLogger(__name__)
+
+
+def _resize_image_block(block: ImageBlock) -> None:
+    """就地把一个超预算 ImageBlock 降采样到面积封顶内。
+
+    url-only（``base64`` 为空）图跳过 —— 没有本地字节可处理。界内小图、
+    解码/降采样失败都是 no-op（``resize_base64_image_if_oversized`` 返回 None），
+    原样保留。
+    """
+    if not block.base64:
+        return
+    resized = resize_base64_image_if_oversized(block.base64, block.mime_type)
+    if resized is None:
+        return
+    block.base64, block.mime_type = resized
+
+
+def _omit_or_resize_image_block(block: ImageBlock) -> TextBlock | None:
+    """超大图 → 返回占位 ``TextBlock``（调用方用它替换该 ``ImageBlock``）；否则就地
+    降采样该图并返回 ``None``（原位置的 block 不动）。
+
+    ``image_exceeds_hard_limit`` 必须在 ``_resize_image_block`` 之前判：后者会全解码，
+    而硬 gate 正是要在解码前拦下 decode 炸弹 + 巨大 payload。url-only（``base64``
+    为空）图既不触发硬 gate（无字节可测）也没有本地字节可 resize，返回 ``None`` 原样
+    保留。
+    """
+    if block.base64 and image_exceeds_hard_limit(block.base64):
+        return TextBlock(text=OVERSIZED_IMAGE_PLACEHOLDER)
+    _resize_image_block(block)
+    return None
+
+
+# 设计边界(#601):持久化闸只处理**用户直传**的顶层 ImageBlock。工具产出
+# (ToolResultBlock.content 嵌套图与 raw_output 副本)一律不碰 —— builtin 读
+# 工具的图已被读路径强制压缩到界内;用户自定义工具/MCP 返回什么、多大、要不
+# 要压缩,是工具作者自己的责任,框架不做任何限制或改写(此前的无差别
+# resize/omit 曾误杀 >20MiB 的非图 base64、并使 image_token_budget=0 的
+# escape hatch 形同虚设)。
 
 
 class HistoryList(list[Message]):
@@ -115,8 +163,51 @@ class HistoryList(list[Message]):
         """Check if there are unflushed pending messages."""
         return bool(self._pending_messages)
 
+    def _resize_oversized_images(self, messages: Iterable[Message]) -> None:
+        """就地把超预算图片降采样到 ``DEFAULT_IMAGE_MAX_PIXELS`` 面积封顶内，超大图
+        （``image_exceeds_hard_limit``：base64 > 20 MiB 或像素 > 60 MP）则直接 omit
+        成占位（不 resize、不全解码，避免 decode 炸弹 + 巨大 payload）。
+
+        在 append / extend / replace_all 把消息落到 ``_pending_messages`` 之前
+        调用 —— 这是生产代码唯一的 persist 汇聚点，用户消息、工具结果、权限恢复
+        重跑、压缩 REPLACE 都经此，但本闸只处理用户直传的顶层 ``ImageBlock``。
+        #599 只在 ``read_visual_file`` 把图返回给 LLM 时降采样；这里补上用户直传
+        图片的持久化兜底，避免原图 base64 进入 SQL / JSONL / memory / remote
+        backend。自定义工具/MCP 输出保持框架透明，由工具作者治理：
+
+        只处理 ``content`` 里**顶层** ``ImageBlock``(用户直传;超硬限 → 占位,
+        超预算 → 就地 resize)。工具产出(``ToolResultBlock`` 的嵌套图与
+        ``raw_output``)刻意不碰:builtin 读工具已在读路径压缩,自定义工具/
+        MCP 的输出由工具作者自己负责。
+
+        原地改同一份对象 —— 既缩小落库体积，也让下一轮喂给 LLM 的历史省 token。
+        graceful：逐条消息 try/except，任何异常吞掉并记日志，绝不让历史写入因
+        图片处理失败而失败（与 read_visual_file 降采样“降级不 fail”一致）。
+        """
+        for message in messages:
+            try:
+                self._resize_message_images(message)
+            except Exception:
+                logger.warning(
+                    "Image resize on persist failed for message %s; keeping original",
+                    message.id,
+                    exc_info=True,
+                )
+
+    @staticmethod
+    def _resize_message_images(message: Message) -> None:
+        # 顶层 block：超大 ImageBlock → 就地按索引换成 TextBlock 占位（TextBlock 是
+        # DiscriminatedBlock 的合法成员，类型安全）；界内超预算图就地 resize。只替换
+        # 当前索引、不增删元素，因此边遍历边改是安全的。
+        for index, block in enumerate(message.content):
+            if isinstance(block, ImageBlock):
+                placeholder = _omit_or_resize_image_block(block)
+                if placeholder is not None:
+                    message.content[index] = placeholder
+
     def append(self, item: Message) -> None:
         """Append a message (will be persisted on flush)."""
+        self._resize_oversized_images((item,))
         super().append(item)
 
         if self._persistence_enabled and item.role != Role.SYSTEM:
@@ -124,6 +215,7 @@ class HistoryList(list[Message]):
 
     def extend(self, items: list[Message] | tuple[Message, ...]) -> None:  # type: ignore[override]
         """Extend with messages (will be persisted on flush)."""
+        self._resize_oversized_images(items)
         super().extend(items)
 
         if self._persistence_enabled:
@@ -191,6 +283,7 @@ class HistoryList(list[Message]):
             update_baseline,
             type(replace_extra).__name__ if replace_extra is not None else None,
         )
+        self._resize_oversized_images(new_messages)
         self.clear()
         super().extend(new_messages)
         if self._persistence_enabled:

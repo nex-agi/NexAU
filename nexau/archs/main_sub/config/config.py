@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import warnings
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager, nullcontext
@@ -59,6 +60,32 @@ THook = TypeVar("THook", bound=object)
 
 YamlValue = dict[str, Any] | list[Any] | str | int | float | bool | None
 HookConfig = str | dict[str, Any] | Callable[..., Any]
+
+_BUILTIN_TOOL_SCHEMA_ROOT = "nexau:archs/tool/builtin/schemas"
+
+# RFC-0028: 聚合 Web 搜索。与上面那些"零配置即可用"的内置工具不同，
+# 它必须有搜索服务商密钥才能工作，因此**仅在配置了密钥时才注入**——
+# 否则每个 Agent 的工具列表里都会多一个一调就报错的工具，白占上下文还诱导误用。
+_CONDITIONAL_BUILTIN_TOOL_BINDINGS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "web_search",
+        "nexau.archs.tool.builtin.web_tools:web_search",
+        ("SEARCH_API_KEY", "SERPER_API_KEY"),
+    ),
+)
+
+
+def _conditional_builtin_bindings() -> tuple[tuple[str, str], ...]:
+    """筛出当前环境已具备前置条件的条件式内置工具。
+
+    RFC-0028: 只要任一候选环境变量非空即视为已配置。
+    """
+    enabled: list[tuple[str, str]] = []
+    for name, binding, env_keys in _CONDITIONAL_BUILTIN_TOOL_BINDINGS:
+        if any((os.getenv(key) or "").strip() for key in env_keys):
+            enabled.append((name, binding))
+    return tuple(enabled)
+
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +165,44 @@ def _require_dict(value: object, *, context: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ConfigError(f"{context} must be a dictionary")
     return cast(dict[str, Any], value)
+
+
+def _inject_builtin_tools(config: dict[str, Any]) -> None:
+    """Inject conditional runtime built-in tools without replacing declared tools.
+
+    插件贡献与 agent 自声明的同名工具优先，runtime 仅补齐缺失项。
+    """
+    tools_raw: object = config.get("tools")
+    if tools_raw is None:
+        tools: list[object] = []
+        config["tools"] = tools
+    elif isinstance(tools_raw, list):
+        tools = cast(list[object], tools_raw)
+    else:
+        raise ConfigError("'tools' must be a list")
+
+    # 1. 收集插件展开与 agent 自声明的工具名
+    existing_names: set[str] = set()
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        tool_entry = cast(dict[object, object], tool)
+        name = tool_entry.get("name")
+        if isinstance(name, str):
+            existing_names.add(name)
+
+    # 2. 按声明顺序补齐已满足前置条件的 runtime 内置工具
+    for name, binding in _conditional_builtin_bindings():
+        if name in existing_names:
+            continue
+        tools.append(
+            {
+                "name": name,
+                "yaml_path": f"{_BUILTIN_TOOL_SCHEMA_ROOT}/{name}.tool.yaml",
+                "binding": binding,
+            },
+        )
+        existing_names.add(name)
 
 
 class AgentConfig(
@@ -289,6 +354,9 @@ class AgentConfig(
             if ignored_plugins:
                 logger.info("sub_agent_load plugins_ignored=%d", len(ignored_plugins))
 
+        # 在插件与 agent 工具合并后补齐已满足前置条件的 runtime 内置工具
+        _inject_builtin_tools(config_dict)
+
         agent_builder = AgentConfigBuilder(
             config_dict,
             base_path,
@@ -378,7 +446,7 @@ class AgentConfig(
 
             # 2. 注册 Agent 工具
             agent_tool = Tool.from_yaml(
-                str(nexau_package_path / "archs" / "tool" / "builtin" / "description" / "agent_tool.yaml"),
+                str(nexau_package_path / "archs" / "tool" / "builtin" / "schemas" / "Agent.tool.yaml"),
                 binding=call_sub_agent,
                 description_suffix=sub_agent_description_suffix,
             )

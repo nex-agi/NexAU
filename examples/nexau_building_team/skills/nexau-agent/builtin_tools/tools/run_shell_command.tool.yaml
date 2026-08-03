@@ -13,7 +13,9 @@ description: >-
   BOM, prefer .NET `WriteAllText` with `UTF8Encoding($false)`. Do not use Bash
   heredoc unless Git Bash is explicitly selected. To run a
   command in the background, set the `is_background` parameter to true. Do NOT
-  use `&` to background commands.
+  use `&` to background commands. On backends that expose a POSIX process group,
+  it can be terminated as `kill -- -PGID` or signaled as
+  `kill -s SIGNAL -- -PGID`.
 
   The following information is returned:
 

@@ -27,6 +27,7 @@ from nexau.core.messages import (
 logger = logging.getLogger(__name__)
 
 _INJECTED_TOOL_IMAGES_RE = re.compile(r"^\s*Images returned by tool call\s+(?P<id>.+?)\s*:\s*$")
+_ROLES_BY_CASEFOLD = {role.value.casefold(): role for role in Role}
 
 
 def _coerce_str(value: Any) -> str:
@@ -69,12 +70,17 @@ def messages_from_legacy_openai_chat(messages: list[dict[str, Any]]) -> list[Mes
 
     result: list[Message] = []
     for idx, raw in enumerate(messages or []):
-        role_raw = (raw.get("role") or "user").lower()
-        try:
-            role = Role(role_raw)
-        except Exception:
-            logger.warning("Unknown role %r in legacy chat message at index=%s; coercing to %s", role_raw, idx, Role.USER.value)
-            role = Role.USER
+        role_value = raw.get("role") or Role.USER.value
+        if isinstance(role_value, Role):
+            role = role_value
+            known_role = True
+        else:
+            role_raw = str(role_value)
+            matched_role = _ROLES_BY_CASEFOLD.get(role_raw.casefold())
+            known_role = matched_role is not None
+            role = matched_role or Role.USER
+        if not known_role:
+            logger.warning("Unknown role %r in legacy chat message at index=%s; coercing to %s", role_value, idx, Role.USER.value)
 
         content_blocks: list[Any] = []
         content = raw.get("content")

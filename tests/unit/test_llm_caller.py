@@ -35,7 +35,7 @@ import pytest
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.execution.hooks import MiddlewareManager, ModelCallParams
-from nexau.archs.main_sub.execution.llm_caller import LLMCaller
+from nexau.archs.main_sub.execution.llm_caller import LLMCaller, call_llm_with_openai_responses_async
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
@@ -206,6 +206,101 @@ class TestLLMCallerBasicCalls:
         assert call_kwargs["input"] == expected_input
         assert call_kwargs["max_output_tokens"] == 120
         assert call_kwargs["parallel_tool_calls"] is True
+
+    def test_call_llm_responses_api_bounds_child_session_prompt_cache_key(self, mock_openai_client, responses_llm_config, agent_state):
+        """The Responses wire payload must bound child-session cache keys to 64 characters."""
+        responses_payload = SimpleNamespace(
+            output=[],
+            output_text="ok",
+            model="gpt-4o-mini",
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+        )
+        mock_openai_client.responses.create.return_value = responses_payload
+        child_session_id = "427e5f70-d6bf-4cce-8157-fc0712b0fbf2::child::81fa1f89-e55a-4abc-9def-0123456789ab"
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=responses_llm_config,
+            session_id=child_session_id,
+        )
+
+        caller.call_llm(
+            [Message.user("Hello")],
+            max_tokens=120,
+            force_stop_reason=AgentStopReason.SUCCESS,
+            agent_state=agent_state,
+        )
+
+        call_kwargs = mock_openai_client.responses.create.call_args.kwargs
+        assert call_kwargs["safety_identifier"] == child_session_id
+        assert call_kwargs["extra_body"]["prompt_cache_key"] == ("5d8a501318b72c27037392a75e216c681ec530727d8706f75e923b527ec57cc4")
+
+    @pytest.mark.parametrize(
+        ("configured_key", "expected_wire_key"),
+        [
+            ("short-cache-key", "short-cache-key"),
+            (
+                "x" * 65,
+                "9537c5fdf120482f7d58d25e9ed583f52c02b4e304ea814db1633ad565aed7e9",
+            ),
+        ],
+    )
+    def test_call_llm_responses_api_bounds_explicit_prompt_cache_key(
+        self,
+        mock_openai_client,
+        responses_llm_config,
+        agent_state,
+        configured_key,
+        expected_wire_key,
+    ):
+        """Explicit cache keys use the same bound while short keys retain cache affinity."""
+        responses_payload = SimpleNamespace(
+            output=[],
+            output_text="ok",
+            model="gpt-4o-mini",
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+        )
+        mock_openai_client.responses.create.return_value = responses_payload
+        responses_llm_config.extra_params["prompt_cache_key"] = configured_key
+        caller = LLMCaller(
+            openai_client=mock_openai_client,
+            llm_config=responses_llm_config,
+        )
+
+        caller.call_llm(
+            [Message.user("Hello")],
+            max_tokens=120,
+            force_stop_reason=AgentStopReason.SUCCESS,
+            agent_state=agent_state,
+        )
+
+        call_kwargs = mock_openai_client.responses.create.call_args.kwargs
+        assert call_kwargs["extra_body"]["prompt_cache_key"] == expected_wire_key
+
+    def test_call_llm_responses_api_async_bounds_prompt_cache_key(self):
+        """The async Responses adapter must apply the same wire constraint."""
+        responses_payload = SimpleNamespace(
+            output=[],
+            output_text="ok",
+            model="gpt-4o-mini",
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+        )
+        async_create = AsyncMock(return_value=responses_payload)
+        async_client = SimpleNamespace(responses=SimpleNamespace(create=async_create))
+        child_session_id = "427e5f70-d6bf-4cce-8157-fc0712b0fbf2::child::81fa1f89-e55a-4abc-9def-0123456789ab"
+
+        asyncio.run(
+            call_llm_with_openai_responses_async(
+                async_client,
+                {
+                    "model": "gpt-4o-mini",
+                    "input": "Hello",
+                    "prompt_cache_key": child_session_id,
+                },
+            )
+        )
+
+        call_kwargs = async_create.call_args.kwargs
+        assert call_kwargs["extra_body"]["prompt_cache_key"] == ("5d8a501318b72c27037392a75e216c681ec530727d8706f75e923b527ec57cc4")
 
     def test_call_llm_success_responses_api_honors_parallel_tool_calls_override(self, mock_openai_client, agent_state):
         """Responses API should preserve explicit parallel_tool_calls=False from LLMConfig extra kwargs."""

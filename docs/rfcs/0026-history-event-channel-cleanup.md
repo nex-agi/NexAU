@@ -1,11 +1,11 @@
 # RFC-0026: HistoryList 写入收口 — typed REPLACE 走 FrameworkContext API + append-only 演进路线
 
-- **状态**: implemented (Stage 1)
+- **状态**: implemented (Stage 1 + Stage 2a)
 - **优先级**: P2
 - **标签**: `architecture`, `dx`, `event-sourcing`, `cleanup`, `api`
-- **影响服务**: NexAU (`HistoryList` / `Executor` / `ContextCompactionMiddleware` / `HookResult` / `FrameworkContext` / `ModelCallParams`)
+- **影响服务**: NexAU (`HistoryList` / `Executor` / provider serializers / `RoundAndTokenReminderMiddleware` / `ContextCompactionMiddleware` / `HookResult` / `FrameworkContext` / `ModelCallParams`)
 - **创建日期**: 2026-05-09
-- **更新日期**: 2026-05-09
+- **更新日期**: 2026-07-31
 
 ## 摘要
 
@@ -14,6 +14,11 @@
 **FrameworkContext.history 是新加的 RPC-friendly 公开 API**——只暴露 `replace(messages, *, extra)` 一个方法，未来加 lambda tool 这种远程执行场景时它能直接当 RPC stub。AgentState 在 deprecation 路径上（替代品 `FrameworkContext`），本 RFC 删除其 `history` 字段并保证不增加新属性。
 
 **对外影响**：旧的 `HookResult.with_modifications(messages=...)` 中间件调用方完全不受影响（additive）。`HistoryList.emit_typed_replace` / `adopt_replaced_state` 退化为薄 wrapper 保留。**`AgentState.history` 字段被删除**——内部无 production caller，只有 RFC-0022 Phase 3 期间加的 demo doc 已同步更新。
+
+Stage 2a 不增加 `prompt_messages` 或第二套模型输入。真实用户输入继续使用 `USER`；框架内部
+语言使用已有 `FRAMEWORK` role。Round/token reminder 始终追加独立 FRAMEWORK，持久化时因而是
+APPEND，不再改写 USER。各 provider 只在序列化边界的临时视图中把相邻 USER/FRAMEWORK 合成
+一个 user turn，canonical UMP 的 role、id、content、metadata 和顺序均不变。
 
 ## 动机
 
@@ -37,9 +42,13 @@ RFC-0022 Phase 3 引入 `CompactAutoVariant` / `UserClearVariant` 等 typed REPL
 
 ### 还有一个隐藏的真实 bug
 
-顺带发现：`runtime_environment` / `round_and_token_reminder` 这两个 middleware 通过 `HookResult.with_modifications(messages=updated_messages)` 注入临时 prompt（环境变量、token 余量提醒），但因为 executor 后续会把 `messages` 通过 `_origin_history.replace_all(messages)` 同步回 HistoryList，flush 时 fingerprint-diff 发现差异 → **把环境变量 / 提醒持久化为 untyped REPLACE 写进 action stream**。这些是临时的 prompt 调整，不应该进 history。
+顺带发现：`round_and_token_reminder` 曾把提示直接拼进最后一条 USER。Executor 随后把 working
+messages 同步回 HistoryList，flush 把 USER fingerprint 变化误判成 untyped REPLACE。这既污染
+真实用户输入，也让上层 UI 显示假的 compaction。
 
-本 RFC Stage 1 不直接修这个 bug，但定义了正确的方向：未来通过 `prompt_messages`（transient）vs `history_event`（persistent）的字段拆分根治。
+Stage 2a 直接复用 UMP 已有 role 修复：用户语言保持 USER，框架语言使用独立 FRAMEWORK。
+FRAMEWORK 是 durable working context，正常持久化为 APPEND；是否展示由上层产品按 role 决定。
+Provider 没有 framework role 时，只在序列化临界点将其投影为 user-shaped content。
 
 ## 设计
 
@@ -396,7 +405,9 @@ def before_model(self, hook_input):
 
 ### 缺点
 
-- **仍保留 fingerprint-diff 兜底机制**：HistoryList 的 `flush()` 仍用旧的 baseline diff 兜底任何"未声明 replace_extra 但实际改了 messages"的 middleware（如 `runtime_environment` / `round_and_token_reminder`）。这是为了 backward compatible 不能马上删，等 Stage 2 全部 middleware 迁移后才能删。在那之前，env 注入仍会被错误持久化为 untyped REPLACE。
+- **仍保留 fingerprint-diff 兜底机制**：HistoryList 的 `flush()` 仍用旧 baseline diff 兼容会改写
+  history 的 middleware。Round/token reminder 已改为 append-only FRAMEWORK；其他 producer（如
+  `runtime_environment`）的持久化语义不在 Stage 2a 范围内。
 - **Emergency 路径的 direct replace 需要局部 history 对齐**：`ctx.history.replace(...)`
   既要写 durable history，也要让 Executor 消费 direct-replace outbox 更新
   working messages。否则 end-of-run sync 会把旧 messages 写回，抵消 typed
@@ -430,19 +441,27 @@ def before_model(self, hook_input):
 - [x] `tool/CLAUDE.md` 示例更新（`agent_state.history` → 提示用 ctx.history）
 - [x] 单元测试 `tests/unit/test_rfc0026_history_event_channel.py`（12 个 test：HookResult.history_event 默认 + ReplaceEvent round-trip + outparam funneling + UnknownEvent forward-compat fallback + 落库端到端 + back-compat shim 等）
 
+#### Stage 2a（本 RFC，已实现）
+
+使用已有 UMP messages 和 role 解决 reminder 污染，不引入平行 prompt channel：
+
+- [x] `RoundAndTokenReminderMiddleware` 始终 append 独立 FRAMEWORK，不修改末尾 USER；
+- [x] OpenAI Chat/Responses、Anthropic、Gemini 仅在 provider 临界点聚合相邻 USER/FRAMEWORK；
+- [x] 没有 FRAMEWORK 时，相邻普通 USER 保持原行为，不被误合并；
+- [x] 空 FRAMEWORK 保留在 canonical history，但不生成空 provider turn；
+- [x] Gemini 在 functionResponse 后把 FRAMEWORK text 追加到同一个 provider USER content，
+      保持 provider 的 user/model 交替；
+- [x] public dict history 对 role 做大小写无关的已知值映射，`FRAMEWORK`/`framework` round-trip
+      仍为 FRAMEWORK；未知 role 继续按旧兼容策略降级为 USER。
+
 #### Stage 2（独立 PR，未启动）
 
-修复 transient vs persistent 混淆 + 删 fingerprint-diff 兜底机制。
+逐个 producer 明确 APPEND/REPLACE 语义后，删除 fingerprint-diff 兜底机制。本阶段同样不引入
+`prompt_messages`：模型输入和 canonical working history 继续使用一份 UMP messages；来源通过
+现有 role 表达。
 
-- [ ] `HookResult.prompt_messages: list[Message] | None`：纯 prompt-time 修改，不持久化
-- [ ] `HookResult.history_event: AppendEvent | ReplaceEvent | None`：显式 history 事件（typed extra 内含）
-- [ ] `HookResult.messages` 标记 `@deprecated`（warning 阶段）
-- [ ] 5 个现有 middleware audit + 迁移：
-  - [ ] `runtime_environment` → `prompt_messages`（修真实 bug：env 注入不该持久化）
-  - [ ] `round_and_token_reminder` → `prompt_messages`（修真实 bug：reminder 不该持久化）
-  - [ ] `long_tool_output` → 保持 tool_output 字段，不影响
-  - [ ] `context_compaction`（regular）→ `history_event=ReplaceEvent(compacted, CompactAutoVariant)` + `prompt_messages=compacted`
-  - [ ] `context_compaction`（emergency）→ 同上，转用 `params.history_event` outparam
+- [ ] audit 仍会改写既有 message 的 middleware，并改为显式 APPEND/REPLACE；
+- [ ] `HookResult.history_event: AppendEvent | ReplaceEvent | None` 覆盖全部 durable mutation；
 - [ ] HistoryList 删除 `_baseline_fingerprints` / `_pending_messages` / `_compute_fingerprints` / `_prepare_flush` 的 diff 逻辑；`flush` 退化为"等 background task 完成"
 - [ ] 删 `emit_typed_replace` / `adopt_replaced_state` 两个 deprecated wrapper
 
@@ -480,9 +499,14 @@ Stage 1（本 RFC 实现的）：
 - `nexau/archs/tool/CLAUDE.md` — 示例更新
 - `tests/unit/test_rfc0026_history_event_channel.py` — 12 个测试
 
+Stage 2a：
+- `nexau/archs/main_sub/execution/middleware/round_and_token_reminder.py`
+- `nexau/core/serializers/user_projection.py`
+- `nexau/core/serializers/{openai_chat,anthropic_messages,gemini_messages}.py`
+- `tests/unit/test_{round_and_token_reminder,user_framework_projection,anthropic_gemini_serializers}.py`
+
 Stage 2/3/4 涉及（未来 PR）：
 - `nexau/archs/main_sub/execution/middleware/runtime_environment.py`
-- `nexau/archs/main_sub/execution/middleware/round_and_token_reminder.py`
 - `nexau/archs/main_sub/history_list.py`（彻底重写）
 - `nexau/archs/session/...`（EventLog 引入）
 
@@ -516,7 +540,9 @@ NAC（`china-qijizhifeng/nexau-cloud-runtime` PR #549）K8s Sandbox 测试覆盖
 
 2. **`agent_state.history` 反向引用何时彻底切断**：emergency 路径仍读它。等 AgentState 全面被 FrameworkContext 替代时，候选迁移路径有 `FrameworkContext.history_handle` 或 `ModelCallParams.history`，需要 RFC-0027 / Stage 3 阶段一并设计。
 
-3. **transient vs persistent 拆分的迁移节奏**：5 个现有 middleware（其中 2 个有 bug：`runtime_environment` + `round_and_token_reminder`）需要逐个迁移到 `prompt_messages`。是同 PR 一次性切换，还是先加新字段后逐个 PR 迁移？倾向后者（每次 PR 改一个 middleware，配套加 fail-on-untyped-replace 的 lint 测试）。
+3. **剩余 producer 的迁移节奏**：`runtime_environment` 等会改写既有 message 的 middleware
+   仍需逐个明确 APPEND/REPLACE 语义。Stage 2a 已证明不需要第二套 prompt channel；后续继续用
+   UMP role + typed history event 收敛。
 
 ## 参考资料
 

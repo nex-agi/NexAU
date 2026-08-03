@@ -12,6 +12,7 @@ import logging
 from typing import Any, cast
 
 from nexau.core.messages import ImageBlock, Message, ReasoningBlock, Role, TextBlock, ToolResultBlock, ToolUseBlock
+from nexau.core.serializers.user_projection import coalesce_user_shaped_messages
 
 _logger = logging.getLogger(__name__)
 
@@ -46,10 +47,19 @@ def serialize_ump_to_anthropic_messages_payload(
 
     def _flush_tool_results() -> None:
         if pending_tool_results:
-            convo.append({"role": Role.USER.value, "content": pending_tool_results.copy()})
+            # Anthropic only matches the leading run of `tool_result` blocks in
+            # the next user message, so a hoisted sibling image (see the
+            # ToolResultBlock branch) sitting between two tool results makes
+            # every tool_use id after it fail with "`tool_use` ids were found
+            # without `tool_result` blocks immediately after" (400).
+            # Stable-partition the flush so all tool results lead and the
+            # hoisted siblings follow.
+            leading = [part for part in pending_tool_results if part.get("type") == "tool_result"]
+            trailing = [part for part in pending_tool_results if part.get("type") != "tool_result"]
+            convo.append({"role": Role.USER.value, "content": leading + trailing})
             pending_tool_results.clear()
 
-    for msg in messages:
+    for msg in coalesce_user_shaped_messages(messages):
         if msg.role == Role.SYSTEM:
             system_text = msg.get_text_content()
             if system_text:
@@ -164,7 +174,7 @@ def serialize_ump_to_anthropic_messages_payload(
                 content_blocks.append({"type": "text", "text": "[reasoning omitted]"})
 
         role = msg.role.value
-        if msg.role in (Role.TOOL, Role.FRAMEWORK):
+        if msg.role == Role.TOOL:
             role = Role.USER.value
 
         if msg.role == Role.TOOL:

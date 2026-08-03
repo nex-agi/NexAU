@@ -15,11 +15,23 @@
 """Unit tests for read_file and read_visual_file builtin tools."""
 
 import base64
+import math
+import struct
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
+# Budget constants + area-cap geometry relocated to the shared image_probe
+# module (single source for the read downscale, the persist-time in-memory
+# resize, and the token counter); tool-specific helpers still come from
+# read_visual_file.
+from nexau.archs.main_sub.utils.image_probe import (
+    DEFAULT_IMAGE_MAX_PIXELS,
+    DEFAULT_IMAGE_TOKEN_BUDGET,
+    OFFICIAL_PIXELS_PER_TOKEN,
+    area_capped_dimensions,
+)
 from nexau.archs.sandbox import CommandResult, FileOperationResult, SandboxStatus
 from nexau.archs.tool.builtin.file_tools.read_file import (
     MAX_TOTAL_OUTPUT_CHARS,
@@ -28,8 +40,9 @@ from nexau.archs.tool.builtin.file_tools.read_file import (
     read_file,
 )
 from nexau.archs.tool.builtin.file_tools.read_visual_file import (
+    _edge_capped_dimensions,
+    _ffmpeg_scale_in_sandbox,
     _read_video_frames,
-    _resize_image_in_sandbox,
     read_visual_file,
 )
 
@@ -602,7 +615,7 @@ class TestReadVisualFileSandboxApiPaths:
         tmp_dir = sandbox.create_directory.call_args.args[0]
         sandbox.delete_file.assert_called_once_with(tmp_dir)
 
-    def test_resize_image_uses_join_path_and_cleans_up_temp_output(self):
+    def test_ffmpeg_scale_uses_join_path_and_cleans_up_temp_output(self):
         sandbox = Mock()
         sandbox.get_temp_dir.return_value = "/tmp"
         sandbox.join_path.side_effect = self._join_sandbox_path
@@ -610,14 +623,202 @@ class TestReadVisualFileSandboxApiPaths:
         sandbox.execute_shell.return_value = Mock(status=SandboxStatus.SUCCESS, exit_code=0, stdout="", stderr="")
         sandbox.read_file.return_value = Mock(status=SandboxStatus.SUCCESS, content=b"jpeg-bytes")
 
-        result = _resize_image_in_sandbox("image.png", sandbox, 640)
+        result = _ffmpeg_scale_in_sandbox("image.png", sandbox, "scale=640:480")
 
         assert result == b"jpeg-bytes"
         tmp_out = sandbox.read_file.call_args.args[0]
         ffmpeg_cmd = sandbox.execute_shell.call_args.args[0]
         assert "SHELL<image.png>" in ffmpeg_cmd
+        assert "scale=640:480" in ffmpeg_cmd
         assert f"SHELL<{tmp_out}>" in ffmpeg_cmd
         sandbox.delete_file.assert_called_once_with(tmp_out)
+
+
+class TestImageDownscaleTokenBudget:
+    """Incident fix (Rust counterpart nexau-rs#94): 读图按 token 预算降采样封顶。"""
+
+    @staticmethod
+    def _join_sandbox_path(base: str, *parts: str) -> str:
+        clean_parts = [str(base).rstrip("/\\")]
+        clean_parts.extend(str(part).strip("/\\") for part in parts)
+        return "/".join(clean_parts)
+
+    @staticmethod
+    def _png_bytes(width: int, height: int) -> bytes:
+        """Minimal probeable PNG header — probe_dimensions never reads past IHDR."""
+        return b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", width, height)
+
+    def _sandbox_serving(self, source_bytes: bytes, ffmpeg_ok: bool = True) -> Mock:
+        """Mock sandbox: serves `source_bytes` as the image file and
+        b"downscaled-jpeg" as any ffmpeg output (paths under nexau_resized_)."""
+        sandbox = Mock()
+        sandbox.work_dir = Path("/tmp/work")
+        sandbox.file_exists.return_value = True
+        info = Mock()
+        info.is_directory = False
+        info.size = len(source_bytes)
+        sandbox.get_file_info.return_value = info
+        sandbox.get_temp_dir.return_value = "/tmp"
+        sandbox.join_path.side_effect = self._join_sandbox_path
+        sandbox.to_shell_path.side_effect = lambda path: f"SHELL<{path}>"
+        exit_code = 0 if ffmpeg_ok else 1
+        status = SandboxStatus.SUCCESS if ffmpeg_ok else SandboxStatus.ERROR
+        sandbox.execute_shell.return_value = Mock(status=status, exit_code=exit_code, stdout="", stderr="")
+
+        def read_file_side_effect(path, encoding=None, binary=False):
+            if "nexau_resized_" in str(path):
+                return Mock(status=SandboxStatus.SUCCESS, content=b"downscaled-jpeg")
+            return Mock(status=SandboxStatus.SUCCESS, content=source_bytes, truncated=False)
+
+        sandbox.read_file.side_effect = read_file_side_effect
+        return sandbox
+
+    def test_default_read_downscales_oversized_image_to_area_budget(self):
+        """No image_max_size → area cap derived from the token budget, exact scale=W:H."""
+        sandbox = self._sandbox_serving(self._png_bytes(4000, 3000))
+
+        result = read_visual_file(file_path="photo.png", agent_state=_make_agent_state(sandbox))
+
+        target = area_capped_dimensions(4000, 3000, DEFAULT_IMAGE_MAX_PIXELS)
+        assert target is not None
+        ffmpeg_cmd = sandbox.execute_shell.call_args.args[0]
+        assert f"scale={target[0]}:{target[1]}" in ffmpeg_cmd
+        block = result["content"]
+        expected = base64.b64encode(b"downscaled-jpeg").decode("utf-8")
+        assert block["image_url"] == f"data:image/jpeg;base64,{expected}"
+
+    def test_default_read_keeps_within_budget_image_untouched(self):
+        """A within-budget image is a true no-op: no ffmpeg call, original bytes/mime."""
+        source = self._png_bytes(1000, 800)  # 0.8 MP < ~1.2 MP cap
+        sandbox = self._sandbox_serving(source)
+
+        result = read_visual_file(file_path="photo.png", agent_state=_make_agent_state(sandbox))
+
+        sandbox.execute_shell.assert_not_called()
+        block = result["content"]
+        expected = base64.b64encode(source).decode("utf-8")
+        assert block["image_url"] == f"data:image/png;base64,{expected}"
+
+    def test_explicit_image_max_size_caps_longest_edge(self):
+        """Explicit image_max_size keeps longest-edge semantics (schema parity)."""
+        sandbox = self._sandbox_serving(self._png_bytes(4000, 3000))
+
+        read_visual_file(file_path="photo.png", image_max_size=500, agent_state=_make_agent_state(sandbox))
+
+        # Governed edge lands on the cap; short side floors to even: 3000*500/4000 = 375 → 374.
+        ffmpeg_cmd = sandbox.execute_shell.call_args.args[0]
+        assert "scale=500:374" in ffmpeg_cmd
+
+    def test_unprobeable_image_falls_back_to_shrink_only_edge_expression(self):
+        """Formats the header prober can't parse still get bounded via ffmpeg
+        expression, capped at the square-equivalent edge of the area budget."""
+        sandbox = self._sandbox_serving(b"RIFF....WEBPVP8 not-parsed-by-prober")
+
+        read_visual_file(file_path="photo.webp", agent_state=_make_agent_state(sandbox))
+
+        edge = math.isqrt(DEFAULT_IMAGE_MAX_PIXELS)
+        ffmpeg_cmd = sandbox.execute_shell.call_args.args[0]
+        assert f"min({edge},iw)" in ffmpeg_cmd
+        assert f"min({edge},ih)" in ffmpeg_cmd
+
+    @staticmethod
+    def _bmp_bytes(width: int, height: int) -> bytes:
+        """Minimal valid 24bpp BI_RGB BMP (width*3 must be 4-aligned)."""
+        assert (width * 3) % 4 == 0
+        pixel_bytes = width * 3 * height
+        header = b"BM" + struct.pack("<IHHI", 54 + pixel_bytes, 0, 0, 54)
+        header += struct.pack("<IiiHHIIiiII", 40, width, height, 1, 24, 0, pixel_bytes, 2835, 2835, 0, 0)
+        return header + (b"\x40\x80\xc0" * (width * height))
+
+    def test_within_bound_unsafe_format_is_transcoded_to_jpeg(self):
+        """Measured live (northgate 2026-07-07): an image/tiff block returns 200
+        but the model sees NO image — silently dropped, worse than the public
+        API's 400. Within-bound images in formats outside the API whitelist
+        (here: a probeable BMP) must be transcoded to JPEG without resizing,
+        never passed through with their original media type."""
+        sandbox = self._sandbox_serving(self._bmp_bytes(100, 100))
+
+        result = read_visual_file(file_path="pic.bmp", agent_state=_make_agent_state(sandbox))
+
+        ffmpeg_cmd = sandbox.execute_shell.call_args.args[0]
+        assert "trunc(iw/2)*2" in ffmpeg_cmd, "must transcode via the even-dimensions passthrough expr"
+        block = result["content"]
+        expected = base64.b64encode(b"downscaled-jpeg").decode("utf-8")
+        assert block["image_url"] == f"data:image/jpeg;base64,{expected}"
+
+    def test_downscale_failure_falls_back_to_original(self):
+        """A failing ffmpeg downscale must not fail the read — original bytes are kept."""
+        source = self._png_bytes(4000, 3000)
+        sandbox = self._sandbox_serving(source, ffmpeg_ok=False)
+
+        result = read_visual_file(file_path="photo.png", agent_state=_make_agent_state(sandbox))
+
+        assert result.get("error") is None
+        block = result["content"]
+        expected = base64.b64encode(source).decode("utf-8")
+        assert block["image_url"] == f"data:image/png;base64,{expected}"
+
+    def test_area_cap_prices_every_aspect_ratio_identically(self):
+        """The default bound caps AREA, not edge length: under a shared edge cap a
+        square image costs ~4x a panoramic one, while the area cap lands every
+        aspect ratio on the same pixel count — the same worst-case token cost."""
+        for width, height in [(4000, 3000), (3000, 3000), (8000, 1000)]:
+            target = area_capped_dimensions(width, height, DEFAULT_IMAGE_MAX_PIXELS)
+            assert target is not None
+            target_width, target_height = target
+            assert target_width % 2 == 0 and target_height % 2 == 0, "ffmpeg mjpeg 4:2:0 needs even dims"
+            area = target_width * target_height
+            assert area <= DEFAULT_IMAGE_MAX_PIXELS, f"{width}x{height} → {target_width}x{target_height} exceeds the cap"
+            assert area >= DEFAULT_IMAGE_MAX_PIXELS * 0.97, f"{width}x{height} → {target_width}x{target_height} far below the cap"
+
+    def test_area_cap_is_noop_within_bound(self):
+        assert area_capped_dimensions(1000, 800, DEFAULT_IMAGE_MAX_PIXELS) is None
+
+    def test_edge_cap_bounds_longest_edge_not_just_width(self):
+        """A tall-narrow image (long mobile screenshot) must be bounded too —
+        the pre-incident `scale='min(max_width,iw)':-2` left it uncapped."""
+        assert _edge_capped_dimensions(4000, 3000, 1000) == (1000, 750)
+        assert _edge_capped_dimensions(500, 6000, 2048) == (170, 2048)
+        assert _edge_capped_dimensions(800, 600, 2048) is None
+
+    def test_default_image_max_pixels_is_derived_from_the_token_budget(self):
+        """Budgets are denominated in official-formula tokens (28x28-pixel
+        patches, 784 px/token): the default must match the official
+        high-resolution tier's own ~4_784-token per-image ceiling, so a
+        default-capped image costs at most what the official server-side
+        downscale would have produced anyway. Literals pinned deliberately —
+        drift fails loudly instead of silently re-deriving."""
+        assert DEFAULT_IMAGE_TOKEN_BUDGET == 4_784
+        assert OFFICIAL_PIXELS_PER_TOKEN == 784
+        assert DEFAULT_IMAGE_MAX_PIXELS == DEFAULT_IMAGE_TOKEN_BUDGET * OFFICIAL_PIXELS_PER_TOKEN
+
+    def test_configurable_image_token_budget_rescales_the_area_cap(self):
+        """`image_token_budget` (binding-time, extra_kwargs-preset) rescales the
+        default area cap: budget x 784 pixels. A 400-token budget on 4000x3000
+        must produce exactly the scale ffmpeg would need for a 300_000 px cap."""
+        sandbox = self._sandbox_serving(self._png_bytes(4000, 3000))
+
+        result = read_visual_file(file_path="photo.png", image_token_budget=400, agent_state=_make_agent_state(sandbox))
+
+        target = area_capped_dimensions(4000, 3000, 400 * OFFICIAL_PIXELS_PER_TOKEN)
+        assert target is not None
+        assert target[0] * target[1] <= 400 * OFFICIAL_PIXELS_PER_TOKEN
+        ffmpeg_cmd = sandbox.execute_shell.call_args.args[0]
+        assert f"scale={target[0]}:{target[1]}" in ffmpeg_cmd
+        block = result["content"]
+        assert block["image_url"].startswith("data:image/jpeg;base64,")
+
+    def test_zero_image_token_budget_disables_downscaling(self):
+        """Budget 0 is the same explicit escape hatch as image_max_size=0."""
+        source = self._png_bytes(4000, 3000)
+        sandbox = self._sandbox_serving(source)
+
+        result = read_visual_file(file_path="photo.png", image_token_budget=0, agent_state=_make_agent_state(sandbox))
+
+        sandbox.execute_shell.assert_not_called()
+        block = result["content"]
+        expected = base64.b64encode(source).decode("utf-8")
+        assert block["image_url"] == f"data:image/png;base64,{expected}"
 
 
 # ---------------------------------------------------------------------------

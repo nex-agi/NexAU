@@ -224,7 +224,7 @@ graph LR
 
 **T1: 创建 Agent 内建工具（YAML + Python 实现）**
 - **范围**:
-  - 新建 `nexau/archs/tool/builtin/description/agent_tool.yaml`（`Agent` 工具定义，`name: Agent`）
+  - 新建 `nexau/archs/tool/builtin/schemas/Agent.tool.yaml`（`Agent` 工具定义，`name: Agent`）
   - 新建 `nexau/archs/tool/builtin/agent_tool.py`（`Agent` 工具实现，路由到 `SubAgentManager.call_sub_agent()`）
   - 在 `AgentConfig._finalize()` 中将 `Agent` 工具替换原来的 `RecallSubAgent` 自动注入逻辑：当 `sub_agents` 非空时注入 `Agent` 工具，并在描述中拼接可用子代理列表
 - **验收标准**:
@@ -300,7 +300,7 @@ graph LR
 ### 影响范围
 
 - `nexau/archs/tool/builtin/` — 新增 `Agent` 工具，删除 RecallSubAgent 工具
-- `nexau/archs/tool/builtin/description/` — 新增 `agent_tool.yaml`，删除 `recall_sub_agent_tool.yaml`
+- `nexau/archs/tool/builtin/schemas/` — 新增 `Agent.tool.yaml`，删除 `recall_sub_agent_tool.yaml`
 - `nexau/archs/main_sub/execution/parse_structures.py` — 移除 `SubAgentCall`、`BatchAgentCall`、`CallType` 整体
 - `nexau/archs/main_sub/execution/response_parser.py` — 移除 sub-agent/batch-agent 特殊解析逻辑
 - `nexau/archs/main_sub/execution/executor.py` — 移除 `SubAgentCall`/`BatchAgentCall` 执行分支和 `_build_sub_agent_tool_definition`，移除 `BatchProcessor` 引用

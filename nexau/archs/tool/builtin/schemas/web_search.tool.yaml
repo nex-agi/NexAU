@@ -1,0 +1,297 @@
+# =============================================================================
+# web_search（聚合搜索）—— 部署配置速查（写给部署/运维的人看，不进模型上下文）
+# =============================================================================
+#
+# 本工具的行为由 6 个环境变量控制。在 NAC 控制台的「环境变量」页设置
+# （Runtime scope），改完需要 Redeploy 才生效。
+#
+# ┌ 变量 ─────────────┬ 必填 ┬ 默认 ───────┬ 说明 ──────────────────────────────┐
+# │ SEARCH_PROVIDER   │  否  │ Serper      │ 用哪家搜索服务商                    │
+# │ SEARCH_API_KEY    │ ✅是 │ —           │ 该服务商的密钥（四家共用这一个变量）│
+# │ SEARCH_ENGINE     │  否  │ 空          │ 底层搜索引擎，仅聚合型服务商生效    │
+# │ SEARCH_BASE_URL   │  否  │ 各家内置    │ 覆盖上游地址（私有化/内网部署）     │
+# │ SEARCH_TIMEOUT    │  否  │ 30          │ 单次请求超时秒数                    │
+# │ SEARCH_MAX_RETRIES│  否  │ 3           │ 总尝试次数(含首次)，指数退避，下限 1│
+# └───────────────────┴──────┴─────────────┴─────────────────────────────────────┘
+#
+# ── SEARCH_PROVIDER 可选值 ───────────────────────────────────────────────────
+#   Serper   Google 结果，快（1~2s），英文/技术内容首选
+#   Seed     豆包搜索，最快（<1s），中文内容与国内站点覆盖好
+#   Baidu    百度千帆 AI 搜索
+#   XiaoBei  北坡聚合搜索（google+bing+baidu），最全但慢（15~40s）
+#   也接受 豆包→Seed、小北/北坡→XiaoBei 这类中文写法。
+#
+# ── SEARCH_ENGINE 可选值（只在 SEARCH_PROVIDER=XiaoBei 时生效）───────────────
+#   baidu              只用百度，中文内容首选
+#   bing               只用必应，英文内容首选
+#   google|bing        双引擎，英文/技术内容推荐配置
+#   （留空）           三个全用，覆盖最全但最慢
+#   ⚠️ 单独只填 google 时上游常静默回落到别的引擎，要英文请用 google|bing 或 bing。
+#   分隔符宽松：google|bing、google,bing、["google","bing"] 都认，大小写不敏感。
+#
+# ── 三组常用配置，直接抄 ─────────────────────────────────────────────────────
+#   ① 中文内容为主（最快）
+#      SEARCH_PROVIDER = Seed
+#      SEARCH_API_KEY  = <豆包搜索的 key>
+#
+#   ② 英文/技术内容为主
+#      SEARCH_PROVIDER = Serper
+#      SEARCH_API_KEY  = <serper.dev 的 key>
+#
+#   ③ 中英文都要、能接受慢
+#      SEARCH_PROVIDER = XiaoBei
+#      SEARCH_API_KEY  = <北坡搜索的 key>
+#      SEARCH_ENGINE   = google|bing        # 想只要中文就填 baidu
+#      SEARCH_TIMEOUT  = 100                # 这家慢，默认 30s 不够
+#
+# ── 想给某个「工具参数」设部署级默认值？──────────────────────────────────────
+#   下方 input_schema 里的每个参数，都能用环境变量设默认值，命名规则：
+#
+#       SEARCH_ + 参数名大写（参数名自带 search_ 前缀的去重）
+#
+#   参数              环境变量                    内置默认
+#   ---------------- --------------------------- ----------
+#   content_format   SEARCH_CONTENT_FORMAT       text
+#   num_results      SEARCH_NUM_RESULTS          10
+#   max_content_chars SEARCH_MAX_CONTENT_CHARS   1000
+#   search_type      SEARCH_TYPE                 search
+#   time_range       SEARCH_TIME_RANGE           (空)
+#   sites            SEARCH_SITES                (空)
+#   block_hosts      SEARCH_BLOCK_HOSTS          (空)
+#   authority_only   SEARCH_AUTHORITY_ONLY       false
+#   industry         SEARCH_INDUSTRY             (空)
+#   query_rewrite    SEARCH_QUERY_REWRITE        false
+#   need_content     SEARCH_NEED_CONTENT         false
+#   full_content     SEARCH_FULL_CONTENT         false
+#   country          SEARCH_COUNTRY              (空)
+#   language         SEARCH_LANGUAGE             (空)
+#   location         SEARCH_LOCATION             (空)
+#   page             SEARCH_PAGE                 1
+#   search_engine    SEARCH_ENGINE               (空)
+#   render_js        SEARCH_RENDER_JS            false
+#
+#   ⚠️ 优先级：模型调用时显式传的值 > 环境变量 > 内置默认。
+#      也就是说环境变量设的是「模型没指定时用什么」，模型仍可按需覆盖。
+#   布尔值写 true/false（也认 1/0、yes/no、on/off）；写错会回退内置默认并打 warning。
+#
+#   例：想让所有检索都返回 markdown 正文、每次 5 条、单条截断 3000 字
+#       SEARCH_CONTENT_FORMAT    = markdown
+#       SEARCH_FULL_CONTENT      = true
+#       SEARCH_NUM_RESULTS       = 5
+#       SEARCH_MAX_CONTENT_CHARS = 3000
+#
+#   例：这个部署只服务政务场景，默认只要权威来源
+#       SEARCH_AUTHORITY_ONLY = true
+#       SEARCH_INDUSTRY       = gov
+#
+# ── 排错 ─────────────────────────────────────────────────────────────────────
+#   工具返回 error.type = WEB_SEARCH_CONFIG_ERROR → 环境变量/账号侧问题，
+#     报错信息里会直接写要设哪个变量；重试无用，去改配置。
+#   工具返回 error.type = WEB_SEARCH_FAILED       → 上游调用失败，可稍后重试。
+#   配了 SEARCH_ENGINE 却没生效 → 检查 SEARCH_PROVIDER 是不是 XiaoBei；
+#     非聚合型服务商的引擎是固定的，日志里会有一条 warning 说明已忽略。
+#
+# 各服务商官方文档见下方 description 段。
+# =============================================================================
+
+type: tool
+name: web_search
+description: >-
+  - 联网搜索：允许模型检索公网实时信息，用于回答超出模型知识截止日期的问题。
+  - 后端服务商可在 Serper / Seed / Baidu / XiaoBei 之间切换（RFC-0028）。
+  - 联网检索并返回格式化的搜索结果块(序号 / 标题 / 链接 / 摘要 / 发布时间 / 权威度)，
+    提供超出模型知识截止日期的最新信息。
+  - **搜索服务商由环境变量切换**：`SEARCH_PROVIDER` 取 `Serper` / `Seed` / `Baidu` /
+    `XiaoBei`(大小写不敏感，缺省 `Serper`)，密钥统一走 `SEARCH_API_KEY`。
+  - 「服务商(provider)」= 调哪家搜索 API；「引擎(engine)」= 结果实际来自
+    google / bing / baidu 哪个搜索引擎。只有聚合型服务商能选引擎。
+
+  Usage notes:
+    - 除 `query` 外所有参数都有默认值，**只传 query 即可**；默认行为与内置 WebSearch 等价。
+    - 注意 <env> 里的 "Today's date"：要查"最新"内容时用当年年份，不要沿用旧年份。
+    - 想要更聚焦时，优先用 `time_range`(限时效) 和 `sites`(限站点)，
+      而不是把限定词硬塞进 `query` —— 后者会稀释检索信号。
+    - 各引擎能力不同，**不支持的参数会被静默忽略**，不会报错：
+      `sites` 在 Serper / XiaoBei 上降级为查询词算子，Seed / Baidu 有原生字段；
+      `block_hosts` 在 Seed 上是原生字段，Serper / XiaoBei / Baidu 靠查询词算子或本地过滤；
+      `authority_only` / `industry` / `need_content` / `full_content` 仅 `Seed`(豆包搜索) 支持；
+      `country` / `location` / `page` 仅 `Serper` 支持；
+      `search_engine` / `render_js` 仅 `XiaoBei` 支持；`language` 仅 `Serper` 与 `XiaoBei` 支持；
+      `search_type` 的 news/places/videos/scholar 在 `Seed` / `XiaoBei` 上会退化为网页搜索。
+    - `XiaoBei` 是多引擎聚合(google+bing+baidu)，单次检索需 15~30 秒，比其他引擎慢，
+      但中英文覆盖更全；它的下游引擎偶发超时，工具内部已自动重试。
+    - `full_content` 会让单条结果变得极长，除非确实需要全文，否则不要开。
+    - 本工具只读，不修改任何文件。
+    - 失败时返回 `error` 字段而不抛异常：`error.type` 为 `WEB_SEARCH_CONFIG_ERROR`
+      表示环境变量/账号侧问题(缺 `SEARCH_API_KEY`、引擎名非法、额度用尽)，重试无用；
+      为 `WEB_SEARCH_FAILED` 表示上游调用失败，可稍后重试。
+
+  部署配置(由部署者在 NAC「环境变量」页设置，改后需 Redeploy)：
+    `SEARCH_PROVIDER` 选服务商 ｜ `SEARCH_API_KEY` 密钥(必填) ｜
+    `SEARCH_ENGINE` 选底层引擎 ｜ `SEARCH_BASE_URL` 覆盖上游地址 ｜
+    `SEARCH_TIMEOUT` 超时秒数(默认 30) ｜ `SEARCH_MAX_RETRIES` 总尝试次数(默认 3)。
+    此外**下方每个参数都能用环境变量设部署级默认值**，命名规则为
+    `SEARCH_` + 参数名大写(自带 search_ 前缀的去重)，如 content_format →
+    `SEARCH_CONTENT_FORMAT`；优先级为「调用时显式传参 > 环境变量 > 内置默认」。
+    完整取值表与配置示例见本工具 .tool.yaml 文件顶部的注释块。
+
+  各服务商官方文档(查参数值域 / 配额 / 错误码以官方文档为准)：
+    - Serper : https://serper.dev  ｜ 调试台 https://serper.dev/playground
+    - Seed   : https://docs.volcengine.com/docs/87772/2272953 (豆包搜索 Custom 版)
+    - Baidu  : https://cloud.baidu.com/doc/qianfan-api/s/Wmbq4z7e5 (百度 AI 搜索)
+    - XiaoBei: https://search.xiaobei.top/docs (北坡聚合搜索)
+
+input_schema:
+  $schema: http://json-schema.org/draft-07/schema#
+  type: object
+  properties:
+    query:
+      type: string
+      description: >-
+        搜索关键词。豆包限 1~100 字符、百度限 72 字符(均超长自动截断)，不支持多词并列检索；
+        一次只查一个主题，多主题请分多次调用。
+    num_results:
+      type: integer
+      default: 10
+      minimum: 1
+      description: >-
+        返回结果条数，默认 10。实际上限按服务商与类型钳制
+        (豆包网页最多 50 条、图片最多 5 条；北坡最多 30 条)。
+        对应上游字段：Serper num / 豆包 Count / 千帆 top_k / 北坡 max_results。
+    search_type:
+      type: string
+      enum: [search, news, images, places, videos, scholar]
+      default: search
+      description: >-
+        搜索类型，默认 search(网页)。news=资讯、images=图片、places=地点、
+        videos=视频、scholar=学术论文。Serper 六类均为独立端点；
+        豆包只有网页与图片两种原生类型，news 会自动附加"最近一周"时效，
+        places/videos/scholar 退化为网页搜索。查论文优先用 scholar。
+        Serper 各端点详见 https://serper.dev/playground。
+    time_range:
+      type: string
+      default: ""
+      description: >-
+        发文时效过滤，默认 ""(不限制)。可填 OneDay / OneWeek / OneMonth / OneYear，
+        或 YYYY-MM-DD..YYYY-MM-DD 自定义区间(Serper / 豆包 / Baidu 支持，XiaoBei 不支持)。
+        显式传值会覆盖 search_type=news 自带的"最近一周"。
+        对应上游字段：Serper tbs(qdr:*/cdr:*) / 豆包 TimeRange / 千帆
+        search_recency_filter / 北坡 time_range。
+    sites:
+      type: string
+      default: ""
+      description: >-
+        限定只在这些站点内搜索，默认 ""(不限)。多个域名用 | 分隔，最多 20 个，
+        需填完整域名，例如 "arxiv.org|nature.com"。
+        对应上游字段：豆包 Filter.Sites / 百度 search_filter.match.site；
+        Serper 与北坡降级为 Google site: 算子。
+    block_hosts:
+      type: string
+      default: ""
+      description: >-
+        屏蔽这些站点的结果，默认 ""(不屏蔽)。多个域名用 | 分隔，最多 5 个，
+        需填完整域名，例如 "zhihu.com|baijiahao.baidu.com"。
+        对应上游字段：豆包 Filter.BlockHosts（原生生效）。
+        Serper 与北坡降级为 -site: 算子；**百度的 search_filter.block_websites
+        实测不生效**（完整域名与裸域名都试过），实际屏蔽由工具在本地按 host 过滤完成。
+    authority_only:
+      type: boolean
+      default: false
+      description: >-
+        是否只保留"非常权威"来源(政府网站、央媒/地方官媒、国家机构、国家级官方协会)，
+        默认 false。开启后结果数会明显减少，适合政策/法规/官方数据类问题。仅豆包支持
+        (Filter.AuthInfoLevel=1；权威度分级定义见豆包文档「站点权威度分级说明」)。
+    industry:
+      type: string
+      enum: ["", finance, game, gov]
+      default: ""
+      description: >-
+        行业垂直检索，默认 ""(不限)。finance=金融、game=电子游戏、gov=政务
+        (比 authority_only 更严格)。开启后结果数会减少。仅豆包支持(Filter.Industry)。
+    query_rewrite:
+      type: boolean
+      default: false
+      description: >-
+        是否让上游改写/纠正查询词以提升召回，默认 false。适合口语化、含指代、
+        表述模糊或可能拼错的 query。Serper 上对应 Google 拼写纠正，
+        豆包上对应 QueryControl.QueryRewrite(会增加检索耗时)。
+    need_content:
+      type: boolean
+      default: false
+      description: >-
+        是否只保留"成功抓到正文"的结果，默认 false。开启可过滤掉只有标题没有内容的
+        空壳页，代价是结果数减少。仅豆包支持(Filter.NeedContent)。
+    full_content:
+      type: boolean
+      default: false
+      description: >-
+        是否用**完整正文**替代摘要，默认 false(用搜索摘要)。
+        开启后单条结果极长、非常消耗上下文，只在确实需要通读全文时开启，
+        并配合 max_content_chars 控制长度。Seed 与 XiaoBei 支持
+        (Baidu 上是空操作：其 snippet 与 content 返回同一段文本)；
+        XiaoBei 上会触发页面抓取，耗时增加约 1 分钟，抓不到会自动回落到摘要。
+    content_format:
+      type: string
+      enum: [text, markdown]
+      default: text
+      description: >-
+        正文格式，默认 text。仅 full_content=true 时有意义。
+        仅豆包支持(ContentFormats)。
+    max_content_chars:
+      type: integer
+      default: 1000
+      minimum: 100
+      description: >-
+        单条摘要/正文的截断长度，默认 1000 字符。开启 full_content 时建议调大
+        (如 5000)，但要注意上下文预算 = num_results × max_content_chars。
+    country:
+      type: string
+      default: ""
+      description: >-
+        检索区域，ISO 3166-1 两位小写国家码，如 cn / us / jp，默认 ""(跟随上游)。
+        查特定国家的本地信息时填。仅 Serper 支持(gl，取值可在 https://serper.dev/playground 里选)。
+    language:
+      type: string
+      default: ""
+      description: >-
+        结果语言，如 zh-cn / en / ja，默认 ""(跟随上游)。想强制拿某语种结果时填。
+        Serper(hl) 与 XiaoBei(language) 支持，均为 BCP-47 写法。
+    location:
+      type: string
+      default: ""
+      description: >-
+        地理定位描述串，用 Google 认得的英文写法，如 "Tokyo, Japan" /
+        "New York, United States"，默认 ""(不定位)。做本地生活类检索或
+        search_type=places 时建议填。**注意：中国大陆城市(北京/上海等)Google 无地域库，
+        会静默回落到香港**，查大陆本地信息请改用 Seed 服务商。
+        仅 Serper 支持(location，合法取值可在 https://serper.dev/playground 试)。
+    page:
+      type: integer
+      default: 1
+      minimum: 1
+      description: >-
+        结果页码，从 1 开始，默认 1。第一页结果不满意时可翻到第 2、3 页取更靠后的结果。
+        仅 Serper 支持(page)。
+    search_engine:
+      type: string
+      default: ""
+      description: >-
+        指定结果来自哪个/哪些底层搜索引擎，| 分隔，可选 google / bing / baidu，
+        默认 ""(用 SEARCH_ENGINE 环境变量；环境变量也没配就三个全用)。
+        中文内容偏好 baidu，英文与技术内容偏好 "google|bing"。
+        只有聚合型服务商(XiaoBei)能选引擎，其余服务商的引擎是固定的、此参数会被忽略。
+        注意：单独只填 "google" 时上游常回落到其他引擎、不保证结果真来自 google，
+        要英文结果请用 "google|bing" 或 "bing"；只填 "baidu" / "bing" 是严格生效的。
+        对应上游字段：北坡 options.engines(见 https://search.xiaobei.top/docs)。
+    render_js:
+      type: boolean
+      default: false
+      description: >-
+        抓正文时是否用浏览器渲染，默认 false(走 HTTP 快速引擎)。
+        开启后能拿到 JS 动态生成的内容(单页应用、需要执行脚本才出正文的站点)，
+        代价是明显更慢。**只在 full_content=true 时有意义**——不抓正文就没有渲染这一步，
+        单独开它不会有任何效果(工具会打 warning 提示)。
+        仅 XiaoBei 支持(对应上游 fast_mode，取反)。
+  required:
+    - query
+  additionalProperties: false

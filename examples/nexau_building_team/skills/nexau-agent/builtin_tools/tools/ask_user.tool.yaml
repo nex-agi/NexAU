@@ -4,11 +4,16 @@ description: >-
   Ask the user one or more questions to gather preferences, clarify
   requirements, or make decisions.
 
-  Supports three question types:
-  - 'choice': Multiple-choice with options (2-4 options, an 'Other' option is
-    automatically added)
-  - 'text': Free-form text input
-  - 'yesno': Yes/No confirmation
+  Always set `type` explicitly. Question types:
+  - 'choice' (default): multiple-choice; MUST provide 2-4 `options`
+    (an 'Other' option is added automatically).
+  - 'text': free-form value the user types (path, id, name, number, …);
+    give a `placeholder`, no `options`.
+  - 'yesno': Yes/No confirmation.
+
+  No fixed 2-4 choices (e.g. the user must type a path or arbitrary
+  value)? Use `type: text`. Never send a 'choice' question with an empty
+  `options` list — it is rejected. When unsure, prefer 'text'.
 input_schema:
   type: object
   properties:
@@ -22,6 +27,7 @@ input_schema:
         required:
           - question
           - header
+          - type
         properties:
           question:
             type: string
@@ -42,15 +48,23 @@ input_schema:
               - yesno
             default: choice
             description: >-
-              Question type: 'choice' (default) for multiple-choice with
-              options, 'text' for free-form input, 'yesno' for Yes/No
-              confirmation.
+              Question type — set explicitly. 'choice' (default) requires 2-4
+              `options`; 'text' is free-form input (give a `placeholder`, no
+              `options`); 'yesno' is Yes/No. With no predefined options you
+              MUST use 'text'; a 'choice' with empty `options` is rejected.
           options:
             type: array
+            minItems: 2
+            maxItems: 4
             description: >-
               The selectable choices for 'choice' type questions. Provide 2-4
               options. An 'Other' option is automatically added. Not needed for
-              'text' or 'yesno' types.
+              'text' or 'yesno' types. Can't produce at least 2 real options?
+              Don't send an empty list — use `type: text` instead. Order options
+              by recommendation: put the recommended/default answer first, and
+              suffix that option label with " (Recommended)" for English
+              questions or "（推荐）" for Chinese questions. Mark only one option
+              as recommended.
             items:
               type: object
               required:
@@ -75,7 +89,8 @@ input_schema:
           placeholder:
             type: string
             description: >-
-              Only applies when type='text'. Hint text shown in the input field.
+              Hint text shown in the input field; only applies when type='text'.
+              If you set a placeholder, also set `type: text`.
   required:
     - questions
   additionalProperties: false

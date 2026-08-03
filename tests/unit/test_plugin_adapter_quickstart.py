@@ -24,6 +24,8 @@ _REQUIRED_ENV = {
 def _set_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key, value in _REQUIRED_ENV.items():
         monkeypatch.setenv(key, value)
+    monkeypatch.delenv("SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
 
 
 def _module_file(module: ModuleType) -> Path:

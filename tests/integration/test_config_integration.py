@@ -89,7 +89,11 @@ class TestConfigIntegration:
                 yaml.dump(agent_config, f)
 
             # Load config - returns Agent object
-            agent = Agent.from_yaml(Path(config_path))
+            with patch.dict(
+                os.environ,
+                {"SEARCH_API_KEY": "", "SERPER_API_KEY": ""},
+            ):
+                agent = Agent.from_yaml(Path(config_path))
             assert agent.config.name == "agent_with_tools"
             assert len(agent.config.tools) == 1
             assert agent.config.tools[0].name == "test_tool"

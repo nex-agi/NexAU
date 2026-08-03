@@ -138,6 +138,46 @@ def test_anthropic_serializer_splits_tool_result_images_and_applies_cache_contro
     }
 
 
+def test_anthropic_serializer_orders_all_tool_results_before_sibling_images() -> None:
+    """Regression: parallel image tool results must not interleave.
+
+    Anthropic only matches the leading run of `tool_result` blocks in the
+    next user message: `[TR, IMG, TR, IMG]` makes every tool_use id after
+    the first fail with "`tool_use` ids were found without `tool_result`
+    blocks immediately after" (400). The flush must emit all tool results
+    first, then the hoisted sibling images.
+    """
+    _system, convo = serialize_ump_to_anthropic_messages_payload(
+        [
+            Message(
+                role=Role.TOOL,
+                content=[
+                    ToolResultBlock(
+                        tool_use_id="call_1",
+                        content=[ImageBlock(url="https://example.com/a.jpg")],
+                    ),
+                ],
+            ),
+            Message(
+                role=Role.TOOL,
+                content=[
+                    ToolResultBlock(
+                        tool_use_id="call_2",
+                        content=[TextBlock(text="caption"), ImageBlock(url="https://example.com/b.jpg")],
+                    ),
+                ],
+            ),
+        ]
+    )
+
+    blocks = convo[0]["content"]
+    assert [block["type"] for block in blocks] == ["tool_result", "tool_result", "image", "image"]
+    assert blocks[0]["tool_use_id"] == "call_1"
+    assert blocks[1]["tool_use_id"] == "call_2"
+    assert blocks[2]["source"]["url"] == "https://example.com/a.jpg"
+    assert blocks[3]["source"]["url"] == "https://example.com/b.jpg"
+
+
 def test_gemini_serializer_emits_thought_signature_and_function_response() -> None:
     contents, system_instruction = serialize_ump_to_gemini_messages_payload(
         [
@@ -164,4 +204,80 @@ def test_gemini_serializer_emits_thought_signature_and_function_response() -> No
     assert contents[2] == {
         "role": "user",
         "parts": [{"functionResponse": {"name": "weather", "response": {"result": "sunny"}}}],
+    }
+
+
+def test_anthropic_serializer_coalesces_user_and_framework() -> None:
+    user = Message.user("question")
+    framework = Message(role=Role.FRAMEWORK, content=[TextBlock(text="iteration reminder")])
+
+    _system, conversation = serialize_ump_to_anthropic_messages_payload([user, framework])
+
+    assert conversation == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "question"},
+                {"type": "text", "text": "\n\n"},
+                {"type": "text", "text": "iteration reminder"},
+            ],
+        }
+    ]
+    assert user.role == Role.USER
+    assert framework.role == Role.FRAMEWORK
+
+
+def test_anthropic_projects_standalone_framework_after_tool_result() -> None:
+    _system, conversation = serialize_ump_to_anthropic_messages_payload(
+        [
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_1", content="sunny")]),
+            Message(role=Role.FRAMEWORK, content=[TextBlock(text="iteration reminder")]),
+        ]
+    )
+
+    assert [block["type"] for block in conversation[0]["content"]] == ["tool_result"]
+    assert conversation[1] == {
+        "role": "user",
+        "content": [{"type": "text", "text": "iteration reminder"}],
+    }
+
+
+def test_gemini_serializer_coalesces_user_and_framework() -> None:
+    contents, _system = serialize_ump_to_gemini_messages_payload(
+        [
+            Message.user("question"),
+            Message(role=Role.FRAMEWORK, content=[TextBlock(text="iteration reminder")]),
+        ]
+    )
+
+    assert contents == [
+        {
+            "role": "user",
+            "parts": [
+                {"text": "question"},
+                {"text": "\n\n"},
+                {"text": "iteration reminder"},
+            ],
+        }
+    ]
+
+
+def test_gemini_appends_framework_after_function_response() -> None:
+    contents, _system = serialize_ump_to_gemini_messages_payload(
+        [
+            Message(
+                role=Role.ASSISTANT,
+                content=[ToolUseBlock(id="call_1", name="weather", input={"city": "Paris"})],
+            ),
+            Message(role=Role.TOOL, content=[ToolResultBlock(tool_use_id="call_1", content="sunny")]),
+            Message(role=Role.FRAMEWORK, content=[TextBlock(text="iteration reminder")]),
+        ]
+    )
+
+    assert contents[1] == {
+        "role": "user",
+        "parts": [
+            {"functionResponse": {"name": "weather", "response": {"result": "sunny"}}},
+            {"text": "iteration reminder"},
+        ],
     }

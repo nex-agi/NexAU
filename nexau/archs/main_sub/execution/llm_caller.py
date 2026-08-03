@@ -23,6 +23,7 @@ tool definitions 适配成 OpenAI / Anthropic / Gemini 所需的 provider schema
 import asyncio
 import contextvars
 import functools
+import hashlib
 import json
 import logging
 import threading
@@ -133,10 +134,18 @@ def _get_event_emitter(manager: MiddlewareManager | None) -> Callable[[Event], N
 logger = logging.getLogger(__name__)
 
 _MISSING_TOOL_RESULT_CONTENT = "no tool result (canceled, compacted or failed)"
+_OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64
 
 # 流式 idle 超时异常，区别于一般网络/API 错误，让重试逻辑可针对性处理
 OnRetryCallback = Callable[[int, int, float, str], None]
 """(attempt, max_attempts, backoff_seconds, error_message) → None"""
+
+
+def _bound_openai_prompt_cache_key(key: str) -> str:
+    """Bound a Responses prompt cache key without changing canonical session identity."""
+    if len(key) <= _OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH:
+        return key
+    return hashlib.sha256(key.encode()).hexdigest()
 
 
 def _log_llm_debug_request(messages: Sequence[Message]) -> None:
@@ -1911,6 +1920,9 @@ def call_llm_with_openai_responses(
     prompt_cache_key = request_payload.pop("prompt_cache_key", None)
     if prompt_cache_key is not None:
         extra_body["prompt_cache_key"] = prompt_cache_key
+    final_prompt_cache_key = extra_body.get("prompt_cache_key")
+    if isinstance(final_prompt_cache_key, str):
+        extra_body["prompt_cache_key"] = _bound_openai_prompt_cache_key(final_prompt_cache_key)
     if extra_body:
         request_payload["extra_body"] = extra_body
 
@@ -2331,6 +2343,9 @@ async def call_llm_with_openai_responses_async(
     prompt_cache_key = request_payload.pop("prompt_cache_key", None)
     if prompt_cache_key is not None:
         extra_body["prompt_cache_key"] = prompt_cache_key
+    final_prompt_cache_key = extra_body.get("prompt_cache_key")
+    if isinstance(final_prompt_cache_key, str):
+        extra_body["prompt_cache_key"] = _bound_openai_prompt_cache_key(final_prompt_cache_key)
     if extra_body:
         request_payload["extra_body"] = extra_body
 

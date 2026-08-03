@@ -71,6 +71,11 @@ from .base_sandbox import (
 
 logger = logging.getLogger(__name__)
 
+# get_file_info 编码探测的文件大小上限(1MiB):E2B SDK 的 read 没有 range
+# 参数,超过此值的文件跳过探测(encoding=None),避免为 metadata 把整个
+# 文件从沙盒下载进 runtime 进程。语义与 LocalSandbox 的 64KB 采样一致。
+_ENCODING_PROBE_MAX_BYTES = 1024 * 1024
+
 BASH_TOOL_RESULTS_BASE_PATH = "/tmp/nexau_bash_tool_results"
 """Remote Linux directory used for E2B shell stdout/stderr artifacts."""
 
@@ -1555,7 +1560,12 @@ class E2BSandbox(BaseSandbox):
                 # Check owner write permission (bit 7)
                 writable = bool(entry.mode & 0o200)
 
-            if entry.type == FileType.FILE:
+            # 编码探测上限:E2B SDK 的 read 没有 range 参数,探测一个大文件的
+            # 编码意味着为了 metadata 把整个文件(如 21MB 图)从沙盒下载进
+            # runtime 进程 —— read_visual_file 对超大图"不读原图"的保证曾被
+            # 这里悄悄打破。大文件直接跳过探测(encoding 无消费方依赖精确值,
+            # 文本读取走 UTF-8 lossy 不看它)。
+            if entry.type == FileType.FILE and (entry.size or 0) <= _ENCODING_PROBE_MAX_BYTES:
                 raw_data = self._retry_on_transient(
                     lambda: self._sandbox._filesystem.read(resolved_path, format="bytes")  # type: ignore[union-attr]
                 )
@@ -2361,12 +2371,20 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
 
         logger.info(f"E2B sandbox created with ID: {sandbox.sandbox_id}")
 
-        # Ensure work_dir exists (it may not exist if user configured a custom path)
-        try:
-            sandbox.create_directory(str(sandbox.work_dir))
-            logger.debug(f"Work directory ensured: {sandbox.work_dir}")
-        except Exception as e:
-            logger.warning(f"Failed to create work directory {sandbox.work_dir}: {e}")
+        # NAC self-host provisions and bind-mounts the canonical work directory
+        # before publishing Sandbox Ready. Reissuing mkdir through envd adds a
+        # redundant synchronous data-plane round trip to every create (and
+        # amplifies concurrent-create latency). SaaS and custom paths retain the
+        # defensive ensure because they do not share that platform contract.
+        platform_provisioned_work_dir = sandbox_config.force_http and PurePosixPath(str(sandbox.work_dir)) == PurePosixPath(
+            E2B_DEFAULT_WORK_DIR
+        )
+        if not platform_provisioned_work_dir:
+            try:
+                sandbox.create_directory(str(sandbox.work_dir))
+                logger.debug(f"Work directory ensured: {sandbox.work_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to create work directory {sandbox.work_dir}: {e}")
 
         # Persist sandbox state
         self.persist_sandbox_state(session_manager, user_id, session_id, sandbox)

@@ -264,6 +264,92 @@ class TestSchemaNormalization:
             AgentConfigSchema.from_yaml(str(bad_path))
 
 
+class TestConditionalBuiltinToolInjection:
+    """Tests for conditional runtime built-in tool injection."""
+
+    def test_websearch_not_injected_without_api_key(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """RFC-0028: 没配搜索密钥时不注入 web_search。"""
+        monkeypatch.delenv("SEARCH_API_KEY", raising=False)
+        monkeypatch.delenv("SERPER_API_KEY", raising=False)
+
+        config = AgentConfig.from_dict(
+            {
+                "type": "agent",
+                "name": "minimal",
+                "llm_config": {"model": "gpt-4o-mini"},
+                "plugins": [],
+                "tools": [],
+            },
+            base_path=tmp_path,
+        )
+
+        assert "web_search" not in {tool.name for tool in config.tools}
+
+    @pytest.mark.parametrize("env_key", ["SEARCH_API_KEY", "SERPER_API_KEY"])
+    def test_websearch_injected_when_api_key_present(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        env_key: str,
+    ) -> None:
+        """RFC-0028: 配了搜索密钥就自动获得 web_search。"""
+        monkeypatch.delenv("SEARCH_API_KEY", raising=False)
+        monkeypatch.delenv("SERPER_API_KEY", raising=False)
+        monkeypatch.setenv(env_key, "dummy-key")
+
+        config = AgentConfig.from_dict(
+            {
+                "type": "agent",
+                "name": "minimal",
+                "llm_config": {"model": "gpt-4o-mini"},
+                "plugins": [],
+                "tools": [],
+            },
+            base_path=tmp_path,
+        )
+
+        tools_by_name = {tool.name: tool for tool in config.tools}
+        assert "web_search" in tools_by_name
+        assert tools_by_name["web_search"].implementation_import_path == "nexau.archs.tool.builtin.web_tools:web_search"
+
+
+def test_minimal_agent_does_not_receive_runtime_builtin_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A minimal agent must not receive undeclared runtime built-in tools."""
+    monkeypatch.delenv("SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            type: agent
+            name: minimal
+            llm_config:
+              model: gpt-4o-mini
+            """,
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    config = AgentConfig.from_yaml(config_path)
+
+    forbidden_tool_names = {
+        "run_shell_command",
+        "read_file",
+        "write_file",
+        "write_todos",
+        "complete_task",
+        "ask_user",
+    }
+    assert forbidden_tool_names.isdisjoint({tool.name for tool in config.tools})
+
+
 class TestAgentConfigBuilderCore:
     """Tests for core builder behaviors."""
 

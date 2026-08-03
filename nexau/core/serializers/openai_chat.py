@@ -4,6 +4,7 @@ import json
 from typing import Any, Literal
 
 from nexau.core.messages import ImageBlock, Message, ReasoningBlock, Role, TextBlock, ToolResultBlock, ToolUseBlock
+from nexau.core.serializers.user_projection import coalesce_user_shaped_messages
 
 ToolImagePolicy = Literal["inject_user_message", "embed_in_tool_message"]
 
@@ -24,8 +25,8 @@ def serialize_ump_to_openai_chat_payload(
     """
 
     output: list[dict[str, Any]] = []
-    for msg in messages or []:
-        role = "user" if msg.role == Role.FRAMEWORK else msg.role.value
+    for msg in coalesce_user_shaped_messages(messages or []):
+        role = msg.role.value
 
         def _image_part_to_image_url_obj(img: ImageBlock) -> dict[str, Any]:
             url = img.url if img.url else f"data:{img.mime_type};base64,{img.base64}"

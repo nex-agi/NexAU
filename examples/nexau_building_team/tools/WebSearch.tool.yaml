@@ -13,7 +13,8 @@ description: >-
     - Account for "Today's date" in <env>. For example, if <env> says "Today's
       date: 2025-07-01", and the user wants the latest docs, do not use 2024 in
       the search query. Use 2025.
-
+skill_description: >-
+  - This is a web search tool, use LoadSkill to understand how to use this tool in details.
 input_schema:
   type: object
   properties:
