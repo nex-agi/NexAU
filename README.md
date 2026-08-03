@@ -96,7 +96,6 @@ uv sync
     from nexau.archs.main_sub.execution.hooks import LoggingMiddleware
     from nexau.archs.tracer.adapters.langfuse import LangfuseTracer
     from nexau.archs.tool.builtin import (
-        glob,
         google_web_search,
         list_directory,
         read_file,
@@ -119,7 +118,6 @@ uv sync
         Tool.from_yaml(base_dir / "tools/WebFetch.tool.yaml", binding=web_fetch),
         Tool.from_yaml(base_dir / "tools/write_todos.tool.yaml", binding=write_todos),
         Tool.from_yaml(base_dir / "tools/search_file_content.tool.yaml", binding=search_file_content),
-        Tool.from_yaml(base_dir / "tools/Glob.tool.yaml", binding=glob),
         Tool.from_yaml(base_dir / "tools/read_file.tool.yaml", binding=read_file),
         Tool.from_yaml(base_dir / "tools/write_file.tool.yaml", binding=write_file),
         Tool.from_yaml(base_dir / "tools/replace.tool.yaml", binding=replace),
@@ -130,8 +128,8 @@ uv sync
 
     # NexAU supports Skills (compatible with Claude Skills)
     skills = [
-        Skill.from_folder(base_dir / "skills/theme-factory"),
-        Skill.from_folder(base_dir / "skills/algorithmic-art"),
+        Skill.from_folder(base_dir / "skills/skill-creator"),
+        Skill.from_folder(base_dir / "skills/template-skill"),
     ]
 
     # Tracer allows you to forward execution data for observability.
@@ -144,7 +142,7 @@ uv sync
     agent_config = AgentConfig(
         name="nexau_code_agent",
         max_context_tokens=100000,
-        system_prompt=str(base_dir / "system-workflow.md"),
+        system_prompt=str(base_dir / "systemprompt.md"),
         system_prompt_type="jinja",
         tool_call_mode="structured", # xml or structured
         llm_config=LLMConfig(
