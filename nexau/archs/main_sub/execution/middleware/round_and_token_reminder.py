@@ -34,17 +34,18 @@ class RoundAndTokenReminderMiddleware(Middleware):
         *,
         max_context_tokens: int,
         desired_max_tokens: int = 16384,
+        token_counter: TokenCounter | None = None,
     ) -> None:
         """Configure the reminder middleware.
 
         Args:
             max_context_tokens: Context window size; required when token hint enabled.
             desired_max_tokens: Preferred response size for token hint messaging.
+            token_counter: Optional shared TokenCounter instance to reuse.
         """
         self.max_context_tokens = max_context_tokens
         self.desired_max_tokens = desired_max_tokens
-        # TODO: reuse token counter from AgentConfig
-        self.token_counter = TokenCounter()
+        self.token_counter = token_counter or TokenCounter()
 
     def before_model(self, hook_input: BeforeModelHookInput) -> HookResult:  # type: ignore[override]
         """Append iteration (and optional token) hints prior to model invocation."""
