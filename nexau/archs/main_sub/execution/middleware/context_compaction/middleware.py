@@ -109,6 +109,7 @@ class ContextCompactionMiddleware(Middleware):
 
         # RFC-0021: 历史归档 (lazy 初始化, 首次有可归档消息时构造)
         self._archive_writer: HistoryArchiveWriter | None = None
+        self._full_archive_writer: FullHistoryArchiveWriter | None = None
 
         # Tracer span state for in-flight compaction (one compaction at a time)
         self._active_compaction_span: Span | None = None
@@ -568,6 +569,17 @@ class ContextCompactionMiddleware(Middleware):
 
     def before_model(self, hook_input: BeforeModelHookInput) -> HookResult:
         """Compaction before the model call when budget is near limit."""
+        
+        # Phase 1 Dual Logger: Write all raw messages to transcript_full.jsonl
+        if self.save_history and hook_input.agent_state is not None:
+            if self._full_archive_writer is None:
+                from .history_archive import FullHistoryArchiveWriter
+                self._full_archive_writer = FullHistoryArchiveWriter.from_sandbox(
+                    agent_state=hook_input.agent_state
+                )
+            if self._full_archive_writer is not None:
+                self._full_archive_writer.write_new_messages(hook_input.messages)
+
         if not self.auto_compact:
             return HookResult.no_changes()
 

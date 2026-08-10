@@ -56,6 +56,7 @@ ARCHIVE_SUBDIR = ".nexau_history_archive"
 """
 
 TRANSCRIPT_FILENAME = "transcript.jsonl"
+TRANSCRIPT_FULL_FILENAME = "transcript_full.jsonl"
 IMAGES_SUBDIR = "images"
 ARCHIVED_IMAGE_URL_PREFIX = "file:"
 BOUNDARY_KEY = "_boundary"
@@ -507,6 +508,89 @@ def _extract_text_for_preview(msg: Message) -> str:
             if isinstance(block.content, str):
                 parts.append(block.content)
     return " ".join(p.strip() for p in parts if p).strip()
+
+class FullHistoryArchiveWriter:
+    """Writes all raw, untruncated messages to transcript_full.jsonl."""
+
+    def __init__(
+        self,
+        *,
+        sandbox: BaseSandbox,
+        archive_dir: str,
+    ) -> None:
+        self._sandbox = sandbox
+        self._archive_dir = archive_dir
+        self._transcript_path = sandbox.join_path(archive_dir, TRANSCRIPT_FULL_FILENAME)
+        self._last_written_ids: set[str] = set()
+        
+    @classmethod
+    def from_sandbox(
+        cls,
+        *,
+        agent_state: Any,
+    ) -> FullHistoryArchiveWriter | None:
+        if agent_state is None:
+            return None
+        get_sb = getattr(agent_state, "get_sandbox", None)
+        if not callable(get_sb):
+            return None
+
+        try:
+            sandbox = get_sb()
+            if not isinstance(sandbox, BaseSandbox):
+                return None
+            temp_dir = str(sandbox.get_temp_dir())
+            if not temp_dir:
+                return None
+            archive_dir = sandbox.join_path(
+                temp_dir,
+                ARCHIVE_SUBDIR,
+                _archive_namespace(agent_state=agent_state, sandbox=sandbox),
+            )
+            sandbox.create_directory(archive_dir, parents=True)
+            return cls(sandbox=sandbox, archive_dir=archive_dir)
+        except Exception as exc:
+            logger.warning("[FullHistoryArchiveWriter] sandbox setup failed: %s", exc)
+            return None
+
+    def write_new_messages(self, messages: list[Message]) -> None:
+        """Appends any previously unseen messages to transcript_full.jsonl."""
+        if not messages:
+            return
+            
+        new_messages = [m for m in messages if str(m.id) not in self._last_written_ids]
+        if not new_messages:
+            return
+
+        try:
+            new_lines = [m.model_dump_json() for m in new_messages]
+            new_content = "\n".join(new_lines) + "\n"
+
+            existing = ""
+            try:
+                if self._sandbox.file_exists(self._transcript_path):
+                    res = self._sandbox.read_file(
+                        self._transcript_path,
+                        encoding="utf-8",
+                        binary=False,
+                    )
+                    if res.status == SandboxStatus.SUCCESS and isinstance(res.content, str):
+                        existing = res.content
+                        if existing and not existing.endswith("\n"):
+                            existing += "\n"
+            except Exception:
+                pass
+
+            self._sandbox.write_file(
+                self._transcript_path,
+                existing + new_content,
+                create_directories=True,
+            )
+
+            for m in new_messages:
+                self._last_written_ids.add(str(m.id))
+        except Exception as exc:
+            logger.warning("[FullHistoryArchiveWriter] write failed: %s", exc)
 
 
 def build_archive_hint(
