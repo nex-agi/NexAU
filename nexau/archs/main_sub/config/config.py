@@ -22,12 +22,12 @@ import os
 import warnings
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import dotenv
-from pydantic import ConfigDict, Field, PrivateAttr, ValidationError, field_validator, model_validator
+from pydantic import ConfigDict, Field, PrivateAttr, TypeAdapter, ValidationError, field_validator, model_validator
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.skill import Skill, build_load_skill_tool, build_tool_skill
@@ -44,7 +44,7 @@ from nexau.archs.tracer.composite import CompositeTracer
 from nexau.archs.tracer.core import BaseTracer
 
 from .base import AgentConfigBase, AgentConfigLoadOptions, HookCallable, HookDefinition
-from .schema import AgentConfigSchema
+from .schema import AgentConfigSchema, MCPServerConfig
 
 if TYPE_CHECKING:
     from nexau.core.messages import Message
@@ -61,7 +61,35 @@ THook = TypeVar("THook", bound=object)
 YamlValue = dict[str, Any] | list[Any] | str | int | float | bool | None
 HookConfig = str | dict[str, Any] | Callable[..., Any]
 
-_BUILTIN_TOOL_SCHEMA_ROOT = "nexau:archs/tool/builtin/schemas"
+
+def _compact_validation_error(exc: ValidationError) -> str:
+    """Format validation diagnostics without including secret-bearing inputs."""
+    messages: list[str] = []
+    for error in exc.errors(include_input=False):
+        location = "->".join(str(segment) for segment in error.get("loc", [])) or "root"
+        messages.append(f"{location}: {error.get('msg')}")
+    return "; ".join(messages)
+
+
+# 用**持有 schemas 目录的那个包**来定位，而不是顶层 `nexau`。
+#
+# 顶层包名在一种很常见的部署形态下会解析到错误的根：宿主把 nexau 以 editable 方式装好
+# （转发器里 `MAPPING['nexau'] = <repo>/nexau`，完全正确），同时又把 **repo 的父目录**
+# 放进 sys.path，而 repo 目录本身正好也叫 `nexau` 且没有 `__init__.py`。这时
+# `sys.meta_path` 的顺序决定一切：PathFinder 排在 setuptools 追加的 editable 转发器
+# **前面**，它扫到那个无 `__init__.py` 的同名目录就当成命名空间包接受了，转发器再没
+# 机会作答。于是 `files("nexau")` 给出 repo 根，比真正的包目录少一层，
+# `schemas/*.tool.yaml` 全部找不到，条件注入的工具在注册阶段静默失效。
+#
+# 2026-08-11 实测：小北镜像正是这个形态（PYTHONPATH=/app、repo 在 /app/nexau、
+# 包在 /app/nexau/nexau），`files("nexau")` → `/app/nexau`，
+# 而 `files("nexau.archs.tool.builtin")` → `/app/nexau/nexau/archs/tool/builtin` 正确。
+# 子包不受影响，是因为 PathFinder 在命名空间根下找不到它们，才轮到转发器按
+# `MAPPING[parent]` 定向查找。
+#
+# 数据文件本就该相对拥有它的模块定位，这么写在正常安装下行为不变，且对这一整类
+# 目录同名遮蔽免疫。
+_BUILTIN_TOOL_SCHEMA_ROOT = "nexau.archs.tool.builtin:schemas"
 
 # RFC-0028: 聚合 Web 搜索。与上面那些"零配置即可用"的内置工具不同，
 # 它必须有搜索服务商密钥才能工作，因此**仅在配置了密钥时才注入**——
@@ -215,7 +243,7 @@ class AgentConfig(
 ):
     """Configuration for an Agent's definition and behavior."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True, hide_input_in_errors=True)
 
     tools: list[Tool] = Field(default_factory=_empty_tool_list)
     skills: list[Skill] = Field(default_factory=_empty_skill_list)
@@ -243,7 +271,9 @@ class AgentConfig(
             return parse_sandbox_config(cast(dict[str, Any], value))
         raise ValueError(f"Invalid sandbox_config type: {type(value)}")
 
-    mcp_servers: list[dict[str, Any]] = Field(default_factory=_empty_dict_list)
+    # RFC-0029: keep runtime dictionaries for compatibility, but hide headers
+    # and auth metadata from the default AgentConfig representation.
+    mcp_servers: list[dict[str, Any]] = Field(default_factory=_empty_dict_list, repr=False)
     after_model_hooks: list[Callable[..., Any]] | None = None
     after_tool_hooks: list[Callable[..., Any]] | None = None
     before_model_hooks: list[Callable[..., Any]] | None = None
@@ -253,6 +283,35 @@ class AgentConfig(
     resolved_tracer: BaseTracer | None = Field(default=None, exclude=True)
     token_counter: HookDefinition | None = None
     _is_finalized: bool = PrivateAttr(default=False)
+
+    @field_validator("mcp_servers", mode="before")
+    @classmethod
+    def _validate_mcp_servers(cls, value: object) -> list[dict[str, Any]]:
+        """Apply the typed MCP contract to direct Python construction too."""
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("mcp_servers must be a list")
+
+        server_adapter: TypeAdapter[MCPServerConfig] = TypeAdapter(MCPServerConfig)
+        normalized_servers: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
+        for index, item in enumerate(cast(list[object], value)):
+            candidate: object = item
+            if is_dataclass(item) and not isinstance(item, type):
+                candidate = {key: field_value for key, field_value in asdict(item).items() if field_value is not None}
+            try:
+                server = server_adapter.validate_python(candidate)
+            except ValidationError as exc:
+                raise ValueError(f"Invalid MCP server configuration {index}: {_compact_validation_error(exc)}") from exc
+            if server.name in seen_names:
+                raise ValueError(f"Duplicate MCP server name '{server.name}'")
+            seen_names.add(server.name)
+            normalized = server.model_dump(mode="python", by_alias=True, exclude_none=True)
+            if not isinstance(normalized.get("source_id"), str):
+                normalized["source_id"] = f"local:mcp_server:{server.name}"
+            normalized_servers.append(normalized)
+        return normalized_servers
 
     @classmethod
     def from_yaml(
@@ -671,47 +730,39 @@ class AgentConfigBuilder:
 
         mcp_servers_list: list[Any] = cast(list[Any], mcp_servers_raw)
 
-        # Validate each MCP server configuration
+        # RFC-0029: use the same discriminated schema for YAML, plugins, and
+        # builder input so every Agent config path accepts the same MCP modes.
+        server_adapter: TypeAdapter[MCPServerConfig] = TypeAdapter(MCPServerConfig)
         typed_servers: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
         for i, server_config in enumerate(mcp_servers_list):
             server_config_typed = _require_dict(
                 server_config,
                 context=f"MCP server configuration {i}",
             )
-
-            # Validate required fields
+            # Preserve the concise legacy diagnostics for the required fields.
             if "name" not in server_config_typed:
-                raise ConfigError(
-                    f"MCP server configuration {i} missing 'name' field",
-                )
-            server_name = str(server_config_typed["name"])
-            if not isinstance(server_config_typed.get("source_id"), str):
-                server_config_typed["source_id"] = f"local:mcp_server:{server_name}"
-
+                raise ConfigError(f"MCP server configuration {i} missing 'name' field")
             if "type" not in server_config_typed:
-                raise ConfigError(
-                    f"MCP server configuration {i} missing 'type' field",
-                )
+                raise ConfigError(f"MCP server configuration {i} missing 'type' field")
+            server_type = server_config_typed["type"]
+            if server_type == "stdio" and "command" not in server_config_typed:
+                raise ConfigError(f"MCP server configuration {i} of type 'stdio' missing 'command' field")
+            if server_type in {"http", "sse"} and "url" not in server_config_typed:
+                raise ConfigError(f"MCP server configuration {i} of type '{server_type}' missing 'url' field")
+            try:
+                server = server_adapter.validate_python(server_config_typed)
+            except ValidationError as exc:
+                raise ConfigError(f"Invalid MCP server configuration {i}: {exc}") from exc
 
-            server_type = str(server_config_typed["type"])
-            if server_type not in ["stdio", "http", "sse"]:
-                raise ConfigError(
-                    f"MCP server configuration {i} has invalid type '{server_type}'. Must be one of: stdio, http, sse",
-                )
+            if server.name in seen_names:
+                raise ConfigError(f"Duplicate MCP server name '{server.name}'")
+            seen_names.add(server.name)
 
-            # Validate type-specific requirements
-            if server_type == "stdio":
-                if "command" not in server_config_typed:
-                    raise ConfigError(
-                        f"MCP server configuration {i} of type 'stdio' missing 'command' field",
-                    )
-            elif server_type in ["http", "sse"]:
-                if "url" not in server_config_typed:
-                    raise ConfigError(
-                        f"MCP server configuration {i} of type '{server_type}' missing 'url' field",
-                    )
-
-            typed_servers.append(server_config_typed)
+            normalized = server.model_dump(mode="python", by_alias=True, exclude_none=True)
+            if not isinstance(normalized.get("source_id"), str):
+                normalized["source_id"] = f"local:mcp_server:{server.name}"
+            typed_servers.append(normalized)
 
         self.agent_params["mcp_servers"] = typed_servers
         return self

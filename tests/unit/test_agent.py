@@ -542,12 +542,11 @@ class TestAgent:
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            # Mock the sync_initialize_mcp_tools function
             mock_mcp_tool = Mock()
             mock_mcp_tool.name = "test_mcp_tool"
 
-            with patch("nexau.archs.tool.builtin.sync_initialize_mcp_tools") as mock_sync_init:
-                mock_sync_init.return_value = [mock_mcp_tool]
+            with patch.object(Agent, "_bootstrap_mcp_tools_async", new_callable=AsyncMock) as mock_bootstrap:
+                mock_bootstrap.return_value = [mock_mcp_tool]
 
                 # Add MCP servers to config
                 agent_config.mcp_servers = [{"name": "test_server", "type": "stdio", "command": "python", "args": ["server.py"]}]
@@ -557,15 +556,19 @@ class TestAgent:
                 # Verify MCP tools were registered without mutating config.tools
                 assert mock_mcp_tool not in agent.config.tools
                 assert "test_mcp_tool" in agent._tool_registry.get_all()
-                mock_sync_init.assert_called_once_with(agent_config.mcp_servers)
+                mock_bootstrap.assert_awaited_once_with()
 
     def test_initialize_mcp_tools_import_error(self, agent_config, global_storage):
         """Test MCP tools initialization with import error."""
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            # Mock import error
-            with patch("nexau.archs.tool.builtin.sync_initialize_mcp_tools", side_effect=ImportError("MCP not available")):
+            with patch.object(
+                Agent,
+                "_bootstrap_mcp_tools_async",
+                new_callable=AsyncMock,
+                side_effect=ImportError("MCP not available"),
+            ):
                 agent_config.mcp_servers = [{"name": "test_server"}]
 
                 # Should not raise, but log error
@@ -579,8 +582,12 @@ class TestAgent:
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
-            # Mock general exception
-            with patch("nexau.archs.tool.builtin.sync_initialize_mcp_tools", side_effect=Exception("Connection failed")):
+            with patch.object(
+                Agent,
+                "_bootstrap_mcp_tools_async",
+                new_callable=AsyncMock,
+                side_effect=Exception("Connection failed"),
+            ):
                 agent_config.mcp_servers = [{"name": "test_server"}]
 
                 # Should not raise, but log error

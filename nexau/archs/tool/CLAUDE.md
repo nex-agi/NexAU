@@ -256,7 +256,10 @@ tools:
       api_key: ${env.API_KEY}  # Loaded from environment
 ```
 
-**Note**: Call-time arguments with the same name override preset values.
+**Note**: Preset values win over call-time arguments with the same name — `extra_kwargs` is a
+deployment-side setting, so the model cannot override it (conflicting call-time values are ignored
+and logged as a warning). Preset keys that the `input_schema` does not declare are also exempt from
+schema validation, so `additionalProperties: false` constrains caller-supplied fields only.
 
 ### Parallel Execution Control
 

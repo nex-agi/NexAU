@@ -24,9 +24,12 @@ if TYPE_CHECKING:
     from .file_tools.replace import replace
     from .file_tools.search_file_content import search_file_content
     from .file_tools.write_file import write_file
+    from .mcp_auth import MCPAuthContext, MCPAuthHost, MCPAuthorizationCodeSession
     from .mcp_client import (
         MCPClient,
         MCPManager,
+        MCPRunScope,
+        MCPRuntimeFactory,
         MCPServerConfig,
         MCPTool,
         get_mcp_manager,
@@ -62,8 +65,13 @@ __all__ = [
     "ask_user",
     "MCPClient",
     "MCPManager",
+    "MCPRuntimeFactory",
+    "MCPRunScope",
     "MCPTool",
     "MCPServerConfig",
+    "MCPAuthContext",
+    "MCPAuthorizationCodeSession",
+    "MCPAuthHost",
     "get_mcp_manager",
     "initialize_mcp_tools",
     "sync_initialize_mcp_tools",
@@ -154,6 +162,14 @@ def __getattr__(name: str) -> object:
         from .mcp_client import MCPManager
 
         return _cache_export(name, MCPManager)
+    if name == "MCPRuntimeFactory":
+        from .mcp_client import MCPRuntimeFactory
+
+        return _cache_export(name, MCPRuntimeFactory)
+    if name == "MCPRunScope":
+        from .mcp_client import MCPRunScope
+
+        return _cache_export(name, MCPRunScope)
     if name == "MCPTool":
         from .mcp_client import MCPTool
 
@@ -162,6 +178,18 @@ def __getattr__(name: str) -> object:
         from .mcp_client import MCPServerConfig
 
         return _cache_export(name, MCPServerConfig)
+    if name == "MCPAuthContext":
+        from .mcp_auth import MCPAuthContext
+
+        return _cache_export(name, MCPAuthContext)
+    if name == "MCPAuthorizationCodeSession":
+        from .mcp_auth import MCPAuthorizationCodeSession
+
+        return _cache_export(name, MCPAuthorizationCodeSession)
+    if name == "MCPAuthHost":
+        from .mcp_auth import MCPAuthHost
+
+        return _cache_export(name, MCPAuthHost)
     if name == "get_mcp_manager":
         from .mcp_client import get_mcp_manager
 

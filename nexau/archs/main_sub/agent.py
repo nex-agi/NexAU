@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from nexau.archs.main_sub.framework_context import FrameworkContext
     from nexau.archs.main_sub.team.state import AgentTeamState
+    from nexau.archs.tool.builtin.mcp_auth import MCPAuthHost
 
 import anthropic
 import dotenv
@@ -121,6 +122,7 @@ class Agent:
         variables: ContextValue | None = None,
         team_state: "AgentTeamState | None" = None,
         sandbox_manager: "BaseSandboxManager[BaseSandbox] | None" = None,
+        mcp_auth_host: "MCPAuthHost | None" = None,
     ):
         """Initialize agent with configuration.
 
@@ -135,6 +137,8 @@ class Agent:
             session_id: Optional session ID for persistence
             is_root: Whether this is the root agent (default True). Set to False for sub-agents.
             variables: Optional ContextValue with structured runtime parameters
+            mcp_auth_host: Optional host boundary for MCP secrets, OAuth callbacks,
+                and token storage. One host is retained across Agent runs.
         """
         logger.info("Initializing Agent (%s)", config.name)
 
@@ -146,6 +150,18 @@ class Agent:
         self._shared_sandbox_manager = sandbox_manager
         self._user_id = user_id or f"local_user_{uuid.uuid4().hex[:8]}"
         self._session_id = session_id or f"local_{uuid.uuid4().hex[:8]}"
+        self._mcp_runtime_factory: Any | None = None
+        self._mcp_run_complete = asyncio.Event()
+        self._mcp_run_complete.set()
+        if self.config.mcp_servers:
+            from ..tool.builtin.mcp_auth import MCPAuthContext
+            from ..tool.builtin.mcp_client import MCPRuntimeFactory
+
+            self._mcp_runtime_factory = MCPRuntimeFactory(
+                self.config.mcp_servers,
+                auth_host=mcp_auth_host,
+                auth_context=MCPAuthContext(identity=f"{self._user_id}:{self._session_id}"),
+            )
 
         # Initialize session_manager
         if session_manager is not None:
@@ -292,6 +308,7 @@ class Agent:
         variables: ContextValue | None = None,
         team_state: "AgentTeamState | None" = None,
         sandbox_manager: "BaseSandboxManager[BaseSandbox] | None" = None,
+        mcp_auth_host: "MCPAuthHost | None" = None,
     ) -> "Agent":
         """Async factory for Agent — the preferred way to create agents from async code.
 
@@ -336,6 +353,7 @@ class Agent:
                 variables=variables,
                 team_state=team_state,
                 sandbox_manager=sandbox_manager,
+                mcp_auth_host=mcp_auth_host,
             )
         finally:
             cls._create_flag.skip = False
@@ -657,13 +675,12 @@ class Agent:
 
         try:
             # Import here to avoid circular imports and optional dependency
-            from ..tool.builtin import sync_initialize_mcp_tools
-
             logger.info(
                 f"Initializing MCP tools from {len(self.config.mcp_servers)} servers",
             )
-
-            mcp_tools = sync_initialize_mcp_tools(self.config.mcp_servers)
+            if self._mcp_runtime_factory is None:
+                return []
+            mcp_tools = asyncio.run(self._bootstrap_mcp_tools_async())
             logger.info(f"Successfully initialized {len(mcp_tools)} MCP tools")
             return list(mcp_tools)
 
@@ -685,13 +702,10 @@ class Agent:
         在主事件循环上执行 MCP 服务器连接和工具发现，避免创建临时 event loop。
         """
         try:
-            from ..tool.builtin import initialize_mcp_tools
-
             logger.info(
                 f"Async initializing MCP tools from {len(self.config.mcp_servers)} servers",
             )
-
-            mcp_tools = await initialize_mcp_tools(self.config.mcp_servers)
+            mcp_tools = await self._bootstrap_mcp_tools_async()
             logger.info(f"Successfully initialized {len(mcp_tools)} MCP tools (async)")
             return list(mcp_tools)
 
@@ -703,6 +717,13 @@ class Agent:
             logger.error(f"Failed to initialize MCP tools (async): {e}")
 
         return []
+
+    async def _bootstrap_mcp_tools_async(self) -> list[Tool]:
+        """Discover descriptors without retaining an SDK session or transport."""
+        if self._mcp_runtime_factory is None:
+            return []
+        async with self._mcp_runtime_factory.open_scope() as scope:
+            return list(await scope.discover_tools())
 
     def _structured_tool_description(self, tool: Tool) -> str:
         """Return the description exposed to structured tool-calling models."""
@@ -985,18 +1006,35 @@ class Agent:
             user_id=self._user_id,
             run_id=run_id,
         ):
-            return await self._run_async_inner(
-                message=message,
-                history=history,
-                context=context,
-                state=state,
-                config=config,
-                parent_agent_state=parent_agent_state,
-                custom_llm_client_provider=custom_llm_client_provider,
-                run_id=run_id,
-                variables=variables,
-                trace_id=trace_id,
-            )
+
+            async def run_inner() -> str | tuple[str, dict[str, Any]]:
+                return await self._run_async_inner(
+                    message=message,
+                    history=history,
+                    context=context,
+                    state=state,
+                    config=config,
+                    parent_agent_state=parent_agent_state,
+                    custom_llm_client_provider=custom_llm_client_provider,
+                    run_id=run_id,
+                    variables=variables,
+                    trace_id=trace_id,
+                )
+
+            if self._mcp_runtime_factory is None:
+                return await run_inner()
+
+            # RFC-0029: SDK clients and transports are owned by this run and
+            # therefore close before a sync entry point can close its loop.
+            self._mcp_run_complete.clear()
+            try:
+                async with self._mcp_runtime_factory.open_scope() as mcp_scope:
+                    mcp_tools = await mcp_scope.discover_tools()
+                    self._tool_registry.replace_source("mcp", mcp_tools)
+                    self.executor.update_structured_tools(self._build_tool_call_payload())
+                    return await run_inner()
+            finally:
+                self._mcp_run_complete.set()
 
     async def _run_async_inner(
         self,
@@ -1684,7 +1722,6 @@ class Agent:
         - deny → 合成 denial ToolResult
         处理完毕后清除 pending_tool_calls。
         """
-        from nexau.archs.main_sub.framework_context import FrameworkContext
         from nexau.core.messages import ToolResultBlock, coerce_tool_result_content
 
         for tool_call_id, entry in pending.items():
@@ -1863,6 +1900,18 @@ class Agent:
             StopResult 包含中断时的消息快照和停止原因
         """
         return await self._interrupt(force=force, timeout=timeout)
+
+    async def aclose(self) -> None:
+        """Idempotently close asynchronous Agent resources.
+
+        An MCP scope is always closed by its owning run task.  If a run is in
+        progress, request a graceful stop and then wait until the SDK contexts
+        have exited before returning to the host.
+        """
+        if self.executor.is_executing:
+            await self.stop(force=False)
+        await self._mcp_run_complete.wait()
+        await self._close_async_llm_client()
 
     async def _close_async_llm_client(self) -> None:
         """Close the async LLM client to prevent httpx.__del__ crashes.

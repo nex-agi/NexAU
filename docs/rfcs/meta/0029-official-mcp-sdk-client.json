@@ -1,0 +1,68 @@
+{
+  "rfc": "0029",
+  "title": "基于官方 Python SDK 的 MCP Client 与 OAuth",
+  "status": "implemented",
+  "priority": "P0",
+  "tags": [
+    "architecture",
+    "security",
+    "networking",
+    "api"
+  ],
+  "affects": "MCP client, Agent lifecycle, tool registry, authentication, plugins, transports, CLI, tests and documentation",
+  "created": "2026-08-12",
+  "updated": "2026-08-12",
+  "requires": [],
+  "related": [
+    "0005",
+    "0017",
+    "0024"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "SDK v2 与配置契约",
+      "depends_on": [],
+      "status": "implemented",
+      "ref": null
+    },
+    {
+      "id": "T2",
+      "title": "官方 Runtime 与 Agent 生命周期",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "implemented",
+      "ref": null
+    },
+    {
+      "id": "T3",
+      "title": "MCP 工具、分页和结果适配",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "implemented",
+      "ref": null
+    },
+    {
+      "id": "T4",
+      "title": "OAuth、secret 与宿主集成",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "implemented",
+      "ref": null
+    },
+    {
+      "id": "T5",
+      "title": "全矩阵验收、自研实现删除与文档迁移",
+      "depends_on": [
+        "T2",
+        "T3",
+        "T4"
+      ],
+      "status": "implemented",
+      "ref": null
+    }
+  ]
+}

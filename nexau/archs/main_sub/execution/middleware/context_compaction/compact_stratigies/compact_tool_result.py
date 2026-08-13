@@ -16,7 +16,7 @@
 
 import json
 import logging
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from nexau.core.messages import BlockType, Message, Role, ToolResultBlock, ToolUseBlock
 
@@ -30,9 +30,11 @@ def _truncate_large_strings(obj: Any, max_length: int = 100) -> Any:
             return obj[:50] + f"...<compacted {len(obj)} chars>..." + obj[-50:]
         return obj
     elif isinstance(obj, dict):
-        return {k: _truncate_large_strings(v, max_length) for k, v in obj.items()}
+        mapping = cast(dict[str, Any], obj)
+        return {key: _truncate_large_strings(value, max_length) for key, value in mapping.items()}
     elif isinstance(obj, list):
-        return [_truncate_large_strings(v, max_length) for v in obj]
+        items = cast(list[Any], obj)
+        return [_truncate_large_strings(item, max_length) for item in items]
     return obj
 
 
@@ -198,7 +200,7 @@ class ToolResultCompaction:
                     result.append(msg)
             elif msg.role == Role.ASSISTANT:
                 # Truncate ToolUseBlock payloads if their result was compacted
-                new_blocks: list[BlockType] = []
+                assistant_blocks: list[BlockType] = []
                 any_compacted = False
                 for block in msg.content:
                     if isinstance(block, ToolUseBlock) and block.id in compacted_tool_use_ids:
@@ -209,13 +211,15 @@ class ToolResultCompaction:
                                 parsed = json.loads(truncated_raw_input)
                                 truncated_raw_input = json.dumps(_truncate_large_strings(parsed), ensure_ascii=False)
                             except Exception:
-                                pass # fallback if parsing fails
-                        new_blocks.append(block.model_copy(update={"input": truncated_input, "raw_input": truncated_raw_input}))
+                                pass  # fallback if parsing fails
+                        assistant_blocks.append(
+                            block.model_copy(update={"input": truncated_input, "raw_input": truncated_raw_input}),
+                        )
                         any_compacted = True
                     else:
-                        new_blocks.append(block)
+                        assistant_blocks.append(block)
                 if any_compacted:
-                    result.append(msg.model_copy(update={"content": new_blocks}))
+                    result.append(msg.model_copy(update={"content": assistant_blocks}))
                 else:
                     result.append(msg)
             else:

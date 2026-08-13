@@ -79,8 +79,9 @@ You can easily extend an agent's capabilities by creating your own custom tools.
 
 ### extra_kwargs (preset parameters)
 - Use `Tool.from_yaml(..., extra_kwargs=...)` or a YAML `extra_kwargs` block to preset fixed arguments (e.g., `base_url`/`api_key`/`model`) so callers can omit them.
-- Call-time arguments with the same name override preset values. Reserved keys `agent_state` and `global_storage` are not allowed in `extra_kwargs`.
-- Extra fields are not blocked by schema validation and are passed to the tool function; if the function signature does not accept them, a `TypeError` will be raised. To reject unknown fields up front, add `additionalProperties: false` in the tool’s `input_schema`.
+- Preset values win over call-time arguments with the same name: `extra_kwargs` is a deployment-side setting (credentials, connection strings, tenant ids), so a caller — including the model — cannot override it. Conflicting call-time values are ignored and logged as a warning. Reserved keys `agent_state` and `global_storage` are not allowed in `extra_kwargs`.
+- Preset keys that the `input_schema` does not declare are exempt from schema validation and passed straight to the tool function; if the function signature does not accept them, a `TypeError` will be raised. Preset keys that *are* declared in `properties` keep being validated as usual.
+- To reject unknown fields sent by the caller, add `additionalProperties: false` in the tool’s `input_schema` — it constrains caller-supplied fields only, never the framework-injected `extra_kwargs`.
 
 **Step 1: Define the Tool's Python Function**
 

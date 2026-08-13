@@ -286,7 +286,25 @@ class PluginAdapter:
     def _expand_mcp_servers(self, manifest: PluginManifest, plugin_dir: Path, context: dict[str, Any]) -> list[dict[str, Any]]:
         expanded: list[dict[str, Any]] = []
         for server_model in manifest.contributes.mcp_servers:
-            server = self._render_value(server_model.model_dump(mode="python", by_alias=True, exclude_none=True), context)
+            raw_server = server_model.model_dump(mode="python", by_alias=True, exclude_none=True)
+            # RFC-0029: plugins may declare an environment-backed secret
+            # reference, but ordinary plugin config interpolation must never
+            # become an OAuth token or client secret.
+            raw_auth = raw_server.get("auth")
+            raw_auth_dict = cast(dict[str, Any], raw_auth) if isinstance(raw_auth, dict) else None
+            secret_values = (
+                (
+                    raw_auth_dict.get("token"),
+                    raw_auth_dict.get("client_secret"),
+                )
+                if raw_auth_dict is not None
+                else ()
+            )
+            if any("${config." in repr(value) for value in secret_values):
+                raise PluginConfigError(
+                    f"Plugin '{manifest.name}' MCP auth secrets must use a static secret reference; config interpolation is not allowed",
+                )
+            server = self._render_value(raw_server, context)
             name = server["name"]
             source_id = self._source_id(f"plugin:{manifest.name}", "mcp_server", name)
             self._claim_name("mcp_server", name, source_id)

@@ -529,6 +529,36 @@ class Tool:
         """
         return self._has_native_async_execute
 
+    def _merge_extra_kwargs(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Merge configured ``extra_kwargs`` over call-time params.
+
+        Issue #615: `extra_kwargs` 由部署方设定（凭证、连接串、租户 id 等），
+        优先级**高于**调用方（模型）传来的同名参数——模型不应有覆盖注入值的权力。
+        调用方传了同名键时按注入值执行，并记一条 warning 便于排查。
+        """
+        # 1. 记录被忽略的同名键（只记 key，不记 value：注入值多为凭证）
+        overridden = sorted(set(self.extra_kwargs) & set(params))
+        if overridden:
+            logger.warning(
+                "Tool '%s' ignored caller-supplied values for injected parameters: %s",
+                self.name,
+                overridden,
+            )
+
+        # 2. extra_kwargs 后置 → 注入值优先
+        return {**params, **self.extra_kwargs}
+
+    def _build_validation_params(self, filtered_params: dict[str, Any]) -> dict[str, Any]:
+        """Drop framework-injected keys the schema does not declare, for schema validation.
+
+        Issue #615: `extra_kwargs` 注入的键不是模型传的，把它们送进 schema 校验会
+        撞上 `additionalProperties: false`，让工具 100% 调用失败。这里只豁免
+        **schema 根本没声明**的注入键——已在 `properties` 里声明过的注入键继续参与
+        校验，因此 `required` / 类型 / `additionalProperties` 对模型侧参数的约束强度不变。
+        """
+        undeclared_injected = set(self.extra_kwargs) - set(self.input_schema.get("properties") or {})
+        return {k: v for k, v in filtered_params.items() if k not in _INJECTED_PARAM_KEYS and k not in undeclared_injected}
+
     def execute(self, **params: Any) -> dict[str, Any]:
         """Execute the tool with given parameters."""
 
@@ -545,7 +575,7 @@ class Tool:
                 raise ValueError(f"Tool '{self.name}' has no implementation")
 
         # RFC-0006: 参数注入 — ctx 优先，agent_state 向后兼容
-        merged_params = {**self.extra_kwargs, **params}
+        merged_params = self._merge_extra_kwargs(params)
         filtered_params = merged_params.copy()
 
         impl = self.implementation
@@ -569,8 +599,7 @@ class Tool:
                     filtered_params.pop("sandbox", None)
 
         # Validate parameters (excluding framework-injected params for schema validation)
-        validation_params = {k: v for k, v in filtered_params.items() if k not in _INJECTED_PARAM_KEYS}
-        self.validate_params(validation_params)
+        self.validate_params(self._build_validation_params(filtered_params))
 
         try:
             if impl is None:
@@ -657,7 +686,7 @@ class Tool:
                 raise ValueError(f"Tool '{self.name}' has no implementation")
 
         # RFC-0006: 参数注入 — ctx 优先，agent_state 向后兼容
-        merged_params = {**self.extra_kwargs, **params}
+        merged_params = self._merge_extra_kwargs(params)
         filtered_params = merged_params.copy()
 
         impl = self.implementation
@@ -681,8 +710,7 @@ class Tool:
                     filtered_params.pop("sandbox", None)
 
         # Validate parameters (excluding framework-injected params for schema validation)
-        validation_params = {k: v for k, v in filtered_params.items() if k not in _INJECTED_PARAM_KEYS}
-        self.validate_params(validation_params)
+        self.validate_params(self._build_validation_params(filtered_params))
 
         try:
             if impl is None:
@@ -731,6 +759,9 @@ class Tool:
     def validate_params(self, params: dict[str, Any]) -> None:
         """Validate parameters against schema.
 
+        Issue #615: 错误信息只列参数名、不列取值。此前回显 `params={...}` 全量取值，
+        会把注入的凭证写进日志 / trace，并作为工具结果回传给模型。
+
         Raises:
             ValueError: If parameters fail schema validation, with detailed error message.
         """
@@ -738,7 +769,7 @@ class Tool:
             jsonschema.validate(params, self.input_schema)
         except jsonschema.ValidationError as e:
             raise ValueError(
-                f"Invalid parameters for tool '{self.name}': {e.message}. params={params}",
+                f"Invalid parameters for tool '{self.name}': {e.message}. param_keys={sorted(params)}",
             ) from e
 
     def _validate_schema(self):

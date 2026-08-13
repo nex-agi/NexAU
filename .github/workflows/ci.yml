@@ -221,6 +221,8 @@ jobs:
           "tests/unit/test_builtin_tools/test_search_file_content.py"
           "tests/unit/test_builtin_tools/test_replace.py"
           "tests/unit/test_config.py"
+          "tests/integration/test_mcp_transports.py::test_stdio_discover_call_repeat_and_cleanup"
+          "tests/integration/test_mcp_agent_lifecycle.py::test_sync_agent_runs_twice_across_event_loops_and_cleans_stdio"
         )
         uv run pytest $targets --timeout=120 -v --tb=short
 

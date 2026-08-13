@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     from .archs.main_sub.config import AgentConfig
     from .archs.main_sub.plugin.manifest import Plugin
     from .archs.main_sub.skill import Skill
+    from .archs.tool.builtin.mcp_auth import MCPAuthContext, MCPAuthHost, MCPAuthorizationCodeSession
+    from .archs.tool.builtin.mcp_client import MCPRunScope, MCPRuntimeFactory, MCPServerConfig
     from .archs.tool.tool import Tool
     from .archs.tracer import BaseTracer, CompositeTracer, Span, SpanType, TraceContext
 
@@ -39,6 +41,13 @@ __all__ = [
     "AgentConfig",
     "Plugin",
     "Skill",
+    # Official-SDK MCP host/runtime boundary
+    "MCPAuthContext",
+    "MCPAuthorizationCodeSession",
+    "MCPAuthHost",
+    "MCPRuntimeFactory",
+    "MCPRunScope",
+    "MCPServerConfig",
     # Tracer components
     "BaseTracer",
     "CompositeTracer",
@@ -80,6 +89,30 @@ def __getattr__(name: str) -> object:
         from .archs.main_sub.skill import Skill
 
         return _cache_export(name, Skill)
+    if name == "MCPAuthContext":
+        from .archs.tool.builtin.mcp_auth import MCPAuthContext
+
+        return _cache_export(name, MCPAuthContext)
+    if name == "MCPAuthorizationCodeSession":
+        from .archs.tool.builtin.mcp_auth import MCPAuthorizationCodeSession
+
+        return _cache_export(name, MCPAuthorizationCodeSession)
+    if name == "MCPAuthHost":
+        from .archs.tool.builtin.mcp_auth import MCPAuthHost
+
+        return _cache_export(name, MCPAuthHost)
+    if name == "MCPRuntimeFactory":
+        from .archs.tool.builtin.mcp_client import MCPRuntimeFactory
+
+        return _cache_export(name, MCPRuntimeFactory)
+    if name == "MCPRunScope":
+        from .archs.tool.builtin.mcp_client import MCPRunScope
+
+        return _cache_export(name, MCPRunScope)
+    if name == "MCPServerConfig":
+        from .archs.tool.builtin.mcp_client import MCPServerConfig
+
+        return _cache_export(name, MCPServerConfig)
     if name == "BaseTracer":
         from .archs.tracer import BaseTracer
 

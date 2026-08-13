@@ -47,8 +47,29 @@
 | `SEARCH_TIMEOUT` | 否 | `30` | 单次请求超时秒数 |
 | `SEARCH_MAX_RETRIES` | 否 | `3` | **总**尝试次数(含首次)，下限 1 |
 
-**上表就是全部环境变量，每项只有唯一一个变量名**，密钥四家共用 `SEARCH_API_KEY`，
-没有按服务商区分的前缀变量。换服务商只需要改 `SEARCH_PROVIDER` + `SEARCH_API_KEY`。
+**上表就是全部搜索相关环境变量，每项只有唯一一个变量名**，密钥四家共用
+`SEARCH_API_KEY`，没有按服务商区分的前缀变量。换服务商只需要改 `SEARCH_PROVIDER`
++ `SEARCH_API_KEY`。
+
+# 出网代理(可选)
+
+| 变量 | 必填 | 默认 | 说明 |
+|------|------|------|------|
+| `NEXAU_HTTP_PROXY` | 否 | — | 显式正向代理地址，如 `http://gateway.internal:8444` |
+| `NEXAU_HTTP_PROXY_AUTH` | 否 | — | 代理认证凭据，原样作为 `Proxy-Authorization` 发送 |
+
+**不配置时行为完全不变**——httpx 默认 `trust_env=True`，照旧读标准的
+`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`。只有**代理需要自定义认证头**这一种场景
+才用得上这两个变量：标准环境变量只能把凭据写进 URL(basic auth)，带不了 `Bearer`
+这类 token，而受控出网网关普遍要求后者。
+
+⚠️ `NEXAU_HTTP_PROXY_AUTH` 的值发送在 **CONNECT 隧道请求头**上(HTTPS 目标一律走
+CONNECT)，不是业务请求头——网关校验的就是这一个。值要写完整、含认证方案前缀，
+例如 `Bearer eyJhbGci...`。
+
+⚠️ 这两个变量**刻意不带 `SEARCH_` 前缀**：代理是运行时级能力，`web_read` 等其它
+出网工具将来复用同一套配置，不该绑死在搜索命名空间里；同时也避开了
+`param_env_name()` 的 `SEARCH_*` 命名空间(有单测守着不许相撞)。
 
 `SEARCH_ENGINE` 的取值宽松解析，`google`、`google|bing`、`google,bing`、
 `["google","bing"]` 都认；它只是**默认值**，工具入参 `search_engine` 会覆盖它。
@@ -168,7 +189,11 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from .proxy import PROXY_AUTH_ENV, PROXY_URL_ENV, resolve_proxy
+
 logger = logging.getLogger(__name__)
+
+__all__ = ["PROXY_AUTH_ENV", "PROXY_URL_ENV", "resolve_proxy", "web_search"]
 
 
 def _host_of(url: str) -> str:
@@ -274,6 +299,9 @@ PROVIDER_ENV_KEYS = frozenset(
 # 布尔环境变量的真值写法(其余一律按 False)
 _TRUE_LITERALS = frozenset({"1", "true", "yes", "on", "y", "t"})
 _FALSE_LITERALS = frozenset({"0", "false", "no", "off", "n", "f"})
+
+# 出网代理定义在 `.proxy`：它是运行时级能力，网页抓取 / HTML 解析服务同样要用，
+# 不该由聚合搜索独占。这里 re-export 保持 `aggregated_search.resolve_proxy` 可用。
 
 
 def param_env_name(param: str) -> str:
@@ -554,9 +582,13 @@ class SearchProviderBase(ABC):
             pool=self.timeout,
         )
 
+        # 每次 search 重新解析：允许运行期改配置(轮换凭据)后下一次调用即生效，
+        # 不需要重建 provider 实例。未配置时为 None，httpx 行为与改动前一致。
+        proxy = resolve_proxy()
+
         for attempt in range(self.max_retries):
             try:
-                with httpx.Client(timeout=timeout) as client:
+                with httpx.Client(timeout=timeout, proxy=proxy) as client:
                     results = self._do_search(client, query, options)
                 # 统一补引擎标识并按 max_content_chars 截断
                 for item in results:

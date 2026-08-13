@@ -12,1449 +12,469 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""MCP client implementation for NexAU framework."""
+"""Run-scoped MCP integration backed exclusively by the official SDK.
+
+RFC-0029: NexAU owns configuration, permissions and result adaptation.  The
+official MCP Python SDK owns protocol negotiation, JSON-RPC, transports,
+subprocesses and their cleanup.
+"""
+
+from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
-import subprocess
-from asyncio.subprocess import Process
-from collections.abc import Callable, Sequence
-from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+import warnings
+from collections.abc import Mapping, Sequence
+from contextlib import AsyncExitStack
+from dataclasses import dataclass, field
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Literal, cast
 
-from mcp import ClientSession, StdioServerParameters
+from mcp.client import Client
+from mcp.client.sse import sse_client
+from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.client.streamable_http import streamable_http_client
+from mcp.types import CallToolResult
 from mcp.types import Tool as MCPToolType
+from pydantic import BaseModel
 
 from nexau.archs.permissions.helpers import check_mcp_permission
-from nexau.archs.platform.shell_backend import windows_no_window_creationflags
 
 from ..tool import Tool
+from .mcp_auth import MCPAuthContext, MCPAuthHost, build_http_auth, build_http_client, redact_sensitive_data
+from .mcp_result import adapt_call_tool_result, format_mcp_tool_output_for_llm, list_all_tools
 
 if TYPE_CHECKING:
-    import httpx
-
     from nexau.archs.main_sub.framework_context import FrameworkContext
 
 logger = logging.getLogger(__name__)
-JSONDict = dict[str, Any]
 
 
-async def _create_stdio_subprocess(
-    command: str,
-    args: Sequence[str],
-    env: dict[str, str],
-) -> Process:
-    creationflags = windows_no_window_creationflags()
-    if creationflags:
-        return await asyncio.create_subprocess_exec(
-            command,
-            *args,
-            limit=1024 * 128,
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=creationflags,
-        )
-    return await asyncio.create_subprocess_exec(
-        command,
-        *args,
-        limit=1024 * 128,
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-
-class _HTTPSessionParams(TypedDict):
-    """Stored parameters needed to recreate an HTTP MCP session."""
-
-    config: "MCPServerConfig"
-    headers: dict[str, str]
-    timeout: float
-
-
-STREAMABLE_HTTP_ACCEPT = "application/json, text/event-stream"
-SSE_ACCEPT = "text/event-stream"
-DEFAULT_CONTENT_TYPE = "application/json"
-
-
-class HTTPMCPSession:
-    """HTTP MCP session that handles MCP streamable HTTP with session management."""
-
-    def __init__(
-        self,
-        config: "MCPServerConfig",
-        headers: dict[str, str],
-        timeout: float,
-    ):
-        self.config = config
-        self.headers = headers
-        self.timeout = timeout
-        self._request_id = 0
-        self._session_id: str | None = None
-        self._initialized = False
-        self._transport: str | None = None
-        self._pending_requests: dict[str, asyncio.Future[JSONDict]] = {}
-        self._sse_client: httpx.AsyncClient | None = None
-        self._sse_stream_cm: AbstractAsyncContextManager[httpx.Response] | None = None
-        self._sse_stream: httpx.Response | None = None
-        self._sse_listener_task: asyncio.Task[None] | None = None
-        self._sse_endpoint_url: str | None = None
-        self._sse_endpoint_headers: dict[str, str] = {}
-        self._sse_endpoint_ready: asyncio.Event | None = None
-
-    async def initialize(self) -> None:
-        """Public initializer for MCP sessions."""
-        await self._initialize_session()
-
-    def _get_next_id(self) -> int:
-        """Get the next request ID."""
-        self._request_id += 1
-        return self._request_id
-
-    async def _initialize_session(self) -> None:
-        """Initialize the MCP session, with fallback to HTTP+SSE transport."""
-        if self._initialized:
-            return
-
-        import httpx
-
-        try:
-            await self._initialize_streamable_http()
-        except httpx.HTTPStatusError as exc:
-            status_code = exc.response.status_code
-            if 400 <= status_code < 500:
-                logger.info(
-                    "Streamable HTTP transport not available (status %s); attempting HTTP+SSE fallback.",
-                    status_code,
-                )
-                await self._initialize_http_sse()
-            else:
-                raise
-
-    def _build_initialize_request(self) -> dict[str, Any]:
-        """Construct the MCP initialize request payload."""
-        return {
-            "jsonrpc": "2.0",
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "roots": {"listChanged": True},
-                    "sampling": {},
-                },
-                "clientInfo": {
-                    "name": "nexau-mcp-client",
-                    "version": "1.0.0",
-                },
-            },
-            "id": self._get_next_id(),
-        }
-
-    def _validate_initialize_payload(
-        self,
-        payload: dict[str, Any] | None,
-        raw_text: str | None = None,
-    ) -> None:
-        """Ensure the initialize response conforms to expectations."""
-        if not payload:
-            raise Exception(
-                f"No valid response data found in initialization response: {raw_text}",
-            )
-
-        if "error" in payload:
-            raise Exception(f"MCP initialization error: {payload['error']}")
-
-        if "result" not in payload:
-            raw_text = raw_text or str(payload)
-            raise Exception(
-                f"Unexpected initialization response format - missing 'result' field: {raw_text}",
-            )
-
-        logger.debug(
-            "Initialization successful, server info: %s",
-            payload.get("result", {}).get("serverInfo", "Unknown"),
-        )
-
-    def _parse_streamable_http_payload(
-        self,
-        response_text: str,
-        expected_id: int | None = None,
-    ) -> dict[str, Any]:
-        """Parse responses that may include SSE-formatted messages."""
-        import json
-
-        if not response_text:
-            raise Exception("Empty response from MCP server")
-
-        if "event:" in response_text and "data:" in response_text:
-            lines = response_text.strip().split("\n")
-            messages: list[dict[str, Any]] = []
-            for line in lines:
-                if line.startswith("data: "):
-                    data_segment = line[6:].strip()
-                    if not data_segment:
-                        continue
-                    try:
-                        messages.append(json.loads(data_segment))
-                    except json.JSONDecodeError:
-                        logger.debug(
-                            "Failed to parse SSE line as JSON: %s...",
-                            data_segment[:100],
-                        )
-                        continue
-
-            if not messages:
-                raise Exception(f"Could not parse SSE response: {response_text}")
-
-            if expected_id is None:
-                return messages[-1]
-
-            for message in messages:
-                if str(message.get("id")) == str(expected_id):
-                    logger.debug(
-                        "Found matching response for request ID %s",
-                        expected_id,
-                    )
-                    return message
-
-            logger.warning(
-                "No matching response found for request ID %s in SSE stream",
-                expected_id,
-            )
-            for message in reversed(messages):
-                if "result" in message or "error" in message:
-                    return message
-            return messages[-1]
-
-        try:
-            return json.loads(response_text)
-        except Exception as exc:  # pragma: no cover - re-raise with context
-            raise Exception(f"Could not parse response: {response_text}") from exc
-
-    async def _initialize_streamable_http(self) -> None:
-        """Attempt MCP initialization using Streamable HTTP transport."""
-        import httpx
-
-        if not self.config.url:
-            raise ValueError("Server URL is required")
-
-        init_request = self._build_initialize_request()
-
-        request_headers = self.headers.copy()
-        request_headers.setdefault("Accept", STREAMABLE_HTTP_ACCEPT)
-        request_headers.setdefault("Content-Type", DEFAULT_CONTENT_TYPE)
-
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.config.url,
-                json=init_request,
-                headers=request_headers,
-            )
-            response.raise_for_status()
-
-        session_id = response.headers.get("mcp-session-id")
-        if session_id:
-            self._session_id = session_id
-            logger.debug("Captured session ID: %s", session_id)
-
-        response_text = response.text
-        logger.debug("Initialize response: %s", response_text)
-
-        parsed = self._parse_streamable_http_payload(
-            response_text,
-            expected_id=init_request.get("id"),
-        )
-        self._validate_initialize_payload(parsed, response_text)
-
-        self._transport = "streamable_http"
-        await self._send_initialized_notification()
-        self._initialized = True
-        logger.info(
-            "MCP HTTP session initialized successfully with session ID: %s",
-            self._session_id,
-        )
-
-    async def _initialize_http_sse(self) -> None:
-        """Fallback initialization for servers speaking HTTP+SSE transport."""
-        import httpx
-
-        if not self.config.url:
-            raise ValueError("Server URL is required")
-
-        timeout = httpx.Timeout(
-            timeout=self.timeout,
-            connect=self.timeout,
-            read=None,
-            write=self.timeout,
-        )
-
-        base_headers = self.headers.copy()
-        base_headers.setdefault("Accept", SSE_ACCEPT)
-
-        self._pending_requests = {}
-        self._sse_endpoint_headers = {}
-        self._sse_endpoint_ready = asyncio.Event()
-
-        self._sse_client = httpx.AsyncClient(timeout=timeout)
-        self._sse_stream_cm = self._sse_client.stream(
-            "GET",
-            self.config.url,
-            headers=base_headers,
-        )
-        self._sse_stream = await self._sse_stream_cm.__aenter__()
-        self._sse_stream.raise_for_status()
-
-        self._sse_listener_task = asyncio.create_task(self._consume_sse_stream())
-
-        try:
-            await asyncio.wait_for(self._sse_endpoint_ready.wait(), timeout=self.timeout)
-        except TimeoutError as exc:
-            raise TimeoutError("Timed out waiting for SSE endpoint event") from exc
-
-        if not self._sse_endpoint_url:
-            raise RuntimeError("Did not receive endpoint information from SSE stream")
-
-        init_request = self._build_initialize_request()
-        init_response = await self._send_json_rpc_via_sse(init_request, expect_response=True)
-        self._validate_initialize_payload(init_response)
-
-        self._transport = "http_sse"
-        await self._send_initialized_notification()
-        self._initialized = True
-        logger.info("MCP HTTP session initialized successfully using HTTP+SSE transport")
-
-    async def _send_initialized_notification(self) -> None:
-        """Send the initialized notification as per MCP protocol."""
-        import httpx
-
-        notification_data = {
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized",
-        }
-
-        if self._transport == "http_sse":
-            try:
-                await self._send_json_rpc_via_sse(notification_data, expect_response=False)
-                logger.debug("Initialized notification sent successfully via SSE transport")
-            except Exception as exc:
-                logger.warning("Initialized notification via SSE transport failed: %s", exc)
-            return
-
-        request_headers = self.headers.copy()
-        request_headers.setdefault("Content-Type", DEFAULT_CONTENT_TYPE)
-        if self._session_id:
-            request_headers["mcp-session-id"] = self._session_id
-
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            if not self.config.url:
-                raise ValueError("Server URL is required")
-            response = await client.post(
-                self.config.url,
-                json=notification_data,
-                headers=request_headers,
-            )
-            if response.status_code >= 400:
-                logger.warning(
-                    "Initialized notification returned status %s",
-                    response.status_code,
-                )
-            else:
-                logger.debug("Initialized notification sent successfully")
-
-    async def _make_request(
-        self,
-        method: str,
-        params: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Make a direct HTTP request to the MCP server."""
-        if not self._initialized:
-            await self._initialize_session()
-
-        request_data: dict[str, Any] = {
-            "jsonrpc": "2.0",
-            "method": method,
-            "id": self._get_next_id(),
-        }
-
-        if params:
-            request_data["params"] = params
-
-        if self._transport == "http_sse":
-            return await self._send_json_rpc_via_sse(request_data, expect_response=True)
-
-        return await self._make_streamable_http_request(request_data)
-
-    async def _make_streamable_http_request(self, request_data: dict[str, Any]) -> dict[str, Any]:
-        """Send a JSON-RPC request over Streamable HTTP."""
-        import httpx
-
-        if not self.config.url:
-            raise ValueError("Server URL is required")
-
-        request_headers = self.headers.copy()
-        request_headers.setdefault("Accept", STREAMABLE_HTTP_ACCEPT)
-        request_headers.setdefault("Content-Type", DEFAULT_CONTENT_TYPE)
-        if self._session_id:
-            request_headers["mcp-session-id"] = self._session_id
-            logger.debug("Including session ID in request: %s", self._session_id)
-
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.config.url,
-                json=request_data,
-                headers=request_headers,
-            )
-            response.raise_for_status()
-
-        response_text = response.text
-        return self._parse_streamable_http_payload(
-            response_text,
-            expected_id=request_data.get("id"),
-        )
-
-    async def _consume_sse_stream(self) -> None:
-        """Continuously consume SSE messages from the fallback transport."""
-        if not self._sse_stream:
-            return
-
-        event_type = "message"
-        data_lines: list[str] = []
-
-        try:
-            async for raw_line in self._sse_stream.aiter_lines():
-                line = raw_line.rstrip("\r")
-
-                if line == "":
-                    if data_lines:
-                        await self._handle_sse_event(event_type, data_lines)
-                    event_type = "message"
-                    data_lines = []
-                    continue
-
-                if line.startswith(":"):
-                    continue
-
-                if line.startswith("event:"):
-                    event_type = line[6:].strip() or "message"
-                elif line.startswith("data:"):
-                    data_lines.append(line[5:].lstrip())
-
-            if data_lines:
-                await self._handle_sse_event(event_type, data_lines)
-        except Exception as exc:  # pragma: no cover - background task
-            logger.error("SSE listener terminated with error: %s", exc, exc_info=True)
-            self._fail_pending_requests(exc)
-        finally:
-            if self._sse_endpoint_ready and not self._sse_endpoint_ready.is_set():
-                self._sse_endpoint_ready.set()
-
-            if self._sse_stream_cm is not None:
-                await self._sse_stream_cm.__aexit__(None, None, None)
-
-            self._sse_stream_cm = None
-            self._sse_stream = None
-
-    async def _handle_sse_event(self, event_type: str, data_lines: list[str]) -> None:
-        """Process individual SSE events."""
-        import json
-        from urllib.parse import urljoin
-
-        if not data_lines:
-            return
-
-        payload_text = "\n".join(data_lines).strip()
-
-        if event_type == "endpoint":
-            endpoint: str | None = None
-            headers_payload: dict[str, Any] | None = None
-
-            if payload_text:
-                try:
-                    payload: Any = json.loads(payload_text)
-                except json.JSONDecodeError:
-                    endpoint = payload_text
-                else:
-                    if isinstance(payload, dict):
-                        payload_dict: dict[str, Any] = cast(dict[str, Any], payload)
-                        endpoint_candidate: Any = payload_dict.get("endpoint") or payload_dict.get("url")
-                        endpoint = str(endpoint_candidate) if endpoint_candidate is not None else None
-                        headers_payload = cast(dict[str, Any] | None, payload_dict.get("headers"))
-                    elif isinstance(payload, str):
-                        endpoint = payload
-
-            if endpoint:
-                base_url = self.config.url or ""
-                self._sse_endpoint_url = urljoin(base_url, endpoint)
-                logger.debug("SSE endpoint resolved to %s", self._sse_endpoint_url)
-            else:
-                logger.error("Endpoint event missing usable endpoint information: %s", payload_text or "<empty>")
-
-            combined_headers = self.headers.copy()
-            if isinstance(headers_payload, dict):
-                for key, value in headers_payload.items():
-                    combined_headers[str(key)] = str(value)
-            combined_headers.setdefault("Content-Type", DEFAULT_CONTENT_TYPE)
-            self._sse_endpoint_headers = combined_headers
-
-            if self._sse_endpoint_ready and not self._sse_endpoint_ready.is_set():
-                self._sse_endpoint_ready.set()
-            return
-
-        try:
-            message_obj: Any = json.loads(payload_text)
-        except json.JSONDecodeError:
-            logger.debug("Failed to parse SSE data as JSON: %s", payload_text[:200])
-            return
-
-        if not isinstance(message_obj, dict):
-            return
-
-        message = cast(dict[str, Any], message_obj)
-        request_id = cast(str | int | None, message.get("id"))
-        if request_id is not None:
-            key = str(request_id)
-            future = self._pending_requests.pop(key, None)
-            if future and not future.done():
-                future.set_result(message)
-            else:
-                logger.debug("Received SSE response for unknown request ID %s: %s", key, message)
-        else:
-            logger.debug("Received SSE notification: %s", message)
-
-    def _fail_pending_requests(self, exc: Exception) -> None:
-        """Fail any pending SSE requests if the stream is closed."""
-        if not self._pending_requests:
-            return
-
-        for key, future in list(self._pending_requests.items()):
-            if future and not future.done():
-                future.set_exception(exc)
-            self._pending_requests.pop(key, None)
-
-    async def _send_json_rpc_via_sse(
-        self,
-        payload: dict[str, Any],
-        *,
-        expect_response: bool,
-    ) -> dict[str, Any]:
-        """Send JSON-RPC payload over HTTP+SSE transport."""
-
-        if not self._sse_client or not self._sse_endpoint_url:
-            raise RuntimeError("SSE transport is not initialized")
-
-        request_headers = self._sse_endpoint_headers.copy()
-        if self._session_id:
-            request_headers.setdefault("mcp-session-id", self._session_id)
-
-        request_id = payload.get("id")
-        future: asyncio.Future[JSONDict] | None = None
-        key: str | None = None
-
-        if expect_response:
-            if request_id is None:
-                raise ValueError("Expected request ID for response tracking")
-            key = str(request_id)
-            loop = asyncio.get_running_loop()
-            future = loop.create_future()
-            self._pending_requests[key] = future
-
-        try:
-            response = await self._sse_client.post(
-                self._sse_endpoint_url,
-                json=payload,
-                headers=request_headers,
-            )
-            response.raise_for_status()
-        except Exception as exc:
-            if key is not None:
-                pending = self._pending_requests.pop(key, None)
-                if pending and not pending.done():
-                    pending.set_exception(exc)
-            raise
-
-        if not expect_response:
-            return {}
-
-        assert future is not None  # for type checkers
-
-        try:
-            result = await asyncio.wait_for(future, timeout=self.timeout)
-            return result
-        except TimeoutError as exc:
-            if key is not None:
-                pending = self._pending_requests.pop(key, None)
-                if pending and not pending.done():
-                    pending.set_exception(exc)
-            raise TimeoutError(
-                f"SSE response timed out for request {request_id}",
-            ) from exc
-
-    async def list_tools(self):
-        """List tools by making a direct HTTP request."""
-        # Ensure session is initialized
-        if not self._initialized:
-            await self._initialize_session()
-
-        response = await self._make_request("tools/list")
-        logger.debug(f"Tools list response: {response}")
-
-        if "error" in response:
-            raise Exception(f"MCP error: {response['error']}")
-
-        # Convert the response to match the expected format
-        tools_data = response.get("result", {}).get("tools", [])
-        logger.debug(f"Extracted tools data: {tools_data}")
-
-        # Create a simple object structure that matches what MCPTool expects
-        class SimpleToolList:
-            def __init__(self, tools_data: Sequence[dict[str, Any]]) -> None:
-                self.tools = [SimpleTool(tool_data) for tool_data in tools_data]
-
-        class SimpleTool:
-            def __init__(self, tool_data: dict[str, Any]) -> None:
-                self.name = tool_data["name"]
-                self.description = tool_data.get("description", "")
-                self.inputSchema = tool_data.get("inputSchema", {})
-
-        result = SimpleToolList(tools_data)
-        logger.debug(f"Created tool list with {len(result.tools)} tools")
-        return result
-
-    async def call_tool(self, tool_name: str, arguments: dict[str, Any]):
-        """Call a tool by making a direct HTTP request."""
-        # Ensure session is initialized
-        if not self._initialized:
-            await self._initialize_session()
-
-        params: JSONDict = {
-            "name": tool_name,
-            "arguments": arguments,
-        }
-
-        response = await self._make_request("tools/call", params)
-
-        if "error" in response:
-            raise Exception(f"MCP error: {response['error']}")
-
-        # Create a simple result object that matches what MCPTool expects
-        class SimpleResult:
-            def __init__(self, result_data: dict[str, Any]) -> None:
-                self.content = result_data.get("content", [])
-
-        return SimpleResult(response.get("result", {}))
+def _sanitized_error(error: Exception) -> RuntimeError:
+    """Detach transport exceptions from potentially credential-bearing text."""
+    return RuntimeError(str(redact_sensitive_data(str(error))))
 
 
 @dataclass
 class MCPServerConfig:
-    """Configuration for an MCP server."""
+    """Compatibility value object for programmatic MCP configuration.
+
+    Agent YAML is validated by the discriminated Pydantic models in
+    ``main_sub.config.schema``.  This class remains callable for existing
+    Python integrations and is normalized to the same runtime contract.
+    """
 
     name: str
-    type: str = "stdio"  # "stdio" or "http"
-    # For stdio servers
+    type: str = "stdio"
     command: str | None = None
-    args: list[str] | None = None
-    env: dict[str, str] | None = None
-    # For HTTP servers
-    url: str | None = None
-    headers: dict[str, str] | None = None
+    args: list[str] | None = field(default=None, repr=False)
+    env: dict[str, str] | None = field(default=None, repr=False)
+    url: str | None = field(default=None, repr=False)
+    headers: dict[str, str] | None = field(default=None, repr=False)
     timeout: float | None = 30
-    # disable parallel
     disable_parallel: bool = False
     source_id: str | None = None
-    # RFC-0019: server 级默认权限（None = auto-allow，向后兼容）
     permissions: dict[str, list[str]] | None = None
-    # RFC-0019: per-tool 权限覆盖（key=原始工具名，None 值 = auto-allow）
     tool_permissions: dict[str, dict[str, list[str]] | None] | None = None
+    auth: object | None = field(default=None, repr=False)
+
+
+def _config_mapping(value: object) -> Mapping[str, Any]:
+    if isinstance(value, BaseModel):
+        return cast(Mapping[str, Any], value.model_dump(mode="python", exclude_none=True))
+    if isinstance(value, Mapping):
+        return cast(Mapping[str, Any], value)
+    if isinstance(value, MCPServerConfig):
+        return vars(value)
+    raise TypeError(f"MCP server configuration must be a mapping or model, got {type(value).__name__}")
+
+
+def _normalize_server_config(value: object) -> MCPServerConfig:
+    if isinstance(value, MCPServerConfig):
+        return value
+    data = _config_mapping(value)
+    name = data.get("name")
+    if not isinstance(name, str) or not name:
+        raise ValueError("MCP server configuration requires a non-empty name")
+    return MCPServerConfig(
+        name=name,
+        type=str(data.get("type") or "stdio"),
+        command=str(data["command"]) if data.get("command") is not None else None,
+        args=[str(item) for item in cast(Sequence[object], data.get("args") or [])] or None,
+        env={str(key): str(item) for key, item in cast(Mapping[object, object], data.get("env") or {}).items()} or None,
+        url=str(data["url"]) if data.get("url") is not None else None,
+        headers={str(key): str(item) for key, item in cast(Mapping[object, object], data.get("headers") or {}).items()} or None,
+        timeout=float(data["timeout"]) if data.get("timeout") is not None else None,
+        disable_parallel=bool(data.get("disable_parallel", False)),
+        source_id=str(data["source_id"]) if data.get("source_id") is not None else None,
+        permissions=cast(dict[str, list[str]] | None, data.get("permissions")),
+        tool_permissions=cast(dict[str, dict[str, list[str]] | None] | None, data.get("tool_permissions")),
+        auth=data.get("auth"),
+    )
+
+
+class MCPRuntimeFactory:
+    """Loop-agnostic factory for per-run MCP connection scopes."""
+
+    def __init__(
+        self,
+        server_configs: Sequence[object],
+        *,
+        auth_host: MCPAuthHost | None = None,
+        auth_context: MCPAuthContext | None = None,
+    ) -> None:
+        configs = [_normalize_server_config(config) for config in server_configs]
+        names = [config.name for config in configs]
+        if len(names) != len(set(names)):
+            raise ValueError("MCP server names must be unique within a runtime factory")
+        self.server_configs = tuple(configs)
+        # RFC-0029: retain one host so its TokenStorage survives across run scopes.
+        self.auth_host = auth_host or MCPAuthHost()
+        self.auth_context = auth_context
+
+    def open_scope(self) -> MCPRunScope:
+        """Create a fresh scope; no SDK session is retained on this factory."""
+        return MCPRunScope(self)
+
+    def auth_context_for(self, config: MCPServerConfig) -> MCPAuthContext:
+        base = self.auth_context
+        return MCPAuthContext(
+            identity=base.identity if base is not None else self.auth_host.identity,
+            server_name=config.name,
+            source_id=config.source_id,
+        )
+
+
+_ACTIVE_SCOPE: contextvars.ContextVar[MCPRunScope | None] = contextvars.ContextVar(
+    "nexau_active_mcp_scope",
+    default=None,
+)
+
+
+class MCPRunScope:
+    """Own official SDK clients and transports for exactly one Agent run.
+
+    Every SDK context is entered, used, and exited by the task that owns this
+    scope.  Server failures are isolated; successful servers remain usable.
+    """
+
+    def __init__(self, factory: MCPRuntimeFactory) -> None:
+        self.factory = factory
+        self._stack: AsyncExitStack | None = None
+        self._clients: dict[str, Client] = {}
+        self._tools: list[MCPTool] = []
+        self._failures: dict[str, Exception] = {}
+        self._active_token: contextvars.Token[MCPRunScope | None] | None = None
+        self._owner_task: asyncio.Task[Any] | None = None
+        self._owner_loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def failures(self) -> Mapping[str, Exception]:
+        return dict(self._failures)
+
+    async def __aenter__(self) -> MCPRunScope:
+        if self._stack is not None:
+            raise RuntimeError("MCPRunScope cannot be entered more than once")
+        self._owner_task = asyncio.current_task()
+        self._owner_loop = asyncio.get_running_loop()
+        self._stack = AsyncExitStack()
+        await self._stack.__aenter__()
+        self._active_token = _ACTIVE_SCOPE.set(self)
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        self._assert_owner()
+        token, self._active_token = self._active_token, None
+        if token is not None:
+            _ACTIVE_SCOPE.reset(token)
+        stack, self._stack = self._stack, None
+        self._clients.clear()
+        self._tools.clear()
+        if stack is None:
+            return False
+        await stack.__aexit__(exc_type, exc, traceback)
+        return False
+
+    def _assert_owner(self) -> None:
+        self._assert_active()
+        if asyncio.current_task() is not self._owner_task:
+            raise RuntimeError("MCPRunScope lifecycle must be managed by the task that entered it")
+
+    def _assert_active(self) -> None:
+        if self._stack is None:
+            raise RuntimeError("MCPRunScope is not active")
+        if asyncio.get_running_loop() is not self._owner_loop:
+            raise RuntimeError("MCPRunScope cannot be used across event loops")
+
+    async def _connect_server(self, config: MCPServerConfig) -> Client:
+        self._assert_owner()
+        existing = self._clients.get(config.name)
+        if existing is not None:
+            return existing
+        if self._stack is None:  # narrowed by _assert_owner; keeps static analyzers honest
+            raise RuntimeError("MCPRunScope is not active")
+
+        timeout = config.timeout
+        if config.type == "stdio":
+            if not config.command:
+                raise ValueError(f"MCP stdio server '{config.name}' requires command")
+            params = StdioServerParameters(
+                command=config.command,
+                args=config.args or [],
+                # The SDK combines these values with its safe environment list.
+                env=config.env,
+            )
+            transport = stdio_client(params)
+            client = Client(
+                transport,
+                mode="auto",
+                read_timeout_seconds=timeout,
+            )
+        elif config.type == "http":
+            if not config.url:
+                raise ValueError(f"MCP HTTP server '{config.name}' requires url")
+            http_client = await self._stack.enter_async_context(
+                build_http_client(
+                    vars(config),
+                    auth_host=self.factory.auth_host,
+                    auth_context=self.factory.auth_context_for(config),
+                )
+            )
+            client = Client(
+                streamable_http_client(config.url, http_client=http_client),
+                mode="auto",
+                read_timeout_seconds=timeout,
+            )
+        elif config.type == "sse":
+            if not config.url:
+                raise ValueError(f"MCP SSE server '{config.name}' requires url")
+            auth = await self._stack.enter_async_context(
+                build_http_auth(
+                    vars(config),
+                    auth_host=self.factory.auth_host,
+                    auth_context=self.factory.auth_context_for(config),
+                )
+            )
+            request_timeout = timeout if timeout is not None else 5.0
+            read_timeout = timeout if timeout is not None else 300.0
+            client = Client(
+                sse_client(
+                    config.url,
+                    headers=config.headers,
+                    timeout=request_timeout,
+                    sse_read_timeout=read_timeout,
+                    auth=auth,
+                ),
+                mode="legacy",
+                read_timeout_seconds=timeout,
+            )
+        else:
+            raise ValueError(f"Unsupported MCP server type for '{config.name}': {config.type!r}")
+
+        entered = await self._stack.enter_async_context(client)
+        self._clients[config.name] = entered
+        return entered
+
+    async def discover_tools(self) -> list[MCPTool]:
+        """Connect and paginate tools/list for every server, fail-soft per server."""
+        self._assert_owner()
+        discovered: list[MCPTool] = []
+        self._failures.clear()
+        for config in self.factory.server_configs:
+            try:
+                client = await self._connect_server(config)
+                sdk_tools = await list_all_tools(client)
+                discovered.extend(MCPTool(tool, self.factory, config) for tool in sdk_tools)
+            except Exception as error:
+                safe_error = _sanitized_error(error)
+                self._failures[config.name] = safe_error
+                logger.warning(
+                    "MCP server '%s' (%s) unavailable for this run: %s",
+                    config.name,
+                    config.type,
+                    safe_error,
+                )
+        self._tools = discovered
+        return list(discovered)
+
+    def get_tools(self) -> list[MCPTool]:
+        self._assert_owner()
+        return list(self._tools)
+
+    async def call_tool(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: Mapping[str, Any] | None = None,
+    ) -> CallToolResult:
+        """Call a tool through the official high-level Client API."""
+        self._assert_active()
+        config = next((item for item in self.factory.server_configs if item.name == server_name), None)
+        if config is None:
+            raise KeyError(f"Unknown MCP server: {server_name}")
+        client = self._clients.get(server_name)
+        if client is None:
+            if asyncio.current_task() is not self._owner_task:
+                failure = self._failures.get(config.name)
+                raise RuntimeError(f"MCP server '{server_name}' is unavailable") from failure
+            try:
+                client = await self._connect_server(config)
+            except Exception as error:
+                safe_error = _sanitized_error(error)
+                self._failures[config.name] = safe_error
+                raise RuntimeError(f"MCP server '{server_name}' is unavailable: {safe_error}") from safe_error
+        try:
+            return await client.call_tool(
+                tool_name,
+                dict(arguments or {}),
+                read_timeout_seconds=config.timeout,
+            )
+        except Exception as error:
+            safe_error = _sanitized_error(error)
+            raise RuntimeError(f"MCP tool '{server_name}/{tool_name}' failed: {safe_error}") from safe_error
 
 
 class MCPTool(Tool):
-    """Wrapper for MCP tools to conform to NexAU Tool interface."""
+    """Stable NexAU descriptor that routes execution to the active run scope."""
 
     def __init__(
         self,
         mcp_tool: MCPToolType,
-        client_session: ClientSession | HTTPMCPSession,
-        server_config: MCPServerConfig | None = None,
-    ):
+        runtime_factory: MCPRuntimeFactory,
+        server_config: MCPServerConfig,
+    ) -> None:
         self.mcp_tool = mcp_tool
-        self.client_session = client_session
-        self.server_config = server_config  # Store config for recreating sessions
-        self._session_type = type(client_session).__name__
-        self._session_params: _HTTPSessionParams | MCPServerConfig | None = None
-        self._sync_executor: Callable[..., dict[str, Any]] = self._execute_sync
-
-        # Store session parameters for thread-safe recreation
-        if isinstance(client_session, HTTPMCPSession):
-            self._session_params = {
-                "config": client_session.config,
-                "headers": client_session.headers,
-                "timeout": float(client_session.timeout),
-            }
-        elif server_config is not None:
-            # For stdio sessions, store the server config for recreation
-            self._session_params = server_config
-
-        # CC 对齐: MCP 工具命名 mcp__{server}__{tool}
-        self._server_name = server_config.name if server_config else "unknown"
+        self.runtime_factory = runtime_factory
+        self.server_config = server_config
+        self._server_name = server_config.name
         self._raw_tool_name = mcp_tool.name
-        prefixed_name = f"mcp__{self._server_name}__{mcp_tool.name}"
 
-        # Convert MCP tool to NexAU tool format
+        resolved_permissions: dict[str, list[str]] | None = None
+        if server_config.tool_permissions is not None and self._raw_tool_name in server_config.tool_permissions:
+            resolved_permissions = server_config.tool_permissions[self._raw_tool_name]
+        elif server_config.permissions is not None:
+            resolved_permissions = server_config.permissions
+
         super().__init__(
-            name=prefixed_name,
+            name=f"mcp__{server_config.name}__{mcp_tool.name}",
             description=mcp_tool.description or "",
-            input_schema=mcp_tool.inputSchema,
-            implementation=self._sync_executor,
-            disable_parallel=server_config.disable_parallel if server_config else False,
-            source_id=server_config.source_id if server_config else None,
+            input_schema=dict(mcp_tool.input_schema),
+            implementation=self._execute_sync,
+            disable_parallel=server_config.disable_parallel,
+            formatter=format_mcp_tool_output_for_llm,
+            permissions=resolved_permissions,
+            source_id=server_config.source_id,
         )
-
-        # RFC-0019: 权限优先级 tool_permissions > server permissions > None (auto-allow)
-        resolved_perms: dict[str, list[str]] | None = None
-        if server_config is not None:
-            if server_config.tool_permissions is not None and self._raw_tool_name in server_config.tool_permissions:
-                resolved_perms = server_config.tool_permissions[self._raw_tool_name]
-            elif server_config.permissions is not None:
-                resolved_perms = server_config.permissions
-        self.permissions = resolved_perms
-
-        # MCPTool 拥有原生 async execute_async() 实现（直接 await MCP RPC），
-        # executor 应走 async 路径而非 to_thread → _execute_sync → asyncio.run。
         self._has_native_async_execute = True
 
-    async def _get_thread_local_session(self) -> Any:
-        """Get or create a thread-local session to avoid event loop conflicts."""
-        # For HTTPMCPSession, we can safely create a new instance in each thread
-        if self._session_type == "HTTPMCPSession" and isinstance(
-            self._session_params,
-            dict,
-        ):
-            params: _HTTPSessionParams = self._session_params
-            config = params["config"]
-            headers = params["headers"]
-            timeout = params["timeout"]
-            return HTTPMCPSession(config, headers, timeout)
+    @staticmethod
+    def _filtered_arguments(kwargs: Mapping[str, Any]) -> dict[str, Any]:
+        return dict(
+            sorted(
+                ((key, value) for key, value in kwargs.items() if key not in {"agent_state", "global_storage", "sandbox", "ctx"}),
+                key=lambda item: item[0],
+            )
+        )
 
-        # For stdio sessions, we need to create a new DirectMCPSession
-        elif self._session_type == "DirectMCPSession" and isinstance(
-            self._session_params,
-            MCPServerConfig,
-        ):
-            config = self._session_params
-            if config.type == "stdio" and config.command:
-                # Create a new DirectMCPSession
-                import os
-
-                merged_env = os.environ.copy()
-                if config.env:
-                    merged_env.update(config.env)
-
-                # Use the DirectMCPSession class definition from the original code
-                class DirectMCPSession:
-                    def __init__(
-                        self,
-                        command: str,
-                        args: list[str],
-                        env: dict[str, str],
-                    ) -> None:
-                        self.command = command
-                        self.args = args
-                        self.env = env
-                        self.process: Process | None = None
-                        self._request_id = 0
-
-                    async def initialize(self) -> "DirectMCPSession":
-                        self.process = await _create_stdio_subprocess(self.command, self.args, self.env)
-
-                        if not self.process.stdout or not self.process.stdin:
-                            raise RuntimeError("Failed to get process streams")
-
-                        # Initialize the MCP connection properly
-                        await self._initialize_connection()
-                        return self
-
-                    def _get_next_id(self) -> int:
-                        self._request_id += 1
-                        return self._request_id
-
-                    async def _initialize_connection(self) -> None:
-                        """Initialize the MCP connection with proper handshake."""
-                        import json
-
-                        # Send initialize request
-                        init_request: JSONDict = {
-                            "jsonrpc": "2.0",
-                            "id": self._get_next_id(),
-                            "method": "initialize",
-                            "params": {
-                                "protocolVersion": "2024-11-05",
-                                "capabilities": {
-                                    "roots": {
-                                        "listChanged": True,
-                                    },
-                                    "sampling": {},
-                                },
-                                "clientInfo": {
-                                    "name": "nexau-mcp-client",
-                                    "version": "1.0.0",
-                                },
-                            },
-                        }
-
-                        # Send the initialize request
-                        init_str = json.dumps(init_request) + "\n"
-                        process = self.process
-                        if process is None or process.stdin is None or process.stdout is None:
-                            raise RuntimeError("Process streams not initialized")
-                        stdin = process.stdin
-                        stdout = process.stdout
-                        stdin.write(init_str.encode())
-                        await stdin.drain()
-
-                        # Read the initialize response
-                        while True:
-                            try:
-                                response_line = await asyncio.wait_for(
-                                    stdout.readline(),
-                                    timeout=60,
-                                )
-                                response = json.loads(
-                                    response_line.decode().strip(),
-                                )
-                                break
-                            except TimeoutError:
-                                raise RuntimeError(
-                                    "MCP initialization timeout",
-                                )
-                            except json.JSONDecodeError:
-                                continue
-
-                        if "error" in response:
-                            raise Exception(
-                                f"MCP initialization error: {response['error']}",
-                            )
-
-                        # Send initialized notification
-                        initialized_notification: JSONDict = {
-                            "jsonrpc": "2.0",
-                            "method": "notifications/initialized",
-                            "params": {},
-                        }
-
-                        notif_str = json.dumps(initialized_notification) + "\n"
-                        stdin.write(notif_str.encode())
-                        await stdin.drain()
-
-                        # Test with tools/list to verify connection
-                        await self._make_request("tools/list")
-
-                    async def _make_request(
-                        self,
-                        method: str,
-                        params: dict[str, Any] | None = None,
-                    ) -> dict[str, Any]:
-                        if not self.process or not self.process.stdin or not self.process.stdout:
-                            raise RuntimeError("Process not initialized")
-
-                        import json
-
-                        request_id = self._get_next_id()
-                        request: JSONDict = {
-                            "jsonrpc": "2.0",
-                            "id": request_id,
-                            "method": method,
-                            "params": params or {},
-                        }
-
-                        # Send request
-                        request_str = json.dumps(request) + "\n"
-                        self.process.stdin.write(request_str.encode())
-                        await self.process.stdin.drain()
-
-                        # Read responses until we get the one matching our request ID
-                        max_attempts = 10  # Prevent infinite loops
-                        attempts = 0
-
-                        while attempts < max_attempts:
-                            response_line = await self.process.stdout.readline()
-
-                            if not response_line:
-                                raise Exception("MCP server closed connection")
-
-                            try:
-                                response = json.loads(
-                                    response_line.decode().strip(),
-                                )
-
-                                # Check if this is a response to our request
-                                if "id" in response and response["id"] == request_id:
-                                    if "error" in response:
-                                        raise Exception(
-                                            f"MCP error: {response['error']}",
-                                        )
-                                    return response
-                                # Ignore notifications and responses to other requests
-
-                            except json.JSONDecodeError:
-                                # Ignore malformed JSON
-                                pass
-
-                            attempts += 1
-
-                        raise Exception(
-                            f"No matching response received for request ID {request_id} after {max_attempts} attempts",
-                        )
-
-                    async def call_tool(
-                        self,
-                        name: str,
-                        arguments: dict[str, Any],
-                    ) -> Any:
-                        try:
-                            response = await self._make_request(
-                                "tools/call",
-                                {
-                                    "name": name,
-                                    "arguments": arguments,
-                                },
-                            )
-                            result_data = response.get("result", {})
-
-                            class ToolCallResult:
-                                def __init__(self, data: dict[str, Any]) -> None:
-                                    self.content = data.get("content", [])
-
-                            return ToolCallResult(result_data)
-                        except Exception as e:
-                            logger.error(f"MCP error: {e}")
-                            logger.error(f"Name: {name}")
-                            logger.error(f"Request: {arguments}")
-                            raise Exception(f"MCP error: {e}")
-
-                # Create and initialize new session
-                session = DirectMCPSession(
-                    config.command,
-                    config.args or [],
-                    merged_env,
-                )
-                await session.initialize()
-                return session
-
-        # For other session types, try to use the original session
-        # This is a fallback - ideally all MCP sessions should be recreatable
-        return self.client_session
+    def _check_permission(self, kwargs: Mapping[str, Any]) -> None:
+        context = cast("FrameworkContext | None", kwargs.get("ctx"))
+        if context is not None:
+            check_mcp_permission(context, self._server_name, self._raw_tool_name)
 
     def _execute_sync(self, **kwargs: Any) -> dict[str, Any]:
-        """Execute the MCP tool synchronously (sync-only fallback).
-
-        P1 async/sync 技术债修复: sync-only 入口 + running-loop 保护
-
-        仅在无 running event loop 的 sync 入口（CLI、脚本）中使用。
-        async executor 应通过 has_native_async_execute 标记检测到 MCPTool
-        并直接 await execute_async()，不会到达此路径。
-
-        Raises:
-            RuntimeError: 在 async context 中调用时
-        """
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            pass  # 无 running loop — 预期的 sync 调用方
-        else:
-            raise RuntimeError(
-                "MCPTool._execute_sync() cannot be called from an async context. Use `await tool.execute_async(...)` instead."
-            )
-        return asyncio.run(self._execute_async(**kwargs))
+            return asyncio.run(self.execute_async(**kwargs))
+        raise RuntimeError("MCPTool.execute() cannot run inside an event loop; use await execute_async()")
 
     def execute(self, **kwargs: Any) -> dict[str, Any]:
-        """Execute the MCP tool synchronously (for backward compatibility)."""
-        # RFC-0019: MCP 权限检查（AskPermission/PermissionDenied 自然传播至 Executor）
-        ctx: FrameworkContext | None = kwargs.get("ctx")
-        if ctx is not None:
-            check_mcp_permission(ctx, self._server_name, self._raw_tool_name)
-
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ("agent_state", "global_storage", "sandbox", "ctx")}
-
-        def _sort_key(item: tuple[str, Any]) -> str:
-            return item[0]
-
-        filtered_kwargs = dict(
-            sorted(filtered_kwargs.items(), key=_sort_key),
-        )
-        return self._sync_executor(**filtered_kwargs)
+        """Execute from a synchronous host using a fresh official SDK scope."""
+        return self._execute_sync(**kwargs)
 
     async def execute_async(self, **kwargs: Any) -> dict[str, Any]:
-        """Execute the MCP tool asynchronously (preferred async path).
-
-        P1 async/sync 技术债修复: 消除 _execute_sync 中 new_event_loop
-
-        直接委托 _execute_async()，在主事件循环上执行 MCP RPC 调用，
-        避免 _execute_sync 中每次调用都创建新的 event loop 的开销和
-        跨 loop session 绑定问题。同步路径 execute() / _execute_sync()
-        保留给向后兼容的 sync 调用方。
-        """
-        # RFC-0019: MCP 权限检查
-        ctx: FrameworkContext | None = kwargs.get("ctx")
-        if ctx is not None:
-            check_mcp_permission(ctx, self._server_name, self._raw_tool_name)
-
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ("agent_state", "global_storage", "sandbox", "ctx")}
-
-        def _sort_key(item: tuple[str, Any]) -> str:
-            return item[0]
-
-        filtered_kwargs = dict(
-            sorted(filtered_kwargs.items(), key=_sort_key),
-        )
-        return await self._execute_async(**filtered_kwargs)
-
-    async def _execute_async(self, **kwargs: Any) -> dict[str, Any]:
-        """Execute the MCP tool asynchronously."""
-        # Filter out agent_state and global_storage parameters (same as execute())
-        kwargs = {k: v for k, v in kwargs.items() if k not in ("agent_state", "global_storage")}
-        try:
-            # Create a thread-local session to avoid event loop conflicts
-            session = await self._get_thread_local_session()
-            result = await session.call_tool(self._raw_tool_name, kwargs)
-
-            if hasattr(result, "content"):
-                result_content = getattr(result, "content")
-                if isinstance(result_content, list):
-                    # Handle list of content items
-                    content_items: list[str] = []
-                    for item in cast(list[Any], result_content):
-                        if hasattr(item, "text"):
-                            text_value = getattr(item, "text")
-                            content_items.append(str(text_value))
-                            continue
-
-                        if isinstance(item, dict):
-                            item_dict = cast(dict[str, Any], item)
-                            if "text" in item_dict:
-                                content_items.append(str(item_dict["text"]))
-                                continue
-                            content_items.append(str(item_dict))
-                            continue
-
-                        else:
-                            content_items.append(str(item))
-                    return {"result": "\n".join(content_items)}
-                else:
-                    return {"result": str(result_content)}
-            else:
-                return {"result": str(result)}
-
-        except Exception as e:
-            logger.error(f"Error executing MCP tool '{self.name}': {e}")
-            return {"error": str(e)}
+        """Execute in the active Agent run, or a fully closed one-shot scope."""
+        self._check_permission(kwargs)
+        arguments = self._filtered_arguments(kwargs)
+        scope = _ACTIVE_SCOPE.get()
+        if scope is not None and scope.factory is self.runtime_factory:
+            result = await scope.call_tool(self._server_name, self._raw_tool_name, arguments)
+        else:
+            # Deprecated standalone/bootstrap tools remain callable without
+            # retaining an SDK client across event loops.
+            async with self.runtime_factory.open_scope() as one_shot_scope:
+                result = await one_shot_scope.call_tool(self._server_name, self._raw_tool_name, arguments)
+        return cast(dict[str, Any], adapt_call_tool_result(result).tool_output)
 
 
 class MCPClient:
-    """Client for connecting to and managing MCP servers."""
+    """Deprecated standalone facade; every operation opens and closes a scope."""
 
-    def __init__(self):
+    def __init__(self, *, auth_host: MCPAuthHost | None = None) -> None:
+        warnings.warn(
+            "MCPClient is deprecated; use MCPRuntimeFactory.open_scope()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.servers: dict[str, MCPServerConfig] = {}
-        self.sessions: dict[str, Any] = {}
+        self.sessions: dict[str, object] = {}
         self.tools: dict[str, MCPTool] = {}
+        self._auth_host = auth_host or MCPAuthHost()
 
-    def add_server(self, config: MCPServerConfig) -> None:
-        """Add an MCP server configuration."""
-        self.servers[config.name] = config
-        logger.info(f"Added MCP server configuration: {config.name}")
+    def add_server(self, config: MCPServerConfig | object) -> None:
+        normalized = _normalize_server_config(config)
+        self.servers[normalized.name] = normalized
 
     async def connect_to_server(self, server_name: str) -> bool:
-        """Connect to an MCP server and initialize the session."""
         if server_name not in self.servers:
-            logger.error(f"Server '{server_name}' not found in configurations")
             return False
-
-        config = self.servers[server_name]
-
-        try:
-            if config.type == "stdio":
-                # Stdio server
-                if not config.command:
-                    logger.error(
-                        f"Command required for stdio server '{server_name}'",
-                    )
-                    return False
-
-                server_params = StdioServerParameters(
-                    command=config.command,
-                    args=config.args or [],
-                    env=config.env or {},
-                )
-
-                # Use asyncio.wait_for for timeout protection
-                timeout_duration = config.timeout or 30
-
-                # Use direct subprocess approach with proper JSON-RPC protocol
-                logger.info(
-                    f"Starting stdio MCP server: {config.command} {' '.join(config.args or [])}",
-                )
-
-                # Override the environment to preserve PATH
-                import os
-
-                merged_env = os.environ.copy()
-                if server_params.env:
-                    merged_env.update(server_params.env)
-
-                # Create a direct subprocess-based MCP session
-                class DirectMCPSession:
-                    def __init__(
-                        self,
-                        command: str,
-                        args: list[str],
-                        env: dict[str, str],
-                    ) -> None:
-                        self.command = command
-                        self.args = args
-                        self.env = env
-                        self.process: Process | None = None
-                        self._request_id = 0
-
-                    async def initialize(self) -> "DirectMCPSession":
-                        self.process = await _create_stdio_subprocess(self.command, self.args, self.env)
-
-                        if not self.process.stdout or not self.process.stdin:
-                            raise RuntimeError("Failed to get process streams")
-
-                        # Initialize the MCP connection properly
-                        await self._initialize_connection()
-                        return self
-
-                    def _get_next_id(self) -> int:
-                        self._request_id += 1
-                        return self._request_id
-
-                    async def _initialize_connection(self) -> None:
-                        """Initialize the MCP connection with proper handshake."""
-                        import json
-
-                        # Send initialize request
-                        init_request: JSONDict = {
-                            "jsonrpc": "2.0",
-                            "id": self._get_next_id(),
-                            "method": "initialize",
-                            "params": {
-                                "protocolVersion": "2024-11-05",
-                                "capabilities": {
-                                    "roots": {
-                                        "listChanged": True,
-                                    },
-                                    "sampling": {},
-                                },
-                                "clientInfo": {
-                                    "name": "nexau-mcp-client",
-                                    "version": "1.0.0",
-                                },
-                            },
-                        }
-
-                        # Send the initialize request
-                        init_str = json.dumps(init_request) + "\n"
-                        process = self.process
-                        if process is None or process.stdin is None or process.stdout is None:
-                            raise RuntimeError("Process streams not initialized")
-                        stdin = process.stdin
-                        stdout = process.stdout
-                        stdin.write(init_str.encode())
-                        await stdin.drain()
-
-                        # Read the initialize response
-                        while True:
-                            try:
-                                response_line = await asyncio.wait_for(
-                                    stdout.readline(),
-                                    timeout=60,
-                                )
-                                response = json.loads(
-                                    response_line.decode().strip(),
-                                )
-                                break
-                            except TimeoutError:
-                                raise RuntimeError(
-                                    "MCP initialization timeout",
-                                )
-                            except json.JSONDecodeError:
-                                continue
-
-                        if "error" in response:
-                            raise Exception(
-                                f"MCP initialization error: {response['error']}",
-                            )
-
-                        # Send initialized notification
-                        initialized_notification: JSONDict = {
-                            "jsonrpc": "2.0",
-                            "method": "notifications/initialized",
-                            "params": {},
-                        }
-
-                        notif_str = json.dumps(initialized_notification) + "\n"
-                        stdin.write(notif_str.encode())
-                        await stdin.drain()
-
-                        # Test with tools/list to verify connection
-                        await self._make_request("tools/list")
-
-                    async def _make_request(
-                        self,
-                        method: str,
-                        params: dict[str, Any] | None = None,
-                    ) -> dict[str, Any]:
-                        if not self.process or not self.process.stdin or not self.process.stdout:
-                            raise RuntimeError("Process not initialized")
-
-                        import json
-
-                        request: JSONDict = {
-                            "jsonrpc": "2.0",
-                            "id": self._get_next_id(),
-                            "method": method,
-                            "params": params or {},
-                        }
-
-                        # Send request
-                        request_str = json.dumps(request) + "\n"
-                        self.process.stdin.write(request_str.encode())
-                        await self.process.stdin.drain()
-
-                        # Read response
-                        response_line = await self.process.stdout.readline()
-                        response = json.loads(response_line.decode().strip())
-
-                        if "error" in response:
-                            raise Exception(f"MCP error: {response['error']}")
-
-                        return response
-
-                    async def list_tools(self) -> Any:
-                        response = await self._make_request("tools/list")
-                        tools_data = response.get(
-                            "result",
-                            {},
-                        ).get("tools", [])
-
-                        # Create tool objects
-                        class SimpleTool:
-                            def __init__(self, data: dict[str, Any]) -> None:
-                                self.name = data["name"]
-                                self.description = data.get("description", "")
-                                self.inputSchema = data.get("inputSchema", {})
-
-                        class ToolResult:
-                            def __init__(self, tools: Sequence[dict[str, Any]]) -> None:
-                                self.tools = [SimpleTool(tool) for tool in tools]
-
-                        return ToolResult(tools_data)
-
-                    async def call_tool(
-                        self,
-                        name: str,
-                        arguments: dict[str, Any],
-                    ) -> Any:
-                        response = await self._make_request(
-                            "tools/call",
-                            {
-                                "name": name,
-                                "arguments": arguments,
-                            },
-                        )
-                        result_data = response.get("result", {})
-
-                        class ToolCallResult:
-                            def __init__(self, data: dict[str, Any]) -> None:
-                                self.content = data.get("content", [])
-
-                        return ToolCallResult(result_data)
-
-                # Create and initialize the session
-                session = DirectMCPSession(
-                    server_params.command,
-                    server_params.args,
-                    merged_env,
-                )
-                await asyncio.wait_for(session.initialize(), timeout=timeout_duration)
-                self.sessions[server_name] = session
-                logger.info(
-                    f"Successfully connected to stdio MCP server: {server_name}",
-                )
-                return True
-
-            elif config.type == "http":
-                # HTTP server with FastMCP protocol
-                if not config.url:
-                    logger.error(
-                        f"URL required for HTTP server '{server_name}'",
-                    )
-                    return False
-
-                # Use reasonable timeout for HTTP connections
-                connection_timeout = config.timeout or 30
-
-                try:
-                    logger.info(
-                        f"Connecting to HTTP MCP server '{server_name}'...",
-                    )
-
-                    # Ensure proper headers for FastMCP streamable HTTP protocol
-                    headers = config.headers or {}
-                    if "Accept" not in headers:
-                        headers["Accept"] = STREAMABLE_HTTP_ACCEPT
-                    if "Content-Type" not in headers:
-                        headers["Content-Type"] = DEFAULT_CONTENT_TYPE
-
-                    # Test connection with a simple session
-                    test_session = HTTPMCPSession(
-                        config,
-                        headers,
-                        connection_timeout,
-                    )
-
-                    # Test basic connectivity by trying to initialize
-                    await test_session.initialize()
-                    logger.info(
-                        f"Successfully tested HTTP MCP server connection: {server_name}",
-                    )
-
-                    # Store the session configuration for later use
-                    self.sessions[server_name] = HTTPMCPSession(
-                        config,
-                        headers,
-                        connection_timeout,
-                    )
-                    logger.info(
-                        f"Successfully connected to HTTP MCP server: {server_name}",
-                    )
-                    return True
-
-                except TimeoutError:
-                    logger.warning(
-                        f"Connection to HTTP MCP server '{server_name}' timed out after {connection_timeout}s",
-                    )
-                    logger.warning(f"  URL: {config.url}")
-                    return False
-                except Exception as e:
-                    logger.error(
-                        f"Failed to connect to HTTP MCP server '{server_name}': {e}",
-                    )
-                    logger.debug(f"Error details: {e}")
-                    return False
-
-            else:
-                logger.error(
-                    f"Unknown server type '{config.type}' for server '{server_name}'",
-                )
-                return False
-
-        except TimeoutError:
-            logger.warning(
-                f"Connection to MCP server '{server_name}' timed out",
-            )
-            return False
-        except Exception as e:
-            logger.error(
-                f"Failed to connect to MCP server '{server_name}': {e}",
-            )
-            # Log more detailed error information for debugging
-            import traceback
-
-            logger.debug(
-                f"Detailed error for '{server_name}': {traceback.format_exc()}",
-            )
-            return False
+        factory = MCPRuntimeFactory([self.servers[server_name]], auth_host=self._auth_host)
+        tools: list[MCPTool] = []
+        async with factory.open_scope() as scope:
+            tools = await scope.discover_tools()
+        self.tools = {tool.name: tool for tool in tools}
+        return server_name not in scope.failures
 
     async def discover_tools(self, server_name: str) -> list[MCPTool]:
-        """Discover tools from an MCP server."""
-        if server_name not in self.sessions:
-            logger.error(f"No active session for server '{server_name}'")
+        if server_name not in self.servers:
             return []
+        prefix = f"mcp__{server_name}__"
+        if not any(name.startswith(prefix) for name in self.tools):
+            await self.connect_to_server(server_name)
+        return [tool for name, tool in self.tools.items() if name.startswith(prefix)]
 
-        session = self.sessions[server_name]
-
-        try:
-            # List available tools
-            tools_result = await session.list_tools()
-
-            # Convert MCP tools to NexAU tools
-            discovered_tools: list[MCPTool] = []
-            server_config = self.servers.get(server_name)
-
-            for mcp_tool in tools_result.tools:
-                # For HTTPMCPSession, we need to pass the session directly
-                # For regular ClientSession, we also pass it directly
-                # Convert SimpleTool to MCPToolType-like object for compatibility
-                if hasattr(mcp_tool, "inputSchema"):
-                    tool = MCPTool(mcp_tool, session, server_config)
-                else:
-                    # Handle SimpleTool case by converting to proper format
-                    tool = MCPTool(mcp_tool, session, server_config)
-                discovered_tools.append(tool)
-
-                # Store in registry with server prefix to avoid conflicts
-                tool_key = f"{server_name}.{mcp_tool.name}"
-                self.tools[tool_key] = tool
-
-            logger.info(
-                f"Discovered {len(discovered_tools)} tools from server '{server_name}'",
-            )
-            return discovered_tools
-
-        except Exception as e:
-            logger.error(
-                f"Failed to discover tools from server '{server_name}': {e}",
-            )
-            # Log more details for debugging
-            import traceback
-
-            logger.debug(f"Detailed error: {traceback.format_exc()}")
-            return []
-
-    def get_tool(self, tool_name: str) -> MCPTool | None:
-        """Get a tool by name."""
-        return self.tools.get(tool_name)
-
-    def get_all_tools(self) -> list[MCPTool]:
-        """Get all discovered tools."""
+    def get_all_tools(self) -> Sequence[Tool]:
         return list(self.tools.values())
 
+    def get_tool(self, tool_name: str) -> MCPTool | None:
+        """Return one cached compatibility descriptor by its NexAU name."""
+        return self.tools.get(tool_name)
+
     async def disconnect_server(self, server_name: str) -> None:
-        """Disconnect from an MCP server."""
-        if server_name in self.sessions:
-            try:
-                # session = self.sessions[server_name]
-                # The session should handle cleanup automatically
-                # when the context manager exits
-                del self.sessions[server_name]
-
-                # Remove tools from this server
-                tools_to_remove = [k for k in self.tools.keys() if k.startswith(f"{server_name}.")]
-                for tool_key in tools_to_remove:
-                    del self.tools[tool_key]
-
-                logger.info(f"Disconnected from MCP server: {server_name}")
-            except Exception as e:
-                logger.error(
-                    f"Error disconnecting from server '{server_name}': {e}",
-                )
+        prefix = f"mcp__{server_name}__"
+        self.tools = {name: tool for name, tool in self.tools.items() if not name.startswith(prefix)}
 
     async def disconnect_all(self) -> None:
-        """Disconnect from all MCP servers."""
-        for server_name in list(self.sessions.keys()):
-            await self.disconnect_server(server_name)
+        self.sessions.clear()
+        self.tools.clear()
 
 
 class MCPManager:
-    """High-level manager for MCP operations."""
+    """Deprecated compatibility manager with no global or persistent sessions."""
 
-    def __init__(self):
-        self.client = MCPClient()
+    def __init__(self, *, auth_host: MCPAuthHost | None = None) -> None:
+        warnings.warn(
+            "MCPManager is deprecated; use MCPRuntimeFactory.open_scope()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.client = MCPClient(auth_host=auth_host)
         self.auto_connect = True
 
     def add_server(
@@ -1471,162 +491,92 @@ class MCPManager:
         source_id: str | None = None,
         permissions: dict[str, list[str]] | None = None,
         tool_permissions: dict[str, dict[str, list[str]] | None] | None = None,
+        auth: object | None = None,
     ) -> None:
-        """Add an MCP server configuration."""
-        config = MCPServerConfig(
-            name=name,
-            type=server_type,
-            command=command,
-            args=args,
-            env=env,
-            url=url,
-            headers=headers,
-            timeout=timeout,
-            disable_parallel=disable_parallel,
-            source_id=source_id,
-            permissions=permissions,
-            tool_permissions=tool_permissions,
+        self.client.add_server(
+            MCPServerConfig(
+                name=name,
+                type=server_type,
+                command=command,
+                args=args,
+                env=env,
+                url=url,
+                headers=headers,
+                timeout=timeout,
+                disable_parallel=disable_parallel,
+                source_id=source_id,
+                permissions=permissions,
+                tool_permissions=tool_permissions,
+                auth=auth,
+            )
         )
-        self.client.add_server(config)
 
     async def initialize_servers(self) -> dict[str, list[MCPTool]]:
-        """Initialize all configured servers and discover their tools concurrently."""
-        all_tools: dict[str, list[MCPTool]] = {}
-        server_names = list(self.client.servers.keys())
-
-        if not server_names:
-            logger.info("No MCP servers configured, skipping initialization")
-            return all_tools
-
-        logger.info(f"Initializing {len(server_names)} MCP servers in parallel: {server_names}")
-
-        async def init_server(server_name: str) -> tuple[str, list[MCPTool]]:
-            """Initialize a single server and discover its tools."""
-            if await self.client.connect_to_server(server_name):
-                tools = await self.client.discover_tools(server_name)
-                return server_name, tools
-            return server_name, []
-
-        # Run all server initializations concurrently
-        results = await asyncio.gather(
-            *[init_server(name) for name in server_names],
-            return_exceptions=True,
-        )
-
-        # Process results
-        success_count = 0
-        failed_servers: list[str] = []
-
-        for i, result in enumerate(results):
-            server_name = server_names[i]
-            if isinstance(result, BaseException):
-                failed_servers.append(server_name)
-                logger.error(
-                    f"Failed to initialize MCP server '{server_name}': {result}",
-                )
-                logger.debug(f"Detailed error for server '{server_name}': {result!r}")
-                continue
-            server_name, tools = result
-            all_tools[server_name] = tools
-            success_count += 1
-
-        # Summary log
-        total_tools = sum(len(tools) for tools in all_tools.values())
-        if failed_servers:
-            logger.warning(
-                f"MCP initialization completed: {success_count}/{len(server_names)} servers succeeded, "
-                f"{len(failed_servers)} failed ({failed_servers}), {total_tools} tools discovered"
-            )
-        else:
-            logger.info(
-                f"MCP initialization completed: {success_count}/{len(server_names)} servers succeeded, {total_tools} tools discovered"
-            )
-
-        return all_tools
+        discovered: dict[str, list[MCPTool]] = {}
+        for name in self.client.servers:
+            if await self.client.connect_to_server(name):
+                discovered[name] = await self.client.discover_tools(name)
+        return discovered
 
     def get_available_tools(self) -> Sequence[Tool]:
-        """Get all available MCP tools."""
         return self.client.get_all_tools()
 
     async def shutdown(self) -> None:
-        """Shutdown the MCP manager and disconnect all servers."""
         await self.client.disconnect_all()
 
 
-# Global MCP manager instance
-_mcp_manager: MCPManager | None = None
-
-
 def get_mcp_manager() -> MCPManager:
-    """Get the global MCP manager instance."""
-    global _mcp_manager
-    if _mcp_manager is None:
-        _mcp_manager = MCPManager()
-    return _mcp_manager
+    """Return a fresh deprecated manager; no process-global state is retained."""
+    warnings.warn(
+        "get_mcp_manager() is deprecated and no longer returns a global singleton",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return MCPManager()
 
 
-async def initialize_mcp_tools(server_configs: list[dict[str, Any]]) -> Sequence[Tool]:
-    """Initialize MCP tools from server configurations.
-
-    Args:
-        server_configs: List of server configuration dictionaries with keys:
-            - name: Server name
-            - type: Server type ("stdio" or "http")
-            For stdio servers:
-            - command: Command to run
-            - args: Command arguments
-            - env: Optional environment variables
-            For HTTP servers:
-            - url: Server URL
-            - headers: Optional HTTP headers
-            - timeout: Optional timeout in seconds
-
-    Returns:
-        List of initialized MCP tools
-    """
-    manager = get_mcp_manager()
-
-    # Add server configurations
-    for config in server_configs:
-        manager.add_server(
-            name=config["name"],
-            server_type=config.get("type", "stdio"),
-            command=config.get("command"),
-            args=config.get("args"),
-            env=config.get("env"),
-            url=config.get("url"),
-            headers=config.get("headers"),
-            timeout=config.get("timeout"),
-            disable_parallel=config.get("disable_parallel", False),
-            source_id=config.get("source_id"),
-            permissions=config.get("permissions"),
-            tool_permissions=config.get("tool_permissions"),
-        )
-
-    # Initialize servers and discover tools
-    await manager.initialize_servers()
-
-    # Return all available tools
-    return manager.get_available_tools()
+async def initialize_mcp_tools(
+    server_configs: Sequence[object],
+    *,
+    auth_host: MCPAuthHost | None = None,
+    auth_context: MCPAuthContext | None = None,
+) -> Sequence[Tool]:
+    """Bootstrap tool metadata in a fully entered and closed SDK scope."""
+    factory = MCPRuntimeFactory(server_configs, auth_host=auth_host, auth_context=auth_context)
+    tools: list[MCPTool] = []
+    async with factory.open_scope() as scope:
+        tools = await scope.discover_tools()
+    return tools
 
 
-def sync_initialize_mcp_tools(server_configs: list[dict[str, Any]]) -> Sequence[Tool]:
-    """Synchronous wrapper for initialize_mcp_tools.
-
-    P1 async/sync 技术债修复: 消除手动 new_event_loop 管理
-
-    仅在无 running event loop 的 sync 入口（CLI、脚本、ThreadPoolExecutor worker）
-    中使用 asyncio.run()。async 调用方应直接使用 initialize_mcp_tools()。
-
-    Raises:
-        RuntimeError: 在 async context 中调用时（应使用 await initialize_mcp_tools()）
-    """
+def sync_initialize_mcp_tools(
+    server_configs: Sequence[object],
+    *,
+    auth_host: MCPAuthHost | None = None,
+    auth_context: MCPAuthContext | None = None,
+) -> Sequence[Tool]:
+    """Synchronous bootstrap wrapper for non-async constructors and scripts."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        pass  # No running loop — expected for sync callers
-    else:
-        raise RuntimeError(
-            "sync_initialize_mcp_tools() cannot be called from an async context. Use `await initialize_mcp_tools(...)` instead."
+        return asyncio.run(
+            initialize_mcp_tools(
+                server_configs,
+                auth_host=auth_host,
+                auth_context=auth_context,
+            )
         )
-    return asyncio.run(initialize_mcp_tools(server_configs))
+    raise RuntimeError("sync_initialize_mcp_tools() cannot be called from an async context; use await initialize_mcp_tools()")
+
+
+__all__ = [
+    "MCPClient",
+    "MCPManager",
+    "MCPRunScope",
+    "MCPRuntimeFactory",
+    "MCPServerConfig",
+    "MCPTool",
+    "get_mcp_manager",
+    "initialize_mcp_tools",
+    "sync_initialize_mcp_tools",
+]

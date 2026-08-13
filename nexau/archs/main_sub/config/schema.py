@@ -2,7 +2,8 @@ import traceback
 import warnings
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -57,14 +58,17 @@ class SubAgentConfigEntry(BaseModel):
 
 
 class MCPServerBaseModel(BaseModel):
-    """Shared attributes for MCP server definitions."""
+    """Shared attributes for MCP server definitions.
 
-    model_config = ConfigDict(extra="forbid")
+    RFC-0029: MCP 协议与认证配置只描述宿主策略，wire 行为由官方 SDK 负责。
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     name: str
     source_id: str | None = None
     timeout: int | None = Field(default=None, gt=0)
-    env: dict[str, str] | None = None
+    env: dict[str, str] | None = Field(default=None, repr=False)
     disable_parallel: bool = False
     # RFC-0019: server 级默认权限（None = auto-allow，向后兼容）
     permissions: dict[str, list[str]] | None = None
@@ -75,22 +79,100 @@ class MCPServerBaseModel(BaseModel):
 class MCPStdIOServer(MCPServerBaseModel):
     type: Literal["stdio"] = "stdio"
     command: str
-    args: list[str] | None = None
+    args: list[str] | None = Field(default=None, repr=False)
 
 
-class MCPHttpServer(MCPServerBaseModel):
+class MCPEnvSecretRef(BaseModel):
+    """Reference a secret without embedding its value in agent configuration.
+
+    RFC-0029: 首版只支持从环境变量解析 secret，后续宿主可注入其他 resolver。
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    source: Literal["env"] = "env"
+    key: str = Field(min_length=1, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+class MCPBearerAuth(BaseModel):
+    """Static bearer authentication backed by a secret reference."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    type: Literal["bearer"] = "bearer"
+    token: MCPEnvSecretRef
+
+
+class MCPAuthorizationCodeAuth(BaseModel):
+    """Interactive OAuth authorization-code authentication configuration."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    type: Literal["authorization_code"] = "authorization_code"
+    client_name: str = "NexAU"
+    scopes: list[str] = Field(default_factory=list)
+    client_id: str | None = None
+    client_secret: MCPEnvSecretRef | None = None
+
+    @model_validator(mode="after")
+    def _validate_registered_client(self) -> "MCPAuthorizationCodeAuth":
+        if self.client_secret is not None and not self.client_id:
+            raise ValueError("authorization_code client_secret requires client_id")
+        return self
+
+
+class MCPClientCredentialsAuth(BaseModel):
+    """Non-interactive OAuth client-credentials authentication configuration."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    type: Literal["client_credentials"] = "client_credentials"
+    client_id: str
+    client_secret: MCPEnvSecretRef
+    scopes: list[str] = Field(default_factory=list)
+
+
+MCPAuthConfig = Annotated[
+    MCPBearerAuth | MCPAuthorizationCodeAuth | MCPClientCredentialsAuth,
+    Field(discriminator="type"),
+]
+
+
+class MCPRemoteServer(MCPServerBaseModel):
+    """Shared HTTP/SSE configuration and security validation."""
+
+    url: str = Field(repr=False)
+    headers: dict[str, str] | None = Field(default=None, repr=False)
+    auth: MCPAuthConfig | None = Field(default=None, discriminator="type", repr=False)
+
+    @model_validator(mode="after")
+    def _validate_remote_security(self) -> "MCPRemoteServer":
+        # RFC-0029: 避免认证凭据经明文网络发送；本地测试允许 loopback HTTP。
+        parsed = urlsplit(self.url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("url must be an absolute HTTP(S) URL")
+        loopback_hosts = {"localhost", "127.0.0.1", "::1"}
+        if parsed.scheme != "https" and parsed.hostname.lower() not in loopback_hosts:
+            raise ValueError("remote MCP URLs must use HTTPS; HTTP is allowed only for loopback hosts")
+
+        if self.auth is not None and self.headers is not None:
+            if any(name.lower() == "authorization" for name in self.headers):
+                raise ValueError("auth cannot be combined with an Authorization header")
+        return self
+
+
+class MCPHttpServer(MCPRemoteServer):
     type: Literal["http"] = "http"
-    url: str
-    headers: dict[str, str] | None = None
 
 
-class MCPSseServer(MCPServerBaseModel):
+class MCPSseServer(MCPRemoteServer):
     type: Literal["sse"] = "sse"
-    url: str
-    headers: dict[str, str] | None = None
 
 
-MCPServerConfig = MCPStdIOServer | MCPHttpServer | MCPSseServer
+MCPServerConfig = Annotated[
+    MCPStdIOServer | MCPHttpServer | MCPSseServer,
+    Field(discriminator="type"),
+]
 
 
 class PluginEntryConfig(BaseModel):
@@ -121,7 +203,7 @@ class AgentConfigSchema(
 
     llm_config: dict[str, Any] | None = None
     sandbox_config: dict[str, Any] | None = None
-    mcp_servers: list[MCPServerConfig] = Field(default_factory=_empty_mcp_server_list)
+    mcp_servers: list[MCPServerConfig] = Field(default_factory=_empty_mcp_server_list, repr=False)
     global_storage: dict[str, Any] = Field(default_factory=dict)
     after_model_hooks: list[HookDefinition] | None = None
     after_tool_hooks: list[HookDefinition] | None = None
@@ -136,6 +218,9 @@ class AgentConfigSchema(
     def _require_llm_config(self) -> "AgentConfigSchema":  # type: ignore[override]
         if self.llm_config is None:
             raise ValueError("llm_config is required in agent configuration")
+        names = [server.name for server in self.mcp_servers]
+        if len(names) != len(set(names)):
+            raise ValueError("mcp_servers names must be unique within an Agent")
         return self
 
     @classmethod

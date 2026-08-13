@@ -32,13 +32,16 @@ from nexau.archs.tool.builtin.web_tools import web_search
 
 _SEARCH_ENV_PREFIX = "SEARCH_"
 _LEGACY_ENV = "SERPER_API_KEY"
+# 代理变量同样要清：开发机上若配了它，全部用例都会静默走代理，
+# MockTransport 虽然不受影响，但断言 proxy 的用例会拿到非预期值。
+_PROXY_ENVS = (agg.PROXY_URL_ENV, agg.PROXY_AUTH_ENV)
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """每个用例都从干净的环境开始，避免开发机上的真实 Key 干扰断言。"""
     for key in list(agg.os.environ):
-        if key.startswith(_SEARCH_ENV_PREFIX) or key == _LEGACY_ENV:
+        if key.startswith(_SEARCH_ENV_PREFIX) or key == _LEGACY_ENV or key in _PROXY_ENVS:
             monkeypatch.delenv(key, raising=False)
     agg._provider_cache.clear()
 
@@ -1007,3 +1010,139 @@ class TestXiaoBeiAsyncScrapePolling:
 
         assert not agg.XiaoBeiProvider._scrape_settled(pending_payload)
         assert agg.XiaoBeiProvider._scrape_settled(settled_payload)
+
+
+# ------------------------------------------------------------------- 出网代理
+
+
+class TestProxyResolution:
+    """`resolve_proxy()` 的解析规则。"""
+
+    def test_unset_returns_none(self) -> None:
+        assert agg.resolve_proxy() is None
+
+    def test_url_only_has_no_connect_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _set(monkeypatch, NEXAU_HTTP_PROXY="http://gw:8444")
+
+        proxy = agg.resolve_proxy()
+
+        assert proxy is not None
+        assert str(proxy.url) == "http://gw:8444"
+        assert "proxy-authorization" not in {k.decode().lower() for k, _ in proxy.headers.raw}
+
+    def test_auth_goes_to_connect_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _set(monkeypatch, NEXAU_HTTP_PROXY="http://gw:8444", NEXAU_HTTP_PROXY_AUTH="Bearer tk-123")
+
+        proxy = agg.resolve_proxy()
+
+        assert proxy is not None
+        # httpx 把 Proxy(headers=...) 挂到 CONNECT 隧道请求上，正是网关校验的位置
+        assert proxy.headers["Proxy-Authorization"] == "Bearer tk-123"
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\n"])
+    def test_blank_url_treated_as_unset(self, monkeypatch: pytest.MonkeyPatch, blank: str) -> None:
+        _set(monkeypatch, NEXAU_HTTP_PROXY=blank, NEXAU_HTTP_PROXY_AUTH="Bearer tk")
+
+        assert agg.resolve_proxy() is None, "只有凭据没有代理地址，不能凭空启用代理"
+
+    def test_blank_auth_falls_back_to_plain_proxy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _set(monkeypatch, NEXAU_HTTP_PROXY="http://gw:8444", NEXAU_HTTP_PROXY_AUTH="  ")
+
+        proxy = agg.resolve_proxy()
+
+        assert proxy is not None
+        assert "proxy-authorization" not in {k.decode().lower() for k, _ in proxy.headers.raw}
+
+    def test_auth_value_is_sent_verbatim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """不替调用方补 `Bearer ` 前缀——网关可能用别的认证方案。"""
+        _set(monkeypatch, NEXAU_HTTP_PROXY="http://gw:8444", NEXAU_HTTP_PROXY_AUTH="Basic YWJj")
+
+        proxy = agg.resolve_proxy()
+
+        assert proxy is not None
+        assert proxy.headers["Proxy-Authorization"] == "Basic YWJj"
+
+
+class TestProxyWiring:
+    """代理配置真的传到了 `httpx.Client`。
+
+    单测 `resolve_proxy()` 只能证明解析对，证明不了它被用上——漏接线时
+    上面那组全绿、真实请求却仍然直连出网。这里把 kwargs 抓下来钉死。
+    """
+
+    @staticmethod
+    def _capture(monkeypatch: pytest.MonkeyPatch, recorder: _Recorder) -> dict[str, object]:
+        seen: dict[str, object] = {}
+        real_client = httpx.Client
+
+        def _factory(*args: object, **kwargs: object) -> httpx.Client:
+            seen.update(kwargs)
+            kwargs.pop("transport", None)
+            timeout = kwargs.get("timeout")
+            return real_client(
+                transport=httpx.MockTransport(recorder.handler),
+                timeout=timeout if isinstance(timeout, (int, float, httpx.Timeout)) else None,
+            )
+
+        monkeypatch.setattr(agg.httpx, "Client", _factory)
+        monkeypatch.setattr(agg.time, "sleep", lambda _seconds: None)
+        return seen
+
+    def test_configured_proxy_reaches_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        recorder = _Recorder({"organic": [{"title": "t", "link": "https://e.com", "snippet": "s"}]})
+        seen = self._capture(monkeypatch, recorder)
+        _set(
+            monkeypatch,
+            SEARCH_PROVIDER="Serper",
+            SEARCH_API_KEY="k",
+            NEXAU_HTTP_PROXY="http://gw:8444",
+            NEXAU_HTTP_PROXY_AUTH="Bearer tk-123",
+        )
+
+        result = web_search(query="q", num_results=1)
+
+        assert result.get("error") is None
+        proxy = seen.get("proxy")
+        assert isinstance(proxy, httpx.Proxy), "proxy 没有传给 httpx.Client，代理配置形同虚设"
+        assert str(proxy.url) == "http://gw:8444"
+        assert proxy.headers["Proxy-Authorization"] == "Bearer tk-123"
+
+    def test_unconfigured_passes_none_and_keeps_trust_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """不配代理时必须是 None，httpx 才会继续按 trust_env 读标准变量。"""
+        recorder = _Recorder({"organic": [{"title": "t", "link": "https://e.com", "snippet": "s"}]})
+        seen = self._capture(monkeypatch, recorder)
+        _set(monkeypatch, SEARCH_PROVIDER="Serper", SEARCH_API_KEY="k")
+
+        result = web_search(query="q", num_results=1)
+
+        assert result.get("error") is None
+        assert "proxy" in seen, "应显式传 proxy 参数"
+        assert seen["proxy"] is None, "未配置时必须是 None，否则会覆盖 trust_env 行为"
+
+    def test_all_providers_share_the_same_proxy_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """代理加在基类，四家服务商应当一视同仁。"""
+        # payload 用各家真实的成功响应形状(与 TestProviderRequestContracts 一致)，
+        # 否则解析阶段就失败，走不到能证明 proxy 生效的那步
+        payloads: dict[str, object] = {
+            "Serper": {"organic": [{"title": "t", "link": "https://e.com", "snippet": "s"}]},
+            "Seed": {"Result": {"WebResults": []}},
+            "Baidu": {"references": []},
+            "XiaoBei": {"status": "search_done", "results": []},
+        }
+        for provider, payload in payloads.items():
+            recorder = _Recorder(payload)
+            seen = self._capture(monkeypatch, recorder)
+            agg._provider_cache.clear()
+            _set(
+                monkeypatch,
+                SEARCH_PROVIDER=provider,
+                SEARCH_API_KEY="k",
+                NEXAU_HTTP_PROXY="http://gw:8444",
+                NEXAU_HTTP_PROXY_AUTH="Bearer tk",
+            )
+
+            web_search(query="q", num_results=1)
+
+            proxy = seen.get("proxy")
+            assert isinstance(proxy, httpx.Proxy), f"{provider} 没有走到带代理的 client"
+            assert proxy.headers["Proxy-Authorization"] == "Bearer tk", provider

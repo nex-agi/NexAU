@@ -49,6 +49,7 @@ RFC 是一种用于记录技术设计决策的文档格式。每个 RFC 描述�
 | [RFC-0006](./0006-neutral-structured-tool-calling.md) | 中性 Structured Tool Calling 与 Provider 延迟适配 | implementing | P1     |
 | [RFC-0014](./0014-ump-provider-serializers.md) | UMP 到 Provider Payload 的统一序列化分层 | implemented | P1 |
 | [RFC-0017](./0017-flatten-tool-output.md) | 工具输出扁平化（Flatten Tool Output） | implemented | P1 |
+| [RFC-0029](./0029-official-mcp-sdk-client.md) | 基于官方 Python SDK 的 MCP Client 与 OAuth | implemented | P0 |
 
 ### Agent 能力扩展
 

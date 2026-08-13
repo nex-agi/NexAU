@@ -1,10 +1,14 @@
-### MCP
+type: agent
+name: mcp_all_modes
+system_prompt: Use the configured MCP tools to answer the user's request.
+llm_config:
+  model: ${LLM_MODEL}
+  base_url: ${LLM_BASE_URL}
+  api_key: ${LLM_API_KEY}
+  api_type: openai_chat_completion
 
-NexAU uses the official MCP Python SDK for protocol negotiation, stdio,
-Streamable HTTP, legacy SSE, and OAuth 2.0. Configure connections through the
-Agent's `mcp_servers` list.
-
-```yaml
+# RFC-0029: all protocol and authentication modes are implemented by the
+# official MCP Python SDK. Replace endpoints/commands with your own servers.
 mcp_servers:
   - name: local_stdio
     type: stdio
@@ -22,6 +26,8 @@ mcp_servers:
   - name: legacy_sse
     type: sse
     url: https://legacy-mcp.example.com/sse
+    headers:
+      Authorization: Bearer legacy-token
 
   - name: static_bearer
     type: http
@@ -50,12 +56,3 @@ mcp_servers:
         source: env
         key: SERVICE_MCP_CLIENT_SECRET
       scopes: ["tools:call"]
-```
-
-Secret values are environment references, not YAML literals. `auth` and an
-`Authorization` header cannot be configured together. Remote endpoints require
-HTTPS; loopback HTTP is allowed for local development and tests.
-
-The complete runnable configuration matrix is in
-`examples/mcp/agent_all_modes.yaml`; the canonical guide is
-`docs/advanced-guides/mcp.md`.
