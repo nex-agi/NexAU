@@ -15,12 +15,16 @@
 """Web-related tools for searching and fetching web content."""
 
 import hashlib
+import json
 import logging
 import os
 import time
 from typing import Any
 
 import httpx
+
+from . import tunnel
+from .proxy import resolve_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -144,24 +148,50 @@ class HtmlParser:
                 ).hexdigest()
             ),
         }
+        # 解析服务同样是出网目标：私有化部署里沙箱只有网关这一条出口，
+        # 不接代理就是直连，在零出网环境下表现为静默超时。
+        #
+        # ⚠️ 这一条推翻了未合入分支 `feat/rfc-0084-safenetwork-proxy` 的假设
+        # ——它按"内网解析服务"处理，刻意不给这条路径接代理。现网 BP 解析服务
+        # 部署在公网地址上，按内网对待会让零出网环境永远读不到网页。
+        # 未配代理时 resolve_proxy() 返回 None，行为与改动前一致。
+        proxy = resolve_proxy()
         try:
-            with httpx.Client() as client:
-                response = client.post(
+            if tunnel.should_tunnel(self.base_url, proxy):
+                # 明文目标 + 受控网关：httpx 不会发 CONNECT，而把鉴权绑在 CONNECT
+                # 会话上的网关一律拒。强制建隧道再在里面说明文。判定见 should_tunnel()，
+                # 三个条件缺一就退回下面的 httpx 路径，既有部署一行不受影响。
+                assert proxy is not None  # should_tunnel() 已保证
+                status_code, body = tunnel.post_json(
                     self.base_url,
-                    json={"url": url},
+                    proxy,
+                    payload={"url": url},
                     headers=headers,
                     timeout=30,
                 )
+            else:
+                with httpx.Client(proxy=proxy) as client:
+                    response = client.post(
+                        self.base_url,
+                        json={"url": url},
+                        headers=headers,
+                        timeout=30,
+                    )
+                status_code, body = response.status_code, response.content
         except Exception as e:
             logger.warning(f"Failed to parser {url} with error: {e}")
             return False, ""
-        if response.status_code == 200:
-            response_data = response.json()
+        if status_code == 200:
+            try:
+                response_data = json.loads(body)
+            except ValueError as e:
+                logger.warning(f"Failed to parser {url}: response is not JSON ({e})")
+                return False, ""
             page_content = response_data.get("content", "")
             return True, page_content
         else:
             logger.warning(
-                f"Failed to parser {url} with status code {response.status_code}",
+                f"Failed to parser {url} with status code {status_code}",
             )
             return False, ""
 
@@ -274,7 +304,9 @@ def web_read(
             "User-Agent": user_agent,
         }
 
-        with httpx.Client(timeout=timeout) as client:
+        # 回退直抓也要走网关：既是唯一出口，也让被策略拒掉的目标留下审计记录，
+        # 而不是变成一条查不到来源的超时。
+        with httpx.Client(timeout=timeout, proxy=resolve_proxy()) as client:
             response = client.get(url, headers=headers)
             response.raise_for_status()
 

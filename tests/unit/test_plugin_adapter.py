@@ -185,6 +185,58 @@ def _write_agent_yaml(agent_path: Path, *, plugin_use: str = '"path:./plugins/no
 
 
 class TestPluginAdapterRFC0024:
+    def test_mcp_auth_allows_non_secret_plugin_config_but_keeps_secret_reference(self, tmp_path: Path) -> None:
+        plugin_dir = tmp_path / "plugins" / "north.secure-mcp"
+        _write(
+            plugin_dir / "plugin.yaml",
+            """
+            type: plugin
+            name: north.secure-mcp
+            version: 0.1.0
+            engines:
+              nexau: ">=0.1.0"
+            config:
+              properties:
+                service_client_id:
+                  type: string
+                  required: true
+            contributes:
+              mcp_servers:
+                - name: secure_service
+                  type: http
+                  url: https://mcp.example.test/mcp
+                  auth:
+                    type: client_credentials
+                    client_id: "${config.service_client_id}"
+                    client_secret:
+                      source: env
+                      key: SERVICE_MCP_CLIENT_SECRET
+            """,
+        )
+        agent_path = tmp_path / "agent.yaml"
+        _write(
+            agent_path,
+            """
+            type: agent
+            name: main
+            llm_config:
+              model: gpt-4o-mini
+            plugins:
+              - use: "path:./plugins/north.secure-mcp"
+                config:
+                  service_client_id: service-client
+            """,
+        )
+
+        config = AgentConfig.from_yaml(agent_path)
+
+        auth = config.mcp_servers[0]["auth"]
+        assert auth["client_id"] == "service-client"
+        assert auth["client_secret"] == {
+            "source": "env",
+            "key": "SERVICE_MCP_CLIENT_SECRET",
+        }
+
     def test_plugin_from_yaml_generates_agent_plugin_entry(self, tmp_path: Path) -> None:
         plugin_dir = tmp_path / "plugins" / "north.customer-service"
         _write_basic_plugin(plugin_dir)

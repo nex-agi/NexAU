@@ -37,6 +37,7 @@ class ToolRegistry:
 
     Core interface:
     - add_source(name, tools): 注册工具来源
+    - replace_source(name, tools): 原子替换一个工具来源
     - compute_eager_tools(): 当前应传给 LLM 的工具列表
     - compute_deferred_tools(): ToolSearch 搜索池
     - compute_serial_tool_names(): 当前串行工具名称列表
@@ -64,6 +65,31 @@ class ToolRegistry:
                 self._sources[name].extend(tools)
             else:
                 self._sources[name] = list(tools)
+
+    def replace_source(self, name: str, tools: Sequence[Tool]) -> None:
+        """Atomically replace every tool registered by one source.
+
+        RFC-0029: official MCP SDK client migration.
+
+        Readers either observe the complete old source or the complete new
+        source. This is used by run-scoped MCP discovery so reconnecting does
+        not append duplicate tools or leave tools that a server no longer
+        advertises.
+
+        Deferred injection state is name-based and is retained when a
+        replacement still contains a deferred tool with the same name. Stale
+        injection entries (including tools that became eager) are pruned while
+        holding the same lock as the source replacement.
+
+        Args:
+            name: Source identifier (for example "mcp").
+            tools: The complete new snapshot for this source.
+        """
+        replacement = list(tools)
+        with self._lock:
+            self._sources[name] = replacement
+            deferred_names = {tool.name for source_tools in self._sources.values() for tool in source_tools if tool.defer_loading}
+            self._injected.intersection_update(deferred_names)
 
     def compute_eager_tools(self) -> list[Tool]:
         """Compute tools that should be sent to LLM this turn.

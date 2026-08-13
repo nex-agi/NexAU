@@ -10,8 +10,12 @@ dependencies = [
   "beautifulsoup4>=4.9.0",
   "openai>=2.14.0",
   "httpx[socks]>=0.28.1",
-  "mcp>=1.12.3",
-  "sqlmodel>=0.0.18",
+  # RFC-0029: the official SDK owns MCP protocol, transports, and OAuth.
+  "mcp>=2,<3",
+  "httpx2>=2.5.0",
+  # MCP v2 requires Pydantic >=2.12; SQLModel 0.0.39 keeps its Field typing
+  # compatible with that Pydantic line under strict Pyright.
+  "sqlmodel>=0.0.39",
   "pytest>=7.0.0",
   "pytest-cov>=4.0.0",
   "pandas>=2.3.1",

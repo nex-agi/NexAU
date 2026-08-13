@@ -175,4 +175,6 @@ tools:
       base_url: https://api.example.com
 ```
 
-Call-time arguments with the same name override preset values.
+Preset values win over call-time arguments with the same name — `extra_kwargs` is a deployment-side
+setting, so the model cannot override it. Preset keys that the `input_schema` does not declare are
+exempt from schema validation, so `additionalProperties: false` constrains caller-supplied fields only.

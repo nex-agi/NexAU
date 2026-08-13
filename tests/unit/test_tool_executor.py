@@ -344,8 +344,8 @@ class TestToolExecutorExecution:
 class TestToolExecutorExtraKwargs:
     """Test how ToolExecutor handles extra_kwargs and unknown params."""
 
-    def test_merge_and_override_extra_kwargs(self, agent_state):
-        """extra_kwargs merge and call-time override should survive executor flow."""
+    def test_extra_kwargs_win_over_call_time_params(self, agent_state):
+        """Issue #615: extra_kwargs 优先于同名调用参数，模型无覆盖注入值的权力。"""
 
         def impl(a=None, b=None, c=None, agent_state=None):
             return {"a": a, "b": b, "c": c}
@@ -368,8 +368,8 @@ class TestToolExecutorExtraKwargs:
         )
 
         assert result["a"] == 1  # from extra_kwargs
-        assert result["b"] == 99  # overridden by call-time parameter
-        assert result["c"] == 3
+        assert result["b"] == 2  # extra_kwargs wins; call-time 99 is ignored
+        assert result["c"] == 3  # call-time param without injection conflict
 
     def test_reserved_keys_in_extra_kwargs_fail(self):
         """Reserved keys should be rejected when constructing the tool."""
@@ -383,10 +383,15 @@ class TestToolExecutorExtraKwargs:
             )
 
     def test_unknown_field_rejected_by_schema_when_additional_properties_false(self, agent_state):
-        """Unknown fields are rejected up front when the schema forbids them."""
+        """Unknown fields *from the caller* are rejected when the schema forbids them.
 
-        def impl(a, agent_state=None):
-            return {"a": a}
+        Issue #615: 触发源必须是调用方传的未声明字段，而不是 `extra_kwargs` 注入的键 ——
+        后者由框架注入、模型无从"不传"，把它拿去校验会让工具 100% 失败（见
+        `test_injected_extra_kwargs_do_not_trip_additional_properties`）。
+        """
+
+        def impl(a, x=None, agent_state=None):
+            return {"a": a, "x": x}
 
         tool = Tool(
             name="unknown_field",
@@ -401,12 +406,40 @@ class TestToolExecutorExtraKwargs:
         result = executor.execute_tool(
             agent_state=agent_state,
             tool_name="unknown_field",
-            parameters={"a": 5},
+            parameters={"a": 5, "foo": "bar"},
             tool_call_id="call_unknown",
         )
 
         assert result["error_type"] == "ValueError"
         assert "Additional properties are not allowed" in result["error"]
+        assert "'foo' was unexpected" in result["error"]
+
+    def test_injected_extra_kwargs_do_not_trip_additional_properties(self, agent_state):
+        """Issue #615 主用例：注入键 ∉ schema + additionalProperties:false → 调用应成功。"""
+
+        def impl(a, x=None, agent_state=None):
+            return {"a": a, "x": x}
+
+        tool = Tool(
+            name="injected_ok",
+            description="injected keys are exempt from schema validation",
+            input_schema={"type": "object", "properties": {"a": {"type": "number"}}, "additionalProperties": False},
+            implementation=impl,
+            extra_kwargs={"x": 1},
+        )
+
+        executor = ToolExecutor(tool_registry=make_tool_registry({"injected_ok": tool}), stop_tools=set())
+
+        result = executor.execute_tool(
+            agent_state=agent_state,
+            tool_name="injected_ok",
+            parameters={"a": 5},
+            tool_call_id="call_injected_ok",
+        )
+
+        assert result["a"] == 5
+        assert result["x"] == 1  # 实现函数确实收到了注入值
+        assert "error" not in result
 
     def test_extra_kwargs_satisfy_required_fields(self, agent_state):
         """extra_kwargs alone can satisfy required schema fields."""

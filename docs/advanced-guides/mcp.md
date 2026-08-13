@@ -1,9 +1,15 @@
 
 ### MCP
 
-Define the mcp servers and create agent by setting `mcp_servers` as follows:
+NexAU delegates MCP protocol negotiation, stdio, Streamable HTTP, legacy SSE,
+and OAuth to the official MCP Python SDK. Configure each connection in the
+Agent's `mcp_servers` list.
+
+#### Python configuration
 
 ```python
+import os
+
 from nexau import Agent, AgentConfig, LLMConfig
 
 llm_config = LLMConfig(
@@ -16,7 +22,7 @@ mcp_servers = [
     {
         "name": "amap-maps-streamableHTTP",
         "type": "http",
-        "url": "https://mcp.amap.com/mcp?key=xxx",
+        "url": "https://mcp.example.com/mcp",
         "headers": {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream"
@@ -48,22 +54,71 @@ response = agent.run("现在从漕河泾现代服务园A6到上南路 4265弄要
 print(response)
 ```
 
-If you use YAML-based agent config, you can add:
+#### YAML configuration
+
+The following Agent config demonstrates every supported transport and auth
+mode. Secret values are always referenced by environment variable name; do not
+place tokens or client secrets in YAML.
+
 ```yaml
 mcp_servers:
-  - name: github
+  # Official SDK stdio transport. Only the SDK safe environment allow-list and
+  # this explicit env mapping are passed to the child process.
+  - name: local_tools
     type: stdio
-    command: npx
-    args: ['-y', '@modelcontextprotocol/server-github']
+    command: python
+    args: ["./local_mcp_server.py"]
     env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "xxxx"
+      SERVER_PROFILE: development
     timeout: 30
 
-  - name: amap-maps
+  # Streamable HTTP with arbitrary non-authentication headers.
+  - name: internal_http
     type: http
-    url: "https://mcp.amap.com/mcp?key=your_amap_key_here"
+    url: "https://mcp.example.com/mcp"
     headers:
-      Content-Type: "application/json"
-      Accept: "application/json, text/event-stream"
+      X-Tenant: north
     timeout: 30
+
+  # Legacy SSE transport with a backward-compatible Authorization header.
+  - name: legacy_sse
+    type: sse
+    url: "https://legacy-mcp.example.com/sse"
+    headers:
+      Authorization: "Bearer legacy-token"
+
+  # Static Bearer auth resolved from the environment.
+  - name: bearer_http
+    type: http
+    url: "https://bearer-mcp.example.com/mcp"
+    auth:
+      type: bearer
+      token:
+        source: env
+        key: BEARER_MCP_TOKEN
+
+  # Interactive OAuth 2.0 Authorization Code + PKCE. Discovery, client
+  # registration, token exchange and refresh are handled by the official SDK.
+  - name: user_oauth
+    type: http
+    url: "https://oauth-mcp.example.com/mcp"
+    auth:
+      type: authorization_code
+      client_name: NexAU CLI
+      scopes: ["tools:read", "tools:call"]
+
+  # OAuth 2.0 Client Credentials for service-to-service connections.
+  - name: service_oauth
+    type: http
+    url: "https://service-mcp.example.com/mcp"
+    auth:
+      type: client_credentials
+      client_id: nexau-service
+      client_secret:
+        source: env
+        key: SERVICE_MCP_CLIENT_SECRET
+      scopes: ["tools:call"]
 ```
+
+`auth` and an `Authorization` header are mutually exclusive. Remote MCP URLs
+must use HTTPS; loopback HTTP is accepted for local development and tests.

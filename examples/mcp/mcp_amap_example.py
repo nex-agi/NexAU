@@ -33,13 +33,17 @@ def main():
     #   LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST
     langfuse_tracer = LangfuseTracer()
 
+    amap_api_key = os.environ.get("AMAP_MCP_API_KEY")
+    if not amap_api_key:
+        raise RuntimeError("Set AMAP_MCP_API_KEY before running this example")
+
     # Amap Maps MCP server configuration
     # This uses the streamable HTTP MCP protocol
     mcp_servers = [
         {
             "name": "amap-maps-streamableHTTP",
             "type": "http",
-            "url": "https://mcp.amap.com/mcp?key=2dcc10a01caa038253df2c5beb078efe",
+            "url": f"https://mcp.amap.com/mcp?key={amap_api_key}",
             "headers": {
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/event-stream",
@@ -59,9 +63,7 @@ def main():
     for server in mcp_servers:
         print(f"   - {server['name']}")
         print(f"     Type: {server['type']}")
-        print(f"     URL: {server['url']}")
-        if server.get("headers"):
-            print(f"     Headers: {server['headers']}")
+        print("     URL: https://mcp.amap.com/mcp?key=<redacted>")
         print(f"     Timeout: {server.get('timeout', 10)}s")
     print()
 
