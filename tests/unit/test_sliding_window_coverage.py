@@ -546,6 +546,34 @@ class TestHardTruncationFallback:
         assert isinstance(result, str)
         assert len(result) > 0
 
+    def test_keeps_chronological_order_without_system_message(self, compaction):
+        msgs = [Message(role=Role.USER, content=[TextBlock(text=f"msg-{i}")]) for i in range(5)]
+
+        result = compaction._hard_truncation_fallback(msgs)
+
+        assert result.splitlines() == ["msg-0", "msg-1", "msg-2", "msg-3", "msg-4"]
+
+    def test_keeps_chronological_order_with_system_message(self, compaction):
+        msgs = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="system prompt")]),
+            *[Message(role=Role.USER, content=[TextBlock(text=f"msg-{i}")]) for i in range(4)],
+        ]
+
+        result = compaction._hard_truncation_fallback(msgs)
+
+        assert result.splitlines() == ["system prompt", "msg-0", "msg-1", "msg-2", "msg-3"]
+
+    def test_system_message_counted_once_against_budget(self, compaction):
+        msgs = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="system prompt")]),
+            Message(role=Role.USER, content=[TextBlock(text="question")]),
+        ]
+
+        compaction._hard_truncation_fallback(msgs)
+
+        counted = [call.args[0][0] for call in compaction.token_counter.count_tokens.call_args_list]
+        assert sum(1 for msg in counted if msg.role == Role.SYSTEM) == 1
+
 
 # ---------------------------------------------------------------------------
 # _inject_summary

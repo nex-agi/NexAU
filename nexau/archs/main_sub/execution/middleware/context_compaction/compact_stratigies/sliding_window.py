@@ -620,16 +620,27 @@ class SlidingWindowCompaction:
         retained_messages: list[Message] = []
 
         # Keep system message if present
+        system_kept = False
         if self.keep_system and messages and messages[0].role == Role.SYSTEM:
             retained_messages.append(messages[0])
             tokens_used += self.token_counter.count_tokens([messages[0]])
+            system_kept = True
 
-        # Iterate messages from newest to oldest
-        for msg in reversed(messages):
+        # Insert after the system message only when one was actually retained.
+        # Keying off self.keep_system instead would insert at index 1 of an
+        # empty list when the history carries no system message, which leaves
+        # the newest message stranded in front of the older ones.
+        insert_idx = 1 if system_kept else 0
+
+        # Iterate messages from newest to oldest. The system message is skipped
+        # because it is already retained; including it here would duplicate it
+        # and charge its tokens against the budget twice.
+        remaining = messages[1:] if system_kept else messages
+        for msg in reversed(remaining):
             msg_tokens = self.token_counter.count_tokens([msg])
             if tokens_used + msg_tokens > max_tokens:
                 break  # stop adding older messages
-            retained_messages.insert(1 if self.keep_system else 0, msg)
+            retained_messages.insert(insert_idx, msg)
             tokens_used += msg_tokens
 
         # Convert retained messages to concatenated text
