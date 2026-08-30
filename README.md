@@ -23,8 +23,8 @@ bash-only commands. See [Windows Support](./docs/windows.md).
 
 **Using pip:**
 ```bash
-# Install from the latest release tag using SSH (you need to use ssh because nexau is a private repo)
-pip install git+ssh://git@github.com/nex-agi/NexAU.git@v0.4.1
+# Install from the latest release tag
+pip install git+https://github.com/nex-agi/NexAU.git@v0.4.1
 
 # or visit https://github.com/nex-agi/nexau/releases/ and download whl, then
 pip install nexau-0.4.1-py3-none-any.whl
@@ -32,8 +32,8 @@ pip install nexau-0.4.1-py3-none-any.whl
 
 **Using uv:**
 ```bash
-# Install from the latest release tag using SSH
-uv pip install git+ssh://git@github.com/nex-agi/NexAU.git@v0.4.1
+# Install from the latest release tag
+uv pip install git+https://github.com/nex-agi/NexAU.git@v0.4.1
 
 # or visit https://github.com/nex-agi/nexau/releases/ and download whl, then
 uv pip install nexau-0.4.1-py3-none-any.whl
@@ -43,19 +43,19 @@ uv pip install nexau-0.4.1-py3-none-any.whl
 
 **Using pip:**
 ```bash
-pip install git+ssh://git@github.com/nex-agi/NexAU.git
+pip install git+https://github.com/nex-agi/NexAU.git
 ```
 
 **Using uv:**
 ```bash
-uv pip install git+ssh://git@github.com/nex-agi/NexAU.git
+uv pip install git+https://github.com/nex-agi/NexAU.git
 ```
 
 ### From Source
 
 ```bash
 # Clone the repository
-git clone git@github.com:nex-agi/NexAU.git
+git clone https://github.com/nex-agi/NexAU.git
 cd NexAU
 
 # Install dependencies using uv

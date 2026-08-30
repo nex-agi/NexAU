@@ -32,7 +32,7 @@ features and tests.
 Install from source with the same Python workflow used on other platforms:
 
 ```powershell
-git clone git@github.com:nex-agi/NexAU.git
+git clone https://github.com/nex-agi/NexAU.git
 cd NexAU
 pip install uv
 uv sync
