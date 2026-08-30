@@ -23,8 +23,8 @@ backend。Git Bash 是可选 backend，仅在显式 bash-compatible 模式或 ba
 
 **使用 pip：**
 ```bash
-# 从最新发布版本安装（需要使用SSH，因为nexau是私有仓库）
-pip install git+ssh://git@github.com/nex-agi/NexAU.git@v0.4.1
+# 从最新发布版本安装
+pip install git+https://github.com/nex-agi/NexAU.git@v0.4.1
 
 # 或者访问 https://github.com/nex-agi/NexAU/releases/ 下载 whl 文件，然后
 pip install nexau-0.4.1-py3-none-any.whl
@@ -32,8 +32,8 @@ pip install nexau-0.4.1-py3-none-any.whl
 
 **使用 uv：**
 ```bash
-# 从最新发布版本安装（需要使用SSH）
-uv pip install git+ssh://git@github.com/nex-agi/NexAU.git@v0.4.1
+# 从最新发布版本安装
+uv pip install git+https://github.com/nex-agi/NexAU.git@v0.4.1
 
 # 或者访问 https://github.com/nex-agi/NexAU/releases/ 下载 whl 文件，然后
 uv pip install nexau-0.4.1-py3-none-any.whl
@@ -43,19 +43,19 @@ uv pip install nexau-0.4.1-py3-none-any.whl
 
 **使用 pip：**
 ```bash
-pip install git+ssh://git@github.com/nex-agi/NexAU.git
+pip install git+https://github.com/nex-agi/NexAU.git
 ```
 
 **使用 uv：**
 ```bash
-uv pip install git+ssh://git@github.com/nex-agi/NexAU.git
+uv pip install git+https://github.com/nex-agi/NexAU.git
 ```
 
 ### 从源码安装
 
 ```bash
 # 克隆仓库
-git clone git@github.com:nex-agi/NexAU.git
+git clone https://github.com/nex-agi/NexAU.git
 cd NexAU
 
 # 使用 uv 安装依赖
