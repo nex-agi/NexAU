@@ -76,4 +76,4 @@ def clean_shell_output(text: str) -> str:
     text = strip_ansi(text)
     # 2. Resolve carriage-return overwrites
     text = resolve_cr(text)
-    return text
+    return text
