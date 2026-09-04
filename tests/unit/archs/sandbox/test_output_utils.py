@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from nexau.archs.sandbox.output_utils import (
     clean_shell_output,
-    collapse_repetitive,
     resolve_cr,
     strip_ansi,
 )
@@ -94,104 +93,6 @@ class TestResolveCr:
 
 
 # ---------------------------------------------------------------------------
-# collapse_repetitive
-# ---------------------------------------------------------------------------
-
-
-class TestCollapseRepetitive:
-    def test_short_text_passthrough(self) -> None:
-        """Fewer lines than min_run → returned unchanged."""
-        text = "line1\nline2\nline3"
-        assert collapse_repetitive(text) == text
-
-    def test_no_repetition_passthrough(self) -> None:
-        """All different lines (no numeric-only diff) → unchanged."""
-        text = "apple\nbanana\ncherry\norange\npear"
-        assert collapse_repetitive(text) == text
-
-    def test_collapses_progress_percentage(self) -> None:
-        """10 lines like 'Downloading: N%' are collapsed to first+summary+last."""
-        lines = [f"Downloading: {i}%" for i in range(1, 11)]
-        text = "\n".join(lines)
-        result = collapse_repetitive(text)
-
-        result_lines = result.split("\n")
-        assert result_lines[0] == "Downloading: 1%"
-        assert result_lines[-1] == "Downloading: 10%"
-        assert "similar lines collapsed" in result_lines[1]
-
-    def test_min_run_boundary(self) -> None:
-        """Exactly min_run-1 lines → not collapsed; exactly min_run → collapsed."""
-        three = "\n".join(f"Step {i}" for i in range(3))
-        assert collapse_repetitive(three, min_run=4) == three
-
-        four = "\n".join(f"Step {i}" for i in range(4))
-        result = collapse_repetitive(four, min_run=4)
-        assert "similar lines collapsed" in result
-
-    def test_custom_min_run(self) -> None:
-        """Custom min_run=2 collapses even 2 similar lines."""
-        text = "row 1\nrow 2"
-        result = collapse_repetitive(text, min_run=2)
-        assert "similar lines collapsed" in result
-        # first + summary + last
-        result_lines = result.split("\n")
-        assert result_lines[0] == "row 1"
-        assert result_lines[-1] == "row 2"
-
-    def test_preserves_non_repetitive_context(self) -> None:
-        """Mixed repetitive and non-repetitive lines: only the run is collapsed."""
-        lines = [
-            "Starting download...",
-            "Progress: 1%",
-            "Progress: 2%",
-            "Progress: 3%",
-            "Progress: 4%",
-            "Progress: 5%",
-            "Download complete.",
-        ]
-        text = "\n".join(lines)
-        result = collapse_repetitive(text)
-
-        assert "Starting download..." in result
-        assert "Download complete." in result
-        assert "similar lines collapsed" in result
-        # Non-repetitive lines kept verbatim
-        result_lines = result.split("\n")
-        assert result_lines[0] == "Starting download..."
-        assert result_lines[-1] == "Download complete."
-
-    def test_multiple_groups(self) -> None:
-        """Two separate groups of repetitive lines, both collapsed."""
-        group1 = [f"Upload: {i}%" for i in range(1, 6)]
-        separator = ["--- separator ---"]
-        group2 = [f"Download: {i}%" for i in range(1, 6)]
-        text = "\n".join(group1 + separator + group2)
-        result = collapse_repetitive(text)
-
-        # Both groups should be collapsed
-        assert result.count("similar lines collapsed") == 2
-        assert "Upload: 1%" in result
-        assert "Upload: 5%" in result
-        assert "--- separator ---" in result
-        assert "Download: 1%" in result
-        assert "Download: 5%" in result
-
-    def test_empty_string(self) -> None:
-        """Empty input returns empty output."""
-        assert collapse_repetitive("") == ""
-
-    def test_collapsed_count_is_correct(self) -> None:
-        """The collapsed count N should equal total_run_length - 2."""
-        # 8 lines → collapsed count should be 6
-        lines = [f"Building module {i}/100" for i in range(1, 9)]
-        text = "\n".join(lines)
-        result = collapse_repetitive(text)
-
-        assert "... [6 similar lines collapsed]" in result
-
-
-# ---------------------------------------------------------------------------
 # clean_shell_output
 # ---------------------------------------------------------------------------
 
@@ -202,12 +103,12 @@ class TestCleanShellOutput:
         assert clean_shell_output("") == ""
 
     def test_plain_text_passthrough(self) -> None:
-        """Clean text with no ANSI, CR, or repetition is returned unchanged."""
+        """Clean text with no ANSI or CR is returned unchanged."""
         text = "Hello World\nAll good."
         assert clean_shell_output(text) == text
 
     def test_full_pipeline_progress_bar(self) -> None:
-        """Realistic progress bar with ANSI + CR + repetition is fully cleaned."""
+        """Realistic progress bar with ANSI + CR is fully cleaned."""
         # Simulate: each progress step overwrites via \r, final state has no trailing \r
         parts = []
         for pct in range(0, 10):
@@ -224,20 +125,20 @@ class TestCleanShellOutput:
         # ANSI codes are gone
         assert "\x1b" not in result
 
-    def test_full_pipeline_multiline_progress(self) -> None:
-        """Multi-line progress with ANSI + repetition collapsed properly."""
+    def test_full_pipeline_preserves_tabular_data(self) -> None:
+        """Multi-line tables and sequential numeric rows are preserved without collapsing."""
         lines = []
-        for pct in range(1, 9):
-            lines.append(f"\x1b[32mStep {pct}/100\x1b[0m")
+        for row in range(1, 9):
+            lines.append(f"\x1b[32mRow {row}: INV/25-26/00{row} | Amount: 1000.00\x1b[0m")
         raw = "\n".join(lines)
 
         result = clean_shell_output(raw)
 
-        # ANSI stripped, repetitive lines collapsed
+        # ANSI stripped, but all rows preserved
         assert "\x1b" not in result
-        assert "Step 1/100" in result
-        assert "Step 8/100" in result
-        assert "similar lines collapsed" in result
+        assert "similar lines collapsed" not in result
+        for row in range(1, 9):
+            assert f"Row {row}: INV/25-26/00{row} | Amount: 1000.00" in result
 
     def test_ansi_only_no_cr_no_repetition(self) -> None:
         """Only ANSI cleaning happens when there's no CR or repetition."""

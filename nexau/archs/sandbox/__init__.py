@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     )
     from .e2b_sandbox import E2BSandbox, E2BSandboxManager
     from .local_sandbox import LocalSandbox, LocalSandboxManager
-    from .output_utils import clean_shell_output, collapse_repetitive, resolve_cr, strip_ansi
+    from .output_utils import clean_shell_output, resolve_cr, strip_ansi
 
 
 def _cache_export(name: str, value: object) -> object:
@@ -160,10 +160,6 @@ def __getattr__(name: str) -> object:
         from .output_utils import resolve_cr
 
         return _cache_export(name, resolve_cr)
-    if name == "collapse_repetitive":
-        from .output_utils import collapse_repetitive
-
-        return _cache_export(name, collapse_repetitive)
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
@@ -195,5 +191,4 @@ __all__ = [
     "clean_shell_output",
     "strip_ansi",
     "resolve_cr",
-    "collapse_repetitive",
 ]
