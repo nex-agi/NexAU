@@ -307,6 +307,55 @@ class TestJSONLDatabaseEngine:
 
             asyncio.run(run())
 
+    def test_find_many_with_order_by_descending(self) -> None:
+        """Prefix '-' on order_by must sort descending, matching SQL/memory engines."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = JSONLDatabaseEngine(base_path=tmpdir)
+
+            async def run() -> None:
+                await engine.setup_models([JsonlUserModel])
+                await engine.create(JsonlUserModel(tenant_id="t1", user_id="u1", name="Charlie", age=35))
+                await engine.create(JsonlUserModel(tenant_id="t1", user_id="u2", name="Alice", age=25))
+                await engine.create(JsonlUserModel(tenant_id="t1", user_id="u3", name="Bob", age=30))
+
+                results = await engine.find_many(
+                    JsonlUserModel,
+                    filters=ComparisonFilter.eq("tenant_id", "t1"),
+                    order_by="-age",
+                )
+                assert [r.age for r in results] == [35, 30, 25]
+
+                newest = await engine.find_many(
+                    JsonlUserModel,
+                    filters=ComparisonFilter.eq("tenant_id", "t1"),
+                    order_by="-age",
+                    limit=1,
+                )
+                assert len(newest) == 1
+                assert newest[0].age == 35
+
+            asyncio.run(run())
+
+    def test_find_many_with_mixed_order_by(self) -> None:
+        """Multi-field order_by must honor per-field '-' prefixes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = JSONLDatabaseEngine(base_path=tmpdir)
+
+            async def run() -> None:
+                await engine.setup_models([JsonlUserModel])
+                await engine.create(JsonlUserModel(tenant_id="t1", user_id="u1", name="Alice", age=30))
+                await engine.create(JsonlUserModel(tenant_id="t1", user_id="u2", name="Carol", age=30))
+                await engine.create(JsonlUserModel(tenant_id="t1", user_id="u3", name="Bob", age=25))
+
+                results = await engine.find_many(
+                    JsonlUserModel,
+                    filters=ComparisonFilter.eq("tenant_id", "t1"),
+                    order_by=("-age", "name"),
+                )
+                assert [r.name for r in results] == ["Alice", "Carol", "Bob"]
+
+            asyncio.run(run())
+
     def test_find_many_no_filters(self) -> None:
         """Test find_many without filters returns all records."""
         with tempfile.TemporaryDirectory() as tmpdir:
