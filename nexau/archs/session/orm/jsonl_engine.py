@@ -135,19 +135,13 @@ class JSONLDatabaseEngine(DatabaseEngine):
 
         if order_by:
             fields = (order_by,) if isinstance(order_by, str) else order_by
-
-            def sort_key(m: SQLModel) -> tuple[Any, ...]:
-                values: list[Any] = []
-                for field in fields:
-                    if field.startswith("-"):
-                        # For descending, we'll handle it differently
-                        values.append(m.__getattribute__(field[1:]))
-                    else:
-                        values.append(m.__getattribute__(field))
-                return tuple(values)
-
-            # Simple ascending sort for now
-            results.sort(key=sort_key)
+            for field in reversed(fields):
+                reverse = field.startswith("-")
+                field_name = field[1:] if reverse else field
+                results.sort(
+                    key=lambda m, name=field_name: m.__getattribute__(name),
+                    reverse=reverse,
+                )
 
         if offset:
             results = results[offset:]
