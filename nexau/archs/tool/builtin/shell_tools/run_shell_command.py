@@ -303,7 +303,7 @@ def run_shell_command(
         elif cmd_result.status == SandboxStatus.STOPPED:
             llm_parts.append("Interrupted: command stopped due to stop request.")
         else:
-            llm_parts.append(f"Output: {output if output else '(empty)'}")
+            llm_parts.append(output if output else "(empty)")
 
         if error_message:
             llm_parts.append(f"Error: {error_message}")

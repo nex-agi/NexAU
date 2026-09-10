@@ -24,6 +24,7 @@ from nexau.archs.tool.builtin.shell_tools.run_shell_command import (
     _truncate_shell_output,
     run_shell_command,
 )
+from nexau.archs.tool.tool import Tool
 
 
 def _make_agent_state(sandbox):
@@ -31,6 +32,22 @@ def _make_agent_state(sandbox):
     agent_state = Mock()
     agent_state.get_sandbox.return_value = sandbox
     return agent_state
+
+
+_RUN_SHELL_TOOL = Tool.from_yaml(
+    str(Path(__file__).parents[3] / "nexau/archs/tool/builtin/schemas/run_shell_command.tool.yaml"),
+    binding=run_shell_command,
+)
+
+
+def _format_shell_result(result: dict[str, object]) -> object:
+    """Pass a real builtin result through the formatter configured in its schema."""
+    return _RUN_SHELL_TOOL.format_output_for_llm(
+        tool_input={},
+        tool_output=result,
+        tool_call_id="call_123",
+        is_error=bool(result.get("error")),
+    )
 
 
 class TestTruncateShellOutput:
@@ -114,12 +131,95 @@ class TestRunShellCommandIntegration:
         result = run_shell_command("echo hello", agent_state=agent_state, ctx=ctx)
 
         assert "error" not in result or result.get("error") is None
-        assert result["content"] == "Output: hello world"
+        assert result["content"] == "hello world"
         assert "hello world" in result["returnDisplay"]
         assert "stdout" not in result
         assert "stderr" not in result
         assert result["interrupted"] is False
         assert result["timed_out"] is False
+        assert _format_shell_result(result) == "hello world"
+
+    def test_empty_success_formats_without_output_prefix(self):
+        """Empty successful output should keep the existing sentinel without a label."""
+        sandbox = Mock()
+        sandbox.work_dir = Path("/tmp/work")
+        sandbox.prepare_shell_command.side_effect = lambda command: command
+
+        start_result = Mock()
+        start_result.background_pid = 123
+        sandbox.execute_shell.return_value = start_result
+
+        cmd_result = Mock()
+        cmd_result.stdout = ""
+        cmd_result.stderr = ""
+        cmd_result.exit_code = 0
+        cmd_result.error = None
+        cmd_result.status = SandboxStatus.SUCCESS
+        cmd_result.output_dir = None
+        cmd_result.stdout_file = None
+        cmd_result.stderr_file = None
+        cmd_result.truncated = False
+        cmd_result.original_stdout_length = None
+        cmd_result.original_stderr_length = None
+        sandbox.get_background_task_status.return_value = cmd_result
+
+        result = run_shell_command("true", agent_state=_make_agent_state(sandbox), ctx=FrameworkContext.for_testing())
+
+        assert result["content"] == "(empty)"
+        assert _format_shell_result(result) == "(empty)"
+
+    def test_nonzero_exit_formats_output_before_exit_code(self):
+        """Content fallback must not discard stdout/stderr on a failed command."""
+        sandbox = Mock()
+        sandbox.work_dir = Path("/tmp/work")
+        sandbox.prepare_shell_command.side_effect = lambda command: command
+
+        start_result = Mock()
+        start_result.background_pid = 123
+        sandbox.execute_shell.return_value = start_result
+
+        cmd_result = Mock()
+        cmd_result.stdout = "stdout body"
+        cmd_result.stderr = "stderr body"
+        cmd_result.exit_code = 7
+        cmd_result.error = None
+        cmd_result.status = SandboxStatus.ERROR
+        cmd_result.output_dir = None
+        cmd_result.stdout_file = None
+        cmd_result.stderr_file = None
+        cmd_result.truncated = False
+        cmd_result.original_stdout_length = None
+        cmd_result.original_stderr_length = None
+        sandbox.get_background_task_status.return_value = cmd_result
+
+        result = run_shell_command("failing-command", agent_state=_make_agent_state(sandbox), ctx=FrameworkContext.for_testing())
+
+        expected = "stdout body\nstderr body\nExit Code: 7"
+        assert result["content"] == expected
+        assert _format_shell_result(result) == expected
+
+    def test_background_start_formats_background_status(self):
+        """Background results should retain their dedicated formatter output."""
+        sandbox = Mock()
+        sandbox.work_dir = Path("/tmp/work")
+
+        cmd_result = Mock()
+        cmd_result.background_pid = 321
+        cmd_result.output_dir = "/tmp/out"
+        cmd_result.stdout_file = "/tmp/out/stdout.txt"
+        cmd_result.stderr_file = "/tmp/out/stderr.txt"
+        sandbox.execute_shell.return_value = cmd_result
+
+        result = run_shell_command(
+            "long-running-command",
+            is_background=True,
+            agent_state=_make_agent_state(sandbox),
+            ctx=FrameworkContext.for_testing(),
+        )
+
+        assert _format_shell_result(result) == (
+            "Command running in background with ID: 321. Output is being written to: /tmp/out/stdout.txt"
+        )
 
     def test_dir_path_is_resolved_and_passed_as_cwd(self):
         """RFC-0020: tool-layer cwd routing reaches the sandbox backend."""
@@ -154,7 +254,7 @@ class TestRunShellCommandIntegration:
         result = run_shell_command("echo cwd", dir_path="subdir", agent_state=agent_state, ctx=ctx)
 
         expected_cwd = str(Path(str(sandbox.work_dir)) / "subdir")
-        assert result["content"] == "Output: cwd ok"
+        assert result["content"] == "cwd ok"
         assert "stdout" not in result
         assert "stderr" not in result
         sandbox.file_exists.assert_called_once_with(expected_cwd)
@@ -198,7 +298,9 @@ class TestRunShellCommandIntegration:
         sandbox.kill_background_task.assert_called_once_with(789)
         assert result["timed_out"] is True
         assert result["error"]["message"] == "Command timed out after 1ms"
-        assert "Timeout: command timed out after 0.0 minutes." in result["content"]
+        expected = "Timeout: command timed out after 0.0 minutes.\nError: Command timed out after 1ms\nExit Code: -1"
+        assert result["content"] == expected
+        assert _format_shell_result(result) == expected
 
     @patch("nexau.archs.tool.builtin.shell_tools.run_shell_command.time.sleep", return_value=None)
     def test_stop_request_kills_running_foreground_command(self, _sleep_mock):
@@ -251,3 +353,6 @@ class TestRunShellCommandIntegration:
         assert "stderr" not in result
         assert result["interrupted"] is True
         assert result["timed_out"] is False
+        expected = "Interrupted: command stopped due to stop request.\nError: Command interrupted by stop request\nExit Code: -1"
+        assert result["content"] == expected
+        assert _format_shell_result(result) == expected

@@ -31,7 +31,13 @@ def format_run_shell_command_output(context: ToolFormatterContext) -> object:
     error_text = _build_error_text(output, stderr=stderr)
     background_info = _build_background_info(output)
 
-    parts = [part for part in (processed_stdout, error_text, background_info) if part]
+    if background_info:
+        return background_info
+
+    if content and "stdout" not in output and "stderr" not in output:
+        return content
+
+    parts = [part for part in (processed_stdout, error_text) if part]
     if parts:
         return "\n".join(parts)
 
