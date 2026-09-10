@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from operator import attrgetter
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -138,10 +139,7 @@ class JSONLDatabaseEngine(DatabaseEngine):
             for field in reversed(fields):
                 reverse = field.startswith("-")
                 field_name = field[1:] if reverse else field
-                results.sort(
-                    key=lambda m, name=field_name: m.__getattribute__(name),
-                    reverse=reverse,
-                )
+                results.sort(key=attrgetter(field_name), reverse=reverse)
 
         if offset:
             results = results[offset:]
